@@ -70,6 +70,11 @@ bash run_worker.sh       # Mac 需保持开机联网
 
 # 命令行/飞书Bot 调用(关键词获客)
 python scripts/crawl_cli.py "美业获客" --count 10
+
+# 🎯 两阶段抓取(爆款深挖)
+python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl        # 筛爆款列表
+python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl --command  # 生成补抓命令
+python scripts/viral_hunter.py data/douyin/jsonl/ --merge --out merged.xlsx         # 合并数据导出
 ```
 
 LaunchAgent（开机自启，已装）：
@@ -86,6 +91,7 @@ worker/    worker.py(领单→爬取→过滤/导出→发飞书)
 scripts/   leads_filter(意图过滤) · export_videos_xlsx · export_account_xlsx
            · resolve_douyin_id(抖音号→sec_uid) · crawl_cli(飞书Bot桥)
            · validate_keywords · login_health_check(健康检查)
+           · viral_hunter(爆款识别+两阶段抓取)
 docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 ```
 
@@ -117,6 +123,7 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 - [x] 公网上线 + Mac worker 开机自启 + 登录态健康告警
 - [ ] 飞书 Bot 小秋接入（`crawl_cli.py` 就绪，待接 `~/.lark-channel`）
 - [ ] 住宅代理 → 爬取搬服务器、脱离 Mac
+- [x] 🎯 两阶段抓取(爆款深挖: search全量扫100条→detail补抓爆款300条,评论翻倍)
 - [ ] 跨爬取去重 / 客户浓度排名
 
 ## 八、安全与合规
