@@ -1,86 +1,113 @@
-# 抖音评论区获客系统（douyin-leadgen）
+# 抖音获客 + 账号分析系统（douyin-leadgen）
 
-> 输入一个关键词 → 自动搜出相关视频 → 扒光评论区 → 过滤出**精准潜在客户名单**（带抖音号/属地/需求原文）。
+一套抖音数据采集工具，两个用途：
+- **🔍 关键词获客**：输行业关键词 → 搜视频 → 扒评论区 → 过滤出**精准潜在客户名单**
+- **👤 账号深扒**：输账号主页链接 → 拉该账号**画像 + 全部作品 + 评论** → 导出 xlsx
 
-为大鹏老板公司 AI 板块的「降本增效」获客场景而建。核心逻辑：**在抖音搜行业关键词，评论区里那群「问怎么拓客 / 求方法 / 报预算」的人，就是精准需求池。**
+为大鹏老板公司 AI 板块的获客/对标场景而建。网页自助使用，结果可发飞书群。
 
 ---
 
-## 一、它解决什么
+## 一、网页怎么用
 
-传统找客户靠人工刷评论、手动记。本系统把整个链路自动化：
+公网地址：`http://129.204.166.13:8090`（口令见内部）。两个 tab：
+
+### 🔍 关键词搜索
+关键词 → 出**评论区精准客户名单**（网页表格 + CSV 下载，客户带抖音号/属地/需求原文/**主页超链接**）。
+- 内置**关键词库**（美业/电商/IP/品牌孵化/AI/美业项目C端，上百词，点一下填入）
+- 自动剔除同行中介刷的广告，只留真实需求（"怎么拓客/想做/多少钱"）
+- 边爬边从视频话题标签自动挖「🔥发现的词」，词库自增长
+- ⚠️ 区分 **B端**（获客/拓客→门店老板）vs **C端**（瘦身/幼态脸→消费者），两类客户
+
+### 👤 按账号爬取
+贴**主页链接**（抖音 app 分享→复制链接，一行一个支持批量）：
+- 单个账号 → 网页显示**画像 + 作品封面预览 + CSV 下载**
+- 批量账号 → 每个账号一个 **xlsx**（画像/全部作品/评论 三个 sheet）自动发飞书群
+- 账号模式评论**爬全**（每视频上限 500 + 子评论回复层）
+
+---
+
+## 二、架构（混合：服务器 + Mac worker）
 
 ```
-关键词(如"美业获客")
-      │
-      ▼
- ① 搜索相关视频  ──────────────┐
-      │                        │  发现层
- ② 逐条扒评论区               │  (MediaCrawler)
-      │                        │
-      ▼ ───────────────────────┘
- ③ 意图过滤器  ←── 本项目核心脚本 scripts/leads_filter.py
-      │   · 保留：怎么拓客/怎么收费/求带/报预算/没开单…
-      │   · 剔除：同行中介引流话术（"需要我推荐给你"…）
-      ▼
- ④ 精准客户名单（昵称 + 抖音号 + IP属地 + 需求原文 + 来源视频）
+①伙伴浏览器 ──公网IP:8090──> ②服务器(腾讯云CVM,广州)
+                               · FastAPI 后端 + SQLite 任务队列(systemd leadgen)
+                               · 网页前端 + 关键词库
+                               · 结果展示 / 发飞书
+                                    ↑ ↓ HTTP 抢单
+                               ③Mac worker(LaunchAgent 开机自启+防休眠)
+                               · 跑 MediaCrawler 实际爬取(住宅IP)
+                               · 关键词→评论过滤 / 账号→creator 深扒
+                               · 导出 + lark-cli 发飞书
 ```
 
-## 二、架构：双层互补
+**为什么是混合**：抖音对**机房 IP 的搜索接口**风控（返回空），但放行深采。所以**爬取必须在 Mac（住宅 IP）**，服务器只做队列/前端/发飞书。代价：**Mac 需开机联网**。
 
-| 层 | 工具 | 职责 | 部署位置 |
-|---|---|---|---|
-| **发现层** | [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler) | 关键词搜索 + 评论采集（7 平台，抖音/小红书等） | 本地 Mac / 服务器(无头) |
-| **深采层** | [Douyin_TikTok_Download_API（小探）](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) | 给定账号深采：画像/作品/无水印下载/口播 ASR | 服务器 `:8501`（systemd 守护） |
-| **过滤层** | 本项目 `scripts/leads_filter.py` | 评论 → 意图分类 → 干净客户名单 | 任意 |
+### 依赖的上游工具（不在本仓库分发）
+- [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)：关键词搜索 + 评论 + 账号(creator) 采集
+- [Douyin_TikTok_Download_API（小探）](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)：账号深采 API（服务器 :8501）
 
-> 发现层负责"关键词→一批种子号/评论"，深采层负责"选定号→深扒"。获客场景发现层一个就够；做对标分析时再上深采层。
+---
 
-## 三、实测成果（2026-06-15）
+## 三、命根子：活账号 + 干净 IP
 
-关键词「美业获客」单次跑：
+系统本质是**用一个抖音账号的登录态（Cookie）+ 住宅 IP** 在抓。所以：
+- **账号会失效**（cookie 过期几天~几周，或爬太猛被风控）→ 失效后需重新扫码登录
+- **建议用专用小号**，别用主号（封了不心疼）
+- **登录态健康检查**（`scripts/login_health_check.py` + LaunchAgent）每 6 小时自检，失效自动飞书私信告警
 
-- 抓取：**14 条视频 / 140 条评论**
-- 过滤：🔥 **精准客户 42 个** | 🗑️ 同行中介噪音 12（已剔除）| 💬 闲聊 86
-- 名单含顶级线索（如"店装修花 30 万快坚持不了，月业绩才 3000"、"我有 5000 拓客预算谁能帮我"）
+---
 
-> 真实名单含 PII，按红线**不进仓库**，只在本地 `data/`（已 gitignore）。脱敏成果见 `docs/`。
-
-## 四、快速开始
-
-依赖两个上游开源项目（不随本仓库分发，自行 clone）：
+## 四、本地 / 运维
 
 ```bash
-# 发现层
-git clone https://github.com/NanmiCoder/MediaCrawler.git
-cd MediaCrawler && uv sync && uv run playwright install chromium
-# 配置 config/base_config.py：PLATFORM=dy / KEYWORDS=你的词 /
-#   CRAWLER_TYPE=search / ENABLE_GET_COMMENTS=True / ENABLE_CDP_MODE=False
-uv run main.py --platform dy --lt qrcode --type search   # 首次扫码，之后免登录
+# 本地全套(后端+worker都在本机,自己用)
+bash run_local.sh        # 然后开 http://localhost:8090
+bash stop_local.sh
 
-# 过滤出客户名单
-python scripts/leads_filter.py \
-  --comments MediaCrawler/data/douyin/jsonl/search_comments_*.jsonl \
-  --contents MediaCrawler/data/douyin/jsonl/search_contents_*.jsonl \
-  --out data/leads.md
+# 生产 worker(连公网服务器,正式给伙伴用)
+bash run_worker.sh       # Mac 需保持开机联网
+
+# 命令行/飞书Bot 调用(关键词获客)
+python scripts/crawl_cli.py "美业获客" --count 10
 ```
 
-详细部署（含服务器无头化、踩坑）见 `docs/部署记录.md`。
-
-## 五、路线图
-
-- [x] 本地跑通 关键词→评论→客户名单
-- [x] 小探深采层部署到服务器（`:8501`，4 接口验证）
-- [ ] MediaCrawler 服务器无头化（搬登录态，机房 IP 可行性验证中）
-- [ ] **封装飞书 Bot**：团队成员发关键词 → 服务器跑 → 回传名单卡片/Excel（团队内部用）
-- [ ] 放大：多关键词、评论回复层、按需求强度排序
-
-## 六、安全与合规
-
-- 浏览器登录态 / cookie：**永不进 git**（见 `.gitignore`）
-- 客户名单含个人信息：私有仓库 + 本地隔离，仅用于正当商业触达，遵守平台规则
-- 上游工具各自遵循其开源协议（MediaCrawler、Douyin_TikTok_Download_API）
+LaunchAgent（开机自启，已装）：
+- `com.tang.leadgen-worker`：worker 主体（KeepAlive + caffeinate 防休眠）
+- `com.tang.leadgen-health`：登录态 6 小时自检告警
 
 ---
 
-*本仓库为「战斗成果」沉淀：架构、部署 playbook 与自研过滤脚本。上游爬虫工具不在此分发。*
+## 五、目录
+
+```
+server/    app.py(后端API+队列) · index.html(网页) · keywords.json(关键词库)
+worker/    worker.py(领单→爬取→过滤/导出→发飞书)
+scripts/   leads_filter(意图过滤) · export_videos_xlsx · export_account_xlsx
+           · resolve_douyin_id(抖音号→sec_uid) · crawl_cli(飞书Bot桥)
+           · validate_keywords · login_health_check(健康检查)
+docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
+```
+
+## 六、踩坑速查（建系统时的硬经验）
+1. 机房 IP 封搜索、放行深采 → 搜索必须住宅 IP（Mac）。
+2. **抖音号→sec_uid 解析被验证码挡**（playwright 无头/有头都弹验证码）→ 网页**改输主页链接**绕过；裸抖音号靠真实 Chrome 人工解析。**连续搜会被限流。**
+3. 飞书发送：lark-cli 加 `--profile xiaoqiu`（默认 app 授权坏；open_id 按 app 隔离）。
+4. CDP 连真实 Chrome：Chrome149+Playwright ws 404 → 用标准模式 + `SAVE_LOGIN_STATE`。
+5. MediaCrawler：`CRAWLER_TYPE` search/creator；翻页爬更多调大 `CRAWLER_MAX_NOTES_COUNT`；评论数 `CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES`。
+6. 切爬取账号：清 `browser_data/dy_user_data_dir` → 跑触发二维码 → 扫；**登录后别立刻杀进程**，等存盘。
+
+## 七、路线图
+- [x] 关键词→评论区精准客户（网页表格+CSV+主页链接）
+- [x] 关键词库多垂类 + C端 + 自动发现词
+- [x] 按账号爬取（画像/全部作品/评论 xlsx → 飞书）
+- [x] 单账号网页预览 + CSV
+- [x] 全量评论（500/视频 + 子评论）
+- [x] 公网上线 + Mac worker 开机自启 + 登录态健康告警
+- [ ] 飞书 Bot 小秋接入（`crawl_cli.py` 就绪，待接 `~/.lark-channel`）
+- [ ] 住宅代理 → 爬取搬服务器、脱离 Mac
+- [ ] 跨爬取去重 / 客户浓度排名
+
+## 八、安全与合规
+- cookie / 真实名单(PII) / jobs.db / xlsx：**永不进 git**（见 `.gitignore`），私有仓库
+- 仅用于正当商业触达，遵守平台规则；上游工具各遵其开源协议
