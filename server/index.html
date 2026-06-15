@@ -84,15 +84,24 @@ loadKeywords();
 document.getElementById('go').addEventListener('click', runCrawl);
 async function runCrawl(){
   const kw=document.getElementById('kw').value.trim();
-  const cnt=document.getElementById('cnt').value;
+  let cnt=parseInt(document.getElementById('cnt').value,10);
+  if(!cnt||cnt<1){cnt=10}if(cnt>30){cnt=30}
   const pw=document.getElementById('pw').value;
-  if(!kw){alert('请输入关键词');return}
+  if(!kw){alert('请先选/输入关键词');return}
+  if(!pw){alert('请输入口令');return}
   const btn=document.getElementById('go');btn.disabled=true;
   setStatus('<span class="spin"></span>提交中…');
   const fd=new FormData();fd.append('password',pw);fd.append('keyword',kw);fd.append('count',cnt);
   let r;
   try{r=await fetch('/api/submit',{method:'POST',body:fd})}catch(e){setStatus('网络错误');btn.disabled=false;return}
-  if(!r.ok){const t=await r.json().catch(()=>({detail:'失败'}));setStatus('❌ '+(t.detail||r.status));btn.disabled=false;return}
+  if(!r.ok){
+    let msg=r.status;
+    try{const t=await r.json();
+      if(typeof t.detail==='string')msg=t.detail;
+      else if(Array.isArray(t.detail))msg=t.detail.map(e=>e.msg||JSON.stringify(e)).join('；');
+      else if(t.detail)msg=JSON.stringify(t.detail);
+    }catch(e){}
+    setStatus('❌ '+msg);btn.disabled=false;return}
   const {job_id}=await r.json();
   setStatus('<span class="spin"></span>已排队(任务#'+job_id+')，等待爬取… 通常 1-3 分钟');
   poll(job_id);
