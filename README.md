@@ -70,6 +70,10 @@ bash run_worker.sh       # Mac 需保持开机联网
 
 # 命令行/飞书Bot 调用(关键词获客)
 python scripts/crawl_cli.py "美业获客" --count 10
+
+# 🎙️ 视频转口播文案(ASR)
+python scripts/transcribe_video.py data/douyin/jsonl/search_contents_*.jsonl --top 10
+python scripts/transcribe_video.py data/douyin/jsonl/creator_contents_*.jsonl --all
 ```
 
 LaunchAgent（开机自启，已装）：
@@ -86,6 +90,7 @@ worker/    worker.py(领单→爬取→过滤/导出→发飞书)
 scripts/   leads_filter(意图过滤) · export_videos_xlsx · export_account_xlsx
            · resolve_douyin_id(抖音号→sec_uid) · crawl_cli(飞书Bot桥)
            · validate_keywords · login_health_check(健康检查)
+           · transcribe_video(视频→口播文案faster-whisper ASR)
 docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 ```
 
@@ -107,6 +112,10 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
    creator 模式失败重跑会自动跳过已抓视频(去重)，补齐剩余即可。
 8. **creator 的 jsonl 是追加写**：连爬多个账号，`creator_contents_*.jsonl` 会混入多账号数据。
    导出时按 `works[0].sec_uid` 过滤 + `aweme_id`/`comment_id` 去重(见 `export_account_xlsx.py`)。
+9. **ASR 模型下载**：faster-whisper small(484MB) 从 huggingface.co 下载在国内很慢/被墙，
+   设 `HF_ENDPOINT=https://hf-mirror.com` 或手动 curl 到 `models/faster-whisper-small/`。
+   ffmpeg 用 `pip install imageio-ffmpeg`(自带完整静态二进制,免系统安装)。
+   口播型视频识别极好；新闻剪辑/多声道/背景音乐大的视频识别差。
 
 ## 七、路线图
 - [x] 关键词→评论区精准客户（网页表格+CSV+主页链接）
@@ -116,6 +125,7 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 - [x] 全量评论（500/视频 + 子评论）
 - [x] 公网上线 + Mac worker 开机自启 + 登录态健康告警
 - [ ] 飞书 Bot 小秋接入（`crawl_cli.py` 就绪，待接 `~/.lark-channel`）
+- [x] 🎙️ 视频转口播文案（faster-whisper ASR，可热榜/账号批量）
 - [ ] 住宅代理 → 爬取搬服务器、脱离 Mac
 - [ ] 跨爬取去重 / 客户浓度排名
 
