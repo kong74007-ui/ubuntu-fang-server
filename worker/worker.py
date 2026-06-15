@@ -78,8 +78,16 @@ def run_crawl():
 def build_result(jsonl_dir):
     comments = load_jsonl(os.path.join(jsonl_dir, "search_comments_*.jsonl"))
     titles = {}
+    hashtags = {}
     for d in load_jsonl(os.path.join(jsonl_dir, "search_contents_*.jsonl")):
-        titles[d.get("aweme_id")] = (d.get("title") or "")[:24]
+        title = d.get("title") or ""
+        titles[d.get("aweme_id")] = title[:24]
+        # 从标题话题标签里挖相关关键词（#美容院获客 #美业老板…）
+        for tag in _re.findall(r"#([^#\s\n]+)", title):
+            tag = tag.strip()
+            if 1 < len(tag) <= 12:
+                hashtags[tag] = hashtags.get(tag, 0) + 1
+    related = [t for t, _ in sorted(hashtags.items(), key=lambda x: -x[1])][:24]
     leads, spam, chat, seen = [], 0, 0, set()
     for c in comments:
         t = (c.get("content") or "").strip()
@@ -106,7 +114,8 @@ def build_result(jsonl_dir):
             chat += 1
     leads.sort(key=lambda x: (len(x["content"]), x["like"]), reverse=True)
     return {"total": len(comments), "leads_count": len(leads),
-            "spam": spam, "chat": chat, "leads": leads}
+            "spam": spam, "chat": chat, "leads": leads,
+            "related_keywords": related}
 
 
 def handle(job):

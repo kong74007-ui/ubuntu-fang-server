@@ -56,6 +56,10 @@
   <div class="card" id="resultCard" style="display:none">
     <div class="stat" id="stat"></div>
     <span class="dl" id="dl" onclick="downloadCSV()">⬇ 下载 CSV</span>
+    <div id="relatedBox" style="display:none;margin-top:12px">
+      <label>🔗 相关关键词（这批视频里挖到的，点一下继续挖）</label>
+      <div id="related" class="chips"></div>
+    </div>
     <div style="overflow-x:auto"><table id="tbl"></table></div>
   </div>
 </div>
@@ -64,7 +68,7 @@ let pollTimer=null, lastLeads=[], KW={};
 async function loadKeywords(){
   try{const r=await fetch('/api/keywords');KW=await r.json()}catch(e){return}
   const cats=Object.keys(KW);if(!cats.length)return;
-  const cbox=document.getElementById('kwcats');
+  const cbox=document.getElementById('kwcats');cbox.innerHTML='';
   cats.forEach((c,i)=>{
     const b=document.createElement('span');b.className='cat'+(i===0?' active':'');b.textContent=c;
     b.onclick=()=>{document.querySelectorAll('.cat').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderChips(c)};
@@ -123,6 +127,10 @@ function render(res){
   document.getElementById('resultCard').style.display='block';
   document.getElementById('stat').innerHTML=
     `🔥 精准客户 <b style="color:#fff">${res.leads_count}</b> &nbsp;|&nbsp; 🗑️ 中介噪音 ${res.spam} &nbsp;|&nbsp; 💬 闲聊 ${res.chat} &nbsp;|&nbsp; 评论 ${res.total}`;
+  const rel=res.related_keywords||[];
+  const rbox=document.getElementById('relatedBox'),rdiv=document.getElementById('related');
+  if(rel.length){rbox.style.display='block';rdiv.innerHTML='';rel.forEach(w=>{const s=document.createElement('span');s.className='chip';s.textContent=w;s.onclick=()=>{document.getElementById('kw').value=w;window.scrollTo({top:0,behavior:'smooth'});setStatus('已填入「'+w+'」，点「开始爬取」继续挖');};rdiv.appendChild(s);});}else{rbox.style.display='none';}
+  loadKeywords();
   let h='<tr><th>#</th><th>昵称</th><th>抖音号</th><th>属地</th><th>需求</th></tr>';
   lastLeads.forEach((c,i)=>{h+=`<tr><td>${i+1}</td><td>${esc(c.nickname)}</td><td>${esc(c.douyin_id||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.content)}</td></tr>`});
   document.getElementById('tbl').innerHTML=h;

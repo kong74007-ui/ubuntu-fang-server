@@ -22,6 +22,22 @@ DB = os.path.join(os.path.dirname(__file__), "jobs.db")
 PASSWORD = os.environ.get("LEADGEN_PASSWORD", "meiye2026")          # 伙伴口令
 WORKER_TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")  # worker 令牌
 INDEX_HTML = Path(os.path.join(os.path.dirname(__file__), "index.html"))
+DISCOVERED = Path(os.path.join(os.path.dirname(__file__), "discovered.json"))
+
+
+def merge_discovered(words):
+    """把爬取中发现的话题词汇入发现词库（按出现频次累计）。"""
+    pool = {}
+    if DISCOVERED.exists():
+        try:
+            pool = json.loads(DISCOVERED.read_text(encoding="utf-8"))
+        except Exception:
+            pool = {}
+    for w in words or []:
+        w = (w or "").strip()
+        if 1 < len(w) <= 12:
+            pool[w] = pool.get(w, 0) + 1
+    DISCOVERED.write_text(json.dumps(pool, ensure_ascii=False), encoding="utf-8")
 
 app = FastAPI(title="抖音评论区获客")
 
@@ -53,10 +69,19 @@ def index():
 
 @app.get("/api/keywords")
 def keywords():
-    kw = Path(os.path.join(os.path.dirname(__file__), "keywords.json"))
-    if kw.exists():
-        return json.loads(kw.read_text(encoding="utf-8"))
-    return {}
+    kwf = Path(os.path.join(os.path.dirname(__file__), "keywords.json"))
+    kw = json.loads(kwf.read_text(encoding="utf-8")) if kwf.exists() else {}
+    # 追加"发现的词"分类（爬取自动挖到的，去掉已在精选库里的）
+    if DISCOVERED.exists():
+        try:
+            pool = json.loads(DISCOVERED.read_text(encoding="utf-8"))
+            curated = set(w for v in kw.values() for w in v)
+            disc = [w for w, _ in sorted(pool.items(), key=lambda x: -x[1]) if w not in curated][:40]
+            if disc:
+                kw["🔥发现的词"] = disc
+        except Exception:
+            pass
+    return kw
 
 
 @app.post("/api/submit")
@@ -108,7 +133,11 @@ def claim(token: str = Query(...)):
 def complete(token: str = Form(...), job_id: int = Form(...), result: str = Form(...)):
     if token != WORKER_TOKEN:
         raise HTTPException(403, "token 错误")
-    json.loads(result)  # 校验是合法 JSON
+    data = json.loads(result)  # 校验是合法 JSON
+    try:
+        merge_discovered(data.get("related_keywords"))  # 发现的词汇入词库
+    except Exception:
+        pass
     with closing(db()) as conn:
         conn.execute("UPDATE jobs SET status='done',result=?,updated_at=? WHERE id=?",
                      (result, int(time.time()), job_id))
