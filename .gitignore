@@ -1,0 +1,28 @@
+# ===== 安全红线：绝不上传 =====
+# 浏览器登录态（含抖音 cookie，泄露=账号被盗）
+browser_data/
+*_user_data_dir/
+**/dy_user_data_dir/
+
+# 真实客户名单 / 爬取原始数据（含 PII：昵称/抖音号/IP属地）
+data/
+*.jsonl
+leads_*.md
+leads_*.xlsx
+*对标情报报告*
+
+# 密钥 / 凭据
+*.enc
+secrets*
+.env
+*.key
+config.local.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+*.log
