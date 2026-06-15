@@ -38,6 +38,14 @@
   .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
   textarea{width:100%;padding:10px 12px;background:#0f1115;border:1px solid var(--line);border-radius:9px;color:var(--txt);font-size:14px;resize:vertical;font-family:inherit;line-height:1.5}
   .ahint{color:var(--sub);font-size:12px;margin-top:6px}
+  #worksGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-top:12px}
+  .wcard{display:block;background:#13161c;border:1px solid var(--line);border-radius:9px;overflow:hidden;text-decoration:none;color:var(--txt)}
+  .wcard img{width:100%;height:170px;object-fit:cover;display:block;background:#0a0c10}
+  .wmeta{padding:6px 8px}
+  .wt{font-size:12px;line-height:1.4;height:34px;overflow:hidden}
+  .ws{font-size:11px;color:var(--sub);margin-top:4px}
+  .pcard{display:flex;gap:14px;align-items:center;margin:6px 0 4px}
+  .pcard img{width:56px;height:56px;border-radius:50%;object-fit:cover}
 </style>
 </head>
 <body>
@@ -76,11 +84,12 @@
       <label>🔗 相关关键词（这批视频里挖到的，点一下继续挖）</label>
       <div id="related" class="chips"></div>
     </div>
+    <div id="worksGrid" style="display:none"></div>
     <div style="overflow-x:auto"><table id="tbl"></table></div>
   </div>
 </div>
 <script>
-let pollTimer=null, lastLeads=[], KW={}, currentMode='search';
+let pollTimer=null, lastLeads=[], KW={}, currentMode='search', lastAccount=null;
 async function loadKeywords(){
   try{const r=await fetch('/api/keywords');KW=await r.json()}catch(e){return}
   const cats=Object.keys(KW);if(!cats.length)return;
@@ -119,11 +128,21 @@ async function runCrawl(){
   if(currentMode==='account'){
     const lines=document.getElementById('accts').value.split('\n').map(s=>s.trim()).filter(Boolean);
     if(!lines.length){alert('请粘贴账号主页链接（一行一个）');return}
-    btn.disabled=true;setStatus('<span class="spin"></span>提交 '+lines.length+' 个账号…');
+    btn.disabled=true;
+    if(lines.length===1){
+      setStatus('<span class="spin"></span>提交中…');
+      const f=new FormData();f.append('password',pw);f.append('keyword',lines[0]);f.append('mode','account');
+      let r;try{r=await fetch('/api/submit',{method:'POST',body:f})}catch(e){setStatus('网络错误');btn.disabled=false;return}
+      if(!r.ok){let m=r.status;try{const t=await r.json();m=typeof t.detail==='string'?t.detail:JSON.stringify(t.detail)}catch(e){}setStatus('❌ '+m);btn.disabled=false;return}
+      const {job_id}=await r.json();
+      setStatus('<span class="spin"></span>已排队(账号#'+job_id+')，爬取中… 作品多的账号会久一点');
+      poll(job_id);return;
+    }
+    setStatus('<span class="spin"></span>提交 '+lines.length+' 个账号…');
     let ok=0;
     for(const ln of lines){const f=new FormData();f.append('password',pw);f.append('keyword',ln);f.append('mode','account');try{const r=await fetch('/api/submit',{method:'POST',body:f});if(r.ok)ok++;}catch(e){}}
     btn.disabled=false;
-    setStatus('✅ 已提交 '+ok+'/'+lines.length+' 个账号。每个账号爬完(画像+作品+评论)会自动发 xlsx 到飞书群，约几分钟、排队进行。');
+    setStatus('✅ 已提交 '+ok+'/'+lines.length+' 个账号。每个爬完(画像+作品+评论)自动发 xlsx 到飞书群，约几分钟、排队进行。');
     return;
   }
   const kw=document.getElementById('kw').value.trim();
@@ -154,13 +173,14 @@ function poll(id){
     const j=await r.json();
     if(j.status==='pending'){setStatus('<span class="spin"></span>排队中(#'+id+')…')}
     else if(j.status==='running'){setStatus('<span class="spin"></span>正在爬取并过滤(#'+id+')…')}
-    else if(j.status==='done'){clearInterval(pollTimer);document.getElementById('go').disabled=false;setStatus('✅ 完成');render(j.result)}
+    else if(j.status==='done'){clearInterval(pollTimer);document.getElementById('go').disabled=false;setStatus('✅ 完成');if(j.result&&j.result.type==='account'){renderAccount(j.result)}else{render(j.result)}}
     else if(j.status==='error'){clearInterval(pollTimer);document.getElementById('go').disabled=false;setStatus('❌ 出错：'+(j.error||'未知'))}
   },3000);
 }
 function setStatus(h){document.getElementById('status').innerHTML=h}
 function render(res){
-  lastLeads=res.leads||[];
+  lastLeads=res.leads||[];lastAccount=null;
+  document.getElementById('worksGrid').style.display='none';
   document.getElementById('resultCard').style.display='block';
   document.getElementById('stat').innerHTML=
     `🔥 精准客户 <b style="color:#fff">${res.leads_count}</b> &nbsp;|&nbsp; 🗑️ 中介噪音 ${res.spam} &nbsp;|&nbsp; 💬 闲聊 ${res.chat} &nbsp;|&nbsp; 评论 ${res.total}`;
@@ -178,12 +198,33 @@ function render(res){
   document.getElementById('tbl').innerHTML=h;
 }
 function esc(s){return(s==null?'':String(s)).replace(/[<>&]/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]))}
+function renderAccount(res){
+  lastAccount=res;lastLeads=[];
+  document.getElementById('resultCard').style.display='block';
+  document.getElementById('relatedBox').style.display='none';
+  document.getElementById('tbl').innerHTML='';
+  document.getElementById('stat').innerHTML=
+    `👤 <b style="color:#fff">${esc(res.nickname)}</b> &nbsp; 粉丝 <b style="color:#fff">${res.fans}</b> | 获赞 ${res.likes} | 作品 ${res.works_count} | 评论 ${res.comments_count} &nbsp; <a href="${res.profile}" target="_blank" style="color:#5aa9ff">主页↗</a> &nbsp; <span style="color:var(--ok)">xlsx已发飞书</span>`;
+  let h='';
+  (res.works||[]).forEach(w=>{
+    h+=`<a class="wcard" href="${w.url}" target="_blank"><img src="${esc(w.cover)}" loading="lazy" referrerpolicy="no-referrer"><div class="wmeta"><div class="wt">${esc((w.title||'').slice(0,40))}</div><div class="ws">❤${w.likes||0} 💬${w.comments||0} 🔄${w.shares||0}</div></div></a>`;
+  });
+  const g=document.getElementById('worksGrid');g.innerHTML=h;g.style.display='grid';
+}
 function downloadCSV(){
-  let rows=[['昵称','抖音号','主页链接','属地','需求','来源视频']];
-  lastLeads.forEach(c=>rows.push([c.nickname,c.douyin_id||'',c.profile||(c.sec_uid?'https://www.douyin.com/user/'+c.sec_uid:''),c.ip,c.content,c.source||'']));
+  let rows,name;
+  if(lastAccount){
+    rows=[['标题','点赞','评论','收藏','分享','发布时间','视频链接']];
+    (lastAccount.works||[]).forEach(w=>rows.push([w.title,w.likes,w.comments,w.collects,w.shares,w.create_time?new Date(w.create_time*1000).toLocaleString():'',w.url]));
+    name='账号_'+(lastAccount.nickname||'account')+'.csv';
+  }else{
+    rows=[['昵称','抖音号','主页链接','属地','需求','来源视频']];
+    lastLeads.forEach(c=>rows.push([c.nickname,c.douyin_id||'',c.profile||(c.sec_uid?'https://www.douyin.com/user/'+c.sec_uid:''),c.ip,c.content,c.source||'']));
+    name='客户名单.csv';
+  }
   let csv='﻿'+rows.map(r=>r.map(x=>'"'+String(x==null?'':x).replace(/"/g,'""')+'"').join(',')).join('\n');
   let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download='客户名单.csv';a.click();
+  a.download=name;a.click();
 }
 </script>
 </body>

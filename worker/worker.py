@@ -167,6 +167,14 @@ def build_account_result(jsonl_dir):
     comments = load_jsonl(os.path.join(jsonl_dir, "creator_comments_*.jsonl"))
     c = creators[0] if creators else {}
     sec = works[0].get("sec_uid") if works else ""
+    works_out = [{
+        "title": w.get("title") or w.get("desc") or "",
+        "cover": w.get("cover_url") or "",
+        "likes": w.get("liked_count"), "comments": w.get("comment_count"),
+        "shares": w.get("share_count"), "collects": w.get("collected_count"),
+        "create_time": w.get("create_time"),
+        "url": w.get("aweme_url") or "",
+    } for w in works[:200]]
     return {
         "type": "account", "nickname": c.get("nickname"),
         "douyin_id": works[0].get("user_unique_id") if works else "",
@@ -175,7 +183,9 @@ def build_account_result(jsonl_dir):
         "follows": c.get("follows"),
         "ip": (c.get("ip_location") or "").replace("IP属地：", ""),
         "desc": c.get("desc") or "",
+        "avatar": c.get("avatar") or "",
         "profile": f"https://www.douyin.com/user/{sec}" if sec else "",
+        "works": works_out,
     }
 
 
