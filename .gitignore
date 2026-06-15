@@ -26,3 +26,9 @@ __pycache__/
 # 系统
 .DS_Store
 *.log
+
+# 任务数据库(含爬取结果PII)
+jobs.db
+server/jobs.db
+*.db
+*.sqlite
