@@ -55,6 +55,7 @@ def patch_config(keyword, count):
         r'^HEADLESS\s*=.*$': f'HEADLESS = {HEADLESS}',
         r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
         r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
+        r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 30',
         r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
     }
     for pat, rep in rules.items():
@@ -102,9 +103,12 @@ def build_result(jsonl_dir):
             if key in seen:
                 continue
             seen.add(key)
+            sec = c.get("sec_uid") or ""
             leads.append({
                 "nickname": c.get("nickname"),
                 "douyin_id": c.get("user_unique_id") or "",
+                "sec_uid": sec,
+                "profile": f"https://www.douyin.com/user/{sec}" if sec else "",
                 "ip": c.get("ip_location"),
                 "content": c.get("content"),
                 "source": titles.get(c.get("aweme_id"), ""),

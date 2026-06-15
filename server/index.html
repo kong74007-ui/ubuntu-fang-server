@@ -132,13 +132,18 @@ function render(res){
   if(rel.length){rbox.style.display='block';rdiv.innerHTML='';rel.forEach(w=>{const s=document.createElement('span');s.className='chip';s.textContent=w;s.onclick=()=>{document.getElementById('kw').value=w;window.scrollTo({top:0,behavior:'smooth'});setStatus('已填入「'+w+'」，点「开始爬取」继续挖');};rdiv.appendChild(s);});}else{rbox.style.display='none';}
   loadKeywords();
   let h='<tr><th>#</th><th>昵称</th><th>抖音号</th><th>属地</th><th>需求</th></tr>';
-  lastLeads.forEach((c,i)=>{h+=`<tr><td>${i+1}</td><td>${esc(c.nickname)}</td><td>${esc(c.douyin_id||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.content)}</td></tr>`});
+  lastLeads.forEach((c,i)=>{
+    const url=c.profile||(c.sec_uid?'https://www.douyin.com/user/'+c.sec_uid:'');
+    const nick=url?`<a href="${url}" target="_blank" style="color:#5aa9ff;text-decoration:none">${esc(c.nickname)} ↗</a>`:esc(c.nickname);
+    const did=url?`<a href="${url}" target="_blank" style="color:#5aa9ff;text-decoration:none">${esc(c.douyin_id||'查看主页')}</a>`:esc(c.douyin_id||'');
+    h+=`<tr><td>${i+1}</td><td>${nick}</td><td>${did}</td><td>${esc(c.ip)}</td><td>${esc(c.content)}</td></tr>`;
+  });
   document.getElementById('tbl').innerHTML=h;
 }
 function esc(s){return(s==null?'':String(s)).replace(/[<>&]/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]))}
 function downloadCSV(){
-  let rows=[['昵称','抖音号','属地','需求','来源视频']];
-  lastLeads.forEach(c=>rows.push([c.nickname,c.douyin_id||'',c.ip,c.content,c.source||'']));
+  let rows=[['昵称','抖音号','主页链接','属地','需求','来源视频']];
+  lastLeads.forEach(c=>rows.push([c.nickname,c.douyin_id||'',c.profile||(c.sec_uid?'https://www.douyin.com/user/'+c.sec_uid:''),c.ip,c.content,c.source||'']));
   let csv='﻿'+rows.map(r=>r.map(x=>'"'+String(x==null?'':x).replace(/"/g,'""')+'"').join(',')).join('\n');
   let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download='客户名单.csv';a.click();

@@ -65,9 +65,10 @@ def main():
     csv_path = f"/tmp/leads_{args.keyword}_{jid}.csv"
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["昵称", "抖音号", "属地", "需求原文", "来源视频"])
+        w.writerow(["昵称", "抖音号", "主页链接", "属地", "需求原文", "来源视频"])
         for c in result["leads"]:
-            w.writerow([c["nickname"], c.get("douyin_id", ""), c["ip"], c["content"], c.get("source", "")])
+            w.writerow([c["nickname"], c.get("douyin_id", ""), c.get("profile", ""),
+                        c["ip"], c["content"], c.get("source", "")])
 
     if args.json:
         print(json.dumps({**result, "csv_path": csv_path}, ensure_ascii=False))
