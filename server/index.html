@@ -33,6 +33,11 @@
   .chips{display:flex;gap:6px;flex-wrap:wrap}
   .chip{padding:5px 11px;border:1px solid var(--line);border-radius:8px;font-size:13px;color:var(--txt);cursor:pointer;background:#13161c}
   .chip:hover{border-color:var(--acc);color:var(--acc)}
+  #tabs{display:flex;gap:8px;margin-bottom:16px}
+  .tab{padding:8px 16px;border:1px solid var(--line);border-radius:9px;cursor:pointer;color:var(--sub);font-size:14px;user-select:none}
+  .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  textarea{width:100%;padding:10px 12px;background:#0f1115;border:1px solid var(--line);border-radius:9px;color:var(--txt);font-size:14px;resize:vertical;font-family:inherit;line-height:1.5}
+  .ahint{color:var(--sub);font-size:12px;margin-top:6px}
 </style>
 </head>
 <body>
@@ -41,6 +46,11 @@
   <p class="sub">输入行业关键词 → 自动搜视频、扒评论 → 过滤出精准潜在客户名单</p>
 
   <div class="card">
+    <div id="tabs">
+      <span class="tab active" data-mode="search">🔍 关键词搜索</span>
+      <span class="tab" data-mode="account">👤 按账号爬取</span>
+    </div>
+    <div id="pane-search">
     <div class="row">
       <div><label>关键词</label><input id="kw" placeholder="如：美业获客"></div>
       <div style="flex:0 0 120px"><label>视频数(1-100)</label><input id="cnt" type="number" value="20" min="1" max="100"></div>
@@ -48,6 +58,12 @@
     <label>从关键词库选（点一下填入）</label>
     <div id="kwcats"></div>
     <div id="kwchips" class="chips"></div>
+    </div>
+    <div id="pane-account" style="display:none">
+      <label>账号主页链接（一行一个，支持批量）</label>
+      <textarea id="accts" rows="4" placeholder="粘贴抖音主页链接，一行一个，如：&#10;https://www.douyin.com/user/MS4wLjAB...&#10;（抖音 app 分享→复制链接；或直接填 sec_uid）"></textarea>
+      <div class="ahint">每个账号会爬：账号画像 + 全部作品 + 评论 → 一个 xlsx 自动发到飞书群</div>
+    </div>
     <label>口令</label><input id="pw" type="password" placeholder="团队共享口令">
     <button id="go">开始爬取</button>
     <div id="status"></div>
@@ -64,7 +80,7 @@
   </div>
 </div>
 <script>
-let pollTimer=null, lastLeads=[], KW={};
+let pollTimer=null, lastLeads=[], KW={}, currentMode='search';
 async function loadKeywords(){
   try{const r=await fetch('/api/keywords');KW=await r.json()}catch(e){return}
   const cats=Object.keys(KW);if(!cats.length)return;
@@ -86,14 +102,35 @@ function renderChips(cat){
 }
 loadKeywords();
 document.getElementById('go').addEventListener('click', runCrawl);
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    currentMode=t.dataset.mode;
+    document.getElementById('pane-search').style.display=currentMode==='search'?'block':'none';
+    document.getElementById('pane-account').style.display=currentMode==='account'?'block':'none';
+    setStatus('');
+  };
+});
 async function runCrawl(){
+  const pw=document.getElementById('pw').value;
+  if(!pw){alert('请输入口令');return}
+  const btn=document.getElementById('go');
+  if(currentMode==='account'){
+    const lines=document.getElementById('accts').value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if(!lines.length){alert('请粘贴账号主页链接（一行一个）');return}
+    btn.disabled=true;setStatus('<span class="spin"></span>提交 '+lines.length+' 个账号…');
+    let ok=0;
+    for(const ln of lines){const f=new FormData();f.append('password',pw);f.append('keyword',ln);f.append('mode','account');try{const r=await fetch('/api/submit',{method:'POST',body:f});if(r.ok)ok++;}catch(e){}}
+    btn.disabled=false;
+    setStatus('✅ 已提交 '+ok+'/'+lines.length+' 个账号。每个账号爬完(画像+作品+评论)会自动发 xlsx 到飞书群，约几分钟、排队进行。');
+    return;
+  }
   const kw=document.getElementById('kw').value.trim();
   let cnt=parseInt(document.getElementById('cnt').value,10);
   if(!cnt||cnt<1){cnt=10}if(cnt>100){cnt=100}
-  const pw=document.getElementById('pw').value;
   if(!kw){alert('请先选/输入关键词');return}
-  if(!pw){alert('请输入口令');return}
-  const btn=document.getElementById('go');btn.disabled=true;
+  btn.disabled=true;
   setStatus('<span class="spin"></span>提交中…');
   const fd=new FormData();fd.append('password',pw);fd.append('keyword',kw);fd.append('count',cnt);
   let r;

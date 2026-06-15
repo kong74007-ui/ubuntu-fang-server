@@ -50,6 +50,7 @@ def patch_config(keyword, count):
     src = open(cfg, encoding="utf-8").read()
     rules = {
         r'^PLATFORM\s*=.*$': 'PLATFORM = "dy"',
+        r'CRAWLER_TYPE = \(\s*"[^"]+"': 'CRAWLER_TYPE = (\n    "search"',
         r'^KEYWORDS\s*=.*$': f'KEYWORDS = "{keyword}"',
         r'^CRAWLER_MAX_NOTES_COUNT\s*=.*$': f'CRAWLER_MAX_NOTES_COUNT = {count}',
         r'^HEADLESS\s*=.*$': f'HEADLESS = {HEADLESS}',
@@ -122,18 +123,111 @@ def build_result(jsonl_dir):
             "related_keywords": related}
 
 
-def handle(job):
+DY_CFG = os.path.join(MC_DIR, "config/dy_config.py")
+EXPORT_ACCOUNT = os.path.join(os.path.dirname(__file__), "..", "scripts", "export_account_xlsx.py")
+FEISHU_CHAT = os.environ.get("LEADGEN_FEISHU_CHAT", "oc_5663a8c602094c48a850a7da7ad9f70d")
+
+
+def patch_config_account(creator_input):
+    """账号模式：creator 模式 + 设要爬的账号 + 开评论。"""
+    cfg = os.path.join(MC_DIR, "config/base_config.py")
+    s = open(cfg, encoding="utf-8").read()
+    rules = {
+        r'^PLATFORM\s*=.*$': 'PLATFORM = "dy"',
+        r'CRAWLER_TYPE = \(\s*"[^"]+"': 'CRAWLER_TYPE = (\n    "creator"',
+        r'^HEADLESS\s*=.*$': 'HEADLESS = True',
+        r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
+        r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
+        r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
+    }
+    for pat, rep in rules.items():
+        s = re.sub(pat, rep, s, count=1, flags=re.M)
+    open(cfg, "w", encoding="utf-8").write(s)
+    safe = (creator_input or "").replace('"', '').strip()
+    d = open(DY_CFG, encoding="utf-8").read()
+    d = re.sub(r'DY_CREATOR_ID_LIST = \[.*?\]', f'DY_CREATOR_ID_LIST = [\n    "{safe}"\n]',
+               d, count=1, flags=re.S)
+    open(DY_CFG, "w", encoding="utf-8").write(d)
+
+
+def run_crawl_creator():
+    jsonl_dir = os.path.join(MC_DIR, "data/douyin/jsonl")
+    if os.path.isdir(jsonl_dir):
+        for f in glob.glob(os.path.join(jsonl_dir, "*.jsonl")):
+            os.remove(f)
+    subprocess.run(["uv", "run", "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "creator"],
+                   cwd=MC_DIR, timeout=1800, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return jsonl_dir
+
+
+def build_account_result(jsonl_dir):
+    creators = load_jsonl(os.path.join(jsonl_dir, "creator_creators_*.jsonl"))
+    works = load_jsonl(os.path.join(jsonl_dir, "creator_contents_*.jsonl"))
+    comments = load_jsonl(os.path.join(jsonl_dir, "creator_comments_*.jsonl"))
+    c = creators[0] if creators else {}
+    sec = works[0].get("sec_uid") if works else ""
+    return {
+        "type": "account", "nickname": c.get("nickname"),
+        "douyin_id": works[0].get("user_unique_id") if works else "",
+        "fans": c.get("fans"), "likes": c.get("interaction"),
+        "works_count": len(works), "comments_count": len(comments),
+        "follows": c.get("follows"),
+        "ip": (c.get("ip_location") or "").replace("IP属地：", ""),
+        "desc": c.get("desc") or "",
+        "profile": f"https://www.douyin.com/user/{sec}" if sec else "",
+    }
+
+
+def feishu_send_file(path, caption):
+    folder, fn = os.path.dirname(path), os.path.basename(path)
+    base = ["lark-cli", "im", "+messages-send", "--profile", "xiaoqiu", "--as", "bot",
+            "--chat-id", FEISHU_CHAT]
+    subprocess.run(base + ["--text", caption], cwd=folder, timeout=60,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(base + ["--file", "./" + fn], cwd=folder, timeout=180,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def handle_account(job):
+    jid, target = job["id"], job["keyword"]
+    print(f"[job {jid}] 账号爬取「{target[:40]}」…")
+    patch_config_account(target)
+    jsonl_dir = run_crawl_creator()
+    res = build_account_result(jsonl_dir)
+    nick = (res.get("nickname") or "account").replace("/", "_")[:20]
+    xlsx = f"/tmp/账号_{nick}_{jid}.xlsx"
+    subprocess.run(["uv", "run", "python", EXPORT_ACCOUNT, jsonl_dir, xlsx],
+                   cwd=MC_DIR, timeout=120, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    feishu_send_file(xlsx, f"👤 账号「{res.get('nickname')}」数据：粉丝{res.get('fans')}/"
+                           f"获赞{res.get('likes')}/作品{res.get('works_count')}，含画像+作品+评论 ↓")
+    res["sent_feishu"] = True
+    http_post("/api/complete", {"token": TOKEN, "job_id": jid,
+                                "result": json.dumps(res, ensure_ascii=False)})
+    print(f"[job {jid}] ✅ 账号「{res.get('nickname')}」已发飞书")
+
+
+def handle_search(job):
     jid, kw, cnt = job["id"], job["keyword"], job["count"]
     print(f"[job {jid}] 关键词「{kw}」x{cnt} 开始爬取…")
+    patch_config(kw, cnt)
+    jsonl_dir = run_crawl()
+    result = build_result(jsonl_dir)
+    http_post("/api/complete", {"token": TOKEN, "job_id": jid,
+                                "result": json.dumps(result, ensure_ascii=False)})
+    print(f"[job {jid}] ✅ 完成：{result['leads_count']} 精准客户")
+
+
+def handle(job):
+    jid = job["id"]
     try:
-        patch_config(kw, cnt)
-        jsonl_dir = run_crawl()
-        result = build_result(jsonl_dir)
-        http_post("/api/complete", {"token": TOKEN, "job_id": jid,
-                                    "result": json.dumps(result, ensure_ascii=False)})
-        print(f"[job {jid}] ✅ 完成：{result['leads_count']} 精准客户")
+        if job.get("mode") == "account":
+            handle_account(job)
+        else:
+            handle_search(job)
     except subprocess.TimeoutExpired:
-        http_post("/api/fail", {"token": TOKEN, "job_id": jid, "error": "爬取超时(15分钟)"})
+        http_post("/api/fail", {"token": TOKEN, "job_id": jid, "error": "爬取超时"})
         print(f"[job {jid}] ❌ 超时")
     except Exception as e:
         http_post("/api/fail", {"token": TOKEN, "job_id": jid, "error": str(e)[:300]})
