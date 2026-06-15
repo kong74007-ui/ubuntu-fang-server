@@ -49,7 +49,7 @@
     <div id="kwcats"></div>
     <div id="kwchips" class="chips"></div>
     <label>口令</label><input id="pw" type="password" placeholder="团队共享口令">
-    <button id="go" onclick="submit()">开始爬取</button>
+    <button id="go">开始爬取</button>
     <div id="status"></div>
   </div>
 
@@ -81,7 +81,8 @@ function renderChips(cat){
   });
 }
 loadKeywords();
-async function submit(){
+document.getElementById('go').addEventListener('click', runCrawl);
+async function runCrawl(){
   const kw=document.getElementById('kw').value.trim();
   const cnt=document.getElementById('cnt').value;
   const pw=document.getElementById('pw').value;
