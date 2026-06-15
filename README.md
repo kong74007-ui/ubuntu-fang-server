@@ -94,8 +94,19 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 2. **抖音号→sec_uid 解析被验证码挡**（playwright 无头/有头都弹验证码）→ 网页**改输主页链接**绕过；裸抖音号靠真实 Chrome 人工解析。**连续搜会被限流。**
 3. 飞书发送：lark-cli 加 `--profile xiaoqiu`（默认 app 授权坏；open_id 按 app 隔离）。
 4. CDP 连真实 Chrome：Chrome149+Playwright ws 404 → 用标准模式 + `SAVE_LOGIN_STATE`。
+   - **已验证的根因+修复**：`CDP_CONNECT_EXISTING=True` 时 MediaCrawler 连的是
+     `ws://localhost:9222/devtools/browser`(裸路径)，新版 Chrome 返回 404。
+     改为从 `http://127.0.0.1:9222/json/version` 读 `webSocketDebuggerUrl` 再连即可。
+   - 取地址的 httpx 须 `trust_env=False`(否则系统代理拦截 localhost 返回 502)；
+     运行加 `NO_PROXY=localhost,127.0.0.1` 让 playwright 连接也绕过代理。
+   - 启动调试 Chrome 不能用默认用户目录(Chrome 拒绝)，要 `--user-data-dir=独立目录`。
 5. MediaCrawler：`CRAWLER_TYPE` search/creator；翻页爬更多调大 `CRAWLER_MAX_NOTES_COUNT`；评论数 `CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES`。
 6. 切爬取账号：清 `browser_data/dy_user_data_dir` → 跑触发二维码 → 扫；**登录后别立刻杀进程**，等存盘。
+7. **网络抖动整任务崩**：抓 creator 几十个视频时，单次 httpx `ConnectError`/TLS 握手失败
+   会让整个进程退出。给 client `request()` 加连接/超时类错误重试(retry 3~4 次)即可扛过抖动；
+   creator 模式失败重跑会自动跳过已抓视频(去重)，补齐剩余即可。
+8. **creator 的 jsonl 是追加写**：连爬多个账号，`creator_contents_*.jsonl` 会混入多账号数据。
+   导出时按 `works[0].sec_uid` 过滤 + `aweme_id`/`comment_id` 去重(见 `export_account_xlsx.py`)。
 
 ## 七、路线图
 - [x] 关键词→评论区精准客户（网页表格+CSV+主页链接）
