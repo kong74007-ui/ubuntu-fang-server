@@ -43,7 +43,7 @@
   <div class="card">
     <div class="row">
       <div><label>关键词</label><input id="kw" placeholder="如：美业获客"></div>
-      <div style="flex:0 0 120px"><label>视频数(1-30)</label><input id="cnt" type="number" value="10" min="1" max="30"></div>
+      <div style="flex:0 0 120px"><label>视频数(1-100)</label><input id="cnt" type="number" value="20" min="1" max="100"></div>
     </div>
     <label>从关键词库选（点一下填入）</label>
     <div id="kwcats"></div>
@@ -89,7 +89,7 @@ document.getElementById('go').addEventListener('click', runCrawl);
 async function runCrawl(){
   const kw=document.getElementById('kw').value.trim();
   let cnt=parseInt(document.getElementById('cnt').value,10);
-  if(!cnt||cnt<1){cnt=10}if(cnt>30){cnt=30}
+  if(!cnt||cnt<1){cnt=10}if(cnt>100){cnt=100}
   const pw=document.getElementById('pw').value;
   if(!kw){alert('请先选/输入关键词');return}
   if(!pw){alert('请输入口令');return}

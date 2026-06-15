@@ -53,9 +53,14 @@ def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             keyword TEXT, count INTEGER,
+            mode TEXT DEFAULT 'search',      -- search(关键词) / account(抖音号)
             status TEXT DEFAULT 'pending',   -- pending/running/done/error
             result TEXT, error TEXT,
             created_at INTEGER, updated_at INTEGER)""")
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN mode TEXT DEFAULT 'search'")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -85,18 +90,20 @@ def keywords():
 
 
 @app.post("/api/submit")
-def submit(password: str = Form(...), keyword: str = Form(...), count: int = Form(10)):
+def submit(password: str = Form(...), keyword: str = Form(...),
+           count: int = Form(10), mode: str = Form("search")):
     if password != PASSWORD:
         raise HTTPException(403, "口令错误")
     keyword = keyword.strip()
     if not keyword:
-        raise HTTPException(400, "关键词不能为空")
-    count = max(1, min(int(count), 30))  # 限幅，保护服务器
+        raise HTTPException(400, "关键词/抖音号不能为空")
+    mode = mode if mode in ("search", "account") else "search"
+    count = max(1, min(int(count), 100))  # 限幅，保护服务器
     now = int(time.time())
     with closing(db()) as conn:
         cur = conn.execute(
-            "INSERT INTO jobs(keyword,count,created_at,updated_at) VALUES(?,?,?,?)",
-            (keyword, count, now, now))
+            "INSERT INTO jobs(keyword,count,mode,created_at,updated_at) VALUES(?,?,?,?,?)",
+            (keyword, count, mode, now, now))
         conn.commit()
         return {"job_id": cur.lastrowid}
 
@@ -126,7 +133,8 @@ def claim(token: str = Query(...)):
             return {"job": None}
         conn.execute("UPDATE jobs SET status='running',updated_at=? WHERE id=?", (now, r["id"]))
         conn.commit()
-        return {"job": {"id": r["id"], "keyword": r["keyword"], "count": r["count"]}}
+        return {"job": {"id": r["id"], "keyword": r["keyword"], "count": r["count"],
+                        "mode": r["mode"] if "mode" in r.keys() else "search"}}
 
 
 @app.post("/api/complete")
