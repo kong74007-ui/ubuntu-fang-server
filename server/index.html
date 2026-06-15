@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>抖音评论区获客</title>
+<style>
+  :root{--bg:#0f1115;--card:#191c23;--line:#2a2e38;--txt:#e8eaed;--sub:#9aa0aa;--acc:#ff5c8a;--ok:#37c871}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.6 -apple-system,"PingFang SC",sans-serif;padding:24px}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--sub);margin:0 0 20px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+  label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}
+  input{width:100%;padding:10px 12px;background:#0f1115;border:1px solid var(--line);border-radius:9px;color:var(--txt);font-size:15px}
+  .row{display:flex;gap:12px}.row>div{flex:1}
+  button{margin-top:16px;width:100%;padding:12px;background:var(--acc);color:#fff;border:0;border-radius:9px;font-size:16px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  #status{margin-top:14px;font-size:14px}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--sub);font-weight:500}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px}
+  .tag-ok{background:rgba(55,200,113,.15);color:var(--ok)}
+  .stat{display:flex;gap:18px;margin:6px 0 0;font-size:13px;color:var(--sub)}
+  .dl{display:inline-block;margin-top:12px;color:var(--acc);cursor:pointer;font-size:14px}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:s .8s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎯 抖音评论区获客</h1>
+  <p class="sub">输入行业关键词 → 自动搜视频、扒评论 → 过滤出精准潜在客户名单</p>
+
+  <div class="card">
+    <div class="row">
+      <div><label>关键词</label><input id="kw" placeholder="如：美业获客"></div>
+      <div style="flex:0 0 120px"><label>视频数(1-30)</label><input id="cnt" type="number" value="10" min="1" max="30"></div>
+    </div>
+    <label>口令</label><input id="pw" type="password" placeholder="团队共享口令">
+    <button id="go" onclick="submit()">开始爬取</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <div class="stat" id="stat"></div>
+    <span class="dl" id="dl" onclick="downloadCSV()">⬇ 下载 CSV</span>
+    <div style="overflow-x:auto"><table id="tbl"></table></div>
+  </div>
+</div>
+<script>
+let pollTimer=null, lastLeads=[];
+async function submit(){
+  const kw=document.getElementById('kw').value.trim();
+  const cnt=document.getElementById('cnt').value;
+  const pw=document.getElementById('pw').value;
+  if(!kw){alert('请输入关键词');return}
+  const btn=document.getElementById('go');btn.disabled=true;
+  setStatus('<span class="spin"></span>提交中…');
+  const fd=new FormData();fd.append('password',pw);fd.append('keyword',kw);fd.append('count',cnt);
+  let r;
+  try{r=await fetch('/api/submit',{method:'POST',body:fd})}catch(e){setStatus('网络错误');btn.disabled=false;return}
+  if(!r.ok){const t=await r.json().catch(()=>({detail:'失败'}));setStatus('❌ '+(t.detail||r.status));btn.disabled=false;return}
+  const {job_id}=await r.json();
+  setStatus('<span class="spin"></span>已排队(任务#'+job_id+')，等待爬取… 通常 1-3 分钟');
+  poll(job_id);
+}
+function poll(id){
+  clearInterval(pollTimer);
+  pollTimer=setInterval(async()=>{
+    const r=await fetch('/api/job/'+id);if(!r.ok)return;
+    const j=await r.json();
+    if(j.status==='pending'){setStatus('<span class="spin"></span>排队中(#'+id+')…')}
+    else if(j.status==='running'){setStatus('<span class="spin"></span>正在爬取并过滤(#'+id+')…')}
+    else if(j.status==='done'){clearInterval(pollTimer);document.getElementById('go').disabled=false;setStatus('✅ 完成');render(j.result)}
+    else if(j.status==='error'){clearInterval(pollTimer);document.getElementById('go').disabled=false;setStatus('❌ 出错：'+(j.error||'未知'))}
+  },3000);
+}
+function setStatus(h){document.getElementById('status').innerHTML=h}
+function render(res){
+  lastLeads=res.leads||[];
+  document.getElementById('resultCard').style.display='block';
+  document.getElementById('stat').innerHTML=
+    `🔥 精准客户 <b style="color:#fff">${res.leads_count}</b> &nbsp;|&nbsp; 🗑️ 中介噪音 ${res.spam} &nbsp;|&nbsp; 💬 闲聊 ${res.chat} &nbsp;|&nbsp; 评论 ${res.total}`;
+  let h='<tr><th>#</th><th>昵称</th><th>抖音号</th><th>属地</th><th>需求</th></tr>';
+  lastLeads.forEach((c,i)=>{h+=`<tr><td>${i+1}</td><td>${esc(c.nickname)}</td><td>${esc(c.douyin_id||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.content)}</td></tr>`});
+  document.getElementById('tbl').innerHTML=h;
+}
+function esc(s){return(s==null?'':String(s)).replace(/[<>&]/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]))}
+function downloadCSV(){
+  let rows=[['昵称','抖音号','属地','需求','来源视频']];
+  lastLeads.forEach(c=>rows.push([c.nickname,c.douyin_id||'',c.ip,c.content,c.source||'']));
+  let csv='﻿'+rows.map(r=>r.map(x=>'"'+String(x==null?'':x).replace(/"/g,'""')+'"').join(',')).join('\n');
+  let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='客户名单.csv';a.click();
+}
+</script>
+</body>
+</html>
