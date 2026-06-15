@@ -51,6 +51,14 @@ def index():
     return INDEX_HTML.read_text(encoding="utf-8")
 
 
+@app.get("/api/keywords")
+def keywords():
+    kw = Path(os.path.join(os.path.dirname(__file__), "keywords.json"))
+    if kw.exists():
+        return json.loads(kw.read_text(encoding="utf-8"))
+    return {}
+
+
 @app.post("/api/submit")
 def submit(password: str = Form(...), keyword: str = Form(...), count: int = Form(10)):
     if password != PASSWORD:

@@ -27,6 +27,12 @@
   .dl{display:inline-block;margin-top:12px;color:var(--acc);cursor:pointer;font-size:14px}
   .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:s .8s linear infinite;vertical-align:-2px;margin-right:6px}
   @keyframes s{to{transform:rotate(360deg)}}
+  #kwcats{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
+  .cat{padding:5px 12px;border:1px solid var(--line);border-radius:20px;font-size:13px;color:var(--sub);cursor:pointer;background:#0f1115}
+  .cat.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{padding:5px 11px;border:1px solid var(--line);border-radius:8px;font-size:13px;color:var(--txt);cursor:pointer;background:#13161c}
+  .chip:hover{border-color:var(--acc);color:var(--acc)}
 </style>
 </head>
 <body>
@@ -39,6 +45,9 @@
       <div><label>关键词</label><input id="kw" placeholder="如：美业获客"></div>
       <div style="flex:0 0 120px"><label>视频数(1-30)</label><input id="cnt" type="number" value="10" min="1" max="30"></div>
     </div>
+    <label>从关键词库选（点一下填入）</label>
+    <div id="kwcats"></div>
+    <div id="kwchips" class="chips"></div>
     <label>口令</label><input id="pw" type="password" placeholder="团队共享口令">
     <button id="go" onclick="submit()">开始爬取</button>
     <div id="status"></div>
@@ -51,7 +60,27 @@
   </div>
 </div>
 <script>
-let pollTimer=null, lastLeads=[];
+let pollTimer=null, lastLeads=[], KW={};
+async function loadKeywords(){
+  try{const r=await fetch('/api/keywords');KW=await r.json()}catch(e){return}
+  const cats=Object.keys(KW);if(!cats.length)return;
+  const cbox=document.getElementById('kwcats');
+  cats.forEach((c,i)=>{
+    const b=document.createElement('span');b.className='cat'+(i===0?' active':'');b.textContent=c;
+    b.onclick=()=>{document.querySelectorAll('.cat').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderChips(c)};
+    cbox.appendChild(b);
+  });
+  renderChips(cats[0]);
+}
+function renderChips(cat){
+  const box=document.getElementById('kwchips');box.innerHTML='';
+  (KW[cat]||[]).forEach(w=>{
+    const s=document.createElement('span');s.className='chip';s.textContent=w;
+    s.onclick=()=>{document.getElementById('kw').value=w};
+    box.appendChild(s);
+  });
+}
+loadKeywords();
 async function submit(){
   const kw=document.getElementById('kw').value.trim();
   const cnt=document.getElementById('cnt').value;
