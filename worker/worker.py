@@ -57,6 +57,7 @@ def patch_config(keyword, count):
         r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
         r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
         r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 30',
+        r'^ENABLE_GET_SUB_COMMENTS\s*=.*$': 'ENABLE_GET_SUB_COMMENTS = False',
         r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
     }
     for pat, rep in rules.items():
@@ -138,6 +139,8 @@ def patch_config_account(creator_input):
         r'^HEADLESS\s*=.*$': 'HEADLESS = True',
         r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
         r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
+        r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 500',
+        r'^ENABLE_GET_SUB_COMMENTS\s*=.*$': 'ENABLE_GET_SUB_COMMENTS = True',
         r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
     }
     for pat, rep in rules.items():
