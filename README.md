@@ -1,8 +1,9 @@
-# 抖音获客 + 账号分析系统（douyin-leadgen）
+# 社交媒体获客系统（douyin-leadgen）
 
-一套抖音数据采集工具，两个用途：
-- **🔍 关键词获客**：输行业关键词 → 搜视频 → 扒评论区 → 过滤出**精准潜在客户名单**
-- **👤 账号深扒**：输账号主页链接 → 拉该账号**画像 + 全部作品 + 评论** → 导出 xlsx
+多平台数据采集，三个主力场景：
+- **🔍 关键词获客**：输行业关键词 → 搜视频/笔记 → 扒评论区 → 过滤出**精准潜在客户名单**（抖音 + 小红书）
+- **👤 账号深扒**：输主页链接 → 拉该账号**画像 + 全部作品 + 评论** → 导出 xlsx
+- **🎯 两阶段抓取**：全量扫 → 自动筛爆款 → 高量补抓 → 评论覆盖率翻倍
 
 为大鹏老板公司 AI 板块的获客/对标场景而建。网页自助使用，结果可发飞书群。
 
@@ -71,6 +72,11 @@ bash run_worker.sh       # Mac 需保持开机联网
 # 命令行/飞书Bot 调用(关键词获客)
 python scripts/crawl_cli.py "美业获客" --count 10
 
+# 🎯 两阶段抓取(爆款深挖)
+python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl        # 筛爆款列表
+python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl --command  # 生成补抓命令
+python scripts/viral_hunter.py data/douyin/jsonl/ --merge --out merged.xlsx         # 合并数据导出
+
 # 🎙️ 视频转口播文案(ASR)
 python scripts/transcribe_video.py data/douyin/jsonl/search_contents_*.jsonl --top 10
 python scripts/transcribe_video.py data/douyin/jsonl/creator_contents_*.jsonl --all
@@ -90,6 +96,8 @@ worker/    worker.py(领单→爬取→过滤/导出→发飞书)
 scripts/   leads_filter(意图过滤) · export_videos_xlsx · export_account_xlsx
            · resolve_douyin_id(抖音号→sec_uid) · crawl_cli(飞书Bot桥)
            · validate_keywords · login_health_check(健康检查)
+           · viral_hunter(爆款识别+两阶段抓取,支持抖音/小红书)
+           · export_xhs_xlsx(小红书数据导出)
            · transcribe_video(视频→口播文案faster-whisper ASR)
 docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 ```
@@ -122,7 +130,21 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
    creator 模式失败重跑会自动跳过已抓视频(去重)，补齐剩余即可。
 8. **creator 的 jsonl 是追加写**：连爬多个账号，`creator_contents_*.jsonl` 会混入多账号数据。
    导出时按 `works[0].sec_uid` 过滤 + `aweme_id`/`comment_id` 去重(见 `export_account_xlsx.py`)。
-9. **ASR 模型下载**：faster-whisper small(484MB) 从 huggingface.co 下载在国内很慢/被墙，
+9. **小红书风控安全参数**（标准 Playwright 模式即可，无需 CDP）：
+   | 参数 | 关键词搜索 | 说明 |
+   |------|:---------:|------|
+   | CRAWLER_MAX_NOTES_COUNT | 30 | 每次搜索笔记数 |
+   | CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES | 100 | 每笔记一级评论上限 |
+   | CRAWLER_MAX_SLEEP_SEC | 3 | 请求间隔(秒) |
+   | ENABLE_GET_SUB_COMMENTS | False | 不爬子评论 |
+   | MAX_CONCURRENCY_NUM | 1 | 单并发 |
+   | ENABLE_CDP_MODE | False | 标准模式(小红书 CDP 不需要) |
+
+   > 小红书互动量级比抖音小,爆款阈值也应调低: 点赞>5000/评论>200 即为爆款，
+   > detail 补抓 200 条/笔记。实测 20 笔记 ~14 分钟，约 9 请求/分钟，无风控。
+10. **小红书导出**：字段名和抖音不同 — `video_url`(不是 video_download_url),
+   `image_list`(不是 cover_url), `note_id`(不是 aweme_id), `user_id`(不是 sec_uid)。
+11. **ASR 模型下载**：faster-whisper small(484MB) 从 huggingface.co 下载在国内很慢/被墙，
    设 `HF_ENDPOINT=https://hf-mirror.com` 或手动 curl 到 `models/faster-whisper-small/`。
    ffmpeg 用 `pip install imageio-ffmpeg`(自带完整静态二进制,免系统安装)。
    口播型视频识别极好；新闻剪辑/多声道/背景音乐大的视频识别差。
@@ -137,6 +159,8 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 - [ ] 飞书 Bot 小秋接入（`crawl_cli.py` 就绪，待接 `~/.lark-channel`）
 - [x] 🎙️ 视频转口播文案（faster-whisper ASR，可热榜/账号批量）
 - [ ] 住宅代理 → 爬取搬服务器、脱离 Mac
+- [x] 🎯 两阶段抓取(抖音/小红书双平台: search全量→viral_hunter筛爆款→detail高量补抓→合并去重)
+- [x] 📕 小红书全流程(搜索→导出xlsx, 20笔记+1548评论实测,登录态复用免扫码)
 - [ ] 跨爬取去重 / 客户浓度排名
 
 ## 八、安全与合规
