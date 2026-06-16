@@ -107,7 +107,7 @@ def patch_config(keyword, count, proxy_server):
         r'^HEADLESS\s*=.*$': 'HEADLESS = True',
         r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
         r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
-        r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 30',
+        r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 100',
         r'^ENABLE_GET_SUB_COMMENTS\s*=.*$': 'ENABLE_GET_SUB_COMMENTS = False',
         r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
         r'^ENABLE_IP_PROXY\s*=.*$': 'ENABLE_IP_PROXY = True',
@@ -134,8 +134,62 @@ def run_crawl():
     return jdir
 
 
+# 爆款深挖（两阶段补抓）阈值
+_DEEP_LIKE_THRESH = 10000
+_DEEP_COMMENT_THRESH = 1000
+_DEEP_DETAIL_COMMENTS = 300
+
+
+def _parse_count(v):
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v or "").strip()
+    if not s:
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        if "万" in s:
+            try:
+                return int(float(s.replace("万", "")) * 10000)
+            except ValueError:
+                return 0
+        return 0
+
+
+def run_deep_dig(jdir):
+    """对 search 结果中的爆款视频用 detail 模式补抓（不清数据，追加 detail_*.jsonl）。"""
+    ids, seen = [], set()
+    for d in load_jsonl(os.path.join(jdir, "search_contents_*.jsonl")):
+        aid = d.get("aweme_id")
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        if (_parse_count(d.get("liked_count")) >= _DEEP_LIKE_THRESH
+                or _parse_count(d.get("comment_count")) >= _DEEP_COMMENT_THRESH):
+            ids.append(aid)
+    if not ids:
+        log("  [deep_dig] no viral videos, skip")
+        return 0
+    log(f"  [deep_dig] {len(ids)} viral → detail {_DEEP_DETAIL_COMMENTS}/video")
+    subprocess.run(
+        [VENV, "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "detail",
+         "--specified_id", ",".join(ids),
+         "--max_comments_count_singlenotes", str(_DEEP_DETAIL_COMMENTS)],
+        cwd=MC, timeout=1800, check=True,
+        env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return len(ids)
+
+
 def build_result(jdir):
-    comments = load_jsonl(os.path.join(jdir, "search_comments_*.jsonl"))
+    # 合并 search + detail(爆款深挖补抓) 评论，按 comment_id 去重
+    _cmt_map = {}
+    for c in load_jsonl(os.path.join(jdir, "search_comments_*.jsonl")):
+        _cmt_map[c.get("comment_id") or id(c)] = c
+    for c in load_jsonl(os.path.join(jdir, "detail_comments_*.jsonl")):
+        _cmt_map[c.get("comment_id") or id(c)] = c
+    comments = list(_cmt_map.values())
     titles, hashtags, videos, vid_seen = {}, {}, [], set()
     for d in load_jsonl(os.path.join(jdir, "search_contents_*.jsonl")):
         aid = d.get("aweme_id")
@@ -202,13 +256,29 @@ def handle_search(job):
             if not prep_login(server):
                 log(f"[job {jid}] 登录态注入失败，换IP重试"); continue
             log(f"[job {jid}] 登录态就绪，开爬「{kw}」x{cnt}")
+            # 爆款深挖开关
+            deep = False
+            try:
+                pl = json.loads(job.get("payload") or "{}")
+                deep = bool(pl.get("deep_dig"))
+            except Exception:
+                pass
+            if deep:
+                log(f"[job {jid}] 爆款深挖模式已启用")
             patch_config(kw, cnt, server)
             crawl_ok = True
             try:
                 run_crawl()
+                if deep:
+                    try:
+                        n = run_deep_dig(jdir)
+                        log(f"[job {jid}] 爆款深挖完成: {n} 个视频")
+                    except Exception as e:
+                        log(f"[job {jid}] 爆款深挖失败(不影响主结果): {e}")
             except subprocess.CalledProcessError:
-                crawl_ok = False  # 中途失败，看有没有抓到部分数据
+                crawl_ok = False
             res = build_result(jdir)
+            res["deep_dig"] = deep
             got = res["leads_count"] > 0 or len(res["videos"]) > 0
             if not got and attempt < 3:
                 log(f"[job {jid}] 爬取{'中断' if not crawl_ok else ''}且无数据，换IP重试 {attempt}/3")
