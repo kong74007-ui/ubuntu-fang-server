@@ -83,14 +83,32 @@ def build_result(jsonl_dir):
     comments = load_jsonl(os.path.join(jsonl_dir, "search_comments_*.jsonl"))
     titles = {}
     hashtags = {}
+    videos = []
+    vid_seen = set()
     for d in load_jsonl(os.path.join(jsonl_dir, "search_contents_*.jsonl")):
+        aid = d.get("aweme_id")
         title = d.get("title") or ""
-        titles[d.get("aweme_id")] = title[:24]
+        if aid:
+            titles[aid] = title[:24]
         # 从标题话题标签里挖相关关键词（#美容院获客 #美业老板…）
         for tag in _re.findall(r"#([^#\s\n]+)", title):
             tag = tag.strip()
             if 1 < len(tag) <= 12:
                 hashtags[tag] = hashtags.get(tag, 0) + 1
+        # 收集视频列表（供网页「按视频看」展示）
+        if aid and aid not in vid_seen:
+            vid_seen.add(aid)
+            videos.append({
+                "aweme_id": aid,
+                "title": title,
+                "nickname": d.get("nickname") or "",   # 博主
+                "likes": d.get("liked_count", 0),
+                "comment_count": d.get("comment_count", 0),
+                "url": d.get("aweme_url") or f"https://www.douyin.com/video/{aid}",
+                "cover": d.get("cover_url") or "",
+                "ip": d.get("ip_location") or "",
+                "leads_count": 0,
+            })
     related = [t for t, _ in sorted(hashtags.items(), key=lambda x: -x[1])][:24]
     leads, spam, chat, seen = [], 0, 0, set()
     for c in comments:
@@ -107,6 +125,7 @@ def build_result(jsonl_dir):
                 continue
             seen.add(key)
             sec = c.get("sec_uid") or ""
+            aid = c.get("aweme_id") or ""
             leads.append({
                 "nickname": c.get("nickname"),
                 "douyin_id": c.get("user_unique_id") or "",
@@ -114,14 +133,24 @@ def build_result(jsonl_dir):
                 "profile": f"https://www.douyin.com/user/{sec}" if sec else "",
                 "ip": c.get("ip_location"),
                 "content": c.get("content"),
-                "source": titles.get(c.get("aweme_id"), ""),
+                "source": titles.get(aid, ""),
+                "aweme_id": aid,   # 精确关联到具体视频
                 "like": c.get("like_count", 0),
             })
         else:
             chat += 1
     leads.sort(key=lambda x: (len(x["content"]), x["like"]), reverse=True)
+    # 统计每条视频扒出了几个精准客户，产出多的排前面
+    lead_cnt = {}
+    for l in leads:
+        if l["aweme_id"]:
+            lead_cnt[l["aweme_id"]] = lead_cnt.get(l["aweme_id"], 0) + 1
+    for v in videos:
+        v["leads_count"] = lead_cnt.get(v["aweme_id"], 0)
+    videos.sort(key=lambda v: v["leads_count"], reverse=True)
     return {"total": len(comments), "leads_count": len(leads),
             "spam": spam, "chat": chat, "leads": leads,
+            "videos": videos,
             "related_keywords": related}
 
 
