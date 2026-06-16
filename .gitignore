@@ -32,3 +32,5 @@ jobs.db
 server/jobs.db
 *.db
 *.sqlite
+models/
+transcribe_out/

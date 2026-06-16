@@ -24,7 +24,7 @@
 贴**主页链接**（抖音 app 分享→复制链接，一行一个支持批量）：
 - 单个账号 → 网页显示**画像 + 作品封面预览 + CSV 下载**
 - 批量账号 → 每个账号一个 **xlsx**（画像/全部作品/评论 三个 sheet）自动发飞书群
-- 账号模式评论**爬全**（每视频上限 500 + 子评论回复层）
+- 账号模式评论**爬全**（每视频上限 100 条一级评论，不爬子回复，安全档）
 
 ---
 
@@ -76,6 +76,10 @@ python scripts/crawl_cli.py "美业获客" --count 10
 python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl        # 筛爆款列表
 python scripts/viral_hunter.py data/douyin/jsonl/search_contents_*.jsonl --command  # 生成补抓命令
 python scripts/viral_hunter.py data/douyin/jsonl/ --merge --out merged.xlsx         # 合并数据导出
+
+# 🎙️ 视频转口播文案(ASR)
+python scripts/transcribe_video.py data/douyin/jsonl/search_contents_*.jsonl --top 10
+python scripts/transcribe_video.py data/douyin/jsonl/creator_contents_*.jsonl --all
 ```
 
 LaunchAgent（开机自启，已装）：
@@ -94,6 +98,7 @@ scripts/   leads_filter(意图过滤) · export_videos_xlsx · export_account_xl
            · validate_keywords · login_health_check(健康检查)
            · viral_hunter(爆款识别+两阶段抓取,支持抖音/小红书)
            · export_xhs_xlsx(小红书数据导出)
+           · transcribe_video(视频→口播文案faster-whisper ASR)
 docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 ```
 
@@ -108,7 +113,17 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
    - 取地址的 httpx 须 `trust_env=False`(否则系统代理拦截 localhost 返回 502)；
      运行加 `NO_PROXY=localhost,127.0.0.1` 让 playwright 连接也绕过代理。
    - 启动调试 Chrome 不能用默认用户目录(Chrome 拒绝)，要 `--user-data-dir=独立目录`。
-5. MediaCrawler：`CRAWLER_TYPE` search/creator；翻页爬更多调大 `CRAWLER_MAX_NOTES_COUNT`；评论数 `CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES`。
+5. MediaCrawler 安全参数（住宅 IP + 小号 + 单并发，实测不触发风控）：
+   | 参数 | 关键词搜索 | 账号深扒 | 说明 |
+   |------|:---------:|:-------:|------|
+   | CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES | 100 | 100 | 每视频一级评论上限 |
+   | ENABLE_GET_SUB_COMMENTS | False | False | 不爬子评论 |
+   | MAX_CONCURRENCY_NUM | 1 | 1 | 单并发 |
+   | CRAWLER_MAX_SLEEP_SEC | 3 | 3 | 请求间隔(秒) |
+   | HEADLESS | True | True | Mac 无头/本地调试改 False |
+   | ENABLE_CDP_MODE | False | False | 标准模式(CDP 有 ws404 bug) |
+   
+   > 💡 以上参数在住宅 IP + 小号场景下已验证安全。搜索模式约 16 请求/分钟，创作者 77 作品~8 分钟跑完，均不触发风控。调大需谨慎。
 6. 切爬取账号：清 `browser_data/dy_user_data_dir` → 跑触发二维码 → 扫；**登录后别立刻杀进程**，等存盘。
 7. **网络抖动整任务崩**：抓 creator 几十个视频时，单次 httpx `ConnectError`/TLS 握手失败
    会让整个进程退出。给 client `request()` 加连接/超时类错误重试(retry 3~4 次)即可扛过抖动；
@@ -129,6 +144,10 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
    > detail 补抓 200 条/笔记。实测 20 笔记 ~14 分钟，约 9 请求/分钟，无风控。
 10. **小红书导出**：字段名和抖音不同 — `video_url`(不是 video_download_url),
    `image_list`(不是 cover_url), `note_id`(不是 aweme_id), `user_id`(不是 sec_uid)。
+11. **ASR 模型下载**：faster-whisper small(484MB) 从 huggingface.co 下载在国内很慢/被墙，
+   设 `HF_ENDPOINT=https://hf-mirror.com` 或手动 curl 到 `models/faster-whisper-small/`。
+   ffmpeg 用 `pip install imageio-ffmpeg`(自带完整静态二进制,免系统安装)。
+   口播型视频识别极好；新闻剪辑/多声道/背景音乐大的视频识别差。
 
 ## 七、路线图
 - [x] 关键词→评论区精准客户（网页表格+CSV+主页链接）
@@ -138,6 +157,7 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 - [x] 全量评论（500/视频 + 子评论）
 - [x] 公网上线 + Mac worker 开机自启 + 登录态健康告警
 - [ ] 飞书 Bot 小秋接入（`crawl_cli.py` 就绪，待接 `~/.lark-channel`）
+- [x] 🎙️ 视频转口播文案（faster-whisper ASR，可热榜/账号批量）
 - [ ] 住宅代理 → 爬取搬服务器、脱离 Mac
 - [x] 🎯 两阶段抓取(抖音/小红书双平台: search全量→viral_hunter筛爆款→detail高量补抓→合并去重)
 - [x] 📕 小红书全流程(搜索→导出xlsx, 20笔记+1548评论实测,登录态复用免扫码)
