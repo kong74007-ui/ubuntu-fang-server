@@ -124,7 +124,8 @@ def keywords():
 
 @app.post("/api/submit")
 def submit(password: str = Form(...), keyword: str = Form(...),
-           count: int = Form(10), mode: str = Form("search")):
+           count: int = Form(10), mode: str = Form("search"),
+           deep_dig: str = Form("0")):
     if password != PASSWORD:
         raise HTTPException(403, "口令错误")
     keyword = keyword.strip()
@@ -132,11 +133,14 @@ def submit(password: str = Form(...), keyword: str = Form(...),
         raise HTTPException(400, "关键词/抖音号不能为空")
     mode = mode if mode in ("search", "account") else "search"
     count = max(1, min(int(count), 100))
+    # 爆款深挖开关（仅 search 模式有意义）：搜完自动对爆款 detail 补抓
+    dig = 1 if str(deep_dig) in ("1", "true", "True", "on") and mode == "search" else 0
+    payload = json.dumps({"deep_dig": dig}, ensure_ascii=False) if dig else None
     now = int(time.time())
     with closing(db()) as conn:
         cur = conn.execute(
-            "INSERT INTO jobs(keyword,count,mode,created_at,updated_at) VALUES(?,?,?,?,?)",
-            (keyword, count, mode, now, now))
+            "INSERT INTO jobs(keyword,count,mode,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (keyword, count, mode, payload, now, now))
         conn.commit()
         return {"job_id": cur.lastrowid}
 

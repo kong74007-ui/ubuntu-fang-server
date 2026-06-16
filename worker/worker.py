@@ -79,8 +79,70 @@ def run_crawl():
     return jsonl_dir
 
 
+# 爆款深挖（两阶段补抓）阈值，与 scripts/viral_hunter.py 默认一致
+DEEP_LIKE_THRESH = 10000
+DEEP_COMMENT_THRESH = 1000
+DEEP_DETAIL_COMMENTS = 300
+
+
+def _parse_count(v):
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v or "").strip()
+    if not s:
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        if "万" in s:
+            try:
+                return int(float(s.replace("万", "")) * 10000)
+            except ValueError:
+                return 0
+        return 0
+
+
+def pick_viral_ids(jsonl_dir):
+    """从 search_contents 里筛爆款 aweme_id(点赞>1万 或 评论>1000)。"""
+    ids, seen = [], set()
+    for d in load_jsonl(os.path.join(jsonl_dir, "search_contents_*.jsonl")):
+        aid = d.get("aweme_id")
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        if (_parse_count(d.get("liked_count")) >= DEEP_LIKE_THRESH
+                or _parse_count(d.get("comment_count")) >= DEEP_COMMENT_THRESH):
+            ids.append(aid)
+    return ids
+
+
+def run_detail_deep_dig(jsonl_dir):
+    """两阶段补抓：对爆款视频用 detail 模式高量补抓评论(不清 search 数据，追加 detail_*.jsonl)。"""
+    ids = pick_viral_ids(jsonl_dir)
+    if not ids:
+        print("  [deep_dig] 无爆款视频，跳过补抓")
+        return 0
+    print(f"  [deep_dig] 爆款 {len(ids)} 个 → detail 补抓 {DEEP_DETAIL_COMMENTS} 条/视频")
+    # detail 模式不清旧数据(保留 search 结果)，结果写入 detail_*.jsonl
+    subprocess.run(
+        ["uv", "run", "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "detail",
+         "--specified_id", ",".join(ids),
+         "--max_comments_count_singlenotes", str(DEEP_DETAIL_COMMENTS)],
+        cwd=MC_DIR, timeout=1800, check=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return len(ids)
+
+
 def build_result(jsonl_dir):
-    comments = load_jsonl(os.path.join(jsonl_dir, "search_comments_*.jsonl"))
+    # 合并 search + detail(爆款深挖补抓) 评论，按 comment_id 去重
+    _cmt_map = {}
+    for c in load_jsonl(os.path.join(jsonl_dir, "search_comments_*.jsonl")):
+        cid = c.get("comment_id")
+        _cmt_map[cid if cid else id(c)] = c
+    for c in load_jsonl(os.path.join(jsonl_dir, "detail_comments_*.jsonl")):
+        cid = c.get("comment_id")
+        _cmt_map[cid if cid else id(c)] = c
+    comments = list(_cmt_map.values())
     titles = {}
     hashtags = {}
     videos = []
@@ -252,12 +314,31 @@ def handle_account(job):
     print(f"[job {jid}] ✅ 账号「{res.get('nickname')}」已发飞书")
 
 
+def _deep_dig_on(job):
+    """从 job.payload(JSON) 读爆款深挖开关。"""
+    raw = job.get("payload")
+    if not raw:
+        return False
+    try:
+        return bool(json.loads(raw).get("deep_dig"))
+    except Exception:
+        return False
+
+
 def handle_search(job):
     jid, kw, cnt = job["id"], job["keyword"], job["count"]
-    print(f"[job {jid}] 关键词「{kw}」x{cnt} 开始爬取…")
+    deep = _deep_dig_on(job)
+    print(f"[job {jid}] 关键词「{kw}」x{cnt}{' [爆款深挖]' if deep else ''} 开始爬取…")
     patch_config(kw, cnt)
     jsonl_dir = run_crawl()
+    if deep:
+        try:
+            n = run_detail_deep_dig(jsonl_dir)
+            print(f"[job {jid}] 爆款深挖补抓完成: {n} 个视频")
+        except Exception as e:
+            print(f"[job {jid}] ⚠️ 爆款深挖失败(不影响主结果): {e}")
     result = build_result(jsonl_dir)
+    result["deep_dig"] = deep
     http_post("/api/complete", {"token": TOKEN, "job_id": jid,
                                 "result": json.dumps(result, ensure_ascii=False)})
     print(f"[job {jid}] ✅ 完成：{result['leads_count']} 精准客户")

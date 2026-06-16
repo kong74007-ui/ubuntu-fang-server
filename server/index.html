@@ -91,6 +91,10 @@
       <div><label>关键词</label><input id="kw" placeholder="如：美业获客"></div>
       <div style="flex:0 0 120px"><label>视频数(1-100)</label><input id="cnt" type="number" value="20" min="1" max="100"></div>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px">
+      <input id="deepDig" type="checkbox" style="width:auto;margin:0">
+      <span>🎯 爆款深挖（搜完自动对爆款视频补抓300条评论，更耗时但客户更全）</span>
+    </label>
     <label>从关键词库选（点一下填入）</label>
     <div id="kwcats"></div>
     <div id="kwchips" class="chips"></div>
@@ -185,6 +189,7 @@ async function runCrawl(){
   btn.disabled=true;
   setStatus('<span class="spin"></span>提交中…');
   const fd=new FormData();fd.append('password',pw);fd.append('keyword',kw);fd.append('count',cnt);
+  fd.append('deep_dig', document.getElementById('deepDig').checked ? '1' : '0');
   let r;
   try{r=await fetch('/api/submit',{method:'POST',body:fd})}catch(e){setStatus('网络错误');btn.disabled=false;return}
   if(!r.ok){
