@@ -15,7 +15,7 @@ import sqlite3
 import time
 from contextlib import closing
 from fastapi import FastAPI, Form, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pathlib import Path
 
 DB = os.path.join(os.path.dirname(__file__), "jobs.db")
@@ -40,6 +40,15 @@ def merge_discovered(words):
     DISCOVERED.write_text(json.dumps(pool, ensure_ascii=False), encoding="utf-8")
 
 app = FastAPI(title="抖音评论区获客")
+
+
+@app.get("/api/download/{filename:path}")
+def download(filename: str):
+    base = Path(os.path.dirname(__file__))
+    filepath = base / filename
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(404, "文件不存在")
+    return FileResponse(str(filepath), filename=filepath.name)
 
 
 def db():
