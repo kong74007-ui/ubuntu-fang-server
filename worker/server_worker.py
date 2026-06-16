@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""服务器端 worker —— 跑在腾讯云服务器上，用青果住宅代理 + 注入 cookie 爬抖音。
-轮询本机队列(127.0.0.1:8090) → 提青果IP + 注cookie/localStorage → MediaCrawler 爬 → 过滤 → 回传。
-取代 Mac worker，彻底脱离 Mac。
+"""服务器端 worker（多 worker 并发版）—— 跑在腾讯云服务器上。
+搜索：青果住宅代理 + 注入号池 cookie；账号深扒：直连机房IP（深采放行）。
+隔离靠 WORKER_ID 派生的独立工作目录(cwd) + 命令行参数传配置（不改 MediaCrawler config 文件，零竞态）。
+环境变量：WORKER_ID(默认1) / WORKER_MODES(空=全能, 如 "search,transcribe,download_video"=快车道)
 """
 import os
 import re
@@ -14,21 +15,36 @@ import subprocess
 import urllib.request
 import urllib.parse
 
-MC = "/home/ubuntu/MediaCrawler"
+WORKER_ID = os.environ.get("WORKER_ID", "1")
+WORKER_MODES = os.environ.get("WORKER_MODES", "")   # 空=领所有 mode；非空=只领这些(快慢分道)
+MC = "/home/ubuntu/MediaCrawler"                     # 共享只读代码
 VENV = MC + "/.venv/bin/python"
-UD = MC + "/browser_data/dy_user_data_dir"
-COOKIES_JSON = "/home/ubuntu/dy_cookies.json"
+MAIN_PY = MC + "/main.py"                             # 绝对脚本路径（cwd 不影响 import）
+WORK_DIR = f"/home/ubuntu/worker_{WORKER_ID}"         # 本 worker cwd → 隔离 browser_data
+DATA_DIR = f"{WORK_DIR}/data"                         # --save_data_path
+JSONL_DIR = f"{DATA_DIR}/douyin/jsonl"               # build_result 从这读
+UD = f"{WORK_DIR}/browser_data/dy_user_data_dir"      # prep_login 注入到这
+NUMBER_POOL = "/home/ubuntu/number_pool"
+COOKIES_JSON = f"{NUMBER_POOL}/cookie_{WORKER_ID}.json"  # 号池：本 worker 绑定的号
 QG_KEY = os.environ.get("QG_KEY", "55DC9F7E")
 SERVER = os.environ.get("LEADGEN_SERVER", "http://127.0.0.1:8090")
 TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
 POLL = 8
+
+# 共享的提取结果目录（按 aweme_id 命名，多 worker 共享不撞）
+FILES_DIR = "/home/ubuntu/leadgen-server/files"
+TRANS_DIR = "/home/ubuntu/leadgen-server/transcribe_out"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+_WHISPER = None
+
+os.makedirs(JSONL_DIR, exist_ok=True)
 
 sys.path.insert(0, "/home/ubuntu/douyin-leadgen")
 from scripts.leads_filter import is_spam, is_high  # noqa
 
 
 def log(m):
-    print(time.strftime("%H:%M:%S"), m, flush=True)
+    print(time.strftime("%H:%M:%S"), f"[w{WORKER_ID}]", m, flush=True)
 
 
 def http_get(path):
@@ -57,7 +73,7 @@ def load_jsonl(pattern):
 
 
 def extract_qg():
-    """提青果住宅代理，返回 (gateway_host:port, 出口IP, 地区)。"""
+    """提青果住宅代理，返回 (gateway_host:port, 出口IP, 地区, isp)。"""
     url = f"https://share.proxy.qg.net/get?key={QG_KEY}&num=1&format=json"
     d = json.loads(urllib.request.urlopen(url, timeout=15).read())
     it = d["data"][0]
@@ -65,7 +81,7 @@ def extract_qg():
 
 
 def prep_login(proxy_server=None):
-    """全新档案：注入 cookie + localStorage HasUserLogin=1，使 pong 跳过登录。
+    """全新档案：注入本 worker 的号 cookie + localStorage HasUserLogin=1，使 pong 跳过登录。
     proxy_server=None 时直连（机房IP，深采接口放行）。"""
     import asyncio
     from playwright.async_api import async_playwright
@@ -93,103 +109,37 @@ def prep_login(proxy_server=None):
             ok = bool(re.search(r"抖音号[:：]", body))
             await ctx.close()
             return ok
-    return asyncio.get_event_loop().run_until_complete(_run())
+    return asyncio.run(_run())
 
 
-def patch_config(keyword, count, proxy_server):
-    cfg = os.path.join(MC, "config/base_config.py")
-    src = open(cfg, encoding="utf-8").read()
-    rules = {
-        r'^PLATFORM\s*=.*$': 'PLATFORM = "dy"',
-        r'CRAWLER_TYPE = \(\s*"[^"]+"': 'CRAWLER_TYPE = (\n    "search"',
-        r'^KEYWORDS\s*=.*$': f'KEYWORDS = "{keyword}"',
-        r'^CRAWLER_MAX_NOTES_COUNT\s*=.*$': f'CRAWLER_MAX_NOTES_COUNT = {count}',
-        r'^HEADLESS\s*=.*$': 'HEADLESS = True',
-        r'^ENABLE_CDP_MODE\s*=.*$': 'ENABLE_CDP_MODE = False',
-        r'^ENABLE_GET_COMMENTS\s*=.*$': 'ENABLE_GET_COMMENTS = True',
-        r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$': 'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 100',
-        r'^ENABLE_GET_SUB_COMMENTS\s*=.*$': 'ENABLE_GET_SUB_COMMENTS = False',
-        r'^SAVE_DATA_OPTION\s*=.*$': 'SAVE_DATA_OPTION = "jsonl"',
-        r'^ENABLE_IP_PROXY\s*=.*$': 'ENABLE_IP_PROXY = True',
-        r'^IP_PROXY_PROVIDER_NAME\s*=.*$': 'IP_PROXY_PROVIDER_NAME = "static"',
-        r'^STATIC_PROXY_URL\s*=.*$': f'STATIC_PROXY_URL = "http://{proxy_server}"',
-    }
-    for pat, rep in rules.items():
-        new = re.sub(pat, rep, src, count=1, flags=re.M)
-        if new == src and pat.startswith("^STATIC_PROXY_URL"):
-            new = src + f'\nSTATIC_PROXY_URL = "http://{proxy_server}"\n'
-        src = new
-    open(cfg, "w", encoding="utf-8").write(src)
-
-
-def run_crawl():
-    jdir = os.path.join(MC, "data/douyin/jsonl")
-    os.makedirs(jdir, exist_ok=True)
-    for f in glob.glob(os.path.join(jdir, "*.jsonl")):
+def clear_jsonl():
+    os.makedirs(JSONL_DIR, exist_ok=True)
+    for f in glob.glob(os.path.join(JSONL_DIR, "*.jsonl")):
         os.remove(f)
-    subprocess.run([VENV, "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "search"],
-                   cwd=MC, timeout=900, check=True,
+
+
+def run_crawl(keyword, count, proxy_server, cmt_limit=100):
+    """搜索爬取：cwd=本worker目录(隔离browser_data) + 全 CLI 传配置(不改config文件)。"""
+    clear_jsonl()
+    cmd = [VENV, MAIN_PY, "--platform", "dy", "--lt", "qrcode", "--type", "search",
+           "--keywords", keyword,
+           "--crawler_max_notes_count", str(count),
+           "--get_comment", "yes", "--get_sub_comment", "no",
+           "--max_comments_count_singlenotes", str(cmt_limit),
+           "--max_concurrency_num", "1",
+           "--crawler_max_sleep_sec", "3",
+           "--save_data_option", "jsonl", "--save_data_path", DATA_DIR,
+           "--headless", "yes",
+           "--enable_ip_proxy", "yes", "--ip_proxy_provider_name", "static",
+           "--static_proxy_url", f"http://{proxy_server}"]
+    subprocess.run(cmd, cwd=WORK_DIR, timeout=900, check=True,
                    env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return jdir
-
-
-# 爆款深挖（两阶段补抓）阈值
-_DEEP_LIKE_THRESH = 10000
-_DEEP_COMMENT_THRESH = 1000
-_DEEP_DETAIL_COMMENTS = 300
-
-
-def _parse_count(v):
-    if isinstance(v, (int, float)):
-        return int(v)
-    s = str(v or "").strip()
-    if not s:
-        return 0
-    try:
-        return int(s)
-    except ValueError:
-        if "万" in s:
-            try:
-                return int(float(s.replace("万", "")) * 10000)
-            except ValueError:
-                return 0
-        return 0
-
-
-def run_deep_dig(jdir):
-    """对 search 结果中的爆款视频用 detail 模式补抓（不清数据，追加 detail_*.jsonl）。"""
-    ids, seen = [], set()
-    for d in load_jsonl(os.path.join(jdir, "search_contents_*.jsonl")):
-        aid = d.get("aweme_id")
-        if not aid or aid in seen:
-            continue
-        seen.add(aid)
-        if (_parse_count(d.get("liked_count")) >= _DEEP_LIKE_THRESH
-                or _parse_count(d.get("comment_count")) >= _DEEP_COMMENT_THRESH):
-            ids.append(aid)
-    if not ids:
-        log("  [deep_dig] no viral videos, skip")
-        return 0
-    log(f"  [deep_dig] {len(ids)} viral → detail {_DEEP_DETAIL_COMMENTS}/video")
-    subprocess.run(
-        [VENV, "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "detail",
-         "--specified_id", ",".join(ids),
-         "--max_comments_count_singlenotes", str(_DEEP_DETAIL_COMMENTS)],
-        cwd=MC, timeout=1800, check=True,
-        env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return len(ids)
+    return JSONL_DIR
 
 
 def build_result(jdir):
-    # 合并 search + detail(爆款深挖补抓) 评论，按 comment_id 去重
-    _cmt_map = {}
-    for c in load_jsonl(os.path.join(jdir, "search_comments_*.jsonl")):
-        _cmt_map[c.get("comment_id") or id(c)] = c
-    for c in load_jsonl(os.path.join(jdir, "detail_comments_*.jsonl")):
-        _cmt_map[c.get("comment_id") or id(c)] = c
-    comments = list(_cmt_map.values())
+    comments = load_jsonl(os.path.join(jdir, "search_comments_*.jsonl"))
     titles, hashtags, videos, vid_seen = {}, {}, [], set()
     for d in load_jsonl(os.path.join(jdir, "search_contents_*.jsonl")):
         aid = d.get("aweme_id")
@@ -248,7 +198,6 @@ def build_result(jdir):
 
 def handle_search(job):
     jid, kw, cnt = job["id"], job["keyword"], job.get("count") or 10
-    jdir = os.path.join(MC, "data/douyin/jsonl")
     for attempt in range(1, 4):  # 青果短效IP不稳，失败换IP重试
         server, pxip, area, isp = extract_qg()
         log(f"[job {jid}] 第{attempt}次 代理出口 {pxip} {area}{isp}")
@@ -256,29 +205,23 @@ def handle_search(job):
             if not prep_login(server):
                 log(f"[job {jid}] 登录态注入失败，换IP重试"); continue
             log(f"[job {jid}] 登录态就绪，开爬「{kw}」x{cnt}")
-            # 爆款深挖开关
+            # 爆款深挖开关: 评论上限 100→300
             deep = False
+            cmt_limit = 100
             try:
                 pl = json.loads(job.get("payload") or "{}")
                 deep = bool(pl.get("deep_dig"))
+                cmt_limit = 300 if deep else 100
             except Exception:
                 pass
             if deep:
-                log(f"[job {jid}] 爆款深挖模式已启用")
-            patch_config(kw, cnt, server)
+                log(f"[job {jid}] 爆款深挖模式: 评论上限 {cmt_limit}/video")
             crawl_ok = True
             try:
-                run_crawl()
-                if deep:
-                    try:
-                        n = run_deep_dig(jdir)
-                        log(f"[job {jid}] 爆款深挖完成: {n} 个视频")
-                    except Exception as e:
-                        log(f"[job {jid}] 爆款深挖失败(不影响主结果): {e}")
+                run_crawl(kw, cnt, server, cmt_limit)
             except subprocess.CalledProcessError:
-                crawl_ok = False
-            res = build_result(jdir)
-            res["deep_dig"] = deep
+                crawl_ok = False  # 中途失败，看有没有抓到部分数据
+            res = build_result(JSONL_DIR)
             got = res["leads_count"] > 0 or len(res["videos"]) > 0
             if not got and attempt < 3:
                 log(f"[job {jid}] 爬取{'中断' if not crawl_ok else ''}且无数据，换IP重试 {attempt}/3")
@@ -293,12 +236,6 @@ def handle_search(job):
             log(f"[job {jid}] 第{attempt}次异常 {str(e)[:90]}，换IP重试")
             continue
     raise RuntimeError("搜索失败（青果代理连续不稳，3次都没成，稍后重试或检查青果余额）")
-
-
-FILES_DIR = "/home/ubuntu/leadgen-server/files"
-TRANS_DIR = "/home/ubuntu/leadgen-server/transcribe_out"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-_WHISPER = None
 
 
 def whisper_model():
@@ -386,8 +323,9 @@ def handle_transcribe(job):
     pl = json.loads(job.get("payload") or "{}")
     aid, url = pl.get("aweme_id"), pl.get("url")
     os.makedirs(TRANS_DIR, exist_ok=True)
-    mp4 = os.path.join(TRANS_DIR, f"{aid}.mp4")
-    wav = os.path.join(TRANS_DIR, f"{aid}.wav")
+    # 临时文件加 worker 后缀，防多 worker 同 aweme_id 撞名
+    mp4 = os.path.join(TRANS_DIR, f"{aid}.{WORKER_ID}.mp4")
+    wav = os.path.join(TRANS_DIR, f"{aid}.{WORKER_ID}.wav")
     log(f"[job {jid}] 提取文案 {aid}：下载视频")
     if not fetch_video(aid, url, mp4):
         raise RuntimeError("视频下载失败（链接可能已过期）")
@@ -406,34 +344,6 @@ def handle_transcribe(job):
         {"type": "transcribe", "text": text, "char_count": len(text), "aweme_id": aid},
         ensure_ascii=False)})
     log(f"[job {jid}] ✅ 文案 {len(text)} 字")
-
-
-def patch_config_account(creator_input, proxy_server):
-    cfg = os.path.join(MC, "config/base_config.py")
-    s = open(cfg, encoding="utf-8").read()
-    s = re.sub(r'^PLATFORM\s*=.*$', 'PLATFORM = "dy"', s, count=1, flags=re.M)
-    s = re.sub(r'CRAWLER_TYPE = \(\s*"[^"]+"', 'CRAWLER_TYPE = (\n    "creator"', s, count=1)
-    s = re.sub(r'^HEADLESS\s*=.*$', 'HEADLESS = True', s, count=1, flags=re.M)
-    s = re.sub(r'^ENABLE_CDP_MODE\s*=.*$', 'ENABLE_CDP_MODE = False', s, count=1, flags=re.M)
-    s = re.sub(r'^ENABLE_GET_COMMENTS\s*=.*$', 'ENABLE_GET_COMMENTS = True', s, count=1, flags=re.M)
-    s = re.sub(r'^CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES\s*=.*$',
-               'CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 100', s, count=1, flags=re.M)
-    s = re.sub(r'^ENABLE_GET_SUB_COMMENTS\s*=.*$', 'ENABLE_GET_SUB_COMMENTS = False', s, count=1, flags=re.M)
-    s = re.sub(r'^SAVE_DATA_OPTION\s*=.*$', 'SAVE_DATA_OPTION = "jsonl"', s, count=1, flags=re.M)
-    if proxy_server:
-        s = re.sub(r'^ENABLE_IP_PROXY\s*=.*$', 'ENABLE_IP_PROXY = True', s, count=1, flags=re.M)
-        s = re.sub(r'^IP_PROXY_PROVIDER_NAME\s*=.*$', 'IP_PROXY_PROVIDER_NAME = "static"', s, count=1, flags=re.M)
-        s = re.sub(r'^STATIC_PROXY_URL\s*=.*$', f'STATIC_PROXY_URL = "http://{proxy_server}"', s, count=1, flags=re.M)
-    else:
-        s = re.sub(r'^ENABLE_IP_PROXY\s*=.*$', 'ENABLE_IP_PROXY = False', s, count=1, flags=re.M)
-    s = re.sub(r'^CRAWLER_MAX_NOTES_COUNT\s*=.*$', 'CRAWLER_MAX_NOTES_COUNT = 100', s, count=1, flags=re.M)
-    open(cfg, "w", encoding="utf-8").write(s)
-    # DY_CREATOR_ID_LIST 在 config/dy_config.py（不在 base_config）
-    dyc = os.path.join(MC, "config/dy_config.py")
-    d = open(dyc, encoding="utf-8").read()
-    d = re.sub(r'DY_CREATOR_ID_LIST\s*=\s*\[.*?\]',
-               f'DY_CREATOR_ID_LIST = [\n    "{creator_input}",\n]', d, count=1, flags=re.S)
-    open(dyc, "w", encoding="utf-8").write(d)
 
 
 def build_account_result(jdir):
@@ -470,30 +380,34 @@ def build_account_result(jdir):
 
 
 def handle_account(job):
+    """账号深扒：直连机房IP（深采放行）+ --creator_id 传账号（不改 dy_config 文件）。"""
     jid, target = job["id"], job["keyword"]
     log(f"[job {jid}] 账号深扒（直连机房IP，深采接口放行）{target[:46]}")
-    if not prep_login():          # 不走代理：深采放行机房IP
+    if not prep_login():          # 不走代理：深采放行机房IP；注入本 worker 的号
         raise RuntimeError("登录态注入失败（cookie 可能过期）")
-    patch_config_account(target, None)
-    jdir = os.path.join(MC, "data/douyin/jsonl")
-    os.makedirs(jdir, exist_ok=True)
-    for f in glob.glob(os.path.join(jdir, "*.jsonl")):
-        os.remove(f)
-    subprocess.run([VENV, "main.py", "--platform", "dy", "--lt", "qrcode", "--type", "creator"],
-                   cwd=MC, timeout=1800, check=True,
+    clear_jsonl()
+    cmd = [VENV, MAIN_PY, "--platform", "dy", "--lt", "qrcode", "--type", "creator",
+           "--creator_id", target,
+           "--get_comment", "yes", "--get_sub_comment", "no",
+           "--max_comments_count_singlenotes", "100",
+           "--crawler_max_notes_count", "100",
+           "--save_data_option", "jsonl", "--save_data_path", DATA_DIR,
+           "--headless", "yes", "--enable_ip_proxy", "no"]
+    subprocess.run(cmd, cwd=WORK_DIR, timeout=1800, check=True,
                    env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    res = build_account_result(jdir)
+    res = build_account_result(JSONL_DIR)
     log(f"[job {jid}] ✅ 账号「{res.get('nickname')}」作品{res.get('works_count')}/评论{res.get('comments_count')}")
     http_post("/api/complete", {"token": TOKEN, "job_id": jid,
                                 "result": json.dumps(res, ensure_ascii=False)})
 
 
 def main():
-    log(f"server_worker 启动，轮询 {SERVER}")
+    modes_q = "&modes=" + urllib.parse.quote(WORKER_MODES) if WORKER_MODES else ""
+    log(f"server_worker 启动 (WORKER_ID={WORKER_ID}, modes={WORKER_MODES or '全能'}, cwd={WORK_DIR})")
     while True:
         try:
-            r = http_get(f"/api/claim?token={TOKEN}")
+            r = http_get(f"/api/claim?token={TOKEN}{modes_q}")
             job = r.get("job")
             if not job:
                 time.sleep(POLL); continue
