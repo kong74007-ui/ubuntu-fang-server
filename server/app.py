@@ -219,6 +219,8 @@ async def wxchannel(password: str = Form(...), url: str = Form(...)):
     d = raw.get("data") or {}
     media = d.get("media") or {}
     title_list = d.get("title") or []
+    if isinstance(title_list, str):
+        title_list = [{"shortTitle": title_list}] if title_list else []
     title = (title_list[0].get("shortTitle") if title_list else "") or d.get("nickname", "")
     return {
         "code": 200,
