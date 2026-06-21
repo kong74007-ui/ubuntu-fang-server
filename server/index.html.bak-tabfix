@@ -173,12 +173,7 @@ document.querySelectorAll('.tab').forEach(t=>{
     document.getElementById('pane-wxchannel').style.display=currentMode==='wxchannel'?'block':'none';
     const btnLabels={videodl:'⬇ 下载视频 + 提取文案',wxchannel:'📺 解析视频号'};
     document.getElementById('go').textContent=btnLabels[currentMode]||'开始爬取';
-    // 各模块结果互相独立：切 tab 只切换显示，不清除其它模块的内容（切回来还在）
-    const _rc=document.getElementById('resultCard'),_vdl=document.getElementById('vdlResult'),_sph=document.getElementById('sphResult');
-    const _hasCrawl=document.getElementById('stat').innerHTML.trim()!=='';
-    _rc.style.display=((currentMode==='search'||currentMode==='account')&&_hasCrawl)?'block':'none';
-    _vdl.style.display=currentMode==='videodl'?'block':'none';
-    _sph.style.display=currentMode==='wxchannel'?'block':'none';
+    if(currentMode==='videodl'||currentMode==='wxchannel'){document.getElementById('resultCard').style.display='none';document.getElementById('vdlResult').innerHTML='';}if(currentMode==='wxchannel'){document.getElementById('sphResult').innerHTML=''}
     setStatus('');
   };
 });

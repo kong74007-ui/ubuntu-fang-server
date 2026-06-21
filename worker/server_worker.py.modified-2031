@@ -11,7 +11,6 @@ import json
 import time
 import glob
 import shutil
-import signal
 import subprocess
 import urllib.request
 import urllib.parse
@@ -30,8 +29,6 @@ COOKIES_JSON = f"{NUMBER_POOL}/cookie_{WORKER_ID}.json"  # 号池：本 worker �
 QG_KEY = os.environ.get("QG_KEY", "55DC9F7E")
 SERVER = os.environ.get("LEADGEN_SERVER", "http://127.0.0.1:8090")
 TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
-STATIC_PROXY = os.environ.get("STATIC_PROXY", "")   # 长效静态代理 user:pass@host:port；设了则搜索优先用(长命→爬得深)
-CMT_LIMIT = os.environ.get("CMT_LIMIT", "100")       # 每视频评论上限
 POLL = 8
 
 # 共享的提取结果目录（按 aweme_id 命名，多 worker 共享不撞）
@@ -75,25 +72,20 @@ def load_jsonl(pattern):
     return rows
 
 
-def extract_qg():
-    """提青果住宅代理，返回 (gateway_host:port, 出口IP, 地区, isp)。"""
-    url = f"https://share.proxy.qg.net/get?key={QG_KEY}&num=1&format=json"
-    d = json.loads(urllib.request.urlopen(url, timeout=15).read())
-    it = d["data"][0]
-    return it["server"], it["proxy_ip"], it["area"], it["isp"]
+STATIC_PROXY = "http://0BD5CE6F:168DBBF2FDE5@125.88.235.70:18080"
 
-
-def _proxy_arg(proxy_server):
-    """proxy_server 可为 'host:port' 或 'user:pass@host:port'；账密拆成 playwright 独立字段(不塞进server地址)。"""
-    if not proxy_server:
-        return None
-    if "@" in proxy_server:
-        creds, hostport = proxy_server.rsplit("@", 1)
-        user, _, pwd = creds.partition(":")
-        return {"server": f"http://{hostport}", "username": user, "password": pwd}
-    return {"server": f"http://{proxy_server}"}
-
-
+def extract_qg(num=1):
+    proxy_server = "0BD5CE6F:168DBBF2FDE5@125.88.235.70:18080"
+    try:
+        import ssl
+        proxy_handler = urllib.request.ProxyHandler({"http": STATIC_PROXY, "https": STATIC_PROXY})
+        opener = urllib.request.build_opener(proxy_handler)
+        req = urllib.request.Request("http://httpbin.org/ip")
+        resp = opener.open(req, timeout=8)
+        real_ip = json.loads(resp.read()).get("origin", "unknown")
+    except Exception:
+        real_ip = proxy_server
+    return (proxy_server, real_ip, "static", "residential")
 def prep_login(proxy_server=None):
     """全新档案：注入本 worker 的号 cookie + localStorage HasUserLogin=1，使 pong 跳过登录。
     proxy_server=None 时直连（机房IP，深采接口放行）。"""
@@ -105,7 +97,7 @@ def prep_login(proxy_server=None):
             c["sameSite"] = "Lax"
     if os.path.isdir(UD):
         shutil.rmtree(UD)
-    proxy_arg = _proxy_arg(proxy_server)
+    proxy_arg = {"server": f"http://{proxy_server}"} if proxy_server else None
 
     async def _run():
         async with async_playwright() as p:
@@ -114,10 +106,10 @@ def prep_login(proxy_server=None):
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
             await ctx.add_cookies(cookies)
             page = await ctx.new_page()
-            await page.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=45000)
+            await page.goto("https://www.douyin.com/", wait_until="commit", timeout=45000)
             await page.evaluate("() => window.localStorage.setItem('HasUserLogin','1')")
             await page.wait_for_timeout(2500)
-            await page.goto("https://www.douyin.com/user/self", wait_until="domcontentloaded", timeout=30000)
+            await page.goto("https://www.douyin.com/user/self", wait_until="commit", timeout=30000)
             await page.wait_for_timeout(5000)
             body = await page.evaluate("() => document.body.innerText")
             ok = bool(re.search(r"抖音号[:：]", body))
@@ -132,39 +124,22 @@ def clear_jsonl():
         os.remove(f)
 
 
-def run_crawl(keyword, count, proxy_server):
+def run_crawl(keyword, count, proxy_server, cmt_limit=100):
     """搜索爬取：cwd=本worker目录(隔离browser_data) + 全 CLI 传配置(不改config文件)。"""
     clear_jsonl()
     cmd = [VENV, MAIN_PY, "--platform", "dy", "--lt", "qrcode", "--type", "search",
            "--keywords", keyword,
            "--crawler_max_notes_count", str(count),
            "--get_comment", "yes", "--get_sub_comment", "no",
-           "--max_comments_count_singlenotes", CMT_LIMIT,
+           "--max_comments_count_singlenotes", str(cmt_limit),
+           "--max_concurrency_num", "1",
            "--save_data_option", "jsonl", "--save_data_path", DATA_DIR,
            "--headless", "yes",
            "--enable_ip_proxy", "yes", "--ip_proxy_provider_name", "static",
            "--static_proxy_url", f"http://{proxy_server}"]
-    # 超时 210s：青果短效IP只活~2分钟，正常爬1-2分钟出结果；IP中途死了卡住，
-    # 最多3.5分钟就放手(抛 TimeoutExpired → handle_search 换IP重试)，不再傻等15分钟。
-    # 用独立进程组(start_new_session) + 超时整组杀，避免 chromium 孙进程变孤儿残留占内存。
-    p = subprocess.Popen(cmd, cwd=WORK_DIR,
-                         env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
-    try:
-        rc = p.wait(timeout=(480 if (STATIC_PROXY and proxy_server == STATIC_PROXY) else 210))
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except Exception:
-            p.kill()
-        try:
-            p.wait(timeout=15)
-        except Exception:
-            pass
-        raise
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
+    subprocess.run(cmd, cwd=WORK_DIR, timeout=900, check=True,
+                   env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return JSONL_DIR
 
 
@@ -228,20 +203,27 @@ def build_result(jdir):
 
 def handle_search(job):
     jid, kw, cnt = job["id"], job["keyword"], job.get("count") or 10
-    for attempt in range(1, 4):  # 优先长效静态IP(爬得深)，失败回退青果短效轮换
-        if STATIC_PROXY and attempt == 1:
-            server = STATIC_PROXY
-            log(f"[job {jid}] 第{attempt}次 长效静态IP {STATIC_PROXY.rsplit('@', 1)[-1]}")
-        else:
-            server, pxip, area, isp = extract_qg()
-            log(f"[job {jid}] 第{attempt}次 短效代理 {pxip} {area}{isp}")
+    for attempt in range(1, 4):  # 青果短效IP不稳，失败换IP重试
+        server, pxip, area, isp = extract_qg()
+        log(f"[job {jid}] 第{attempt}次 代理出口 {pxip} {area}{isp}")
         try:
             if not prep_login(server):
                 log(f"[job {jid}] 登录态注入失败，换IP重试"); continue
             log(f"[job {jid}] 登录态就绪，开爬「{kw}」x{cnt}")
+            # 爆款深挖开关: 评论上限 100→300
+            deep = False
+            cmt_limit = 100
+            try:
+                pl = json.loads(job.get("payload") or "{}")
+                deep = bool(pl.get("deep_dig"))
+                cmt_limit = 300 if deep else 100
+            except Exception:
+                pass
+            if deep:
+                log(f"[job {jid}] 爆款深挖模式: 评论上限 {cmt_limit}/video")
             crawl_ok = True
             try:
-                run_crawl(kw, cnt, server)
+                run_crawl(kw, cnt, server, cmt_limit)
             except subprocess.CalledProcessError:
                 crawl_ok = False  # 中途失败，看有没有抓到部分数据
             res = build_result(JSONL_DIR)
@@ -341,19 +323,24 @@ def handle_download(job):
     log(f"[job {jid}] ✅ 视频 {size // 1024}KB")
 
 
-def transcribe_mp4(jid, aid, mp4, remove_mp4=False):
+def handle_transcribe(job):
+    jid = job["id"]
+    pl = json.loads(job.get("payload") or "{}")
+    aid, url = pl.get("aweme_id"), pl.get("url")
     os.makedirs(TRANS_DIR, exist_ok=True)
+    # 临时文件加 worker 后缀，防多 worker 同 aweme_id 撞名
+    mp4 = os.path.join(TRANS_DIR, f"{aid}.{WORKER_ID}.mp4")
     wav = os.path.join(TRANS_DIR, f"{aid}.{WORKER_ID}.wav")
+    log(f"[job {jid}] 提取文案 {aid}：下载视频")
+    if not fetch_video(aid, url, mp4):
+        raise RuntimeError("视频下载失败（链接可能已过期）")
     log(f"[job {jid}] 提取音频")
     subprocess.run([ffmpeg_exe(), "-y", "-i", mp4, "-ar", "16000", "-ac", "1", "-vn", wav],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log(f"[job {jid}] 语音识别(ASR)…")
     segments, info = whisper_model().transcribe(wav, language="zh", vad_filter=True)
     text = "".join(s.text for s in segments).strip()
-    cleanup = [wav]
-    if remove_mp4:
-        cleanup.append(mp4)
-    for f in cleanup:
+    for f in (mp4, wav):
         try:
             os.remove(f)
         except Exception:
@@ -362,34 +349,6 @@ def transcribe_mp4(jid, aid, mp4, remove_mp4=False):
         {"type": "transcribe", "text": text, "char_count": len(text), "aweme_id": aid},
         ensure_ascii=False)})
     log(f"[job {jid}] ✅ 文案 {len(text)} 字")
-
-
-def handle_transcribe(job):
-    jid = job["id"]
-    pl = json.loads(job.get("payload") or "{}")
-    aid, url = pl.get("aweme_id"), pl.get("url")
-    os.makedirs(TRANS_DIR, exist_ok=True)
-    # 临时文件加 worker 后缀，防多 worker 同 aweme_id 撞名
-    mp4 = os.path.join(TRANS_DIR, f"{aid}.{WORKER_ID}.mp4")
-    log(f"[job {jid}] 提取文案 {aid}：下载视频")
-    if not fetch_video(aid, url, mp4):
-        raise RuntimeError("视频下载失败（链接可能已过期）")
-    transcribe_mp4(jid, aid, mp4, remove_mp4=True)
-
-
-def handle_transcribe_file(job):
-    jid = job["id"]
-    pl = json.loads(job.get("payload") or "{}")
-    aid = pl.get("aweme_id") or f"job_{jid}"
-    rel = pl.get("file") or ""
-    fname = os.path.basename(rel)
-    mp4 = os.path.join(FILES_DIR, fname)
-    if not fname or not mp4.startswith(FILES_DIR + os.sep):
-        raise RuntimeError("本地视频路径不合法")
-    if not os.path.exists(mp4) or os.path.getsize(mp4) < 50_000:
-        raise RuntimeError("本地视频不存在或文件过小")
-    log(f"[job {jid}] 视频号本地文件转写 {fname}")
-    transcribe_mp4(jid, aid, mp4, remove_mp4=False)
 
 
 def build_account_result(jdir):
@@ -462,8 +421,6 @@ def main():
             try:
                 if mode == "transcribe":
                     handle_transcribe(job)
-                elif mode == "transcribe_file":
-                    handle_transcribe_file(job)
                 elif mode == "download_video":
                     handle_download(job)
                 elif mode == "account":

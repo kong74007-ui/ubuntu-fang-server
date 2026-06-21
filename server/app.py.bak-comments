@@ -190,7 +190,7 @@ def extract(password: str = Form(...), aweme_id: str = Form(...), url: str = For
 
 
 XIAOTAN = os.environ.get("XIAOTAN_API", "http://127.0.0.1:8501")
-TIKHUB_KEY = os.environ.get("TIKHUB_KEY", "")  # 真实 key 由 systemd EnvironmentFile=/etc/leadgen-secrets.env 注入
+TIKHUB_KEY = os.environ.get("TIKHUB_KEY", "qq8uBc5J+X+NmnXME4yOmzbZaAWIAb1GyjfF6x+LRvikkw6RJ0WTSQC1YA==")
 
 
 @app.post("/api/wxchannel")
@@ -358,70 +358,6 @@ async def wxchannel_transcribe(password: str = Form(...), share_url: str = Form(
             (aid, "transcribe_file", payload, now, now))
         conn.commit()
         return {"job_id": cur.lastrowid, "cached": False, **video}
-
-
-@app.post("/api/wxchannel_comments")
-async def wxchannel_comments(password: str = Form(...), share_url: str = Form(...),
-                             max_pages: int = Form(3)):
-    """视频号分享链接 → 解析 object_id → 翻页拉取作品评论列表。
-    两步走：fetch_video_detail 拿 data.id 当 object_id（评论接口必须用纯数字 object_id，
-    不能直接用分享链接）→ fetch_video_comments 用 object_id + last_buffer 游标翻页。"""
-    if password != PASSWORD:
-        raise HTTPException(403, "口令错误")
-    share_url = share_url.strip()
-    if not re.search(r"weixin\.qq\.com", share_url, re.I):
-        raise HTTPException(400, "请传入视频号分享链接")
-    headers = {"Authorization": f"Bearer {TIKHUB_KEY}"}
-    # 1. 分享链接 → object_id（纯数字）
-    try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post(
-                "https://api.tikhub.io/api/v1/wechat_channels/v2/fetch_video_detail",
-                json={"share_url": share_url, "raw": False},
-                headers=headers)
-    except Exception as e:
-        raise HTTPException(502, f"TikHub 请求失败: {str(e)[:80]}")
-    if r.status_code != 200:
-        raise HTTPException(502, f"TikHub 返回 {r.status_code}")
-    detail = r.json().get("data") or {}
-    object_id = str(detail.get("id") or "")
-    if not object_id:
-        raise HTTPException(502, "未能解析出作品 object_id")
-    # 2. 用 object_id 翻页拉评论（last_buffer 为游标，down_continue=0 或无游标即停）
-    comments = []
-    last_buffer = ""
-    pages = max(1, min(int(max_pages), 20))
-    for _ in range(pages):
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                cr = await c.post(
-                    "https://api.tikhub.io/api/v1/wechat_channels/v2/fetch_video_comments",
-                    json={"object_id": object_id, "last_buffer": last_buffer, "raw": False},
-                    headers=headers)
-        except Exception as e:
-            raise HTTPException(502, f"TikHub 评论请求失败: {str(e)[:80]}")
-        if cr.status_code != 200:
-            raise HTTPException(502, f"TikHub 评论返回 {cr.status_code}")
-        cdata = cr.json().get("data") or {}
-        for it in (cdata.get("comments") or []):
-            comments.append({
-                "nickname": it.get("nickname", ""),
-                "content": it.get("content", ""),
-                "like_count": it.get("like_count", 0),
-                "ip_region": it.get("ip_region", ""),
-                "create_time": it.get("create_time", 0),
-            })
-        last_buffer = cdata.get("last_buffer") or ""
-        if not cdata.get("down_continue") or not last_buffer:
-            break
-    return {
-        "code": 200,
-        "object_id": object_id,
-        "nickname": detail.get("nickname", ""),
-        "comment_count": detail.get("comment_count", 0),
-        "fetched": len(comments),
-        "comments": comments,
-    }
 
 
 @app.post("/api/resolve")
