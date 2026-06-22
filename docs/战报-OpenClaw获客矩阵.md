@@ -75,6 +75,17 @@
 - **小冬（爬取，已走 :8090 队列）→ 留 exec 当管理号、不进客户群**。
 - **沙箱前置（缺一即破）**：`sandbox.mode=all`（默认 off=零隔离）+ `exec.host≠gateway` + 堵 elevated（否则强制回宿主）+ binds 不含 `~/.openclaw`。
 
+### 🆕 已落地：小冬"工具收口 + 队列化"= 第一个 airtight 客户号（路 B 模板）
+把小冬从"exec 全键盘"改造成"只有爬取按钮"，红队实证扒不出隐私、且照常能爬：
+- **队列化（爬取按钮）**：写了 `scripts/mcp_douyin_crawl.py`（零依赖 MCP stdio server，**异步两段式** `douyin_crawl` 提交 + `douyin_crawl_result` 查结果），`openclaw mcp add` 注册；agent 只能传关键词、传不了任意命令；LEADGEN 密码由 MCP 服务持有，agent 看不到。
+- **工具收口**：小冬 `tools = {profile:"minimal", alsoAllow:[douyin__douyin_crawl, douyin__douyin_crawl_result, message, web_search, ...], deny:[exec,read,fs,runtime,...]}`。
+- **红队铁证**：放随机串文件 `cat` 不出来、tool-policy 日志确认 exec/read 被 `profile(minimal)` 砍掉；功能上走按钮搜「皮肤管理」出 10 条带预算客户名单。
+- **血泪教训（务必记住）**：
+  1. **`profile:"minimal"` 才砍得动 exec/read**，光 `deny` 不够（实测 deny-only 时 whoami 仍可执行）。
+  2. **MCP/plugin 工具要用 `alsoAllow` 加回**，不能用 `allow`（闭合白名单会把 MCP 工具排除，日志报 "won't match unless plugin enabled"）。
+  3. **红队必须用"随机串/随机值"**，别用 `whoami`/主机名——agent 会从 TOOLS.md 猜出主机名"编"出一个像真的假答案（实测小冬 whoami 假报 ubuntu，但随机串文件就读不出来）。
+- → 图片 bot（v1-10，exec 跑 gen_and_send.py）、文案 bot 都照此模板：**队列化/工具收口 + alsoAllow 装回能力按钮**。
+
 ### 🆕 进行中：OpenClaw 安全加固中心（v1，设计已成）
 "OpenClaw 管理后台"第一个模块，接现有 `/admin` 门禁：
 - **双层**：只读审计层（零风险，每 bot 红/绿姿态）+ 可控加固层（每个动作先 `--dry-run` 预检 + 二次确认 + 默认勾"先测试群"，**绝不"一键全改"直接打生产**）。
