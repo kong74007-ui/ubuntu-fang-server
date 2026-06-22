@@ -4,7 +4,7 @@
 > ⚠️ 本文档**只记录架构与 App ID**。飞书 App Secret、服务器密码、中转站 Token 等机密**一律不入库**（见文末"机密存放位置"）。
 
 ## 服务器
-- 腾讯云 CVM（广州），公网 `129.204.166.13`，登录用户 `ubuntu@`，主机名 `VM-0-15-ubuntu`，Ubuntu 22.04（4 核 / 3.6G 内存 / 59G 盘）
+- 腾讯云 CVM（广州），公网 `129.204.166.13`，登录用户 `ubuntu@`，主机名 `VM-0-15-ubuntu`，Ubuntu 22.04（4 核 / 8G 内存 / 59G 盘）<!-- 2026-06-22 实测控制台为 8G，原写 3.6G 有误已更正 -->
 - OpenClaw 安装路径：`/home/ubuntu/.npm-global/lib/node_modules/openclaw`（版本 `2026.6.6`）
 - 多开方式：**多 home 隔离**，每套独立数据目录 + 独立网关端口（用 `OPENCLAW_CONFIG_PATH` / `OPENCLAW_STATE_DIR` / `OPENCLAW_GATEWAY_PORT` 区分）。非 systemd 托管 agent（仅 `openclaw-gateway.service` 这一个 systemd 单元），其余为常驻进程。
 
