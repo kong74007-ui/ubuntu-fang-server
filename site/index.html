@@ -543,6 +543,22 @@ textarea::placeholder{color:#667891}
   .tpl{flex:0 0 150px}
   .history{grid-template-columns:1fr}
 }
+
+.site-footer{
+  border-top:1px solid var(--line);
+  background:rgba(6,10,18,.88);
+  padding:18px 26px;
+}
+.foot-inner{
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:10px;
+  font-size:12px;color:var(--faint);
+}
+.foot-brand{display:flex;align-items:center;gap:9px;color:var(--muted);font-weight:700}
+.foot-brand img{width:20px}
+.foot-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.foot-meta a{color:var(--faint)}
+.foot-meta a:hover{color:var(--cyan)}
 </style>
 </head>
 <body>
@@ -707,6 +723,19 @@ textarea::placeholder{color:#667891}
     </section>
   </main>
 </div>
+
+<footer class="site-footer">
+  <div class="foot-inner">
+    <span class="foot-brand"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀传媒 · AI 内容工作台</span>
+    <span class="foot-meta">
+      <span>© 2026 广州黄雀传媒有限公司</span>
+      <span>·</span>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2025447525号-2</a>
+      <span>·</span>
+      <span>正当商业触达 · 遵守平台规则</span>
+    </span>
+  </div>
+</footer>
 
 <div class="toast" id="toast">任务已提交，结果会同步到飞书客户群</div>
 
