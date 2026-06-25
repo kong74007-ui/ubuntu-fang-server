@@ -111,6 +111,7 @@
   </div>
 </div>
 
+<script src="tasks.js"></script>
 <script>
 (function(){
   "use strict";
@@ -143,6 +144,7 @@
   // ---- status ----
   function setStatus(html,isErr){var s=$("status");s.className="status show"+(isErr?" err":"");s.innerHTML=html;}
   function hideStatus(){$("status").className="status";}
+  function track(id,status){ if(window.HQTasks){ try{ HQTasks.upsert({id:id,status:status}); }catch(e){} } }
 
   // ---- submit + poll ----
   var pollTimer=null;
@@ -150,6 +152,7 @@
     clearInterval(pollTimer);
     pollTimer=setInterval(function(){
       fetch("/api/job/"+id).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(j){
+        track(id,j.status);
         if(j.status==="queued"){setStatus('<span class="spin"></span>已排队（任务 #'+id+'），等待爬取…');}
         else if(j.status==="running"){setStatus('<span class="spin"></span>爬取中（任务 #'+id+'）… 关键词热度高的会久一点，通常 1–6 分钟');}
         else if(j.status==="done"){clearInterval(pollTimer);$("go").disabled=false;hideStatus();render(j.result||{});}
@@ -199,12 +202,27 @@
       if(!r.ok)throw new Error("HTTP "+r.status);
       return r.json();
     }).then(function(d){
+      if(window.HQTasks){ try{ HQTasks.upsert({id:d.job_id,keyword:kw,mode:"search",status:"queued"}); }catch(e){} }
       setStatus('<span class="spin"></span>已排队（任务 #'+d.job_id+'），爬取中…');
       poll(d.job_id);
     }).catch(function(e){$("go").disabled=false;setStatus("❌ "+esc(e.message||"提交失败"),true);});
   }
   $("go").addEventListener("click",submit);
   $("kw").addEventListener("keydown",function(e){if(e.key==="Enter")submit();});
+
+  // ---- 恢复未完成任务：进页 / 点徽标(hash) 时，从 localStorage 取 job_id 重连后端续看 ----
+  function resumeJobs(){
+    if(!window.HQTasks) return;
+    var id=null, m=/task=(\d+)/.exec(location.hash||"");
+    if(m){ id=m[1]; }
+    else { var la=HQTasks.latestActive(); if(la) id=la.id; }
+    if(id==null) return;
+    var t=HQTasks.get(id), lab=(t&&t.keyword)?'「'+esc(t.keyword)+'」':'';
+    setStatus('<span class="spin"></span>恢复任务 #'+id+' '+lab+'…');
+    poll(id);
+  }
+  window.addEventListener("hashchange",resumeJobs);
+  resumeJobs();
 })();
 </script>
 </body>
