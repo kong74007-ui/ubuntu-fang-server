@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI 工作台 · 灵感案例</title>
+<link rel="icon" href="assets/logo_sparrow.png">
+<link rel="stylesheet" href="shell.css">
+<style>
+  .gwrap{padding:20px 24px 60px;max-width:1500px;}
+  /* 促销 banner */
+  .promos{display:grid;grid-template-columns:1.7fr 1fr 1fr 1fr;gap:14px;margin-bottom:20px;}
+  .promo{border-radius:14px;padding:18px 20px;position:relative;overflow:hidden;border:1px solid var(--line-soft);min-height:104px;display:flex;flex-direction:column;justify-content:center;background:var(--panel);transition:.16s;}
+  .promo:hover{transform:translateY(-2px);border-color:var(--line-strong);}
+  .promo.main{background:linear-gradient(120deg,rgba(231,178,76,.16),rgba(45,212,191,.07)),var(--panel);border-color:rgba(231,178,76,.3);}
+  .promo .pk{font-size:10.5px;letter-spacing:1px;color:var(--gold-soft);text-transform:uppercase;}
+  .promo b{font-size:16px;margin-top:6px;}
+  .promo span{font-size:11.5px;color:var(--txt-dim);margin-top:5px;}
+  .promo .ic{position:absolute;right:16px;top:16px;font-size:22px;opacity:.5;}
+
+  /* 切换 + 筛选 */
+  .seg2{display:inline-flex;gap:4px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:10px;padding:4px;margin-bottom:14px;}
+  .seg2 b{font-size:13px;padding:7px 16px;border-radius:7px;color:var(--txt-dim);cursor:pointer;font-weight:600;}
+  .seg2 b.on{background:var(--surface);color:var(--txt);box-shadow:inset 0 0 0 1px var(--line);}
+  .filt{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 20px;}
+  .fchip{font-size:13px;color:var(--txt-dim);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:7px 15px;cursor:pointer;transition:.15s;}
+  .fchip.on{color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));border-color:transparent;font-weight:700;}
+  .fchip:not(.on):hover{color:var(--txt);border-color:var(--line-strong);}
+
+  /* masonry 画廊 */
+  .gallery{column-count:4;column-gap:14px;}
+  @media(max-width:1340px){.gallery{column-count:3;}}
+  @media(max-width:920px){.gallery{column-count:2;}}
+  .gcard{break-inside:avoid;margin-bottom:14px;border-radius:14px;overflow:hidden;position:relative;border:1px solid var(--line-soft);cursor:pointer;transition:.18s;background:var(--panel);}
+  .gcard:hover{transform:translateY(-3px);border-color:var(--gold);box-shadow:0 14px 36px rgba(0,0,0,.45);}
+  .gcard img{width:100%;display:block;}
+  .gcard .gtag{position:absolute;top:10px;left:10px;font-size:10.5px;color:var(--gold-soft);background:rgba(8,12,22,.72);border:1px solid rgba(231,178,76,.3);border-radius:7px;padding:3px 8px;backdrop-filter:blur(6px);z-index:2;}
+  .gcard .glike{position:absolute;top:10px;right:10px;font-size:11px;color:#fff;background:rgba(8,12,22,.55);border-radius:7px;padding:3px 8px;z-index:2;backdrop-filter:blur(6px);}
+  .gcard .gov{position:absolute;inset:0;background:linear-gradient(180deg,transparent 50%,rgba(5,8,15,.9));opacity:0;transition:.18s;display:flex;flex-direction:column;justify-content:flex-end;padding:14px;z-index:1;}
+  .gcard:hover .gov{opacity:1;}
+  .gcard .gt{font-size:13.5px;font-weight:700;color:#fff;}
+  .gcard .gs{font-size:11px;color:#b9c4d6;margin-top:2px;}
+  .gcard .gdo{margin-top:10px;align-self:flex-start;font-size:12px;font-weight:800;color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));padding:6px 13px;border-radius:8px;}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(14px);background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 18px;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;box-shadow:0 16px 44px rgba(0,0,0,.5);z-index:60;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"><img src="assets/logo_sparrow.png" alt="黄雀"></div>
+    <a class="navbtn active" href="inspiration"><svg viewBox="0 0 24 24"><path d="M12 3l2.3 5.3 5.7.5-4.3 3.8 1.3 5.6L12 20.3 7 18l1.3-5.6L4 8.6l5.7-.5z"/></svg><span class="lb">灵感</span></a>
+    <a class="navbtn" href="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
+    <a class="navbtn" href="leads"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
+    <a class="navbtn" href="banana"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
+    <a class="navbtn" href="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
+    <a class="navbtn" href="assets"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
+    <a class="navbtn" href="cost"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
+    <div class="spacer"></div>
+    <a class="pts" href="recharge"><b class="mono">340</b><span>剩余点数</span></a>
+    <a class="navbtn" href="/"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="title">灵感案例 <span class="sub">/ 黄雀 AI 真实作品 · 做同款一键复用</span></div>
+      <div class="spacer"></div>
+      <div class="client-chip"><span class="k">当前客户</span><span class="v">仙颜美容·示例</span><span class="ar">▾</span></div>
+      <a class="tbtn" href="banana"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>进入作图</a>
+    </header>
+
+    <div class="page">
+      <div class="gwrap">
+
+        <!-- 促销 banner -->
+        <div class="promos">
+          <a class="promo main" href="video"><span class="ic">🎬</span><div class="pk">本月主推</div><b>AI 数字人 + 动作迁移</b><span>真人形象一键生成口播视频 · Seedance 驱动</span></a>
+          <a class="promo" href="banana"><span class="ic">🎨</span><div class="pk">AI 作图</div><b>美业封面 / 海报</b><span>gpt-image-2 出图</span></a>
+          <a class="promo" href="leads"><span class="ic">🎯</span><div class="pk">关键词获客</div><b>评论区扒精准客户</b><span>抖音 / 小红书</span></a>
+          <a class="promo" href="recharge"><span class="ic">⚡</span><div class="pk">充值有礼</div><b>2000 点送 400</b><span>限时优惠</span></a>
+        </div>
+
+        <!-- 切换 + 筛选 -->
+        <div class="seg2"><b class="on">灵感案例</b><b id="tabTut">教程视频</b></div>
+        <div class="filt" id="filt">
+          <span class="fchip on" data-c="全部">全部</span>
+          <span class="fchip" data-c="美业">美业</span>
+          <span class="fchip" data-c="数字人">数字人</span>
+          <span class="fchip" data-c="品牌">品牌主视觉</span>
+          <span class="fchip" data-c="节日">节日活动</span>
+          <span class="fchip" data-c="电商">电商矩阵</span>
+          <span class="fchip" data-c="创意">创意/漫画</span>
+          <span class="fchip" data-c="设计">国风设计</span>
+        </div>
+
+        <!-- 画廊 -->
+        <div class="gallery" id="gallery">
+          <div class="gcard" data-cat="美业 数字人"><span class="gtag">数字人 · 美业</span><span class="glike">♥ 326</span><img src="../assets/meiye_poster.webp" alt=""><div class="gov"><div class="gt">科技焕肤 · 逆龄新生</div><div class="gs">美业活动封面 + 数字人首帧</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="美业"><span class="gtag">美业海报</span><span class="glike">♥ 211</span><img src="assets/mock_result_1.webp" alt=""><div class="gov"><div class="gt">皮肤管理周年庆</div><div class="gs">门店活动主视觉</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="品牌"><span class="gtag">品牌主视觉</span><span class="glike">♥ 408</span><img src="../assets/huangque_poster.webp" alt=""><div class="gov"><div class="gt">黄雀 AI 主视觉</div><div class="gs">品牌获客系统</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="节日"><span class="gtag">节日活动</span><span class="glike">♥ 178</span><img src="../assets/midautumn.webp" alt=""><div class="gov"><div class="gt">中秋活动海报</div><div class="gs">门店节日营销</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="创意"><span class="gtag">创意 · 漫画</span><span class="glike">♥ 295</span><img src="../assets/comic.webp" alt=""><div class="gov"><div class="gt">漫画一键成片</div><div class="gs">图文转译短视频</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="电商"><span class="gtag">电商矩阵</span><span class="glike">♥ 264</span><img src="../assets/wechat_matrix.webp" alt=""><div class="gov"><div class="gt">微信矩阵分发图</div><div class="gs">私域生态投放</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="设计"><span class="gtag">国风设计</span><span class="glike">♥ 187</span><img src="../assets/guofeng_bg.webp" alt=""><div class="gov"><div class="gt">国风主视觉背景</div><div class="gs">高端品质感</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="创意"><span class="gtag">创意</span><span class="glike">♥ 233</span><img src="../assets/cyberpunk.webp" alt=""><div class="gov"><div class="gt">赛博国潮视觉</div><div class="gs">年轻化潮流风</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="美业"><span class="gtag">美业海报</span><span class="glike">♥ 199</span><img src="assets/mock_result_2.webp" alt=""><div class="gov"><div class="gt">新客体验活动图</div><div class="gs">99 元体验价</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="品牌"><span class="gtag">品牌</span><span class="glike">♥ 156</span><img src="../assets/brand_v3.webp" alt=""><div class="gov"><div class="gt">品牌升级视觉</div><div class="gs">VI 主形象</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="节日"><span class="gtag">节日活动</span><span class="glike">♥ 142</span><img src="../assets/duanwu.webp" alt=""><div class="gov"><div class="gt">端午活动图</div><div class="gs">门店节日营销</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="设计"><span class="gtag">国风设计</span><span class="glike">♥ 168</span><img src="../assets/guofeng_cube.webp" alt=""><div class="gov"><div class="gt">国风立体设计</div><div class="gs">空间结构感</div><span class="gdo">做同款</span></div></div>
+          <div class="gcard" data-cat="设计"><span class="gtag">国风设计</span><span class="glike">♥ 151</span><img src="../assets/guofeng_search.webp" alt=""><div class="gov"><div class="gt">国风搜索视觉</div><div class="gs">功能页主视觉</div><span class="gdo">做同款</span></div></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="tasks.js"></script>
+<script>
+(function(){
+  "use strict";
+  var toast=document.getElementById("toast");
+  function showToast(t){ toast.textContent=t; toast.classList.add("show"); setTimeout(function(){toast.classList.remove("show")},2200); }
+
+  // 分类筛选
+  var chips=document.querySelectorAll("#filt .fchip"), cards=document.querySelectorAll("#gallery .gcard");
+  chips.forEach(function(ch){
+    ch.addEventListener("click",function(){
+      chips.forEach(function(x){x.classList.remove("on")}); ch.classList.add("on");
+      var c=ch.getAttribute("data-c");
+      cards.forEach(function(card){
+        var cat=card.getAttribute("data-cat")||"";
+        card.style.display=(c==="全部"||cat.indexOf(c)>=0)?"":"none";
+      });
+    });
+  });
+
+  // 做同款 / 卡片点击 → 去作图
+  document.querySelectorAll(".gcard").forEach(function(card){
+    card.addEventListener("click",function(){
+      var t=(card.querySelector(".gt")||{}).textContent||"作品";
+      showToast("以「"+t+"」做同款 → 进入作图工作台");
+      setTimeout(function(){ location.href="banana"; },700);
+    });
+  });
+
+  // 教程视频 tab（占位）
+  document.getElementById("tabTut").addEventListener("click",function(){ showToast("教程视频上线中，敬请期待"); });
+})();
+</script>
+</body>
+</html>
