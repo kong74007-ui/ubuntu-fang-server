@@ -37,7 +37,7 @@ body{
   font-size:14px;
   line-height:1.5;
   -webkit-font-smoothing:antialiased;
-  overflow:hidden;
+  overflow-x:hidden;
 }
 a{color:inherit;text-decoration:none}
 button,input,textarea{font:inherit}
@@ -49,7 +49,7 @@ img{display:block;max-width:100%}
 ::-webkit-scrollbar-thumb{background:#1b2940;border-radius:8px}
 
 .app{
-  height:100vh;
+  min-height:100vh;
   display:grid;
   grid-template-columns:76px 1fr;
   background:
@@ -66,6 +66,10 @@ img{display:block;max-width:100%}
   align-items:center;
   gap:7px;
   padding:14px 0;
+  position:sticky;
+  top:0;
+  height:100vh;
+  align-self:start;
 }
 .logo{
   width:42px;height:42px;border-radius:12px;
@@ -118,8 +122,11 @@ img{display:block;max-width:100%}
   display:flex;align-items:center;gap:18px;
   padding:0 22px;
   border-bottom:1px solid var(--line);
-  background:rgba(8,13,22,.78);
+  background:rgba(8,13,22,.92);
   backdrop-filter:blur(18px);
+  position:sticky;
+  top:0;
+  z-index:20;
 }
 .brandline{display:flex;align-items:center;gap:12px;min-width:0}
 .brandline .title{font-size:17px;font-weight:850;letter-spacing:.2px;white-space:nowrap}
@@ -164,8 +171,12 @@ img{display:block;max-width:100%}
   display:flex;align-items:center;gap:8px;
   padding:8px 18px;
   border-bottom:1px solid var(--line);
-  background:rgba(9,15,26,.86);
-  overflow:auto;
+  background:rgba(9,15,26,.95);
+  backdrop-filter:blur(18px);
+  overflow-x:auto;
+  position:sticky;
+  top:58px;
+  z-index:19;
 }
 .tab{
   display:inline-flex;align-items:center;gap:8px;
@@ -200,8 +211,6 @@ img{display:block;max-width:100%}
   border-right:1px solid var(--line);
 }
 .scroll{
-  min-height:0;
-  overflow:auto;
   padding:22px 24px 18px;
 }
 
@@ -430,8 +439,6 @@ textarea::placeholder{color:#667891}
 }
 
 .inspector{
-  min-height:0;
-  overflow:auto;
   background:rgba(7,12,20,.78);
   padding:20px;
 }
