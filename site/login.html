@@ -159,7 +159,9 @@
       if(res.ok && res.d && res.d.token){
         try{ localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
         setMsg("登录成功，正在进入…","ok");
-        location.href="workbench/dashboard.html";
+        var rd=new URLSearchParams(location.search).get("redirect");
+        var dest=(rd && /^[a-zA-Z0-9_-]+\.html$/.test(rd)) ? rd : "dashboard.html";
+        location.href="workbench/"+dest;
       }else{
         btn.disabled=false; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
       }
