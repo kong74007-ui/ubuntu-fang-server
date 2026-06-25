@@ -3,779 +3,288 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>黄雀 AI 工作台 · 获客与内容生产</title>
-<meta name="description" content="黄雀 AI 工作台：关键词获客、文案编导、AI 作图、数字人口播、素材资产与成本看板。">
+<title>黄雀 AI · 评论区获客，AI 内容成交</title>
+<meta name="description" content="黄雀 AI —— 关键词进，抖音/小红书评论区扒出精准客户名单；同一套工作台 AI 作图、数字人口播、内容成交。为美业/电商/IP 生意降本增效。">
 <link rel="icon" href="assets/logo_sparrow.webp">
 <style>
-:root{
-  --bg:#050811;
-  --rail:#080d16;
-  --panel:#0b111d;
-  --panel2:#101827;
-  --panel3:#141e30;
-  --line:#1b2840;
-  --line2:#283a58;
-  --txt:#ecf4ff;
-  --muted:#96a8bf;
-  --faint:#5d708a;
-  --gold:#e7b24c;
-  --gold2:#f4ce75;
-  --cyan:#35d6c6;
-  --blue:#5fb7ff;
-  --green:#38d878;
-  --red:#ff6475;
-  --orange:#d9873a;
-  --mono:ui-monospace,"SF Mono",Menlo,"JetBrains Mono",Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{
-  background:var(--bg);
-  color:var(--txt);
-  font-family:var(--sans);
-  font-size:14px;
-  line-height:1.5;
-  -webkit-font-smoothing:antialiased;
-  overflow-x:hidden;
-}
-a{color:inherit;text-decoration:none}
-button,input,textarea{font:inherit}
-button{border:0;background:none;color:inherit;cursor:pointer}
-img{display:block;max-width:100%}
-.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
-::-webkit-scrollbar{width:9px;height:9px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:#1b2940;border-radius:8px}
+  :root{
+    --bg:#050811; --bg2:#0a0f1b; --panel:#0d1320; --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+    --txt:#eaf0fb; --muted:#aeb8cc; --faint:#6f7a92;
+    --gold:#e7b24c; --gold2:#f4cd6f; --gold-deep:#caa23e; --cyan:#35d6c6; --green:#39d98a;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--txt); font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+    background-image:
+      radial-gradient(1100px 520px at 78% -8%, rgba(231,178,76,.10), transparent 60%),
+      radial-gradient(900px 600px at 8% 22%, rgba(53,214,198,.06), transparent 55%);
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1240px;margin:0 auto;padding:0 28px}
 
-.app{
-  min-height:100vh;
-  display:grid;
-  grid-template-columns:76px 1fr;
-  background:
-    radial-gradient(760px 420px at 86% -8%,rgba(53,214,198,.12),transparent 62%),
-    radial-gradient(620px 360px at 18% -12%,rgba(231,178,76,.11),transparent 58%),
-    linear-gradient(180deg,#07101a 0%,#050811 42%,#04070d 100%);
-}
+  /* ===== Nav ===== */
+  .nav{position:sticky;top:0;z-index:40;backdrop-filter:blur(16px);background:rgba(5,8,17,.72);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:30px;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.5px}
+  .brand img{width:30px;height:30px}
+  .brand b{color:var(--gold)}
+  .menu{display:flex;gap:26px;font-size:14.5px;color:var(--muted)}
+  .menu a:hover{color:var(--txt)}
+  .nav .spacer{flex:1}
+  .nav-cta{display:flex;align-items:center;gap:14px}
+  .login-link{font-size:14.5px;color:var(--muted)}
+  .login-link:hover{color:var(--txt)}
+  .btn{display:inline-flex;align-items:center;gap:8px;border-radius:11px;font-weight:700;font-size:14.5px;transition:.16s;cursor:pointer;white-space:nowrap}
+  .btn-gold{background:linear-gradient(135deg,var(--gold2),var(--gold));color:#0a0e16;padding:10px 20px;box-shadow:0 8px 24px rgba(231,178,76,.26)}
+  .btn-gold:hover{transform:translateY(-1px);box-shadow:0 12px 30px rgba(231,178,76,.34)}
+  .btn-ghost{border:1px solid var(--line2);color:var(--txt);padding:10px 20px;background:rgba(255,255,255,.02)}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold2)}
 
-.rail{
-  background:rgba(8,13,22,.94);
-  border-right:1px solid var(--line);
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  gap:7px;
-  padding:14px 0;
-  position:sticky;
-  top:0;
-  height:100vh;
-  align-self:start;
-}
-.logo{
-  width:42px;height:42px;border-radius:12px;
-  display:grid;place-items:center;
-  background:linear-gradient(180deg,#111d2d,#09101b);
-  border:1px solid rgba(231,178,76,.28);
-  box-shadow:0 0 24px rgba(231,178,76,.12) inset;
-  margin-bottom:12px;
-}
-.logo img{width:28px;filter:drop-shadow(0 0 9px rgba(231,178,76,.5))}
-.navitem{
-  width:60px;height:58px;border-radius:13px;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
-  color:var(--faint);
-  position:relative;
-  transition:.18s;
-}
-.navitem svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8}
-.navitem span{font-size:10px;letter-spacing:.3px}
-.navitem:hover{background:rgba(255,255,255,.035);color:var(--muted)}
-.navitem.active{color:var(--gold2);background:rgba(231,178,76,.08)}
-.navitem.active:before{
-  content:"";position:absolute;left:-8px;top:14px;bottom:14px;width:3px;border-radius:4px;
-  background:var(--gold);box-shadow:0 0 12px rgba(231,178,76,.55);
-}
-.rail-spacer{flex:1}
-.points{
-  width:58px;border-radius:12px;
-  border:1px solid rgba(231,178,76,.28);
-  background:rgba(231,178,76,.08);
-  color:var(--gold2);
-  padding:8px 4px;text-align:center;
-}
-.points b{display:block;font-size:16px;line-height:1}
-.points span{font-size:9px;color:var(--faint)}
-.avatar{
-  width:36px;height:36px;border-radius:50%;
-  display:grid;place-items:center;
-  border:1px solid var(--line2);
-  background:linear-gradient(135deg,#22314d,#111a2c);
-  color:#d8e5f6;font-weight:700;
-}
+  /* ===== Hero ===== */
+  .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:70px 0 60px}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:2px;color:var(--gold2);text-transform:uppercase;border:1px solid rgba(231,178,76,.28);border-radius:999px;padding:6px 14px;margin-bottom:22px}
+  .eyebrow i{width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 10px var(--gold)}
+  h1.hero-title{font-size:52px;line-height:1.12;font-weight:900;letter-spacing:-1px}
+  h1.hero-title b{color:var(--gold)}
+  .hero-sub{margin:22px 0 30px;font-size:16.5px;color:var(--muted);max-width:520px}
+  .hero-cta{display:flex;gap:14px;margin-bottom:38px}
+  .hero-cta .btn{padding:13px 26px;font-size:15px}
+  .stats{display:grid;grid-template-columns:repeat(4,auto);gap:34px}
+  .stat .n{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--gold2);line-height:1}
+  .stat .n.cyan{color:var(--cyan)}
+  .stat .l{font-size:12.5px;color:var(--faint);margin-top:7px}
 
-.shell{
-  min-width:0;
-  display:grid;
-  grid-template-rows:58px 52px 1fr;
-}
-.topbar{
-  display:flex;align-items:center;gap:18px;
-  padding:0 22px;
-  border-bottom:1px solid var(--line);
-  background:rgba(8,13,22,.92);
-  backdrop-filter:blur(18px);
-  position:sticky;
-  top:0;
-  z-index:20;
-}
-.brandline{display:flex;align-items:center;gap:12px;min-width:0}
-.brandline .title{font-size:17px;font-weight:850;letter-spacing:.2px;white-space:nowrap}
-.brandline .sub{font-size:12px;color:var(--faint);white-space:nowrap}
-.status-pill{
-  display:inline-flex;align-items:center;gap:7px;
-  padding:6px 10px;border-radius:999px;
-  background:rgba(56,216,120,.08);
-  border:1px solid rgba(56,216,120,.22);
-  color:#90efba;
-  font-size:12px;
-}
-.status-pill i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
-.topbar .grow{flex:1}
-.client{
-  display:flex;align-items:center;gap:8px;
-  background:rgba(16,24,39,.78);
-  border:1px solid var(--line);
-  border-radius:10px;
-  padding:7px 12px;
-  color:var(--muted);
-  white-space:nowrap;
-}
-.client b{color:var(--gold2);font-weight:700}
-.topbtn{
-  display:inline-flex;align-items:center;gap:7px;
-  padding:8px 12px;border-radius:10px;
-  color:var(--muted);
-  transition:.15s;
-}
-.topbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8}
-.topbtn:hover{background:rgba(255,255,255,.04);color:var(--txt)}
-.goldbtn{
-  background:linear-gradient(135deg,var(--gold2),var(--gold));
-  color:#07101a;
-  font-weight:850;
-  box-shadow:0 8px 24px rgba(231,178,76,.24);
-}
-.goldbtn:hover{filter:brightness(1.04);transform:translateY(-1px)}
+  /* ===== Hero product card ===== */
+  .showcase{position:relative;border:1px solid var(--line);border-radius:22px;overflow:hidden;background:#070c16;box-shadow:0 30px 80px rgba(0,0,0,.5)}
+  .showcase .badge{position:absolute;left:16px;top:16px;z-index:3;font-size:11.5px;font-weight:700;color:var(--gold2);background:rgba(7,12,22,.7);border:1px solid rgba(231,178,76,.3);border-radius:999px;padding:5px 12px;backdrop-filter:blur(8px)}
+  .showcase .hero-img{position:relative}
+  .showcase .hero-img img{width:100%;display:block;aspect-ratio:4/3.4;object-fit:cover}
+  .showcase .hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 40%,rgba(5,8,17,.86) 100%)}
+  .showcase .overlay-title{position:absolute;left:22px;bottom:96px;z-index:2}
+  .showcase .overlay-title b{display:block;font-size:26px;font-weight:900;color:#fff;text-shadow:0 2px 18px rgba(0,0,0,.6)}
+  .showcase .overlay-title span{display:block;font-size:13px;color:var(--gold2);margin-top:4px;letter-spacing:3px}
+  .showcase .foot{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;align-items:center;gap:14px;padding:16px 20px;border-top:1px solid var(--line);background:rgba(7,12,22,.55);backdrop-filter:blur(10px)}
+  .showcase .foot .cap b{font-size:13px;color:var(--txt);display:block}
+  .showcase .foot .cap span{font-size:11.5px;color:var(--faint)}
+  .showcase .foot .mini{margin-left:auto;display:flex;gap:18px}
+  .showcase .foot .mini div{text-align:right}
+  .showcase .foot .mini b{font-family:var(--mono);font-size:15px;color:var(--gold2)}
+  .showcase .foot .mini span{font-size:10.5px;color:var(--faint)}
 
-.tabs{
-  display:flex;align-items:center;gap:8px;
-  padding:8px 18px;
-  border-bottom:1px solid var(--line);
-  background:rgba(9,15,26,.95);
-  backdrop-filter:blur(18px);
-  overflow-x:auto;
-  position:sticky;
-  top:58px;
-  z-index:19;
-}
-.tab{
-  display:inline-flex;align-items:center;gap:8px;
-  padding:8px 13px;border-radius:10px;
-  color:var(--muted);
-  border:1px solid transparent;
-  white-space:nowrap;
-  transition:.16s;
-}
-.tab i{width:7px;height:7px;border-radius:50%;background:var(--faint)}
-.tab:hover{background:rgba(255,255,255,.035);color:var(--txt)}
-.tab.active{
-  color:var(--txt);
-  background:rgba(16,24,39,.96);
-  border-color:var(--line2);
-}
-.tab.active i{background:var(--gold);box-shadow:0 0 10px rgba(231,178,76,.7)}
-.tab .chip{
-  font-size:9px;color:#0b111d;background:var(--cyan);font-weight:800;
-  padding:1px 5px;border-radius:5px;
-}
+  /* ===== Section head ===== */
+  .sec-head{text-align:center;margin:30px 0 36px}
+  .sec-head .k{font-size:12px;letter-spacing:2px;color:var(--cyan);text-transform:uppercase}
+  .sec-head h2{font-size:32px;font-weight:850;margin-top:10px}
+  .sec-head p{color:var(--muted);margin-top:10px;font-size:15px}
 
-.workspace{
-  min-height:0;min-width:0;
-  display:grid;
-  grid-template-columns:minmax(540px,1fr) 420px;
-}
-.studio{
-  min-width:0;min-height:0;
-  display:grid;
-  grid-template-rows:1fr auto;
-  border-right:1px solid var(--line);
-}
-.scroll{
-  padding:22px 24px 18px;
-}
+  /* ===== Features ===== */
+  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;padding-bottom:30px}
+  .fcard{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel),rgba(8,12,20,.6));padding:26px;transition:.18s}
+  .fcard:hover{transform:translateY(-4px);border-color:rgba(231,178,76,.4);box-shadow:0 18px 44px rgba(0,0,0,.4)}
+  .fcard .ic{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(231,178,76,.12);border:1px solid rgba(231,178,76,.25);margin-bottom:18px}
+  .fcard .ic svg{width:24px;height:24px;stroke:var(--gold2);fill:none;stroke-width:1.8}
+  .fcard h3{font-size:18px;font-weight:800;margin-bottom:9px}
+  .fcard p{font-size:14px;color:var(--muted)}
+  .fcard .tags{margin-top:16px;display:flex;flex-wrap:wrap;gap:7px}
+  .fcard .tag{font-size:11px;font-family:var(--mono);color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:3px 8px}
 
-.hero-panel{
-  display:grid;
-  grid-template-columns:1.05fr .95fr;
-  gap:18px;
-  margin-bottom:18px;
-}
-.glass{
-  background:linear-gradient(180deg,rgba(16,24,39,.92),rgba(11,17,29,.92));
-  border:1px solid var(--line);
-  border-radius:18px;
-  overflow:hidden;
-}
-.brief{
-  padding:24px;
-  position:relative;
-}
-.eyebrow{
-  color:var(--gold);
-  font-size:12px;
-  letter-spacing:2px;
-  font-weight:800;
-  margin-bottom:16px;
-}
-.brief h1{
-  font-size:clamp(30px,4vw,46px);
-  line-height:1.08;
-  letter-spacing:-.7px;
-  margin-bottom:16px;
-}
-.brief h1 b{color:var(--gold2)}
-.brief p{color:var(--muted);font-size:15px;max-width:620px}
-.quickline{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:22px;
-}
-.q{
-  border:1px solid var(--line);
-  background:#0c1422;
-  border-radius:13px;
-  padding:12px;
-}
-.q .n{font-size:20px;font-weight:850;color:var(--txt);line-height:1}
-.q .n.gold{color:var(--gold2)}
-.q .l{font-size:11px;color:var(--faint);margin-top:7px}
+  /* ===== Pipeline ===== */
+  .pipe{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:14px 0 56px}
+  .step{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:22px 20px;position:relative}
+  .step .num{font-family:var(--mono);font-size:13px;color:var(--gold);border:1px solid rgba(231,178,76,.3);border-radius:8px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .step h4{font-size:15.5px;font-weight:800;margin-bottom:6px}
+  .step p{font-size:13px;color:var(--faint)}
 
-.preview-card{
-  position:relative;
-  min-height:310px;
-  background:#0a111d;
-}
-.preview-card img{
-  width:100%;
-  height:100%;
-  min-height:310px;
-  object-fit:cover;
-}
-.preview-card:after{
-  content:"";position:absolute;inset:0;
-  background:linear-gradient(180deg,transparent 42%,rgba(5,8,17,.88));
-}
-.preview-badge{
-  position:absolute;left:16px;top:16px;z-index:2;
-  padding:6px 10px;border-radius:999px;
-  background:rgba(5,8,17,.72);
-  border:1px solid rgba(255,255,255,.12);
-  color:var(--cyan);
-  font-size:11px;font-weight:800;
-  backdrop-filter:blur(12px);
-}
-.preview-caption{
-  position:absolute;left:18px;right:18px;bottom:18px;z-index:2;
-}
-.preview-caption .t{font-size:18px;font-weight:850}
-.preview-caption .s{font-size:12px;color:var(--muted);margin-top:4px}
+  /* ===== CTA band ===== */
+  .cta-band{border:1px solid rgba(231,178,76,.3);border-radius:22px;background:linear-gradient(135deg,rgba(231,178,76,.1),rgba(53,214,198,.05));padding:46px;text-align:center;margin-bottom:60px}
+  .cta-band h2{font-size:30px;font-weight:850}
+  .cta-band p{color:var(--muted);margin:12px 0 26px}
+  .cta-band .hero-cta{justify-content:center;margin-bottom:0}
 
-.compose-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:16px;
-}
-.card{
-  background:rgba(11,17,29,.94);
-  border:1px solid var(--line);
-  border-radius:16px;
-  padding:17px;
-}
-.card.full{grid-column:1/-1}
-.label{
-  display:flex;align-items:center;gap:9px;
-  font-size:11px;color:var(--faint);
-  text-transform:uppercase;letter-spacing:1.4px;
-  margin-bottom:13px;
-  font-weight:850;
-}
-.label .num{
-  width:20px;height:20px;border-radius:7px;
-  background:rgba(231,178,76,.12);
-  color:var(--gold2);
-  display:grid;place-items:center;
-  font-family:var(--mono);letter-spacing:0;
-}
-.segments{display:flex;gap:7px;background:#09101b;border:1px solid var(--line);border-radius:13px;padding:5px}
-.seg{
-  flex:1;
-  text-align:center;
-  padding:12px 8px;
-  border-radius:10px;
-  color:var(--muted);
-  position:relative;
-  transition:.15s;
-}
-.seg strong{display:block;color:inherit}
-.seg small{display:block;color:var(--faint);font-size:11px;margin-top:3px}
-.seg.on{
-  background:linear-gradient(180deg,#17243a,#111a2b);
-  color:var(--txt);
-  box-shadow:inset 0 0 0 1px var(--line2);
-}
-.seg.on small{color:var(--gold2)}
-.seg .free{
-  position:absolute;top:-8px;right:8px;
-  background:var(--green);color:#06100b;
-  border-radius:6px;padding:1px 6px;
-  font-size:9px;font-weight:900;
-}
+  /* ===== Footer ===== */
+  footer{border-top:1px solid var(--line);background:rgba(6,10,18,.7)}
+  .foot-in{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:30px;padding:48px 0 30px}
+  .foot-brand .brand{margin-bottom:14px}
+  .foot-brand p{font-size:13px;color:var(--faint);max-width:260px}
+  .foot-col h5{font-size:13px;color:var(--muted);margin-bottom:14px;font-weight:700}
+  .foot-col a{display:block;font-size:13.5px;color:var(--faint);margin-bottom:10px}
+  .foot-col a:hover{color:var(--cyan)}
+  .foot-bottom{border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:18px 0;font-size:12.5px;color:var(--faint)}
+  .foot-bottom a{color:var(--faint)}
+  .foot-bottom a:hover{color:var(--cyan)}
+  .foot-bottom .spacer{flex:1}
 
-.upload{
-  border:1.5px dashed var(--line2);
-  border-radius:14px;
-  min-height:126px;
-  display:flex;
-  align-items:center;
-  gap:16px;
-  padding:18px;
-  background:#09101b;
-  transition:.15s;
-}
-.upload:hover{border-color:var(--cyan);background:rgba(53,214,198,.035)}
-.upicon{
-  width:54px;height:54px;border-radius:14px;
-  display:grid;place-items:center;
-  border:1px solid var(--line);
-  background:#101827;
-}
-.upicon svg{width:24px;height:24px;stroke:var(--muted);fill:none;stroke-width:1.8}
-.upload b{color:var(--txt)}
-.upload span{color:var(--cyan)}
-.upload p{font-size:12px;color:var(--faint);margin-top:4px}
-
-textarea{
-  width:100%;
-  min-height:128px;
-  resize:vertical;
-  border:1px solid var(--line);
-  border-radius:14px;
-  background:#09101b;
-  color:var(--txt);
-  padding:14px;
-  outline:none;
-}
-textarea:focus{border-color:var(--cyan)}
-textarea::placeholder{color:#667891}
-.helpers{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}
-.helper{
-  display:inline-flex;align-items:center;gap:7px;
-  padding:7px 10px;
-  border-radius:9px;
-  border:1px solid var(--line);
-  background:#0f1726;
-  color:var(--muted);
-  font-size:12px;
-  transition:.15s;
-}
-.helper:hover{color:var(--txt);border-color:var(--cyan)}
-.template-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-.tpl{
-  min-width:0;
-  border:1px solid var(--line);
-  border-radius:14px;
-  overflow:hidden;
-  background:#09101b;
-  transition:.18s;
-}
-.tpl:hover{transform:translateY(-3px);border-color:var(--gold)}
-.tpl .img{aspect-ratio:4/3;overflow:hidden}
-.tpl img{width:100%;height:100%;object-fit:cover}
-.tpl .tx{padding:9px}
-.tpl .tx b{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tpl .tx span{display:block;font-size:10px;color:var(--faint);margin-top:3px}
-
-.actionbar{
-  display:flex;align-items:center;gap:12px;
-  border-top:1px solid var(--line);
-  background:rgba(8,13,22,.92);
-  padding:14px 24px;
-  backdrop-filter:blur(18px);
-}
-.select{
-  display:flex;flex-direction:column;gap:4px;
-}
-.select .k{font-size:10px;color:var(--faint);letter-spacing:.8px}
-.select .v{
-  display:flex;align-items:center;gap:7px;
-  min-width:92px;
-  padding:8px 11px;border-radius:10px;
-  background:#101827;border:1px solid var(--line);
-  color:var(--txt);
-}
-.actionbar .grow{flex:1}
-.estimate{font-size:12px;color:var(--faint)}
-.estimate b{color:var(--gold2)}
-.generate{
-  display:flex;align-items:center;gap:10px;
-  padding:13px 28px;border-radius:13px;
-  background:linear-gradient(135deg,var(--gold2),var(--gold));
-  color:#07101a;
-  font-weight:900;
-  box-shadow:0 9px 28px rgba(231,178,76,.28);
-}
-.generate .cost{
-  background:rgba(5,8,17,.16);
-  padding:3px 8px;border-radius:8px;
-  font-size:12px;
-}
-
-.inspector{
-  background:rgba(7,12,20,.78);
-  padding:20px;
-}
-.side-head{
-  display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:14px;
-}
-.side-head b{font-size:13px;letter-spacing:1.2px;color:var(--muted);text-transform:uppercase}
-.side-head span{font-size:12px;color:var(--faint)}
-.result{
-  border:1px solid var(--line);
-  background:#0b111d;
-  border-radius:18px;
-  overflow:hidden;
-  margin-bottom:16px;
-}
-.result-img{position:relative;background:#080d16}
-.result-img img{width:100%;aspect-ratio:9/13;object-fit:cover}
-.result-img .ok{
-  position:absolute;left:12px;top:12px;
-  color:#0a130d;background:linear-gradient(135deg,#8ff2b6,var(--green));
-  font-size:11px;font-weight:900;border-radius:999px;padding:4px 10px;
-}
-.result-body{padding:14px}
-.tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.tag{
-  font-family:var(--mono);
-  font-size:10.5px;
-  color:var(--muted);
-  border:1px solid var(--line);
-  background:#101827;
-  padding:3px 7px;border-radius:7px;
-}
-.tag.gold{color:var(--gold2);border-color:rgba(231,178,76,.3)}
-.prompt-line{font-size:12px;color:var(--muted)}
-.actions{
-  display:grid;grid-template-columns:repeat(4,1fr);
-  border-top:1px solid var(--line);
-  padding:8px;
-  gap:2px;
-}
-.act{
-  display:flex;flex-direction:column;align-items:center;gap:5px;
-  padding:9px 2px;border-radius:10px;color:var(--muted);
-  font-size:11px;transition:.15s;
-}
-.act svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.8}
-.act:hover{background:rgba(255,255,255,.04);color:var(--txt)}
-.act.send{color:var(--cyan)}
-.mini-title{font-size:12px;color:var(--muted);font-weight:850;margin:18px 0 11px;letter-spacing:1px;text-transform:uppercase}
-.history{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.hist{
-  border:1px solid var(--line);
-  background:#0b111d;
-  border-radius:13px;
-  overflow:hidden;
-}
-.hist img{width:100%;aspect-ratio:1;object-fit:cover}
-.hist div{padding:8px}
-.hist b{font-size:11px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hist span{font-size:10px;color:var(--faint)}
-
-.mobile-only{display:none}
-.toast{
-  position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(12px);
-  background:#101827;border:1px solid var(--line2);border-radius:12px;
-  padding:11px 16px;color:var(--txt);font-size:13px;
-  opacity:0;pointer-events:none;transition:.22s;
-  box-shadow:0 16px 44px rgba(0,0,0,.45);
-}
-.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-
-@media (max-width:1180px){
-  .workspace{grid-template-columns:1fr 360px}
-  .hero-panel{grid-template-columns:1fr}
-  .preview-card{min-height:240px}
-  .preview-card img{min-height:240px}
-}
-@media (max-width:920px){
-  body{overflow:auto}
-  .app{height:auto;min-height:100vh;grid-template-columns:1fr}
-  .rail{display:none}
-  .shell{grid-template-rows:auto auto auto}
-  .topbar{height:auto;min-height:58px;flex-wrap:wrap;padding:12px 16px}
-  .brandline{width:100%}
-  .tabs{padding:8px 12px}
-  .workspace{grid-template-columns:1fr}
-  .studio{border-right:0}
-  .compose-grid{grid-template-columns:1fr}
-  .template-row{grid-template-columns:repeat(2,1fr)}
-  .quickline{grid-template-columns:repeat(2,1fr)}
-  .inspector{border-top:1px solid var(--line)}
-  .actionbar{position:sticky;bottom:0;flex-wrap:wrap}
-  .generate{width:100%;justify-content:center}
-}
-@media (max-width:560px){
-  .scroll{padding:14px}
-  .brief{padding:18px}
-  .brief h1{font-size:30px}
-  .topbtn:not(.goldbtn),.client{display:none}
-  .template-row{display:flex;overflow:auto}
-  .tpl{flex:0 0 150px}
-  .history{grid-template-columns:1fr}
-}
-
-.site-footer{
-  border-top:1px solid var(--line);
-  background:rgba(6,10,18,.88);
-  padding:18px 26px;
-}
-.foot-inner{
-  display:flex;align-items:center;justify-content:space-between;
-  flex-wrap:wrap;gap:10px;
-  font-size:12px;color:var(--faint);
-}
-.foot-brand{display:flex;align-items:center;gap:9px;color:var(--muted);font-weight:700}
-.foot-brand img{width:20px}
-.foot-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.foot-meta a{color:var(--faint)}
-.foot-meta a:hover{color:var(--cyan)}
+  @media (max-width:980px){
+    .hero{grid-template-columns:1fr;gap:34px;padding:46px 0}
+    h1.hero-title{font-size:40px}
+    .features,.pipe,.foot-in{grid-template-columns:1fr 1fr}
+    .menu{display:none}
+  }
+  @media (max-width:620px){
+    .features,.pipe,.foot-in{grid-template-columns:1fr}
+    h1.hero-title{font-size:33px}
+    .stats{grid-template-columns:1fr 1fr;gap:22px}
+    .nav-cta .login-link{display:none}
+  }
 </style>
 </head>
 <body>
-<div class="app">
-  <aside class="rail">
-    <a class="logo" href="#"><img src="assets/logo_sparrow.webp" alt="黄雀"></a>
-    <a class="navitem active" href="#" onclick="return false"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span>今日</span></a>
-    <a class="navitem" href="workbench/leads.html"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span>获客</span></a>
-    <a class="navitem" href="workbench/banana.html"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M5 18l5-5 3 3 3-4 3 6"/></svg><span>作图</span></a>
-    <a class="navitem" href="workbench/video.html"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span>视频</span></a>
-    <a class="navitem" href="workbench/assets.html"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span>资产</span></a>
-    <a class="navitem" href="workbench/cost.html"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span>成本</span></a>
-    <div class="rail-spacer"></div>
-    <div class="points"><b class="mono">340</b><span>剩余点数</span></div>
-    <div class="avatar">唐</div>
-  </aside>
 
-  <main class="shell">
-    <header class="topbar">
-      <div class="brandline">
-        <div>
-          <div class="title">黄雀 AI 内容工作台</div>
-          <div class="sub">获客、文案、作图、视频、资产与成本统一管理</div>
-        </div>
-        <span class="status-pill"><i></i> 34 个 Bot 在线</span>
-      </div>
-      <div class="grow"></div>
-      <div class="client">当前客户 <b>仙颜美容 · 示例</b></div>
-      <a class="topbtn" href="#contact"><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 01-4 4H8l-5 3V7a4 4 0 014-4h10a4 4 0 014 4z"/></svg>预约演示</a>
-      <a class="topbtn goldbtn" href="workbench/banana.html">进入作图</a>
-    </header>
-
-    <nav class="tabs">
-      <button class="tab active" data-mode="lead"><i></i>关键词获客</button>
-      <button class="tab" data-mode="copy"><i></i>文案编导</button>
-      <button class="tab" data-mode="image"><i></i>作图工作台</button>
-      <button class="tab" data-mode="video"><i></i>数字人口播 <span class="chip">本月</span></button>
-      <button class="tab" data-mode="asset"><i></i>资产库</button>
-      <button class="tab" data-mode="cost"><i></i>点数账本</button>
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀 <b>AI</b></a>
+    <nav class="menu">
+      <a href="#products">产品</a>
+      <a href="#how">解决方案</a>
+      <a href="workbench/cost.html">价格</a>
+      <a href="#about">关于</a>
     </nav>
+    <div class="spacer"></div>
+    <div class="nav-cta">
+      <a class="login-link" href="login.html">登录</a>
+      <a class="btn btn-gold" href="#contact">预约演示</a>
+    </div>
+  </div>
+</header>
 
-    <section class="workspace">
-      <div class="studio">
-        <div class="scroll">
-          <div class="hero-panel">
-            <div class="glass brief">
-              <div class="eyebrow">AI OPERATING DESK</div>
-              <h1>评论区获客，<br><b>AI 内容</b>成交。</h1>
-              <p>输入行业关键词，系统跑抖音 / 小红书评论区，过滤高意向线索；同一套工作台继续生成文案、封面、活动图与数字人口播。</p>
-              <div class="quickline">
-                <div class="q"><div class="n gold mono">1,770+</div><div class="l">采集评论</div></div>
-                <div class="q"><div class="n mono">3,168</div><div class="l">账号线索池</div></div>
-                <div class="q"><div class="n gold mono">100+</div><div class="l">精准名单</div></div>
-                <div class="q"><div class="n mono">80%</div><div class="l">回复率</div></div>
-              </div>
-            </div>
-            <div class="glass preview-card">
-              <span class="preview-badge">实时作品 · 可入库</span>
-              <img src="assets/meiye_poster.webp" alt="美业 AI 内容样片">
-              <div class="preview-caption">
-                <div class="t">美业活动封面与数字人首帧</div>
-                <div class="s">从文案到图像，再到 Seedance 口播视频</div>
-              </div>
-            </div>
-          </div>
+<main id="top">
+  <!-- Hero -->
+  <section class="wrap hero">
+    <div class="hero-left">
+      <span class="eyebrow"><i></i> AI 获客 × 内容成交中台</span>
+      <h1 class="hero-title">评论区获客，<br><b>AI 内容</b>成交。</h1>
+      <p class="hero-sub">输入行业关键词，系统自动跑抖音 / 小红书评论区，过滤噪音、扒出正在表达需求的精准客户；同一套工作台继续生成文案、封面、活动图与数字人口播，一条龙完成成交。</p>
+      <div class="hero-cta">
+        <a class="btn btn-gold" href="workbench/dashboard.html">进入工作台 →</a>
+        <a class="btn btn-ghost" href="#products"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/></svg>看演示</a>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n">1,770+</div><div class="l">采集评论</div></div>
+        <div class="stat"><div class="n cyan">3,168</div><div class="l">账号线索池</div></div>
+        <div class="stat"><div class="n">100+</div><div class="l">精准名单</div></div>
+        <div class="stat"><div class="n cyan">80%</div><div class="l">回复率</div></div>
+      </div>
+    </div>
 
-          <div class="compose-grid">
-            <div class="card">
-              <div class="label"><span class="num">1</span>选择能力</div>
-              <div class="segments" id="abilitySegs">
-                <button class="seg on" data-cost="5"><strong>关键词获客</strong><small>评论区线索</small></button>
-                <button class="seg" data-cost="1"><strong>文案编导</strong><small>脚本二创</small></button>
-                <button class="seg" data-cost="4"><strong>AI 作图</strong><small>内容封面</small></button>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="label"><span class="num">2</span>选择客户资产</div>
-              <div class="upload">
-                <div class="upicon"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/></svg></div>
-                <div>
-                  <b>从 <span>素材库</span> 或历史作品选择</b>
-                  <p>支持门店图、产品图、真人形象、对标链接与文案稿</p>
-                </div>
-              </div>
-            </div>
-
-            <div class="card full">
-              <div class="label"><span class="num">3</span>输入任务</div>
-              <textarea id="prompt" placeholder="例如：美业获客，找正在问拓客、开店没客流、有预算合作的美容院老板；同时生成一条小红书封面文案和活动海报方向。"></textarea>
-              <div class="helpers">
-                <button class="helper" data-fill="美业获客，过滤正在问拓客方法、开店没客流、有预算合作的美容院老板，输出可私信名单。">美业获客模板</button>
-                <button class="helper" data-fill="把这条对标视频文案改成 30 秒抖音口播，前 3 秒要有痛点钩子，结尾引导私信。">文案二创模板</button>
-                <button class="helper" data-fill="生成一张小红书 3:4 封面图，主题是皮肤管理门店周年庆，新客体验价 99 元，高级、干净、有真实门店感。">小红书封面模板</button>
-                <button class="helper" data-fill="用真人形象生成数字人口播首帧，真实、自然、门店前台场景，适合美业老板出镜。">数字人首帧模板</button>
-              </div>
-            </div>
-
-            <div class="card full">
-              <div class="label"><span class="num">4</span>灵感案例 · 做同款</div>
-              <div class="template-row">
-                <button class="tpl"><div class="img"><img src="assets/huangque_poster.webp" alt=""></div><div class="tx"><b>品牌主视觉</b><span>AI 获客系统</span></div></button>
-                <button class="tpl"><div class="img"><img src="assets/meiye_poster.webp" alt=""></div><div class="tx"><b>数字人首帧</b><span>美业口播</span></div></button>
-                <button class="tpl"><div class="img"><img src="assets/midautumn.webp" alt=""></div><div class="tx"><b>节日活动图</b><span>门店营销</span></div></button>
-                <button class="tpl"><div class="img"><img src="assets/comic.webp" alt=""></div><div class="tx"><b>漫画成片</b><span>图文转译</span></div></button>
-                <button class="tpl"><div class="img"><img src="assets/wechat_matrix.webp" alt=""></div><div class="tx"><b>矩阵分发</b><span>微信生态</span></div></button>
-              </div>
-            </div>
-          </div>
+    <div class="showcase">
+      <span class="badge">实时作品 · 可入库</span>
+      <div class="hero-img">
+        <img src="assets/meiye_poster.webp" alt="美业 AI 数字人内容样片">
+      </div>
+      <div class="overlay-title">
+        <b>科技焕肤 · 逆龄新生</b>
+        <span>美 业 活 动 主 视 觉</span>
+      </div>
+      <div class="foot">
+        <div class="cap">
+          <b>美业活动封面 + 数字人首帧</b>
+          <span>从文案到图像，再到 Seedance 口播视频</span>
         </div>
-
-        <div class="actionbar">
-          <div class="select"><span class="k">投放平台</span><button class="v">小红书</button></div>
-          <div class="select"><span class="k">比例</span><button class="v">3:4</button></div>
-          <div class="select"><span class="k">清晰度</span><button class="v">普通 1K</button></div>
-          <div class="select"><span class="k">张数</span><button class="v">1 张</button></div>
-          <div class="grow"></div>
-          <div class="estimate">预计 <b class="mono" id="timeCost">~40秒</b> · <b class="mono" id="pointCost">5点</b></div>
-          <button class="generate" id="generate">立即生成 <span class="cost mono">试跑</span></button>
+        <div class="mini">
+          <div><b>~40s</b><span>单张出图</span></div>
+          <div><b>340</b><span>剩余点数</span></div>
         </div>
       </div>
+    </div>
+  </section>
 
-      <aside class="inspector">
-        <div class="side-head"><b>生成结果</b><span>结果即资产</span></div>
-        <div class="result">
-          <div class="result-img">
-            <span class="ok" id="resultState">已生成</span>
-            <img id="mainResult" src="assets/meiye_poster.webp" alt="生成结果">
-          </div>
-          <div class="result-body">
-            <div class="tags">
-              <span class="tag gold">美业</span>
-              <span class="tag">小红书</span>
-              <span class="tag">3:4</span>
-              <span class="tag">普通1K</span>
-              <span class="tag">12:08</span>
-            </div>
-            <div class="prompt-line" id="resultText">皮肤管理周年庆活动图，真实门店氛围，新客体验价清晰，适合私域与小红书投放。</div>
-          </div>
-          <div class="actions">
-            <button class="act"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 4v7h-7"/></svg>再生成</button>
-            <button class="act"><svg viewBox="0 0 24 24"><path d="M4 20h4l11-11a2.8 2.8 0 00-4-4L4 16z"/></svg>继续改</button>
-            <button class="act"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>转视频</button>
-            <button class="act send"><svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>发飞书</button>
-            <button class="act"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>下载</button>
-            <button class="act"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>入库</button>
-            <button class="act"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>拆解</button>
-            <button class="act"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>更多</button>
-          </div>
-        </div>
+  <!-- Products / Features -->
+  <section class="wrap" id="products">
+    <div class="sec-head">
+      <div class="k">Core Capabilities</div>
+      <h2>一套工作台，从找客户到出内容</h2>
+      <p>获客、文案、作图、数字人口播、资产与成本，统一在黄雀 AI 工作台里跑通。</p>
+    </div>
+    <div class="features">
+      <a class="fcard" href="workbench/leads.html">
+        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></div>
+        <h3>关键词获客</h3>
+        <p>关键词进，抖音/小红书评论区扒评论，AI 过滤中介噪音，输出带抖音号、属地、需求原话、主页链接的精准客户名单。</p>
+        <div class="tags"><span class="tag">意图过滤</span><span class="tag">可私信</span><span class="tag">名单导出</span></div>
+      </a>
+      <a class="fcard" href="workbench/banana.html">
+        <div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg></div>
+        <h3>AI 作图</h3>
+        <p>用客户素材一键生成小红书封面、活动海报、品牌主视觉。gpt-image-2 出图，做同款模板，结果即资产。</p>
+        <div class="tags"><span class="tag">封面/海报</span><span class="tag">做同款</span><span class="tag">入库复用</span></div>
+      </a>
+      <a class="fcard" href="workbench/video.html">
+        <div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg></div>
+        <h3>数字人口播</h3>
+        <p>真人形象生成数字人首帧与口播视频，Seedance 驱动，适合美业老板出镜，一键回传客户飞书群。</p>
+        <div class="tags"><span class="tag">真人对口型</span><span class="tag">Seedance</span><span class="tag">发飞书</span></div>
+      </a>
+    </div>
+  </section>
 
-        <div class="mini-title">最近作品</div>
-        <div class="history">
-          <button class="hist"><img src="assets/huangque_poster.webp" alt=""><div><b>AI 获客主视觉</b><span>品牌图 · 已入库</span></div></button>
-          <button class="hist"><img src="assets/midautumn.webp" alt=""><div><b>中秋活动海报</b><span>节日营销 · 已入库</span></div></button>
-          <button class="hist"><img src="assets/comic.webp" alt=""><div><b>漫画一键成片</b><span>视频素材 · 已入库</span></div></button>
-          <button class="hist"><img src="assets/wechat_matrix.webp" alt=""><div><b>矩阵分发图</b><span>微信生态 · 已入库</span></div></button>
-        </div>
-      </aside>
-    </section>
-  </main>
-</div>
+  <!-- How it works -->
+  <section class="wrap" id="how">
+    <div class="sec-head">
+      <div class="k">How It Works</div>
+      <h2>四步，从一个关键词到成交内容</h2>
+    </div>
+    <div class="pipe">
+      <div class="step"><div class="num">1</div><h4>输入关键词</h4><p>如「美业获客」「皮肤管理」，选定行业与平台。</p></div>
+      <div class="step"><div class="num">2</div><h4>扒评论 · 过滤</h4><p>抓抖音/小红书评论区，AI 过滤中介与闲聊，留高意向真人。</p></div>
+      <div class="step"><div class="num">3</div><h4>出内容</h4><p>同台生成文案、封面、海报、数字人口播，做同款。</p></div>
+      <div class="step"><div class="num">4</div><h4>推送成交</h4><p>名单与作品一键回传客户飞书群，跟进转化。</p></div>
+    </div>
+  </section>
 
-<footer class="site-footer">
-  <div class="foot-inner">
-    <span class="foot-brand"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀传媒 · AI 内容工作台</span>
-    <span class="foot-meta">
+  <!-- CTA -->
+  <section class="wrap" id="contact">
+    <div class="cta-band">
+      <h2>让 AI 帮你把客户和内容一起做出来</h2>
+      <p>为美业 / 电商 / IP 生意降本增效。预约一次演示，看真实名单与作品。</p>
+      <div class="hero-cta">
+        <a class="btn btn-gold" href="workbench/dashboard.html">进入工作台 →</a>
+        <a class="btn btn-ghost" href="login.html">登录账号</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer id="about">
+  <div class="wrap">
+    <div class="foot-in">
+      <div class="foot-brand">
+        <a class="brand" href="#top"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀 <b>AI</b></a>
+        <p>螳螂捕蝉，黄雀在后。AI 获客与内容中台，为实体与网络生意精准捕客、高效产出。</p>
+      </div>
+      <div class="foot-col">
+        <h5>产品</h5>
+        <a href="workbench/leads.html">关键词获客</a>
+        <a href="workbench/banana.html">AI 作图</a>
+        <a href="workbench/video.html">数字人口播</a>
+        <a href="workbench/cost.html">点数与价格</a>
+      </div>
+      <div class="foot-col">
+        <h5>平台</h5>
+        <a href="workbench/dashboard.html">今日工作台</a>
+        <a href="workbench/assets.html">资产库</a>
+        <a href="login.html">登录</a>
+        <a href="#contact">预约演示</a>
+      </div>
+      <div class="foot-col">
+        <h5>公司</h5>
+        <a href="#about">关于黄雀</a>
+        <a href="#about">联系合作</a>
+        <a href="#about">加入我们</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
       <span>© 2026 广州黄雀传媒有限公司</span>
       <span>·</span>
       <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2025447525号-2</a>
-      <span>·</span>
+      <span class="spacer"></span>
       <span>正当商业触达 · 遵守平台规则</span>
-    </span>
+    </div>
   </div>
 </footer>
 
-<div class="toast" id="toast">任务已提交，结果会同步到飞书客户群</div>
-
-<script>
-(function(){
-  var segs=document.querySelectorAll(".seg");
-  var point=document.getElementById("pointCost");
-  var time=document.getElementById("timeCost");
-  segs.forEach(function(seg){
-    seg.addEventListener("click",function(){
-      segs.forEach(function(s){s.classList.remove("on")});
-      seg.classList.add("on");
-      var cost=seg.getAttribute("data-cost")||"4";
-      point.textContent=cost+"点";
-      time.textContent=cost==="1"?"~12秒":cost==="4"?"~28秒":"~40秒";
-    });
-  });
-  document.querySelectorAll(".helper").forEach(function(btn){
-    btn.addEventListener("click",function(){
-      document.getElementById("prompt").value=btn.getAttribute("data-fill");
-    });
-  });
-  var imgs=["assets/meiye_poster.webp","assets/huangque_poster.webp","assets/midautumn.webp","assets/comic.webp"];
-  var idx=0;
-  var toast=document.getElementById("toast");
-  document.getElementById("generate").addEventListener("click",function(){
-    var state=document.getElementById("resultState");
-    var result=document.getElementById("mainResult");
-    var text=document.getElementById("resultText");
-    state.textContent="生成中";
-    state.style.background="linear-gradient(135deg,#8ed5ff,#5fb7ff)";
-    setTimeout(function(){
-      idx=(idx+1)%imgs.length;
-      result.src=imgs[idx];
-      state.textContent="已生成";
-      state.style.background="linear-gradient(135deg,#8ff2b6,#38d878)";
-      text.textContent=document.getElementById("prompt").value || "根据当前客户素材生成一条可交付内容，已保存到资产库，可继续改图或推送飞书。";
-      toast.classList.add("show");
-      setTimeout(function(){toast.classList.remove("show")},1800);
-    },720);
-  });
-})();
-</script>
 </body>
 </html>
