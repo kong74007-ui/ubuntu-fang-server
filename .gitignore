@@ -34,3 +34,11 @@ server/jobs.db
 *.sqlite
 models/
 transcribe_out/
+.gstack/
+
+# ===== 临时/派生：截图预览、原始大图、本地工具缓存（不进 git，可重生成）=====
+.playwright-cli/
+.context/
+**/_preview/
+site/assets_raw/
+workbench/assets_raw/
