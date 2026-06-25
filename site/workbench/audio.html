@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI 工作台 · 配音 · 音频</title>
+<link rel="icon" href="assets/logo_sparrow.png">
+<link rel="stylesheet" href="shell.css">
+<style>
+  /* 这里可加本页专属 CSS（不要重定义 shell.css 已有的通用类） */
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(14px);background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 18px;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;box-shadow:0 16px 44px rgba(0,0,0,.5);z-index:60;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* ===== 音色网格 ===== */
+  .voice-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;}
+  .voice{position:relative;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:13px 13px 11px;cursor:pointer;transition:border-color .15s,background .15s,transform .15s;}
+  .voice:hover{border-color:var(--line-strong);transform:translateY(-1px);}
+  .voice.on{border-color:var(--gold);background:linear-gradient(180deg,rgba(231,178,76,.07),rgba(231,178,76,.02));box-shadow:inset 0 0 0 1px var(--gold);}
+  .voice .vtop{display:flex;align-items:center;gap:9px;}
+  .voice .ava{width:34px;height:34px;border-radius:10px;flex:0 0 auto;display:grid;place-items:center;font-size:15px;background:linear-gradient(135deg,#22324d,#15203400);border:1px solid var(--line);}
+  .voice.on .ava{border-color:rgba(231,178,76,.4);}
+  .voice .vn{font-size:13.5px;font-weight:700;color:var(--txt);line-height:1.2;}
+  .voice .vt{font-size:10.5px;color:var(--txt-faint);margin-top:2px;}
+  .voice .vtags{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px;}
+  .vtag{font-size:9.5px;font-family:var(--mono);color:var(--txt-dim);background:var(--surface);border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;}
+  .voice .vplay{position:absolute;top:11px;right:11px;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line);color:var(--txt-dim);background:var(--surface);transition:.15s;}
+  .voice .vplay:hover{color:var(--gold);border-color:var(--gold);}
+  .voice .vplay svg{width:11px;height:11px;stroke:none;fill:currentColor;}
+  .voice .vcheck{position:absolute;top:11px;right:11px;width:22px;height:22px;border-radius:50%;display:none;place-items:center;background:linear-gradient(135deg,var(--gold-soft),var(--gold));color:#0a0e16;font-size:12px;font-weight:900;}
+  .voice.on .vcheck{display:grid;}
+  .voice.on .vplay{display:none;}
+  .voice .clone-dot{position:absolute;top:11px;right:42px;font-size:9px;font-weight:700;color:var(--cyan);border:1px solid rgba(45,212,191,.3);background:rgba(45,212,191,.1);padding:1px 6px;border-radius:6px;}
+
+  /* ===== 参数行 ===== */
+  .param-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .param-lab{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--txt-faint);margin-bottom:8px;text-transform:uppercase;}
+
+  /* ===== 右栏 音频条 ===== */
+  .audio-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px;margin-bottom:14px;}
+  .ac-top{display:flex;align-items:center;gap:8px;margin-bottom:13px;}
+  .ac-top .stt{font-size:10.5px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;}
+  .stt.ok{color:var(--green);background:rgba(43,213,118,.14);border:1px solid rgba(43,213,118,.3);}
+  .stt.run{color:var(--blue);background:rgba(70,180,255,.14);border:1px solid rgba(70,180,255,.3);}
+  .ac-top .stt .d{width:6px;height:6px;border-radius:50%;background:currentColor;}
+  .ac-top .ac-meta{margin-left:auto;font-size:10.5px;color:var(--txt-faint);font-family:var(--mono);}
+
+  .player{display:flex;align-items:center;gap:13px;}
+  .pbtn{width:46px;height:46px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold-soft),var(--gold));color:#0a0e16;box-shadow:0 5px 16px rgba(231,178,76,.3);transition:transform .15s;}
+  .pbtn:hover{transform:scale(1.05);}
+  .pbtn svg{width:18px;height:18px;fill:currentColor;stroke:none;}
+  .wave{flex:1;min-width:0;height:46px;display:flex;align-items:center;gap:2px;overflow:hidden;}
+  .wave i{flex:1;min-width:2px;background:var(--line-strong);border-radius:2px;transition:background .15s;}
+  .wave i.p{background:linear-gradient(180deg,var(--gold-soft),var(--copper));}
+  .player.playing .wave i.live{animation:wv .9s ease-in-out infinite alternate;}
+  @keyframes wv{from{opacity:.55;}to{opacity:1;}}
+  .dur{font-family:var(--mono);font-size:12.5px;color:var(--txt-dim);flex:0 0 auto;font-variant-numeric:tabular-nums;}
+
+  .ac-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);}
+  .aact{display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 4px;border-radius:9px;font-size:11px;color:var(--txt-dim);transition:.15s;}
+  .aact:hover{color:var(--txt);background:rgba(255,255,255,.04);}
+  .aact svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;}
+  .aact.feishu{color:var(--cyan);}
+  .aact.feishu:hover{background:rgba(45,212,191,.08);}
+
+  /* ===== 最近配音列表 ===== */
+  .rlist{display:flex;flex-direction:column;gap:9px;}
+  .ritem{display:flex;align-items:center;gap:12px;padding:11px 13px;border:1px solid var(--line-soft);border-radius:11px;background:var(--panel);cursor:pointer;transition:.15s;}
+  .ritem:hover{border-color:var(--line-strong);}
+  .ritem .rplay{width:30px;height:30px;flex:0 0 auto;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line);color:var(--txt-dim);background:var(--surface-2);transition:.15s;}
+  .ritem:hover .rplay{color:var(--gold);border-color:var(--gold);}
+  .ritem .rplay svg{width:11px;height:11px;fill:currentColor;stroke:none;}
+  .ritem .rmain{flex:1;min-width:0;}
+  .ritem .rt{font-size:12.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ritem .rm{font-size:10px;color:var(--txt-faint);font-family:var(--mono);margin-top:3px;}
+  .ritem .rdl{flex:0 0 auto;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--txt-faint);transition:.15s;}
+  .ritem .rdl:hover{color:var(--gold);background:rgba(231,178,76,.08);}
+  .ritem .rdl svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;}
+
+  @media (max-width:1080px){.voice-grid{grid-template-columns:repeat(2,1fr);}}
+</style>
+<script src="auth-guard.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <aside class="rail">
+    <div class="logo"><img src="assets/logo_sparrow.png" alt="黄雀"></div>
+    <a class="navbtn" href="inspiration"><svg viewBox="0 0 24 24"><path d="M12 3l2.3 5.3 5.7.5-4.3 3.8 1.3 5.6L12 20.3 7 18l1.3-5.6L4 8.6l5.7-.5z"/></svg><span class="lb">灵感</span></a>
+    <a class="navbtn" href="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
+    <a class="navbtn" href="leads"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
+    <a class="navbtn" href="banana"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
+    <a class="navbtn" href="script"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span class="lb">编导</span></a>
+    <a class="navbtn active" href="audio"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg><span class="lb">音频</span></a>
+    <a class="navbtn" href="canvas"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg><span class="lb">画布</span></a>
+    <a class="navbtn" href="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
+    <a class="navbtn" href="assets"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
+    <a class="navbtn" href="cost"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
+    <div class="spacer"></div>
+    <a class="pts" href="recharge"><b class="mono">340</b><span>剩余点数</span></a>
+    <a class="navbtn" href="/"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+
+    <!-- topbar -->
+    <header class="topbar">
+      <div class="title">配音 · 音频 <span class="sub">/ 文本转语音 · AI 口播配音</span></div>
+      <div class="spacer"></div>
+      <div class="client-chip"><span class="k">当前客户</span><span class="v">仙颜美容·示例</span><span class="ar">▾</span></div>
+      <button class="tbtn" id="histBtn"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>历史记录</button>
+      <button class="tbtn" id="helpBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 113.5 2.3c-.8.4-1 .9-1 1.7M12 17h.01"/></svg>教程</button>
+    </header>
+
+    <!-- page -->
+    <div class="page">
+      <div class="page-pad">
+        <div class="workspace" style="display:grid;grid-template-columns:1fr var(--inspector);gap:22px;align-items:start;">
+
+          <!-- ============ 左栏：配音输入 ============ -->
+          <section>
+
+            <!-- 文本 -->
+            <div class="panel-card">
+              <div class="block-label"><span class="n">1</span>配音文本</div>
+              <div class="prompt-wrap">
+                <textarea class="prompt" id="prompt" maxlength="2000" placeholder="粘贴或输入要配音的口播文案。例如：姐妹们注意啦～仙颜美容年中宠粉，新客到店做一次深层清洁皮肤管理，原价 398 现在只要 99，名额有限，点击主页预约～">姐妹们注意啦～仙颜美容年中宠粉来咯，新客到店做一次深层清洁皮肤管理，原价 398 现在只要 99，名额有限，点主页就能预约，错过再等一年～</textarea>
+              </div>
+              <div class="prompt-foot">
+                <button class="helper" id="copyHelper"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>从编导口播取文案</button>
+                <button class="helper" id="polishHelper"><svg viewBox="0 0 24 24"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/></svg>口语化润色</button>
+                <div class="right">
+                  <span class="counter"><span id="cc">0</span>/2000 · 约 <span id="secEst" class="mono">0</span> 秒</span>
+                  <button class="clear" id="clearBtn">清空</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 音色 -->
+            <div class="panel-card">
+              <div class="block-label"><span class="n">2</span>选择音色 <span style="color:var(--txt-faint);font-weight:500;text-transform:none;letter-spacing:0">（点卡片选，点 ▶ 试听）</span></div>
+              <div class="voice-grid" id="voices">
+
+                <div class="voice on" data-name="大鹏" data-pts="2">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <div class="vtop"><div class="ava">🧑🏻‍💼</div><div><div class="vn">大鹏</div><div class="vt">老板本人声 · 厚实</div></div></div>
+                  <div class="vtags"><span class="vtag">男声</span><span class="vtag">沉稳</span><span class="vtag">权威</span></div>
+                </div>
+
+                <div class="voice" data-name="泽龙" data-pts="2">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <span class="clone-dot">克隆</span>
+                  <div class="vtop"><div class="ava">🎙️</div><div><div class="vn">泽龙</div><div class="vt">复刻音色 · 自然</div></div></div>
+                  <div class="vtags"><span class="vtag">男声</span><span class="vtag">亲切</span><span class="vtag">口播</span></div>
+                </div>
+
+                <div class="voice" data-name="温柔女声" data-pts="1">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <div class="vtop"><div class="ava">👩🏻</div><div><div class="vn">温柔女声</div><div class="vt">美业首选 · 治愈</div></div></div>
+                  <div class="vtags"><span class="vtag">女声</span><span class="vtag">温柔</span><span class="vtag">种草</span></div>
+                </div>
+
+                <div class="voice" data-name="沉稳男声" data-pts="1">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <div class="vtop"><div class="ava">👨🏻</div><div><div class="vn">沉稳男声</div><div class="vt">专业讲解 · 可信</div></div></div>
+                  <div class="vtags"><span class="vtag">男声</span><span class="vtag">沉稳</span><span class="vtag">科普</span></div>
+                </div>
+
+                <div class="voice" data-name="活力女声" data-pts="1">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <div class="vtop"><div class="ava">💃🏻</div><div><div class="vn">活力女声</div><div class="vt">促销带货 · 上头</div></div></div>
+                  <div class="vtags"><span class="vtag">女声</span><span class="vtag">活力</span><span class="vtag">带货</span></div>
+                </div>
+
+                <div class="voice" data-name="知性女声" data-pts="1">
+                  <div class="vplay" title="试听"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></div>
+                  <div class="vcheck">✓</div>
+                  <div class="vtop"><div class="ava">👩🏻‍🏫</div><div><div class="vn">知性女声</div><div class="vt">院长口吻 · 优雅</div></div></div>
+                  <div class="vtags"><span class="vtag">女声</span><span class="vtag">知性</span><span class="vtag">讲解</span></div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- 语速 / 情绪 -->
+            <div class="panel-card" style="margin-bottom:0;">
+              <div class="block-label"><span class="n">3</span>语速 · 情绪</div>
+              <div class="param-row">
+                <div>
+                  <div class="param-lab">语速</div>
+                  <div class="segmented" id="speed">
+                    <div class="seg" data-v="0.85">偏慢<span class="s2">0.85×</span></div>
+                    <div class="seg on" data-v="1.0">正常<span class="s2">1.0×</span></div>
+                    <div class="seg" data-v="1.15">偏快<span class="s2">1.15×</span></div>
+                  </div>
+                </div>
+                <div>
+                  <div class="param-lab">情绪</div>
+                  <div class="segmented" id="emotion">
+                    <div class="seg on" data-v="自然">自然<span class="s2">日常口播</span></div>
+                    <div class="seg" data-v="热情">热情<span class="s2">促销带货</span></div>
+                    <div class="seg" data-v="温柔">温柔<span class="s2">种草治愈</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="prompt-foot" style="margin-top:16px;">
+                <div class="cost-note">预计 <b id="costTime">~10秒</b> · 本次 <b id="costPts">2 点</b> ≈ <b id="costRmb">¥0.2</b></div>
+                <div class="right">
+                  <button class="gen-btn" id="genBtn">生成配音 <span class="cost mono" id="genCost">2 点</span></button>
+                </div>
+              </div>
+            </div>
+
+          </section>
+
+          <!-- ============ 右栏：结果 + 最近配音 ============ -->
+          <aside>
+
+            <div class="sec-title"><span class="bar"></span>本次配音</div>
+
+            <div class="audio-card" id="resultCard">
+              <div class="ac-top">
+                <span class="stt ok" id="acStatus"><span class="d"></span>合成成功</span>
+                <span class="ac-meta" id="acMeta">大鹏 · 自然 · 1.0×</span>
+              </div>
+              <div class="player" id="player">
+                <button class="pbtn" id="pbtn"><svg id="pbtnIcon" viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></button>
+                <div class="wave" id="wave"></div>
+                <span class="dur" id="dur">00:14</span>
+              </div>
+              <div class="ac-actions">
+                <button class="aact" data-t="正在重新合成（原型）"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0114-5l2 2M20 12a8 8 0 01-14 5l-2-2"/><path d="M18 4v5h-5M6 20v-5h5"/></svg>重新生成</button>
+                <button class="aact" data-t="已下载 MP3 到本地"><svg viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>下载</button>
+                <button class="aact" data-t="转数字人口播链路（原型）"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>配口播视频</button>
+                <button class="aact feishu" data-t="已推送到客户飞书群"><svg viewBox="0 0 24 24"><path d="M22 3L2 10l7 3 3 7z"/><path d="M22 3L11 14"/></svg>推送飞书</button>
+              </div>
+            </div>
+
+            <div class="sec-title" style="margin-top:20px;"><span class="bar"></span>最近配音 <span class="more" id="moreBtn">全部</span></div>
+
+            <div class="rlist" id="rlist">
+              <div class="ritem" data-t="载入：年中宠粉口播">
+                <button class="rplay"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></button>
+                <div class="rmain"><div class="rt">年中宠粉 · 99 体验价口播</div><div class="rm">大鹏 · 00:14 · 2点 · ✓</div></div>
+                <button class="rdl" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg></button>
+              </div>
+              <div class="ritem" data-t="载入：皮肤管理科普">
+                <button class="rplay"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></button>
+                <div class="rmain"><div class="rt">皮肤管理项目科普口播</div><div class="rm">温柔女声 · 00:31 · 1点 · ✓</div></div>
+                <button class="rdl" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg></button>
+              </div>
+              <div class="ritem" data-t="载入：周年庆活动">
+                <button class="rplay"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></button>
+                <div class="rmain"><div class="rt">门店周年庆活动招揽</div><div class="rm">活力女声 · 00:22 · 1点 · ✓</div></div>
+                <button class="rdl" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg></button>
+              </div>
+              <div class="ritem" data-t="载入：泽龙复刻测试">
+                <button class="rplay"><svg viewBox="0 0 24 24"><path d="M5 3l16 9-16 9z"/></svg></button>
+                <div class="rmain"><div class="rt">泽龙复刻音色 · 自我介绍</div><div class="rm">泽龙·克隆 · 00:18 · 2点 · ✓</div></div>
+                <button class="rdl" title="下载"><svg viewBox="0 0 24 24"><path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/></svg></button>
+              </div>
+            </div>
+
+          </aside>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="tasks.js"></script>
+<script>
+(function(){
+  "use strict";
+  var $=function(s){return document.querySelector(s);};
+
+  /* ---- toast ---- */
+  var toastEl=$("#toast"),tt;
+  function showToast(m){toastEl.textContent=m;toastEl.classList.add("show");clearTimeout(tt);tt=setTimeout(function(){toastEl.classList.remove("show");},2200);}
+
+  /* ---- 波形条（生成假波形） ---- */
+  var wave=$("#wave");
+  function buildWave(n,progress){
+    wave.innerHTML="";
+    for(var i=0;i<n;i++){
+      var bar=document.createElement("i");
+      var h=20+Math.round(60*Math.abs(Math.sin(i*0.7)+Math.sin(i*0.27)*0.6));
+      bar.style.height=Math.min(96,h)+"%";
+      if(progress!=null && i/n<progress)bar.classList.add("p");
+      wave.appendChild(bar);
+    }
+  }
+  buildWave(52,0.35);
+
+  /* ---- 文本计数 + 时长估算 ---- */
+  var prompt=$("#prompt"),cc=$("#cc"),secEst=$("#secEst");
+  function recalc(){
+    var len=prompt.value.length;
+    cc.textContent=len;
+    var secs=Math.round(len/5.2);           // ~5.2 字/秒
+    secEst.textContent=secs;
+    var pts=curPts;
+    $("#costTime").textContent="~"+Math.max(4,Math.round(secs*0.4+4))+"秒";
+    $("#costPts").textContent=pts+" 点";
+    $("#costRmb").textContent="¥"+(pts*0.1).toFixed(1);
+    $("#genCost").textContent=pts+" 点";
+  }
+  prompt.addEventListener("input",recalc);
+
+  /* ---- 音色选择 ---- */
+  var curVoice="大鹏",curPts=2;
+  document.querySelectorAll("#voices .voice").forEach(function(v){
+    v.addEventListener("click",function(e){
+      if(e.target.closest(".vplay"))return; // 试听不切换
+      document.querySelectorAll("#voices .voice").forEach(function(x){x.classList.remove("on");});
+      v.classList.add("on");
+      curVoice=v.getAttribute("data-name");
+      curPts=parseInt(v.getAttribute("data-pts"),10);
+      syncMeta();recalc();
+    });
+    var pl=v.querySelector(".vplay");
+    if(pl)pl.addEventListener("click",function(e){e.stopPropagation();showToast("试听音色：「"+v.getAttribute("data-name")+"」（原型）");});
+  });
+
+  /* ---- 语速 / 情绪 segmented ---- */
+  var curSpeed="1.0",curEmotion="自然";
+  function bindSeg(wrapId,onpick){
+    document.querySelectorAll(wrapId+" .seg").forEach(function(s){
+      s.addEventListener("click",function(){
+        document.querySelectorAll(wrapId+" .seg").forEach(function(x){x.classList.remove("on");});
+        s.classList.add("on");onpick(s.getAttribute("data-v"));
+      });
+    });
+  }
+  bindSeg("#speed",function(v){curSpeed=v;syncMeta();});
+  bindSeg("#emotion",function(v){curEmotion=v;syncMeta();});
+  function syncMeta(){$("#acMeta").textContent=curVoice+" · "+curEmotion+" · "+curSpeed+"×";}
+
+  /* ---- 文案 helper ---- */
+  $("#copyHelper").addEventListener("click",function(){showToast("从「编导 · 口播」拉取已通过的文案（原型）");});
+  $("#polishHelper").addEventListener("click",function(){
+    if(prompt.value && prompt.value.indexOf("（已口语化）")<0)prompt.value+="（已口语化）";
+    recalc();showToast("已做口语化润色（原型）");
+  });
+  $("#clearBtn").addEventListener("click",function(){prompt.value="";recalc();});
+
+  /* ---- 播放器（mock 进度动画） ---- */
+  var player=$("#player"),pbtn=$("#pbtn"),pbtnIcon=$("#pbtnIcon"),playing=false,prog=0.35,pv;
+  var PLAY='<path d="M5 3l16 9-16 9z"/>',PAUSE='<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>';
+  function setProgress(p){buildWave(52,p);}
+  function togglePlay(){
+    playing=!playing;
+    pbtnIcon.innerHTML=playing?PAUSE:PLAY;
+    player.classList.toggle("playing",playing);
+    var bars=wave.querySelectorAll("i");bars.forEach(function(b,i){if(i%3===0)b.classList.toggle("live",playing);});
+    if(playing){
+      showToast("播放中（原型 · 无真实音频）");
+      pv=setInterval(function(){
+        prog+=0.02;if(prog>=1){prog=0;clearInterval(pv);playing=false;pbtnIcon.innerHTML=PLAY;player.classList.remove("playing");}
+        setProgress(prog);
+      },120);
+    }else{clearInterval(pv);}
+  }
+  pbtn.addEventListener("click",togglePlay);
+
+  /* ---- 结果区动作 ---- */
+  document.querySelectorAll(".aact").forEach(function(a){a.addEventListener("click",function(){showToast(a.getAttribute("data-t"));});});
+
+  /* ---- 最近配音 ---- */
+  document.querySelectorAll("#rlist .ritem").forEach(function(r){
+    r.addEventListener("click",function(e){
+      if(e.target.closest(".rdl")){e.stopPropagation();showToast("已下载该条配音 MP3");return;}
+      showToast(r.getAttribute("data-t")+"（载入到结果区）");
+    });
+  });
+  $("#moreBtn").addEventListener("click",function(){showToast("查看全部历史配音（原型）");});
+  $("#histBtn").addEventListener("click",function(){showToast("打开配音历史记录（原型）");});
+  $("#helpBtn").addEventListener("click",function(){showToast("打开 TTS 配音教程（原型）");});
+
+  /* ---- 生成配音（mock） ---- */
+  var genBtn=$("#genBtn"),acStatus=$("#acStatus");
+  genBtn.addEventListener("click",function(){
+    var txt=prompt.value.trim();
+    if(!txt){showToast("请先输入要配音的文本");prompt.focus();return;}
+    acStatus.className="stt run";acStatus.innerHTML='<span class="d"></span>正在合成…';
+    genBtn.style.opacity=".6";genBtn.style.pointerEvents="none";
+    var msgs=["切分文本…","调用 TTS 引擎…","合成「"+curVoice+"」音色…","生成波形…"],mi=0;
+    var iv=setInterval(function(){mi++;if(mi<msgs.length)showToast(msgs[mi]);},620);
+    showToast(msgs[0]);
+    setTimeout(function(){
+      clearInterval(iv);
+      genBtn.style.opacity="1";genBtn.style.pointerEvents="auto";
+      acStatus.className="stt ok";acStatus.innerHTML='<span class="d"></span>合成成功';
+      var secs=Math.max(3,Math.round(txt.length/5.2));
+      $("#dur").textContent="00:"+("0"+Math.min(59,secs)).slice(-2);
+      prog=0;setProgress(0);syncMeta();
+      showToast("配音生成完成 · 已计入成本看板");
+    },2400);
+  });
+
+  /* init */
+  recalc();syncMeta();
+})();
+</script>
+</body>
+</html>

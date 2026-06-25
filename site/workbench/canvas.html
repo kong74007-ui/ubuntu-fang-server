@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI 工作台 · 创意画布</title>
+<link rel="icon" href="assets/logo_sparrow.png">
+<link rel="stylesheet" href="shell.css">
+<style>
+  /* 这里可加本页专属 CSS（不要重定义 shell.css 已有的通用类） */
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(14px);background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 18px;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;box-shadow:0 16px 44px rgba(0,0,0,.5);z-index:60;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* 三栏画布布局：左工具条 / 中画布 / 右属性面板 */
+  .cv-stage{display:grid;grid-template-columns:64px 1fr var(--inspector);min-height:0;min-width:0;height:100%;}
+
+  /* ---------- 左工具条 ---------- */
+  .cv-tools{background:var(--surface-2);border-right:1px solid var(--line-soft);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:6px;}
+  .ctool{width:46px;height:46px;border-radius:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--txt-dim);background:transparent;border:1px solid transparent;transition:.15s;position:relative;}
+  .ctool svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7;}
+  .ctool .tl{font-size:9px;letter-spacing:.2px;}
+  .ctool:hover{color:var(--txt);background:rgba(255,255,255,.04);border-color:var(--line-soft);}
+  .ctool.on{color:var(--gold);background:rgba(231,178,76,.08);border-color:rgba(231,178,76,.28);}
+  .cv-tools .div{width:30px;height:1px;background:var(--line-soft);margin:4px 0;}
+
+  /* ---------- 中：画布工作区 ---------- */
+  .cv-work{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);}
+  /* 画布顶部小工具栏（缩放/模板/对齐快捷） */
+  .cv-bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-soft);background:var(--panel);flex-wrap:wrap;}
+  .cv-bar .cbtn{font-size:12px;color:var(--txt-dim);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 11px;display:flex;align-items:center;gap:6px;transition:.15s;cursor:pointer;}
+  .cv-bar .cbtn:hover{border-color:var(--line-strong);color:var(--txt);}
+  .cv-bar .cbtn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;}
+  .cv-bar .cbtn.gold{color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));border-color:transparent;font-weight:700;}
+  .cv-bar .zoom{display:flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:2px;}
+  .cv-bar .zoom b{font-family:var(--mono);font-size:11.5px;color:var(--txt-dim);min-width:42px;text-align:center;}
+  .cv-bar .zoom button{width:24px;height:24px;border-radius:6px;color:var(--txt-dim);font-size:15px;line-height:1;}
+  .cv-bar .zoom button:hover{background:rgba(255,255,255,.05);color:var(--txt);}
+  .cv-bar .gap{flex:1;}
+  .cv-bar .nm{font-size:13px;font-weight:700;color:var(--txt);display:flex;align-items:center;gap:8px;}
+  .cv-bar .nm .ed{font-size:11px;color:var(--txt-faint);font-weight:500;}
+
+  /* 模板抽屉 */
+  .cv-templates{display:flex;gap:9px;padding:11px 16px;border-bottom:1px solid var(--line-soft);background:var(--surface-2);overflow-x:auto;}
+  .ctpl{flex:0 0 auto;display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:7px 12px 7px 8px;cursor:pointer;transition:.15s;}
+  .ctpl:hover{border-color:var(--gold);transform:translateY(-2px);}
+  .ctpl .mn{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line-soft);font-size:15px;flex:0 0 auto;}
+  .ctpl .tt{font-size:12px;font-weight:600;color:var(--txt);white-space:nowrap;}
+  .ctpl .ts{font-size:10px;color:var(--txt-faint);margin-top:1px;white-space:nowrap;}
+
+  /* 画布外圈（深色网格背景 = .panel-card 改造） */
+  .cv-canvas-wrap{flex:1;min-height:0;overflow:auto;padding:24px;}
+  .cv-canvas{position:relative;width:1180px;height:760px;margin:0 auto;border-radius:16px;
+    background-color:#070b13;
+    background-image:
+      linear-gradient(rgba(45,212,191,.045) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(45,212,191,.045) 1px,transparent 1px),
+      linear-gradient(rgba(231,178,76,.06) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(231,178,76,.06) 1px,transparent 1px);
+    background-size:28px 28px,28px 28px,140px 140px,140px 140px;
+    border:1px solid var(--line);box-shadow:inset 0 0 0 1px rgba(255,255,255,.015),0 24px 60px rgba(0,0,0,.5);
+    transform-origin:top center;}
+  .cv-canvas::after{content:"情绪板 · MOODBOARD";position:absolute;left:18px;bottom:14px;font-size:10.5px;letter-spacing:2px;color:var(--txt-faint);font-family:var(--mono);opacity:.55;pointer-events:none;}
+
+  /* 画布上的素材卡（absolute 摆位 + 可拖拽） */
+  .citem{position:absolute;cursor:grab;border-radius:12px;overflow:hidden;border:1px solid var(--line-strong);background:var(--panel);box-shadow:0 12px 30px rgba(0,0,0,.45);transition:box-shadow .15s,border-color .15s;user-select:none;}
+  .citem:hover{border-color:var(--gold-soft);box-shadow:0 16px 40px rgba(0,0,0,.55);}
+  .citem.sel{border-color:var(--gold);box-shadow:0 0 0 2px rgba(231,178,76,.4),0 16px 44px rgba(0,0,0,.6);z-index:30;}
+  .citem.drag{cursor:grabbing;z-index:40;}
+  .citem img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;}
+  .citem .cap{position:absolute;left:0;right:0;bottom:0;font-size:10.5px;color:#e9f0fa;padding:14px 9px 7px;background:linear-gradient(transparent,rgba(5,8,15,.86));pointer-events:none;}
+  /* 选中时四角控制点（纯装饰，原型） */
+  .citem.sel::before,.citem.sel::after{content:"";position:absolute;width:9px;height:9px;border-radius:50%;background:var(--gold);border:1.5px solid #0a0e16;}
+  .citem.sel::before{top:-5px;left:-5px;}
+  .citem.sel::after{bottom:-5px;right:-5px;}
+
+  /* 文字 / 形状 类素材 */
+  .citem.text{background:transparent;border-style:dashed;border-color:var(--line-strong);box-shadow:none;display:grid;place-items:center;padding:10px 16px;}
+  .citem.text:hover{background:rgba(255,255,255,.02);}
+  .citem.text span{font-weight:800;line-height:1.2;text-align:center;}
+  .citem.shape{border:none;box-shadow:0 10px 26px rgba(0,0,0,.4);}
+  .citem.note{background:linear-gradient(150deg,#1a1408,#221a08);border-color:rgba(231,178,76,.32);display:flex;align-items:center;gap:8px;padding:0 14px;box-shadow:0 10px 26px rgba(0,0,0,.4);}
+  .citem.note .dot{width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold);flex:0 0 auto;}
+  .citem.note span{font-size:12px;color:var(--gold-soft);font-weight:600;}
+
+  /* ---------- 右属性面板 ---------- */
+  .cv-insp{background:var(--surface-2);border-left:1px solid var(--line-soft);overflow-y:auto;padding:16px;min-width:0;}
+  .ih{font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--txt-dim);margin:2px 0 12px;display:flex;align-items:center;gap:8px;}
+  .ih .bar{width:3px;height:13px;border-radius:2px;background:var(--gold);}
+  .ih .cnt{margin-left:auto;font-size:11px;color:var(--txt-faint);font-weight:500;letter-spacing:0;text-transform:none;}
+
+  /* 图层列表 */
+  .layers{display:flex;flex-direction:column;gap:6px;margin-bottom:18px;}
+  .lyr{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;border:1px solid var(--line-soft);background:var(--panel);cursor:pointer;transition:.13s;}
+  .lyr:hover{border-color:var(--line-strong);}
+  .lyr.sel{border-color:var(--gold);background:rgba(231,178,76,.06);}
+  .lyr .lic{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--line-soft);font-size:13px;flex:0 0 auto;}
+  .lyr .lname{flex:1;min-width:0;font-size:12.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .lyr .lname .lk{display:block;font-size:10px;color:var(--txt-faint);font-family:var(--mono);margin-top:1px;}
+  .lyr .eye{color:var(--txt-faint);}
+  .lyr .eye svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.6;}
+  .lyr:hover .eye,.lyr.sel .eye{color:var(--txt-dim);}
+
+  /* 对齐工具 */
+  .align-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:6px;}
+  .abtn{height:38px;border-radius:9px;border:1px solid var(--line-soft);background:var(--panel);display:grid;place-items:center;color:var(--txt-dim);transition:.13s;cursor:pointer;}
+  .abtn:hover{border-color:var(--gold);color:var(--txt);background:rgba(231,178,76,.05);}
+  .abtn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6;}
+  .akv{display:flex;gap:8px;margin-bottom:14px;}
+  .akv .f{flex:1;}
+  .akv .f label{font-size:10px;color:var(--txt-faint);letter-spacing:.4px;display:block;margin-bottom:4px;}
+  .akv .f .iv{display:flex;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:0 9px;height:34px;}
+  .akv .f .iv b{font-family:var(--mono);font-size:13px;color:var(--txt);}
+  .akv .f .iv .u{font-size:10px;color:var(--txt-faint);margin-left:auto;}
+
+  /* 属性小标题 */
+  .isub{font-size:10.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--txt-faint);margin:4px 0 9px;}
+  .opac{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+  .opac input[type=range]{flex:1;accent-color:var(--gold);}
+  .opac b{font-family:var(--mono);font-size:12px;color:var(--txt-dim);min-width:38px;text-align:right;}
+
+  .empty-pick{text-align:center;padding:30px 14px;color:var(--txt-faint);font-size:12px;line-height:1.6;border:1px dashed var(--line-soft);border-radius:11px;}
+  .empty-pick .ei{font-size:26px;display:block;margin-bottom:8px;opacity:.6;}
+
+  .insp-foot{margin-top:8px;display:flex;gap:8px;}
+  .insp-foot .ff{flex:1;font-size:12.5px;font-weight:700;text-align:center;padding:10px;border-radius:10px;cursor:pointer;transition:.15s;}
+  .insp-foot .ff.gold{color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));}
+  .insp-foot .ff.gold:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(231,178,76,.3);}
+  .insp-foot .ff.ghost{color:var(--txt-dim);border:1px solid var(--line);background:var(--surface);}
+  .insp-foot .ff.ghost:hover{border-color:var(--line-strong);color:var(--txt);}
+
+  @media (max-width:1080px){.cv-stage{grid-template-columns:56px 1fr 320px;}}
+  @media (max-width:900px){.cv-stage{display:block;height:auto;}.cv-tools{flex-direction:row;border-right:0;border-bottom:1px solid var(--line-soft);overflow-x:auto;}.cv-insp{border-left:0;border-top:1px solid var(--line-soft);}.cv-canvas{width:100%;min-width:680px;}}
+</style>
+<script src="auth-guard.js"></script>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"><img src="assets/logo_sparrow.png" alt="黄雀"></div>
+    <a class="navbtn" href="inspiration"><svg viewBox="0 0 24 24"><path d="M12 3l2.3 5.3 5.7.5-4.3 3.8 1.3 5.6L12 20.3 7 18l1.3-5.6L4 8.6l5.7-.5z"/></svg><span class="lb">灵感</span></a>
+    <a class="navbtn" href="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
+    <a class="navbtn" href="leads"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
+    <a class="navbtn" href="banana"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
+    <a class="navbtn" href="script"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span class="lb">编导</span></a>
+    <a class="navbtn" href="audio"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg><span class="lb">音频</span></a>
+    <a class="navbtn active" href="canvas"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg><span class="lb">画布</span></a>
+    <a class="navbtn" href="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
+    <a class="navbtn" href="assets"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
+    <a class="navbtn" href="cost"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
+    <div class="spacer"></div>
+    <a class="pts" href="recharge"><b class="mono">340</b><span>剩余点数</span></a>
+    <a class="navbtn" href="/"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="title">创意画布 <span class="sub">/ 自由拼版 · 情绪板 · 灵感速搭</span></div>
+      <div class="spacer"></div>
+      <div class="client-chip"><span class="k">当前客户</span><span class="v">仙颜美容·示例</span><span class="ar">▾</span></div>
+      <a class="tbtn" id="btnInspire" href="inspiration"><svg viewBox="0 0 24 24"><path d="M12 3l2.3 5.3 5.7.5-4.3 3.8 1.3 5.6L12 20.3 7 18l1.3-5.6L4 8.6l5.7-.5z"/></svg>灵感库取素材</a>
+      <a class="tbtn" id="btnToBanana" href="banana"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>导出去作图</a>
+    </header>
+
+    <div class="page" style="overflow:hidden;">
+      <div class="cv-stage">
+
+        <!-- ============ 左工具条 ============ -->
+        <div class="cv-tools" id="tools">
+          <button class="ctool on" data-tool="select" title="选择/移动"><svg viewBox="0 0 24 24"><path d="M5 3l15 7-6 2-2 6z"/></svg><span class="tl">选择</span></button>
+          <div class="div"></div>
+          <button class="ctool" data-tool="image" title="添加图片"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="tl">图片</span></button>
+          <button class="ctool" data-tool="text" title="添加文字"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg><span class="tl">文字</span></button>
+          <button class="ctool" data-tool="shape" title="添加形状"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="9" height="9" rx="1"/><circle cx="16" cy="16" r="4"/></svg><span class="tl">形状</span></button>
+          <button class="ctool" data-tool="note" title="便签/标注"><svg viewBox="0 0 24 24"><path d="M4 5h16v10l-5 5H4z"/><path d="M14 20v-5h5"/></svg><span class="tl">标注</span></button>
+          <div class="div"></div>
+          <button class="ctool" data-tool="upload" title="本地上传"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 16v4h14v-4"/></svg><span class="tl">上传</span></button>
+        </div>
+
+        <!-- ============ 中：画布工作区 ============ -->
+        <div class="cv-work">
+          <!-- 画布顶栏 -->
+          <div class="cv-bar">
+            <div class="nm">仙颜·秋季焕肤情绪板 <span class="ed">· 自动保存于 2 分钟前</span></div>
+            <div class="gap"></div>
+            <button class="cbtn" id="aLeft" title="左对齐"><svg viewBox="0 0 24 24"><path d="M4 4v16M8 7h10M8 12h6M8 17h12"/></svg>对齐</button>
+            <button class="cbtn" id="aDist" title="均匀分布"><svg viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M9 8v8M15 8v8"/></svg>分布</button>
+            <div class="zoom"><button id="zOut">−</button><b id="zVal">100%</b><button id="zIn">+</button></div>
+            <button class="cbtn gold" id="btnExport"><svg viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M5 20h14"/></svg>导出拼版</button>
+          </div>
+
+          <!-- 模板抽屉 -->
+          <div class="cv-templates" id="tpls">
+            <div class="ctpl" data-t="美业活动"><div class="mn">💆</div><div><div class="tt">美业活动情绪板</div><div class="ts">封面 + 卖点 + 调性</div></div></div>
+            <div class="ctpl" data-t="品牌主视觉"><div class="mn">🪶</div><div><div class="tt">品牌主视觉</div><div class="ts">VI 色板 + 主形象</div></div></div>
+            <div class="ctpl" data-t="节日营销"><div class="mn">🏮</div><div><div class="tt">节日营销拼版</div><div class="ts">节点 + 优惠 + 氛围</div></div></div>
+            <div class="ctpl" data-t="创意漫画"><div class="mn">💥</div><div><div class="tt">创意/漫画板</div><div class="ts">分镜灵感速搭</div></div></div>
+            <div class="ctpl" data-t="空白画布"><div class="mn">＋</div><div><div class="tt">空白画布</div><div class="ts">从零自由拼版</div></div></div>
+          </div>
+
+          <!-- 画布外圈 + 深色网格 -->
+          <div class="cv-canvas-wrap">
+            <div class="cv-canvas" id="canvas">
+
+              <div class="citem sel" data-id="L1" data-name="封面 · 科技焕肤" style="left:60px;top:54px;width:236px;height:318px;">
+                <img src="../assets/meiye_poster.webp" alt="">
+                <div class="cap">封面 · 科技焕肤 逆龄新生</div>
+              </div>
+
+              <div class="citem" data-id="L2" data-name="品牌主视觉" style="left:332px;top:90px;width:300px;height:200px;">
+                <img src="../assets/huangque_poster.webp" alt="">
+                <div class="cap">品牌主视觉 · 黄雀 AI</div>
+              </div>
+
+              <div class="citem" data-id="L3" data-name="节日海报 · 中秋" style="left:678px;top:48px;width:210px;height:300px;">
+                <img src="../assets/midautumn.webp" alt="">
+                <div class="cap">节日活动 · 中秋特惠</div>
+              </div>
+
+              <div class="citem" data-id="L4" data-name="创意/漫画" style="left:910px;top:120px;width:228px;height:300px;">
+                <img src="../assets/comic.webp" alt="">
+                <div class="cap">创意 · 漫画风分镜</div>
+              </div>
+
+              <div class="citem text" data-id="L5" data-name="主标题文字" style="left:96px;top:412px;width:300px;height:96px;">
+                <span style="font-size:28px;color:#f2c869;">秋季焕肤<br>逆龄新生计划</span>
+              </div>
+
+              <div class="citem shape" data-id="L6" data-name="形状 · 金色色块" style="left:430px;top:330px;width:150px;height:150px;border-radius:18px;background:linear-gradient(135deg,#f2c869,#cf8a3e);"></div>
+
+              <div class="citem shape" data-id="L7" data-name="形状 · 青色圆" style="left:600px;top:392px;width:118px;height:118px;border-radius:50%;background:radial-gradient(circle at 32% 30%,#2dd4bf,#0f7c72);"></div>
+
+              <div class="citem note" data-id="L8" data-name="标注 · 调性" style="left:742px;top:392px;width:206px;height:46px;">
+                <span class="dot"></span><span>调性：高端 / 冷色科技 / 留白</span>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ 右属性面板 ============ -->
+        <div class="cv-insp">
+          <div class="ih"><span class="bar"></span>图层 <span class="cnt" id="lyrCnt">8 项</span></div>
+          <div class="layers" id="layers"><!-- JS 注入 --></div>
+
+          <div class="ih"><span class="bar"></span>属性 · 对齐 <span class="cnt" id="selName">封面 · 科技焕肤</span></div>
+
+          <div class="isub">坐标 / 尺寸</div>
+          <div class="akv">
+            <div class="f"><label>X</label><div class="iv"><b id="pvX">60</b><span class="u">px</span></div></div>
+            <div class="f"><label>Y</label><div class="iv"><b id="pvY">54</b><span class="u">px</span></div></div>
+          </div>
+          <div class="akv">
+            <div class="f"><label>宽 W</label><div class="iv"><b id="pvW">236</b><span class="u">px</span></div></div>
+            <div class="f"><label>高 H</label><div class="iv"><b id="pvH">318</b><span class="u">px</span></div></div>
+          </div>
+
+          <div class="isub">对齐 / 分布</div>
+          <div class="align-grid">
+            <button class="abtn" data-a="左对齐" title="左对齐"><svg viewBox="0 0 24 24"><path d="M4 4v16M8 8h11M8 16h7"/></svg></button>
+            <button class="abtn" data-a="水平居中" title="水平居中"><svg viewBox="0 0 24 24"><path d="M12 4v16M6 9h12M8 15h8"/></svg></button>
+            <button class="abtn" data-a="右对齐" title="右对齐"><svg viewBox="0 0 24 24"><path d="M20 4v16M5 8h11M9 16h7"/></svg></button>
+            <button class="abtn" data-a="顶对齐" title="顶对齐"><svg viewBox="0 0 24 24"><path d="M4 4h16M8 8v11M16 8v7"/></svg></button>
+            <button class="abtn" data-a="垂直居中" title="垂直居中"><svg viewBox="0 0 24 24"><path d="M4 12h16M9 6v12M15 8v8"/></svg></button>
+            <button class="abtn" data-a="底对齐" title="底对齐"><svg viewBox="0 0 24 24"><path d="M4 20h16M8 5v11M16 9v7"/></svg></button>
+          </div>
+
+          <div class="isub">不透明度</div>
+          <div class="opac"><input type="range" id="opac" min="0" max="100" value="100"><b id="opacV">100%</b></div>
+
+          <div class="isub">层级</div>
+          <div class="align-grid" style="grid-template-columns:repeat(2,1fr);">
+            <button class="abtn" data-z="置顶" style="font-size:11px;font-weight:600;">↑ 置顶</button>
+            <button class="abtn" data-z="置底" style="font-size:11px;font-weight:600;">↓ 置底</button>
+          </div>
+
+          <div class="insp-foot">
+            <div class="ff ghost" id="btnDup">复制图层</div>
+            <div class="ff gold" id="btnApply">应用并出图</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="tasks.js"></script>
+<script>
+(function(){
+  "use strict";
+  var toast=document.getElementById("toast");
+  function showToast(t){ toast.textContent=t; toast.classList.add("show"); clearTimeout(showToast._t); showToast._t=setTimeout(function(){toast.classList.remove("show");},2200); }
+
+  var canvas=document.getElementById("canvas");
+  var items=function(){ return Array.prototype.slice.call(canvas.querySelectorAll(".citem")); };
+  var layersBox=document.getElementById("layers");
+  var selName=document.getElementById("selName");
+  var lyrCnt=document.getElementById("lyrCnt");
+  var sel=null;
+
+  var ICONS={image:"🖼️",text:"🔤",shape:"⬛",note:"📌"};
+  function typeOf(el){ if(el.classList.contains("text"))return"text"; if(el.classList.contains("note"))return"note"; if(el.classList.contains("shape"))return"shape"; return"image"; }
+
+  // ---- 选中态：同步属性面板 + 图层高亮 ----
+  function select(el,opts){
+    items().forEach(function(i){ i.classList.remove("sel"); });
+    sel=el; if(!el){ return; }
+    el.classList.add("sel");
+    var name=el.getAttribute("data-name")||"图层";
+    selName.textContent=name;
+    document.getElementById("pvX").textContent=Math.round(parseFloat(el.style.left)||0);
+    document.getElementById("pvY").textContent=Math.round(parseFloat(el.style.top)||0);
+    document.getElementById("pvW").textContent=Math.round(el.offsetWidth);
+    document.getElementById("pvH").textContent=Math.round(el.offsetHeight);
+    var op=Math.round((parseFloat(el.style.opacity||"1"))*100);
+    document.getElementById("opac").value=op; document.getElementById("opacV").textContent=op+"%";
+    // 图层列表高亮
+    Array.prototype.forEach.call(layersBox.children,function(r){
+      r.classList.toggle("sel", r.getAttribute("data-ref")===el.getAttribute("data-id"));
+    });
+    if(opts&&opts.toast) showToast("已选中「"+name+"」");
+  }
+
+  // ---- 渲染图层列表（自顶向下=画布上层在前）----
+  function renderLayers(){
+    var arr=items().slice().reverse();
+    layersBox.innerHTML="";
+    arr.forEach(function(el){
+      var t=typeOf(el);
+      var row=document.createElement("div");
+      row.className="lyr"+(el===sel?" sel":"");
+      row.setAttribute("data-ref",el.getAttribute("data-id"));
+      row.innerHTML='<div class="lic">'+(ICONS[t]||"🖼️")+'</div>'+
+        '<div class="lname">'+(el.getAttribute("data-name")||"图层")+
+        '<span class="lk">'+el.getAttribute("data-id")+' · '+t+'</span></div>'+
+        '<span class="eye"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg></span>';
+      row.addEventListener("click",function(e){
+        if(e.target.closest(".eye")){ el.style.visibility=(el.style.visibility==="hidden")?"":"hidden"; showToast("切换图层可见性"); e.stopPropagation(); return; }
+        select(el,{toast:true});
+      });
+      layersBox.appendChild(row);
+    });
+    lyrCnt.textContent=arr.length+" 项";
+  }
+
+  // ---- 拖拽（pointer 事件，约束在画布内）----
+  var dragEl=null,offX=0,offY=0;
+  canvas.addEventListener("pointerdown",function(e){
+    var it=e.target.closest(".citem"); if(!it)return;
+    select(it); dragEl=it; it.classList.add("drag");
+    var r=it.getBoundingClientRect(), cr=canvas.getBoundingClientRect();
+    var z=zoom/100;
+    offX=(e.clientX-r.left)/z; offY=(e.clientY-r.top)/z;
+    it.setPointerCapture&&it.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove",function(e){
+    if(!dragEl)return;
+    var cr=canvas.getBoundingClientRect(), z=zoom/100;
+    var x=(e.clientX-cr.left)/z-offX, y=(e.clientY-cr.top)/z-offY;
+    x=Math.max(0,Math.min(x,canvas.offsetWidth-dragEl.offsetWidth));
+    y=Math.max(0,Math.min(y,canvas.offsetHeight-dragEl.offsetHeight));
+    dragEl.style.left=Math.round(x)+"px"; dragEl.style.top=Math.round(y)+"px";
+    document.getElementById("pvX").textContent=Math.round(x);
+    document.getElementById("pvY").textContent=Math.round(y);
+  });
+  function endDrag(){ if(dragEl){ dragEl.classList.remove("drag"); dragEl=null; } }
+  canvas.addEventListener("pointerup",endDrag);
+  canvas.addEventListener("pointercancel",endDrag);
+
+  // ---- 左工具条 ----
+  var newCnt=8;
+  document.querySelectorAll("#tools .ctool").forEach(function(btn){
+    btn.addEventListener("click",function(){
+      var tool=btn.getAttribute("data-tool");
+      if(tool==="select"){
+        document.querySelectorAll("#tools .ctool").forEach(function(b){b.classList.remove("on");});
+        btn.classList.add("on"); showToast("选择/移动工具：拖动画布上的素材卡"); return;
+      }
+      // 其它工具：在画布上新增一个占位素材（原型）
+      newCnt++;
+      var id="L"+newCnt;
+      var el=document.createElement("div");
+      var imgs=["meiye_poster","huangque_poster","midautumn","comic"];
+      var x=80+Math.round(Math.random()*420), y=120+Math.round(Math.random()*260);
+      if(tool==="text"){
+        el.className="citem text"; el.style.cssText="left:"+x+"px;top:"+y+"px;width:240px;height:80px;";
+        el.setAttribute("data-name","新文字图层"); el.innerHTML='<span style="font-size:22px;color:#eaf1fa;">双击编辑文字</span>';
+        showToast("已添加文字图层");
+      }else if(tool==="shape"){
+        el.className="citem shape"; el.style.cssText="left:"+x+"px;top:"+y+"px;width:130px;height:130px;border-radius:16px;background:linear-gradient(135deg,#2dd4bf,#0f7c72);";
+        el.setAttribute("data-name","新形状"); showToast("已添加形状");
+      }else if(tool==="note"){
+        el.className="citem note"; el.style.cssText="left:"+x+"px;top:"+y+"px;width:200px;height:46px;";
+        el.setAttribute("data-name","新标注"); el.innerHTML='<span class="dot"></span><span>双击写下灵感标注</span>';
+        showToast("已添加标注");
+      }else if(tool==="upload"){
+        showToast("本地上传：原型仅演示，已放入示例素材");
+        var im=imgs[Math.floor(Math.random()*imgs.length)];
+        el.className="citem"; el.style.cssText="left:"+x+"px;top:"+y+"px;width:200px;height:268px;";
+        el.setAttribute("data-name","上传素材"); el.innerHTML='<img src="../assets/'+im+'.webp" alt=""><div class="cap">本地上传 · 示例</div>';
+      }else{ // image
+        var im2=imgs[Math.floor(Math.random()*imgs.length)];
+        el.className="citem"; el.style.cssText="left:"+x+"px;top:"+y+"px;width:200px;height:268px;";
+        el.setAttribute("data-name","图片素材"); el.innerHTML='<img src="../assets/'+im2+'.webp" alt=""><div class="cap">图片素材 · 示例</div>';
+        showToast("已添加图片素材");
+      }
+      el.setAttribute("data-id",id);
+      canvas.appendChild(el); renderLayers(); select(el);
+    });
+  });
+
+  // ---- 模板抽屉 ----
+  document.querySelectorAll("#tpls .ctpl").forEach(function(t){
+    t.addEventListener("click",function(){ showToast("套用模板「"+t.getAttribute("data-t")+"」→ 已铺排到画布（原型）"); });
+  });
+
+  // ---- 缩放 ----
+  var zoom=100;
+  function applyZoom(){ canvas.style.transform="scale("+(zoom/100)+")"; document.getElementById("zVal").textContent=zoom+"%"; }
+  document.getElementById("zIn").addEventListener("click",function(){ zoom=Math.min(160,zoom+10); applyZoom(); });
+  document.getElementById("zOut").addEventListener("click",function(){ zoom=Math.max(50,zoom-10); applyZoom(); });
+
+  // ---- 对齐 / 分布按钮（原型提示）----
+  document.querySelectorAll(".abtn[data-a]").forEach(function(b){
+    b.addEventListener("click",function(){ showToast(sel?("已"+b.getAttribute("data-a")+"：「"+(sel.getAttribute("data-name"))+"」"):"请先选中一个图层"); });
+  });
+  document.querySelectorAll(".abtn[data-z]").forEach(function(b){
+    b.addEventListener("click",function(){
+      if(!sel){ showToast("请先选中一个图层"); return; }
+      if(b.getAttribute("data-z")==="置顶"){ canvas.appendChild(sel); } else { canvas.insertBefore(sel,canvas.firstChild); }
+      renderLayers(); select(sel); showToast("已"+b.getAttribute("data-z"));
+    });
+  });
+  document.getElementById("aLeft").addEventListener("click",function(){ showToast("已按左边缘对齐选中素材（原型）"); });
+  document.getElementById("aDist").addEventListener("click",function(){ showToast("已水平均匀分布（原型）"); });
+
+  // ---- 不透明度 ----
+  var opac=document.getElementById("opac");
+  opac.addEventListener("input",function(){
+    document.getElementById("opacV").textContent=opac.value+"%";
+    if(sel) sel.style.opacity=(opac.value/100);
+  });
+
+  // ---- 复制 / 应用 ----
+  document.getElementById("btnDup").addEventListener("click",function(){
+    if(!sel){ showToast("请先选中一个图层"); return; }
+    newCnt++; var c=sel.cloneNode(true); c.classList.remove("sel"); c.setAttribute("data-id","L"+newCnt);
+    c.setAttribute("data-name",(sel.getAttribute("data-name")||"图层")+" 副本");
+    c.style.left=((parseFloat(sel.style.left)||0)+24)+"px"; c.style.top=((parseFloat(sel.style.top)||0)+24)+"px";
+    canvas.appendChild(c); renderLayers(); select(c); showToast("已复制图层");
+  });
+  document.getElementById("btnApply").addEventListener("click",function(){
+    showToast("已将拼版传入作图工作台 · 即将生成成图");
+    setTimeout(function(){ location.href="banana"; },800);
+  });
+  document.getElementById("btnExport").addEventListener("click",function(){ showToast("已导出拼版图（原型）：moodboard_仙颜秋季.png"); });
+  document.getElementById("btnToBanana").addEventListener("click",function(e){ e.preventDefault(); showToast("把当前拼版作为参考图 → 进入作图"); setTimeout(function(){ location.href="banana"; },700); });
+  document.getElementById("btnInspire").addEventListener("click",function(e){ e.preventDefault(); showToast("打开灵感库挑选素材拖入画布"); setTimeout(function(){ location.href="inspiration"; },700); });
+
+  // ---- 点击空白取消选中 ----
+  document.querySelector(".cv-canvas-wrap").addEventListener("pointerdown",function(e){
+    if(e.target.classList.contains("cv-canvas")||e.target===this){ items().forEach(function(i){i.classList.remove("sel");}); Array.prototype.forEach.call(layersBox.children,function(r){r.classList.remove("sel");}); sel=null; }
+  });
+
+  // 初始化
+  renderLayers();
+  select(canvas.querySelector('.citem[data-id="L1"]'));
+})();
+</script>
+</body>
+</html>
