@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 黄雀 AI 工作台</title>
+<link rel="icon" href="assets/logo_sparrow.webp">
+<style>
+  :root{
+    --bg:#050811; --panel:#0d1320; --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.16);
+    --txt:#eaf0fb; --muted:#aeb8cc; --faint:#6f7a92;
+    --gold:#e7b24c; --gold2:#f4cd6f; --cyan:#35d6c6; --red:#ff5566; --green:#39d98a;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .page{min-height:100vh;display:grid;grid-template-columns:1.05fr .95fr}
+
+  /* ===== Left brand panel ===== */
+  .brandside{
+    position:relative;overflow:hidden;padding:54px 56px;display:flex;flex-direction:column;
+    background:
+      radial-gradient(700px 460px at 25% 70%, rgba(231,178,76,.18), transparent 60%),
+      radial-gradient(600px 420px at 80% 12%, rgba(53,214,198,.10), transparent 55%),
+      #060a14;
+    border-right:1px solid var(--line);
+  }
+  .brandside .logo{display:flex;align-items:center;gap:11px;font-weight:800;font-size:20px}
+  .brandside .logo img{width:34px;height:34px}
+  .brandside .logo b{color:var(--gold)}
+  .brandside .mid{margin-top:auto}
+  .brandside h1{font-size:46px;line-height:1.15;font-weight:900;letter-spacing:-.5px}
+  .brandside h1 b{color:var(--gold)}
+  .brandside .sub{margin-top:18px;font-size:15px;color:var(--muted);max-width:420px}
+  .brandside .stats{display:flex;gap:34px;margin-top:34px}
+  .brandside .stats .n{font-family:var(--mono);font-size:26px;font-weight:800;color:var(--gold2);line-height:1}
+  .brandside .stats .n.cyan{color:var(--cyan)}
+  .brandside .stats .l{font-size:12px;color:var(--faint);margin-top:6px}
+  .sparrow-glow{position:absolute;right:-60px;bottom:-40px;width:360px;opacity:.18;filter:drop-shadow(0 0 40px var(--gold))}
+  .brandside .copyright{margin-top:42px;font-size:12px;color:var(--faint)}
+
+  /* ===== Right login ===== */
+  .loginside{display:flex;align-items:center;justify-content:center;padding:40px 28px;
+    background:radial-gradient(600px 500px at 70% 20%, rgba(231,178,76,.06), transparent 60%);}
+  .card{
+    width:100%;max-width:392px;border:1px solid var(--line2);border-radius:20px;
+    background:linear-gradient(180deg,rgba(16,22,34,.95),rgba(10,15,25,.95));
+    box-shadow:0 30px 80px rgba(0,0,0,.5);padding:38px 34px;
+  }
+  .card .top{text-align:center;margin-bottom:26px}
+  .card .top img{width:40px;height:40px}
+  .card .top h2{font-size:21px;font-weight:850;margin-top:12px}
+  .card .top p{font-size:13px;color:var(--faint);margin-top:7px}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+  .field input{
+    width:100%;background:#0a1018;border:1px solid var(--line2);border-radius:11px;
+    padding:13px 14px;color:var(--txt);font-size:14.5px;transition:.15s;
+  }
+  .field input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(231,178,76,.12)}
+  .field input::placeholder{color:#54607a}
+  .row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;margin:-4px 0 18px}
+  .row a{color:var(--faint)}
+  .row a:hover{color:var(--cyan)}
+  .row label{display:flex;align-items:center;gap:7px;color:var(--faint);cursor:pointer}
+  .submit{
+    width:100%;border:none;cursor:pointer;border-radius:12px;padding:14px;font-size:15.5px;font-weight:800;
+    color:#0a0e16;background:linear-gradient(135deg,var(--gold2),var(--gold));
+    box-shadow:0 10px 26px rgba(231,178,76,.28);transition:.16s;
+  }
+  .submit:hover{transform:translateY(-1px)}
+  .submit:disabled{opacity:.6;transform:none;cursor:default}
+  .msg{min-height:18px;margin-top:13px;font-size:12.5px;text-align:center}
+  .msg.err{color:var(--red)}
+  .msg.ok{color:var(--green)}
+  .alt{margin-top:20px;text-align:center;font-size:13px;color:var(--faint)}
+  .alt a{color:var(--gold2)}
+  .alt a:hover{text-decoration:underline}
+
+  @media (max-width:860px){
+    .page{grid-template-columns:1fr}
+    .brandside{display:none}
+    .loginside{min-height:100vh}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <!-- Brand panel -->
+  <aside class="brandside">
+    <a class="logo" href="index.html"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀 <b>AI</b></a>
+    <img class="sparrow-glow" src="assets/logo_sparrow.webp" alt="">
+    <div class="mid">
+      <h1>评论区获客，<br><b>AI 内容</b>成交。</h1>
+      <p class="sub">登录进入你的获客与内容工作台：关键词扒精准客户、AI 作图、数字人口播，一台搞定。</p>
+      <div class="stats">
+        <div><div class="n">1,770+</div><div class="l">采集评论</div></div>
+        <div><div class="n cyan">3,168</div><div class="l">账号线索池</div></div>
+        <div><div class="n">100+</div><div class="l">精准名单</div></div>
+        <div><div class="n cyan">80%</div><div class="l">回复率</div></div>
+      </div>
+    </div>
+    <div class="copyright">© 2026 广州黄雀传媒有限公司 · 粤ICP备2025447525号-2</div>
+  </aside>
+
+  <!-- Login card -->
+  <main class="loginside">
+    <form class="card" id="loginForm" autocomplete="on">
+      <div class="top">
+        <img src="assets/logo_sparrow.webp" alt="黄雀">
+        <h2>黄雀 AI 工作台</h2>
+        <p>登录账号，进入获客与内容生产</p>
+      </div>
+      <div class="field">
+        <label for="username">账号</label>
+        <input id="username" name="username" type="text" placeholder="手机号 / 用户名" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" placeholder="请输入密码" autocomplete="current-password" required>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="remember" checked> 记住我</label>
+        <a href="#">忘记密码？</a>
+      </div>
+      <button class="submit" type="submit" id="submitBtn">登 录</button>
+      <div class="msg" id="msg"></div>
+      <div class="alt">还没有账号？ <a href="#" id="toRegister">注册账号</a> &nbsp;·&nbsp; <a href="workbench/leads.html">团队口令登录</a></div>
+    </form>
+  </main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var f=document.getElementById("loginForm");
+  var msg=document.getElementById("msg");
+  var btn=document.getElementById("submitBtn");
+  function setMsg(t,kind){ msg.textContent=t||""; msg.className="msg"+(kind?(" "+kind):""); }
+
+  // 若已登录则直接进工作台
+  try{ if(localStorage.getItem("hq_token")){ /* 可选：自动跳转，留给后端校验后再开 */ } }catch(e){}
+
+  f.addEventListener("submit", function(e){
+    e.preventDefault();
+    var username=document.getElementById("username").value.trim();
+    var password=document.getElementById("password").value;
+    if(!username||!password){ setMsg("请填写账号和密码","err"); return; }
+    btn.disabled=true; setMsg("登录中…");
+    fetch("/api/auth/login",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:username,password:password})
+    }).then(function(r){
+      if(r.status===404){ throw new Error("__nobackend__"); }
+      return r.json().then(function(d){ return {ok:r.ok,d:d}; });
+    }).then(function(res){
+      if(res.ok && res.d && res.d.token){
+        try{ localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
+        setMsg("登录成功，正在进入…","ok");
+        location.href="workbench/dashboard.html";
+      }else{
+        btn.disabled=false; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
+      }
+    }).catch(function(err){
+      btn.disabled=false;
+      if(err&&err.message==="__nobackend__"){ setMsg("登录服务即将上线（账号体系开发中）","err"); }
+      else{ setMsg("网络错误，请重试","err"); }
+    });
+  });
+
+  document.getElementById("toRegister").addEventListener("click", function(e){
+    e.preventDefault(); setMsg("注册开放中，请联系管理员开通账号","ok");
+  });
+})();
+</script>
+</body>
+</html>
