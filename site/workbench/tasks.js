@@ -118,7 +118,7 @@
         // 在获客页点徽标不整页跳，只改 hash(同文档) → 触发 leads 的 hashchange 恢复
         el.addEventListener("click", function (ev) {
           try {
-            if (/leads\.html$/.test(location.pathname)) {
+            if (/leads$/.test(location.pathname)) {
               ev.preventDefault();
               var la = latestActive();
               location.hash = "task=" + (la ? la.id : "");
@@ -128,7 +128,7 @@
         });
       }
       var la2 = latestActive();
-      el.setAttribute("href", "leads.html#task=" + (la2 ? la2.id : ""));
+      el.setAttribute("href", "leads#task=" + (la2 ? la2.id : ""));
       var cnt = document.getElementById("hq-tasks-count");
       if (n > 0) {
         el.style.display = "";

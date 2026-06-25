@@ -90,7 +90,7 @@
 <div class="page">
   <!-- Brand panel -->
   <aside class="brandside">
-    <a class="logo" href="index.html"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀 <b>AI</b></a>
+    <a class="logo" href="/"><img src="assets/logo_sparrow.webp" alt="黄雀">黄雀 <b>AI</b></a>
     <img class="sparrow-glow" src="assets/logo_sparrow.webp" alt="">
     <div class="mid">
       <h1>评论区获客，<br><b>AI 内容</b>成交。</h1>
@@ -127,7 +127,7 @@
       </div>
       <button class="submit" type="submit" id="submitBtn">登 录</button>
       <div class="msg" id="msg"></div>
-      <div class="alt">还没有账号？ <a href="#" id="toRegister">注册账号</a> &nbsp;·&nbsp; <a href="workbench/leads.html">团队口令登录</a></div>
+      <div class="alt">还没有账号？ <a href="#" id="toRegister">注册账号</a> &nbsp;·&nbsp; <a href="workbench/leads">团队口令登录</a></div>
     </form>
   </main>
 </div>
@@ -160,7 +160,7 @@
         try{ localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
         setMsg("登录成功，正在进入…","ok");
         var rd=new URLSearchParams(location.search).get("redirect");
-        var dest=(rd && /^[a-zA-Z0-9_-]+\.html$/.test(rd)) ? rd : "dashboard.html";
+        var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : "dashboard";
         location.href="workbench/"+dest;
       }else{
         btn.disabled=false; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");

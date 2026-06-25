@@ -4,8 +4,8 @@
 (function () {
   try {
     if (!localStorage.getItem("hq_token")) {
-      var here = (location.pathname.split("/").pop() || "dashboard.html");
-      location.replace("../login.html?redirect=" + encodeURIComponent(here));
+      var here = (location.pathname.split("/").pop() || "dashboard");
+      location.replace("../login?redirect=" + encodeURIComponent(here));
     }
   } catch (e) { /* localStorage 不可用时不拦截，避免误锁 */ }
 })();
