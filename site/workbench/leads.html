@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI 工作台 · 关键词获客</title>
+<link rel="icon" href="assets/logo_sparrow.webp">
+<link rel="stylesheet" href="shell.css">
+<style>
+  .lead-wrap{padding:22px 26px 60px;max-width:1280px;}
+  .pw-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;font-size:12.5px;color:var(--txt-faint);}
+  .pw-bar input{background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:8px 11px;color:var(--txt);font-size:13px;width:200px;}
+  .pw-bar input:focus{outline:none;border-color:var(--cyan);}
+  .pw-bar .ok{color:var(--green);}
+  .kw-row{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px;}
+  .kw-input{flex:1;min-width:280px;display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line);border-radius:13px;padding:4px 6px 4px 16px;}
+  .kw-input input{flex:1;background:none;border:0;color:var(--txt);font-size:16px;padding:12px 0;}
+  .kw-input input:focus{outline:none;}
+  .go-btn{display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:800;color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));padding:0 24px;border-radius:11px;white-space:nowrap;transition:.15s;}
+  .go-btn:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(231,178,76,.3);}
+  .go-btn[disabled]{opacity:.55;transform:none;cursor:default;}
+  .cats{margin-bottom:8px;}
+  .cat{margin-bottom:12px;}
+  .cat .ct{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--gold);margin-bottom:8px;}
+  .kchip{display:inline-block;font-size:12.5px;color:var(--txt-dim);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 12px;margin:0 6px 6px 0;cursor:pointer;transition:.15s;}
+  .kchip:hover{border-color:var(--gold);color:var(--txt);}
+  .status{display:none;align-items:center;gap:10px;font-size:13.5px;color:var(--txt);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:16px 0;}
+  .status.show{display:flex;}
+  .status .spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .status.err{color:var(--red);border-color:rgba(255,85,102,.35);}
+  .results{display:none;}
+  .results.show{display:block;}
+  .statline{display:flex;flex-wrap:wrap;gap:18px;align-items:center;font-size:13.5px;color:var(--txt-dim);margin:18px 2px 14px;}
+  .statline b{color:var(--gold-soft);font-family:var(--mono);font-size:17px;}
+  .statline .hot b{color:var(--green);}
+  .related{margin:6px 0 16px;}
+  .related .rt{font-size:11.5px;color:var(--txt-faint);margin-bottom:8px;}
+  table.leads{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+  table.leads thead th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--txt-faint);padding:11px 14px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap;}
+  table.leads tbody td{padding:11px 14px;border-bottom:1px solid var(--line-soft);color:var(--txt-dim);vertical-align:top;}
+  table.leads tbody tr:last-child td{border-bottom:none;}
+  table.leads tbody tr:hover{background:rgba(45,212,191,.04);}
+  table.leads .nk a,table.leads .src a{color:var(--cyan);text-decoration:none;}
+  table.leads .nk a:hover,table.leads .src a:hover{text-decoration:underline;}
+  table.leads .need{color:var(--txt);max-width:420px;}
+  table.leads .idx{color:var(--txt-faint);font-family:var(--mono);}
+  .empty{text-align:center;padding:60px;color:var(--txt-faint);}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"><img src="assets/logo_sparrow.webp" alt="黄雀"></div>
+    <a class="navbtn" href="dashboard.html"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
+    <a class="navbtn active" href="leads.html"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
+    <a class="navbtn" href="banana.html"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
+    <a class="navbtn" href="video.html"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
+    <a class="navbtn" href="assets.html"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
+    <a class="navbtn" href="cost.html"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
+    <div class="spacer"></div>
+    <div class="pts"><b class="mono">340</b><span>剩余点数</span></div>
+    <a class="navbtn" href="../index.html"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="title">关键词获客 <span class="sub">/ 抖音 · 小红书评论区 → 精准客户名单</span></div>
+      <div class="spacer"></div>
+      <div class="client-chip"><span class="k">当前客户</span><span class="v">仙颜美容 · 示例</span><span class="ar">▾</span></div>
+      <a class="tbtn" href="dashboard.html"><svg viewBox="0 0 24 24"><path d="M3 12h7l2 5 4-12 2 7h3"/></svg>战报</a>
+    </header>
+
+    <div class="page">
+      <div class="lead-wrap">
+
+        <div class="pw-bar">
+          <span>访问口令</span>
+          <input type="password" id="pw" placeholder="输入团队口令" autocomplete="off">
+          <span id="pwState"></span>
+          <span style="margin-left:auto;color:var(--txt-faint)">关键词进 → 评论区扒 → 意图过滤 → 精准客户名单（带抖音号/属地/需求原话/主页）</span>
+        </div>
+
+        <div class="panel-card">
+          <div class="kw-row">
+            <div class="kw-input">
+              <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:var(--txt-faint);fill:none;stroke-width:2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+              <input id="kw" placeholder="输入行业关键词，如：美业获客 / 美容院拓客 / 皮肤管理">
+            </div>
+            <button class="go-btn" id="go">开始爬取 →</button>
+          </div>
+          <div class="cats" id="cats"><div style="color:var(--txt-faint);font-size:12px">加载推荐关键词…</div></div>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="results" id="results">
+          <div class="statline" id="statline"></div>
+          <div class="related" id="relatedBox" style="display:none">
+            <div class="rt">🔎 相关关键词 · 点一下继续挖</div>
+            <div id="related"></div>
+          </div>
+          <table class="leads">
+            <thead><tr><th>#</th><th>昵称</th><th>抖音号</th><th>属地</th><th>需求原话</th><th>来源视频</th></tr></thead>
+            <tbody id="tbl"></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  function $(id){return document.getElementById(id);}
+  function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+  function safeUrl(u){u=String(u||"");return /^https?:\/\//i.test(u)?u:"#";}
+
+  // ---- password (sessionStorage) ----
+  var pw=$("pw");
+  pw.value=sessionStorage.getItem("lead_pw")||"";
+  function syncPwState(){ $("pwState").innerHTML = pw.value? '<span class="ok">●</span>' : ''; }
+  pw.addEventListener("input",function(){sessionStorage.setItem("lead_pw",pw.value);syncPwState();});
+  syncPwState();
+
+  // ---- keyword suggestions ----
+  fetch("/api/keywords").then(function(r){return r.json();}).then(function(kw){
+    var box=$("cats");box.innerHTML="";
+    Object.keys(kw).forEach(function(cat){
+      var d=document.createElement("div");d.className="cat";
+      var t=document.createElement("div");t.className="ct";t.textContent=cat;d.appendChild(t);
+      (kw[cat]||[]).forEach(function(w){
+        var c=document.createElement("span");c.className="kchip";c.textContent=w;
+        c.onclick=function(){$("kw").value=w;$("kw").focus();};
+        d.appendChild(c);
+      });
+      box.appendChild(d);
+    });
+  }).catch(function(){ $("cats").innerHTML='<div style="color:var(--txt-faint);font-size:12px">推荐关键词加载失败（需在 huangquechuanmei.com 线上访问，接 /api/）</div>'; });
+
+  // ---- status ----
+  function setStatus(html,isErr){var s=$("status");s.className="status show"+(isErr?" err":"");s.innerHTML=html;}
+  function hideStatus(){$("status").className="status";}
+
+  // ---- submit + poll ----
+  var pollTimer=null;
+  function poll(id){
+    clearInterval(pollTimer);
+    pollTimer=setInterval(function(){
+      fetch("/api/job/"+id).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(j){
+        if(j.status==="queued"){setStatus('<span class="spin"></span>已排队（任务 #'+id+'），等待爬取…');}
+        else if(j.status==="running"){setStatus('<span class="spin"></span>爬取中（任务 #'+id+'）… 关键词热度高的会久一点，通常 1–6 分钟');}
+        else if(j.status==="done"){clearInterval(pollTimer);$("go").disabled=false;hideStatus();render(j.result||{});}
+        else if(j.status==="error"){clearInterval(pollTimer);$("go").disabled=false;setStatus('❌ 出错：'+esc(j.error||"未知"),true);}
+      }).catch(function(){});
+    },2500);
+  }
+
+  function render(res){
+    var leads=res.leads||[];
+    $("statline").innerHTML=
+      '<span class="hot">🔥 精准客户 <b>'+(res.leads_count!=null?res.leads_count:leads.length)+'</b></span>'+
+      '<span>🎬 视频 <b>'+((res.videos||[]).length)+'</b></span>'+
+      '<span>🗑️ 中介噪音 <b>'+(res.spam||0)+'</b></span>'+
+      '<span>💬 闲聊 <b>'+(res.chat||0)+'</b></span>'+
+      '<span>评论总数 <b>'+(res.total||0)+'</b></span>';
+    var rel=res.related_keywords||[];
+    var rbox=$("relatedBox"),rdiv=$("related");
+    if(rel.length){rbox.style.display="block";rdiv.innerHTML="";rel.forEach(function(w){
+      var s=document.createElement("span");s.className="kchip";s.textContent=w;
+      s.onclick=function(){$("kw").value=w;window.scrollTo({top:0,behavior:"smooth"});};
+      rdiv.appendChild(s);
+    });}else{rbox.style.display="none";}
+    var h="";
+    if(!leads.length){h='<tr><td colspan="6" class="empty">这批没挖到精准客户，换个关键词试试（如「美容院拓客」「皮肤管理获客」）</td></tr>';}
+    leads.forEach(function(c,i){
+      var url=c.profile||(c.sec_uid?"https://www.douyin.com/user/"+c.sec_uid:"");
+      var nick=url?'<a href="'+safeUrl(url)+'" target="_blank" rel="noopener">'+esc(c.nickname)+' ↗</a>':esc(c.nickname);
+      var did=url?'<a href="'+safeUrl(url)+'" target="_blank" rel="noopener">'+esc(c.douyin_id||"查看主页")+'</a>':esc(c.douyin_id||"");
+      var vurl=c.aweme_id?"https://www.douyin.com/video/"+c.aweme_id:"";
+      var src=vurl?'<a href="'+safeUrl(vurl)+'" target="_blank" rel="noopener">'+esc(c.source||"视频")+' ↗</a>':esc(c.source||"");
+      h+='<tr><td class="idx">'+(i+1)+'</td><td class="nk">'+nick+'</td><td class="nk">'+did+'</td><td>'+esc(c.ip)+'</td><td class="need">'+esc(c.content)+'</td><td class="src">'+src+'</td></tr>';
+    });
+    $("tbl").innerHTML=h;
+    $("results").className="results show";
+  }
+
+  function submit(){
+    var kw=$("kw").value.trim();
+    if(!pw.value){setStatus("请先在上方输入团队口令",true);pw.focus();return;}
+    if(!kw){setStatus("请输入关键词",true);$("kw").focus();return;}
+    $("go").disabled=true;
+    setStatus('<span class="spin"></span>提交中…');
+    var f=new FormData();f.append("password",pw.value);f.append("keyword",kw);f.append("mode","search");
+    fetch("/api/submit",{method:"POST",body:f}).then(function(r){
+      if(r.status===401||r.status===403){throw new Error("口令错误");}
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      return r.json();
+    }).then(function(d){
+      setStatus('<span class="spin"></span>已排队（任务 #'+d.job_id+'），爬取中…');
+      poll(d.job_id);
+    }).catch(function(e){$("go").disabled=false;setStatus("❌ "+esc(e.message||"提交失败"),true);});
+  }
+  $("go").addEventListener("click",submit);
+  $("kw").addEventListener("keydown",function(e){if(e.key==="Enter")submit();});
+})();
+</script>
+</body>
+</html>
