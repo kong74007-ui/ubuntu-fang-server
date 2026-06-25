@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI 工作台 · 点数充值</title>
+<link rel="icon" href="assets/logo_sparrow.png">
+<link rel="stylesheet" href="shell.css">
+<style>
+  .rc-wrap{padding:22px 26px 50px;max-width:1180px;}
+  .balance{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:14px;margin-bottom:26px;}
+  .bcard{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:20px;position:relative;overflow:hidden;}
+  .bcard.main{background:linear-gradient(135deg,rgba(231,178,76,.10),var(--panel));border-color:rgba(231,178,76,.3);}
+  .bcard .l{font-size:12.5px;color:var(--txt-dim);font-weight:600;}
+  .bcard .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:34px;font-weight:800;line-height:1;margin-top:10px;color:var(--txt);}
+  .bcard.main .v{color:var(--gold-soft);font-size:42px;}
+  .bcard .h{font-size:11px;color:var(--txt-faint);margin-top:7px;}
+  .bcard .glow{position:absolute;top:-40px;right:-30px;width:120px;height:120px;border-radius:50%;background:var(--gold);filter:blur(50px);opacity:.16;}
+
+  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:10px;}
+  .tier{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:22px 20px;position:relative;transition:.16s;text-align:center;}
+  .tier:hover{border-color:var(--line-strong);transform:translateY(-3px);}
+  .tier.reco{border-color:rgba(231,178,76,.5);background:linear-gradient(180deg,rgba(231,178,76,.07),var(--panel));}
+  .tier .rtag{position:absolute;top:-10px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:800;color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));padding:3px 13px;border-radius:999px;letter-spacing:1px;}
+  .tier .pn{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--gold-soft);line-height:1;}
+  .tier .pn small{font-size:13px;color:var(--txt-dim);font-weight:600;}
+  .tier .price{font-size:24px;font-weight:800;margin:12px 0 3px;}
+  .tier .price .c{font-size:15px;color:var(--txt-dim);font-weight:600;}
+  .tier .bonus{font-size:12px;color:var(--green);min-height:17px;font-weight:600;}
+  .tier .buy{margin-top:16px;width:100%;padding:11px;border-radius:10px;font-weight:800;font-size:14px;background:var(--surface);border:1px solid var(--line);color:var(--txt);transition:.15s;}
+  .tier.reco .buy{background:linear-gradient(135deg,var(--gold-soft),var(--gold));color:#0a0e16;border:0;}
+  .tier .buy:hover{border-color:var(--gold);color:var(--gold-soft);}
+  .tier.reco .buy:hover{color:#0a0e16;filter:brightness(1.05);}
+
+  .pay-row{display:flex;gap:12px;margin-top:4px;}
+  .pay{display:flex;align-items:center;gap:10px;padding:12px 18px;border-radius:11px;background:var(--surface-2);border:1px solid var(--line);font-size:13.5px;cursor:pointer;transition:.15s;}
+  .pay.on{border-color:var(--gold);box-shadow:0 0 0 2px rgba(231,178,76,.12);}
+  .pay .dot{width:15px;height:15px;border-radius:50%;border:2px solid var(--line-strong);flex:0 0 auto;}
+  .pay.on .dot{border-color:var(--gold);background:radial-gradient(circle,var(--gold) 38%,transparent 42%);}
+  .pay .wx{color:#3eb96f;font-weight:700;} .pay .zfb{color:#2f8fe6;font-weight:700;}
+
+  .htable{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;overflow:hidden;}
+  .htable th{text-align:left;font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--txt-faint);padding:11px 16px;background:var(--surface-2);border-bottom:1px solid var(--line-soft);white-space:nowrap;}
+  .htable td{padding:11px 16px;border-bottom:1px solid var(--line-soft);color:var(--txt-dim);}
+  .htable tr:last-child td{border-bottom:none;}
+  .htable .out{color:var(--red);font-family:var(--mono);}
+  .htable .in{color:var(--green);font-family:var(--mono);}
+  .htable .bal{font-family:var(--mono);color:var(--txt);}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 18px;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;box-shadow:0 16px 44px rgba(0,0,0,.5);z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .demo-note{font-size:11.5px;color:var(--warn);background:rgba(224,169,60,.1);border:1px solid rgba(224,169,60,.28);border-radius:8px;padding:4px 10px;}
+
+  @media (max-width:1080px){ .balance{grid-template-columns:1fr 1fr;} .tiers{grid-template-columns:1fr 1fr;} }
+</style>
+<script src="auth-guard.js"></script>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"><img src="assets/logo_sparrow.png" alt="黄雀"></div>
+    <a class="navbtn" href="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
+    <a class="navbtn" href="leads"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
+    <a class="navbtn" href="banana"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
+    <a class="navbtn" href="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
+    <a class="navbtn" href="assets"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
+    <a class="navbtn active" href="cost"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
+    <div class="spacer"></div>
+    <a class="pts" href="recharge"><b class="mono" id="railPts">340</b><span>剩余点数</span></a>
+    <a class="navbtn" href="/"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="title">点数充值 <span class="sub">/ 余额 · 套餐 · 消费明细</span></div>
+      <div class="spacer"></div>
+      <span class="demo-note">示例环境 · 模拟支付</span>
+      <div class="client-chip"><span class="k">账号</span><span class="v" id="acctName">—</span><span class="ar">▾</span></div>
+      <a class="tbtn" href="cost"><svg viewBox="0 0 24 24"><path d="M3 12h7l2 5 4-12 2 7h3"/></svg>成本明细</a>
+    </header>
+
+    <div class="page">
+      <div class="rc-wrap">
+
+        <!-- 余额 -->
+        <div class="balance">
+          <div class="bcard main"><div class="glow"></div><div class="l">剩余点数</div><div class="v" id="balPts">340</div><div class="h">1 点 ≈ 一次轻量生成；作图 4 点 / 获客 5 点</div></div>
+          <div class="bcard"><div class="l">本月已消耗</div><div class="v mono" style="font-size:30px">1,280</div><div class="h">点</div></div>
+          <div class="bcard"><div class="l">本月成本</div><div class="v mono" style="font-size:30px">¥9,960</div><div class="h">毛利率约 72%</div></div>
+          <div class="bcard"><div class="l">套餐到期</div><div class="v mono" style="font-size:24px">2026-09-30</div><div class="h">到期前续费不断点</div></div>
+        </div>
+
+        <!-- 套餐 -->
+        <div class="sec-title"><span class="bar"></span>点数充值套餐</div>
+        <div class="tiers">
+          <div class="tier"><div class="pn">100 <small>点</small></div><div class="price"><span class="c">¥</span>39</div><div class="bonus">&nbsp;</div><button class="buy" data-pts="100" data-price="39">立即充值</button></div>
+          <div class="tier"><div class="pn">500 <small>点</small></div><div class="price"><span class="c">¥</span>168</div><div class="bonus">额外赠 30 点</div><button class="buy" data-pts="530" data-price="168">立即充值</button></div>
+          <div class="tier reco"><div class="rtag">最划算</div><div class="pn">2000 <small>点</small></div><div class="price"><span class="c">¥</span>598</div><div class="bonus">额外赠 400 点</div><button class="buy" data-pts="2400" data-price="598">立即充值</button></div>
+          <div class="tier"><div class="pn">企业版</div><div class="price" style="font-size:18px;margin-top:18px">不限量 · 专属</div><div class="bonus">&nbsp;</div><button class="buy" data-enterprise="1">联系销售</button></div>
+        </div>
+
+        <!-- 支付方式 -->
+        <div class="sec-title" style="margin-top:24px"><span class="bar"></span>支付方式</div>
+        <div class="pay-row">
+          <div class="pay on" data-pay="wx"><span class="dot"></span><span class="wx">微信支付</span></div>
+          <div class="pay" data-pay="zfb"><span class="dot"></span><span class="zfb">支付宝</span></div>
+        </div>
+
+        <!-- 消费明细 -->
+        <div class="sec-title" style="margin-top:26px"><span class="bar"></span>消费明细</div>
+        <table class="htable">
+          <thead><tr><th>时间</th><th>项目</th><th>类型</th><th>点数</th><th>余额</th></tr></thead>
+          <tbody>
+            <tr><td>06-26 09:12</td><td>AI 作图 · 美业海报</td><td>消耗</td><td class="out">-4</td><td class="bal">340</td></tr>
+            <tr><td>06-26 08:40</td><td>关键词获客 · 美业获客</td><td>消耗</td><td class="out">-5</td><td class="bal">344</td></tr>
+            <tr><td>06-25 21:30</td><td>套餐充值 · 2000 点</td><td>充值</td><td class="in">+2400</td><td class="bal">349</td></tr>
+            <tr><td>06-25 18:05</td><td>数字人口播 · 首帧</td><td>消耗</td><td class="out">-8</td><td class="bal">-2051</td></tr>
+            <tr><td>06-25 16:22</td><td>AI 作图 · 节日活动图</td><td>消耗</td><td class="out">-4</td><td class="bal">-2043</td></tr>
+          </tbody>
+        </table>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="tasks.js"></script>
+<script>
+(function(){
+  "use strict";
+  // 读登录用户，显示真实账号与点数
+  var pts=340, name="—";
+  try{
+    var u=JSON.parse(localStorage.getItem("hq_user")||"{}");
+    if(u){ if(u.points!=null) pts=u.points; if(u.name) name=u.name; }
+  }catch(e){}
+  document.getElementById("balPts").textContent=Number(pts).toLocaleString();
+  document.getElementById("railPts").textContent=Number(pts).toLocaleString();
+  document.getElementById("acctName").textContent=name;
+
+  // 支付方式切换
+  document.querySelectorAll(".pay").forEach(function(p){
+    p.addEventListener("click",function(){ document.querySelectorAll(".pay").forEach(function(x){x.classList.remove("on")}); p.classList.add("on"); });
+  });
+
+  // 模拟支付
+  var toast=document.getElementById("toast");
+  function showToast(t){ toast.textContent=t; toast.classList.add("show"); setTimeout(function(){toast.classList.remove("show")},2600); }
+  document.querySelectorAll(".buy").forEach(function(b){
+    b.addEventListener("click",function(){
+      if(b.getAttribute("data-enterprise")){ showToast("企业版请联系黄雀销售开通，享专属点数与优先算力"); return; }
+      var p=b.getAttribute("data-pts"), price=b.getAttribute("data-price");
+      var pay=(document.querySelector(".pay.on")||{}).getAttribute&&document.querySelector(".pay.on").getAttribute("data-pay")==="zfb"?"支付宝":"微信";
+      showToast("示例环境：将用"+pay+"支付 ¥"+price+" 充值 "+p+" 点（接入真实支付后生效，当前不扣款）");
+    });
+  });
+})();
+</script>
+</body>
+</html>
