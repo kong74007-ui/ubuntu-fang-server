@@ -4,9 +4,13 @@
   "description": "黄雀 AI · 设计系统（tokens + React 组件 + 粒子动效）。供 Claude Design /design-sync 同步。",
   "private": true,
   "type": "module",
+  "types": "dist/types/index.d.ts",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build:lib": "vite build -c vite.lib.config.ts",
+    "build:ds": "npm run build:types && npm run build:lib",
     "preview": "vite preview"
   },
   "dependencies": {
