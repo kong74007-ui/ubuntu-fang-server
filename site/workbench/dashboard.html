@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/cloud.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=4">
 <style>
   body{ overflow:hidden; }
   .gKpi{ grid-template-columns:repeat(5,1fr); }
@@ -17,17 +17,6 @@
   @media (max-width:1200px){ .gKpi{ grid-template-columns:repeat(3,1fr);} .gTri{ grid-template-columns:1fr;} }
   @media (max-width:900px){ .gKpi{ grid-template-columns:repeat(2,1fr);} .gTwo{ grid-template-columns:1fr;} }
 </style>
-<script>
-  /* 今日看板仅管理员可见：非管理员直接访问 → 跳转灵感。?admin=1 可临时开管理员视图测试 */
-  (function(){ try{
-    var q=new URLSearchParams(location.search);
-    if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
-    if(q.get('admin')==='0') localStorage.removeItem('hq_role');
-    var admin = localStorage.getItem('hq_role')==='admin';
-    if(!admin){ var u=JSON.parse(localStorage.getItem('hq_user')||'null'); admin=!!(u&&u.role==='admin'); }
-    if(!admin) location.replace('inspiration.html');
-  }catch(e){} })();
-</script>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -82,9 +71,9 @@
     </div>
   </div>
 
-  <!-- 今日行动 + 系统公告 -->
-  <div class="gTwo" style="display:grid; gap:18px; margin-bottom:22px;">
-    <div style="padding:20px; border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45));">
+  <!-- 今日行动（管理员） + 系统公告 -->
+  <div id="gTwoRow" class="gTwo" style="display:grid; gap:18px; margin-bottom:22px;">
+    <div id="cardActions" style="padding:20px; border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45));">
       <div style="font-size:16px; font-weight:600; margin-bottom:16px;">今日行动</div>
       <div style="display:flex; flex-direction:column; gap:11px;">
         <div style="display:flex; align-items:center; gap:13px; padding:13px 14px; border:1px solid rgba(148,164,187,.08); border-radius:13px; background:rgba(7,11,19,.34);">
@@ -135,12 +124,12 @@
     </div>
   </div>
 
-  <!-- 三条生产线 -->
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+  <!-- 三条生产线（管理员）-->
+  <div id="pipeHead" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
     <div style="font-size:16px; font-weight:600;">三条生产线状态</div>
     <div class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">查看全部 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
   </div>
-  <div class="gTri" style="display:grid; gap:16px;">
+  <div id="pipeGrid" class="gTri" style="display:grid; gap:16px;">
     <div style="padding:20px; border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45));">
       <div style="display:flex; align-items:flex-start; justify-content:space-between;">
         <div>
@@ -192,7 +181,24 @@
   </div>
 </div></div>
 
-<script src="../assets/cloud.js"></script>
-<script src="cloud-shell.js"></script>
+<script src="../assets/cloud.js?v=4"></script>
+<script src="cloud-shell.js?v=4"></script>
+<script>
+  /* 今日页：数据统计/关键指标/系统公告对所有人开放；今日行动、生产线状态等运营区块仅管理员可见。
+     ?admin=1 临时开管理员视图，?admin=0 关。角色源 hq_user.role(member/admin)。 */
+  (function(){
+    function isAdmin(){ try{
+      var q=new URLSearchParams(location.search);
+      if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+      if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+      if(localStorage.getItem('hq_role')==='admin') return true;
+      var u=JSON.parse(localStorage.getItem('hq_user')||'null'); return !!(u&&u.role==='admin');
+    }catch(e){ return false; } }
+    if(!isAdmin()){
+      ['cardActions','pipeHead','pipeGrid'].forEach(function(id){ var e=document.getElementById(id); if(e) e.style.display='none'; });
+      var g=document.getElementById('gTwoRow'); if(g) g.style.gridTemplateColumns='1fr';
+    }
+  })();
+</script>
 </body>
 </html>
