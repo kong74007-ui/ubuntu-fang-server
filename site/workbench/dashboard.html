@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/cloud.css?v=4">
+<link rel="stylesheet" href="../assets/cloud.css?v=5">
 <style>
   body{ overflow:hidden; }
   .gKpi{ grid-template-columns:repeat(5,1fr); }
@@ -16,7 +16,20 @@
   .gTri{ grid-template-columns:repeat(3,1fr); }
   @media (max-width:1200px){ .gKpi{ grid-template-columns:repeat(3,1fr);} .gTri{ grid-template-columns:1fr;} }
   @media (max-width:900px){ .gKpi{ grid-template-columns:repeat(2,1fr);} .gTwo{ grid-template-columns:1fr;} }
+  .gUser{ grid-template-columns:repeat(4,1fr); }
+  @media (max-width:1200px){ .gUser{ grid-template-columns:repeat(2,1fr);} }
 </style>
+<script>
+  /* 今日 = 运营管理台，仅管理员可见。非管理员直接访问 → 跳灵感。?admin=1/0 临时切视图测试 */
+  (function(){ try{
+    var q=new URLSearchParams(location.search);
+    if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+    if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+    var admin = localStorage.getItem('hq_role')==='admin';
+    if(!admin){ var u=JSON.parse(localStorage.getItem('hq_user')||'null'); admin=!!(u&&u.role==='admin'); }
+    if(!admin) location.replace('inspiration.html');
+  }catch(e){} })();
+</script>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -68,6 +81,63 @@
       <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:11px 0 6px;">28s</div>
       <div style="font-size:12px; color:#94a4bb;">较昨日 <span class="mono" style="color:#2bd576; font-weight:600;">↓ 4s</span></div>
       <div style="margin:8px -16px -8px;"><svg viewBox="0 0 120 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block"><polyline points="0,12 20,14 40,11 60,16 80,15 100,20 120,18" fill="none" stroke="#2dd4bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    </div>
+  </div>
+
+  <!-- 团队 · 用户概览（管理员运营数据）-->
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+    <div style="font-size:16px; font-weight:600;">团队 · 用户概览</div>
+    <div style="display:flex; gap:9px;">
+      <a href="settings.html" class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:7px 13px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer;">团队设置</a>
+      <a href="bots.html" class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:7px 13px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer;">Bot 矩阵</a>
+    </div>
+  </div>
+  <div class="gUser" style="display:grid; gap:14px; margin-bottom:18px;">
+    <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(45,212,191,.12); color:#2dd4bf;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">注册用户</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:11px 0 5px;">12</div>
+      <div style="font-size:12px; color:#94a4bb;">较上月 <span class="mono" style="color:#2bd576; font-weight:600;">↑ 3</span></div>
+    </div>
+    <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 17l6-6 4 4 7-7"/><path d="M17 8h4v4"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">活跃用户 · 7日</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:11px 0 5px;">8</div>
+      <div style="font-size:12px; color:#94a4bb;">活跃率 <span class="mono" style="color:#2bd576; font-weight:600;">67%</span></div>
+    </div>
+    <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">本月新增</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:11px 0 5px;">3</div>
+      <div style="font-size:12px; color:#94a4bb;">较上月 <span class="mono" style="color:#2bd576; font-weight:600;">↑ 2</span></div>
+    </div>
+    <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="8" cy="8" r="6"/><path d="M18.1 6.6A6 6 0 1 1 9.9 18.5"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">团队消耗点数 · 本月</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:11px 0 5px;">4,280</div>
+      <div style="font-size:12px; color:#94a4bb;">折合 <span class="mono" style="color:#e7b24c; font-weight:600;">¥4,280</span></div>
+    </div>
+  </div>
+  <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); overflow:hidden; margin-bottom:22px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 20px 14px;">
+      <div style="font-size:15px; font-weight:600;">用户 · 用量明细</div>
+      <a href="settings.html" class="lk" style="font-size:12.5px; color:#94a4bb; cursor:pointer;">管理成员 →</a>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:760px;">
+        <thead><tr style="background:rgba(7,11,19,.4);">
+          <th style="text-align:left; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 20px; border-bottom:1px solid rgba(148,164,187,.1);">用户</th>
+          <th style="text-align:left; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 14px; border-bottom:1px solid rgba(148,164,187,.1);">角色</th>
+          <th style="text-align:left; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 14px; border-bottom:1px solid rgba(148,164,187,.1);">负责客户</th>
+          <th style="text-align:right; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 14px; border-bottom:1px solid rgba(148,164,187,.1);">本月任务</th>
+          <th style="text-align:right; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 14px; border-bottom:1px solid rgba(148,164,187,.1);">消耗点数</th>
+          <th style="text-align:right; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 14px; border-bottom:1px solid rgba(148,164,187,.1);">作品</th>
+          <th style="text-align:right; font-size:11px; font-weight:600; letter-spacing:.5px; color:#5c6b82; padding:11px 20px; border-bottom:1px solid rgba(148,164,187,.1);">最近活跃</th>
+        </tr></thead>
+        <tbody>
+          <tr style="border-bottom:1px solid rgba(148,164,187,.06);"><td style="padding:12px 20px;"><div style="display:flex; align-items:center; gap:10px;"><div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">唐</div><b style="color:#eaf1fa; font-weight:600;">tang</b></div></td><td style="padding:12px 14px;"><span style="font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">管理员</span></td><td style="padding:12px 14px; color:#94a4bb;">仙颜美容 · 韩辰</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">86</td><td class="mono" style="padding:12px 14px; text-align:right; color:#e7b24c;">1,240</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">52</td><td style="padding:12px 20px; text-align:right; color:#5c6b82;">2 分钟前</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,164,187,.06);"><td style="padding:12px 20px;"><div style="display:flex; align-items:center; gap:10px;"><div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(150deg,#3a6a9a,#22405a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">鹏</div><b style="color:#eaf1fa; font-weight:600;">dapeng</b></div></td><td style="padding:12px 14px;"><span style="font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">管理员</span></td><td style="padding:12px 14px; color:#94a4bb;">全部客户</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">64</td><td class="mono" style="padding:12px 14px; text-align:right; color:#e7b24c;">980</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">38</td><td style="padding:12px 20px; text-align:right; color:#5c6b82;">1 小时前</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,164,187,.06);"><td style="padding:12px 20px;"><div style="display:flex; align-items:center; gap:10px;"><div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(150deg,#6a3a9a,#40225a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">方</div><b style="color:#eaf1fa; font-weight:600;">fang</b></div></td><td style="padding:12px 14px;"><span style="font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">运营</span></td><td style="padding:12px 14px; color:#94a4bb;">知妍医美</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">48</td><td class="mono" style="padding:12px 14px; text-align:right; color:#e7b24c;">760</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">29</td><td style="padding:12px 20px; text-align:right; color:#5c6b82;">3 小时前</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,164,187,.06);"><td style="padding:12px 20px;"><div style="display:flex; align-items:center; gap:10px;"><div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">唐</div><b style="color:#eaf1fa; font-weight:600;">tang1</b></div></td><td style="padding:12px 14px;"><span style="font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">管理员</span></td><td style="padding:12px 14px; color:#94a4bb;">测试</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">12</td><td class="mono" style="padding:12px 14px; text-align:right; color:#e7b24c;">200</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">8</td><td style="padding:12px 20px; text-align:right; color:#5c6b82;">今天</td></tr>
+          <tr><td style="padding:12px 20px;"><div style="display:flex; align-items:center; gap:10px;"><div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(150deg,#5a6a7a,#2a3a4a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">仙</div><b style="color:#eaf1fa; font-weight:600;">仙颜美容 · 示例</b></div></td><td style="padding:12px 14px;"><span style="font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:6px; background:rgba(148,164,187,.1); color:#94a4bb;">客户</span></td><td style="padding:12px 14px; color:#94a4bb;">—</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">32</td><td class="mono" style="padding:12px 14px; text-align:right; color:#e7b24c;">540</td><td class="mono" style="padding:12px 14px; text-align:right; color:#eaf1fa;">21</td><td style="padding:12px 20px; text-align:right; color:#5c6b82;">昨天</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -181,24 +251,7 @@
   </div>
 </div></div>
 
-<script src="../assets/cloud.js?v=4"></script>
-<script src="cloud-shell.js?v=4"></script>
-<script>
-  /* 今日页：数据统计/关键指标/系统公告对所有人开放；今日行动、生产线状态等运营区块仅管理员可见。
-     ?admin=1 临时开管理员视图，?admin=0 关。角色源 hq_user.role(member/admin)。 */
-  (function(){
-    function isAdmin(){ try{
-      var q=new URLSearchParams(location.search);
-      if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
-      if(q.get('admin')==='0') localStorage.removeItem('hq_role');
-      if(localStorage.getItem('hq_role')==='admin') return true;
-      var u=JSON.parse(localStorage.getItem('hq_user')||'null'); return !!(u&&u.role==='admin');
-    }catch(e){ return false; } }
-    if(!isAdmin()){
-      ['cardActions','pipeHead','pipeGrid'].forEach(function(id){ var e=document.getElementById(id); if(e) e.style.display='none'; });
-      var g=document.getElementById('gTwoRow'); if(g) g.style.gridTemplateColumns='1fr';
-    }
-  })();
-</script>
+<script src="../assets/cloud.js?v=5"></script>
+<script src="cloud-shell.js?v=5"></script>
 </body>
 </html>

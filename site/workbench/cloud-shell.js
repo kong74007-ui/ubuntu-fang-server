@@ -44,13 +44,13 @@
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:'+(w||'100%')+';height:'+(w||'100%')+'">'+p+'</svg>';
   }
 
-  // 灵感置顶(用户主界面)，今日紧随其后；今日对所有人可见，仅页内"生产线/今日行动"等运营区块对管理员
+  // 角色分化：今日(运营台)+成本(统计) 仅管理员；用户侧导以灵感(主页)为首，只有内容创作工具
   var NAV=[
-    {k:'inspiration',l:'灵感',i:'sparkles'}, {k:'dashboard',l:'今日',i:'home'},
+    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感',i:'sparkles'},
     {k:'leads',l:'获客',i:'search'}, {k:'banana',l:'作图',i:'image'},
     {k:'video',l:'视频',i:'video'}, {k:'audio',l:'音频',i:'mic'}, {k:'script',l:'编导',i:'edit'},
-    {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'}, {k:'cost',l:'成本',i:'coins'},
-    {k:'settings',l:'设置',i:'gear'}
+    {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'},
+    {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'设置',i:'gear'}
   ];
 
   // 管理员判定：hq_user.role==='admin'；支持 ?admin=1/0 测试开关 + 本地 hq_role 覆盖
