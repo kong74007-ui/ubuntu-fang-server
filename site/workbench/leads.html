@@ -8,16 +8,27 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/cloud.css?v=6">
+<link rel="stylesheet" href="../assets/cloud.css?v=7">
 <style>
   body{ overflow:hidden; }
-  /* 本页响应式增量 */
   .gAcq{ grid-template-columns:repeat(4,1fr); }
   .hqRow{ transition:.14s; }
   .hqRow:hover{ background:rgba(231,178,76,.04); }
+  .lrowg{ display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 168px 84px; gap:14px; min-width:1010px; }
   @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:560px){ .gAcq{ grid-template-columns:1fr;} }
 </style>
+<script>
+  /* 获客 = 拉真实客户 PII + 耗抓取资源，仅管理员可用。非管理员直接访问 → 跳灵感 */
+  (function(){ try{
+    var q=new URLSearchParams(location.search);
+    if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+    if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+    var u=JSON.parse(localStorage.getItem('hq_user')||'null');
+    var admin = u ? (u.role==='admin') : (localStorage.getItem('hq_role')==='admin');
+    if(!admin) location.replace('inspiration.html');
+  }catch(e){} })();
+</script>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -25,27 +36,27 @@
 <div class="hq-app"><div class="hq-content" data-active="leads">
   <div>
     <div style="margin-bottom:22px;">
-      <h1 style="margin:0; font-size:27px; font-weight:700;">获客结果</h1>
-      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">基于评论分析，为你找到有真实需求的精准客户</p>
+      <h1 style="margin:0; font-size:27px; font-weight:700;">关键词获客</h1>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">关键词进 → 跑抖音搜视频、扒评论区、AI 意图过滤 → 真实精准客户名单</p>
     </div>
 
     <!-- KPI 概览条 -->
     <div class="gAcq" style="display:grid; gap:14px; margin-bottom:20px;">
       <div class="hv-lift" style="padding:18px; border:1px solid rgba(231,178,76,.22); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.07), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:9px; margin-bottom:14px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg></span></div><span style="font-size:13.5px; font-weight:600;">精准客户</span></div>
-        <div style="display:flex; align-items:baseline; gap:10px;"><span class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#e7b24c;">156</span><span style="font-size:12.5px; color:#94a4bb;">真实需求客户</span></div>
+        <div style="display:flex; align-items:baseline; gap:10px;"><span id="kLeads" class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#e7b24c;">—</span><span style="font-size:12.5px; color:#94a4bb;">真实需求客户</span></div>
       </div>
       <div class="hv-lift" style="padding:18px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:9px; margin-bottom:14px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(244,112,138,.12); color:#f4708a;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></span></div><span style="font-size:13.5px; font-weight:600;">中介噪音</span></div>
-        <div style="display:flex; align-items:baseline; gap:10px;"><span class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#f4708a;">89</span><span style="font-size:12.5px; color:#94a4bb;">已自动过滤</span></div>
+        <div style="display:flex; align-items:baseline; gap:10px;"><span id="kSpam" class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#f4708a;">—</span><span style="font-size:12.5px; color:#94a4bb;">已自动过滤</span></div>
       </div>
       <div class="hv-lift" style="padding:18px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:9px; margin-bottom:14px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(45,212,191,.12); color:#2dd4bf;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 11.5a8.4 8.4 0 0 1-9 8 9 9 0 0 1-4-1l-5 1 1-4a8.4 8.4 0 0 1-1-4 8.4 8.4 0 0 1 9-8 8.4 8.4 0 0 1 9 8z"/></svg></span></div><span style="font-size:13.5px; font-weight:600;">闲聊评论</span></div>
-        <div style="display:flex; align-items:baseline; gap:10px;"><span class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#2dd4bf;">412</span><span style="font-size:12.5px; color:#94a4bb;">无明确意向</span></div>
+        <div style="display:flex; align-items:baseline; gap:10px;"><span id="kChat" class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#2dd4bf;">—</span><span style="font-size:12.5px; color:#94a4bb;">无明确意向</span></div>
       </div>
       <div class="hv-lift" style="padding:18px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:9px; margin-bottom:14px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(148,164,187,.1); color:#94a4bb;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span></div><span style="font-size:13.5px; font-weight:600;">评论总数</span></div>
-        <div style="display:flex; align-items:baseline; gap:10px;"><span class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#eaf1fa;">1,770</span><span style="font-size:12.5px; color:#94a4bb;">本次采集总量</span></div>
+        <div style="display:flex; align-items:baseline; gap:10px;"><span id="kTotal" class="mono" style="font-size:30px; font-weight:700; letter-spacing:-1px; color:#eaf1fa;">—</span><span style="font-size:12.5px; color:#94a4bb;">本次采集总量</span></div>
       </div>
     </div>
 
@@ -53,12 +64,14 @@
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
       <div style="flex:1; max-width:520px; display:flex; align-items:center; gap:11px; padding:0 16px; height:46px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
         <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
-        <input placeholder="输入行业关键词，如 美业获客 / 皮肤管理…" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        <input id="kw" placeholder="输入行业关键词，如 美业获客 / 皮肤管理…（也可直接粘抖音视频/主页链接）" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
       </div>
-      <button class="btn-gold" style="padding:0 28px; height:46px; font-size:14.5px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; box-shadow:0 10px 26px -10px rgba(231,178,76,.6);">开始获客</button>
-      <div style="margin-left:auto; display:flex; gap:10px;">
-        <button class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:0 16px; height:46px; font-size:13.5px; color:#eaf1fa; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:12px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:15px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg></span>高级筛选</button>
-        <button class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:0 16px; height:46px; font-size:13.5px; color:#2dd4bf; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:12px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:15px; color:#2dd4bf;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出 Excel</button>
+      <button id="goBtn" class="btn-gold" style="padding:0 28px; height:46px; font-size:14.5px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; box-shadow:0 10px 26px -10px rgba(231,178,76,.6);">开始获客</button>
+      <div style="display:flex; align-items:center; gap:8px; font-size:13px;">
+        <span style="color:#5c6b82;">采集量</span>
+        <select id="cnt" style="height:46px; padding:0 12px; background:rgba(7,11,19,.5); color:#eaf1fa; border:1px solid rgba(148,164,187,.16); border-radius:12px; font-size:13.5px; font-family:inherit; cursor:pointer;">
+          <option value="20">20 视频</option><option value="50" selected>50 视频</option><option value="100">100 视频</option>
+        </select>
       </div>
     </div>
 
@@ -66,205 +79,123 @@
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap;">
       <span style="font-size:13px; color:#94a4bb; white-space:nowrap;">行业关键词推荐</span>
       <div style="display:flex; flex-wrap:wrap; gap:8px;">
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); transition:.16s;">美业获客</div>
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">皮肤管理</div>
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">医美</div>
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">美容院拓客</div>
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">纹绣</div>
-        <div style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">美甲</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">美业获客</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">皮肤管理</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">医美获客</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">美容院拓客</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">纹绣获客</div>
+        <div class="kwchip" style="padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">美甲店拓客</div>
       </div>
     </div>
 
     <!-- 精准客户名单表 -->
     <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow-x:auto;">
       <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
-        <div style="font-size:15.5px; font-weight:600;">精准客户名单 <span style="font-size:13px; color:#5c6b82; font-weight:400;">（共 156 条）</span></div>
-        <div style="display:flex; align-items:center; gap:7px; font-size:12px; color:#2dd4bf;"><span style="width:6px; height:6px; border-radius:50%; background:#2dd4bf; animation:hq-pulse 2s infinite;"></span>实时更新中</div>
+        <div style="font-size:15.5px; font-weight:600;">精准客户名单 <span id="cntLabel" style="font-size:13px; color:#5c6b82; font-weight:400;"></span></div>
+        <div id="statusLine" style="display:flex; align-items:center; gap:7px; font-size:12px; color:#5c6b82;"><span id="statusDot" style="width:6px; height:6px; border-radius:50%; background:#5c6b82;"></span><span id="statusText">待开始 · 输入关键词点「开始获客」</span></div>
       </div>
-      <div style="position:sticky; top:0; z-index:2; display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:12px 22px; font-size:12px; color:#5c6b82; background:rgba(13,20,34,.96); border-bottom:1px solid rgba(148,164,187,.07);">
-        <div>#</div><div>昵称 <span style="font-size:10.5px;">(点击进入主页)</span></div><div>抖音号</div><div>IP属地</div><div>需求原话</div><div>来源视频</div><div>操作</div>
+      <div class="lrowg" style="position:sticky; top:0; z-index:2; padding:12px 22px; font-size:12px; color:#5c6b82; background:rgba(13,20,34,.96); border-bottom:1px solid rgba(148,164,187,.07);">
+        <div>#</div><div>昵称 <span style="font-size:10.5px;">(点击进主页)</span></div><div>抖音号</div><div>IP属地</div><div>需求原话</div><div>来源视频</div><div>操作</div>
       </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">01</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">美</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">美丽小仙女 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iLm9KqR</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">dy_meili1314</div>
-        <div style="font-size:12.5px; color:#94a4bb;">广东·深圳</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“求推荐靠谱的皮肤管理，闭口太多了”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">闭口护理科普</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-25</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">02</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#b04a60,#6a2d3d); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">甜</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">甜甜圈呀 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iTt8c2P</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">tiantian_0808</div>
-        <div style="font-size:12.5px; color:#94a4bb;">浙江·杭州</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“有没有杭州做水光针靠谱的医美机构呀”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">水光针避坑指南</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-25</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">03</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#2c8478,#15534a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">阿</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">阿May爱美丽 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iA5yMbe</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">amay_beauty</div>
-        <div style="font-size:12.5px; color:#94a4bb;">江苏·苏州</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“脸上痘印好多年了，求问怎么淡化效果好”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">痘印修复案例</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-24</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">04</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#7a5aa8,#3d2d5a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">小</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">小猫不困 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iN2kU7d</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">mao_buk88</div>
-        <div style="font-size:12.5px; color:#94a4bb;">四川·成都</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“想纹个自然款的雾眉，求推荐成都的店”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">雾眉作品集</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-24</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">05</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">柠</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">柠檬味的夏天 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iLe6sQ9</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">lemon_summer</div>
-        <div style="font-size:12.5px; color:#94a4bb;">广东·广州</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“产后肚子松弛，做哪种项目能紧致呀”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">产后修复科普</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-23</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">06</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#b04a60,#6a2d3d); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">大</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">大眼睛Lulu <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iD4lU0x</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">lulu_eyes</div>
-        <div style="font-size:12.5px; color:#94a4bb;">浙江·宁波</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“想做个美甲，有没有日式晕染推荐的款”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">夏日美甲合集</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-23</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">07</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#2c8478,#15534a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">安</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">安啦啦啦 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iAn1Lk7</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">anla_la</div>
-        <div style="font-size:12.5px; color:#94a4bb;">江苏·南京</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“黄褐斑能不能去掉，做激光会反弹吗”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">祛斑真实记录</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-22</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">08</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#7a5aa8,#3d2d5a); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">一</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">一只小确幸 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iXq3Pm2</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">xiaoquxing_</div>
-        <div style="font-size:12.5px; color:#94a4bb;">四川·绵阳</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“想找个美容院做肩颈，长期办卡的那种”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">肩颈调理体验</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-22</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">09</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">茉</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">茉莉花开 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iMo7Hf5</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">molihua_k</div>
-        <div style="font-size:12.5px; color:#94a4bb;">广东·东莞</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“双眼皮一直消肿慢，是不是要做修复”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">双眼皮修复答疑</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-21</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <div class="hqRow" style="display:grid; grid-template-columns:46px minmax(190px,1.5fr) 124px 96px minmax(220px,2fr) 184px 84px; gap:14px; min-width:1010px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">
-        <div class="mono" style="font-size:13px; color:#5c6b82;">10</div>
-        <div style="display:flex; align-items:center; gap:11px; min-width:0;">
-          <div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient(150deg,#b04a60,#6a2d3d); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">软</div>
-          <div style="min-width:0;"><div style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600;">软糖小公主 <span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></div><div class="mono" style="font-size:11px; color:#5c6b82; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">v.douyin.com/iCa9Gz6</div></div>
-        </div>
-        <div class="mono" style="font-size:12.5px; color:#94a4bb;">candy_gz66</div>
-        <div style="font-size:12.5px; color:#94a4bb;">湖南·长沙</div>
-        <div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“求长沙做半永久的，纹唇大概多少钱”</div>
-        <div style="display:flex; align-items:center; gap:9px; min-width:0;">
-          <div style="width:42px; height:30px; flex:none; border-radius:7px; background:linear-gradient(150deg, rgba(231,178,76,.22), rgba(176,140,232,.18)); display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.7);"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></div>
-          <div style="min-width:0;"><div style="font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">半永久价格表</div><div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">2026-06-21</div></div>
-        </div>
-        <div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>
-      </div>
-
-      <!-- 分页 -->
-      <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 22px; flex-wrap:wrap; gap:12px;">
-        <div style="font-size:12px; color:#5c6b82;">© 2026 黄雀传媒（广州）有限公司</div>
-        <div style="display:flex; align-items:center; gap:6px;">
-          <div class="mono" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; cursor:pointer; font-size:13px;">‹</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(231,178,76,.3); border-radius:8px; color:#e7b24c; background:rgba(231,178,76,.1); cursor:pointer; font-size:13px;">1</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; background:transparent; cursor:pointer; font-size:13px;">2</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; background:transparent; cursor:pointer; font-size:13px;">3</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; background:transparent; cursor:pointer; font-size:13px;">4</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid transparent; border-radius:8px; color:#5c6b82; font-size:13px;">…</div>
-          <div class="mono" style="min-width:32px; height:32px; padding:0 6px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; background:transparent; cursor:pointer; font-size:13px;">8</div>
-          <div class="mono" style="width:32px; height:32px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:8px; color:#94a4bb; cursor:pointer; font-size:13px;">›</div>
-          <div style="margin-left:8px; font-size:12.5px; color:#94a4bb;">20 条/页</div>
+      <div id="rows">
+        <div style="padding:64px 22px; text-align:center; color:#5c6b82;">
+          <div style="width:54px; height:54px; margin:0 auto 16px; display:flex; align-items:center; justify-content:center; border-radius:15px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:26px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span></div>
+          <div style="font-size:14px; color:#94a4bb;">输入行业关键词，点「开始获客」</div>
+          <div style="font-size:12.5px; margin-top:7px;">系统会真实跑抖音搜视频、扒评论、过滤意图，约 1-3 分钟出名单</div>
         </div>
       </div>
     </div>
   </div>
 </div></div>
 
-<script src="../assets/cloud.js?v=6"></script>
-<script src="cloud-shell.js?v=6"></script>
+<script src="../assets/cloud.js?v=7"></script>
+<script src="cloud-shell.js?v=7"></script>
+<script>
+(function(){
+  "use strict";
+  var PW = "__LEADGEN_PW__"; // 团队获客口令：部署时由服务器侧从 systemd env 注入，repo/源码不含明文
+  var input=document.getElementById('kw'), goBtn=document.getElementById('goBtn'), cntSel=document.getElementById('cnt');
+  var rows=document.getElementById('rows'), cntLabel=document.getElementById('cntLabel');
+  var dot=document.getElementById('statusDot'), stat=document.getElementById('statusText');
+  var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
+  var poll=null, running=false;
+  var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function setStatus(t,c){ stat.textContent=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
+  function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+  function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); }
+
+  function rowHTML(L,i){
+    var n=L.nickname||'匿名', g=GRAD[i%GRAD.length], first=(n.trim()[0]||'客');
+    var profile=L.profile||'', secuid=L.sec_uid||'', dyid=L.douyin_id||'';
+    var userUrl = profile || (secuid?('https://www.douyin.com/user/'+encodeURIComponent(secuid)):'');
+    var src=L.source||L.aweme_id||'—';
+    var pm = userUrl ? ('onclick="window.open(\''+esc(userUrl)+'\',\'_blank\')"') : '';
+    var nameLink = userUrl
+      ? '<a href="'+esc(userUrl)+'" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600; color:#eaf1fa;">'+esc(n)+'<span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></a>'
+      : '<div style="font-size:13.5px; font-weight:600;">'+esc(n)+'</div>';
+    return '<div class="hqRow lrowg" style="padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">'+
+      '<div class="mono" style="font-size:13px; color:#5c6b82;">'+(i+1<10?'0':'')+(i+1)+'</div>'+
+      '<div style="display:flex; align-items:center; gap:11px; min-width:0;"><div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient('+g+'); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">'+esc(first)+'</div><div style="min-width:0;">'+nameLink+(L.like?'<div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">👍 '+esc(L.like)+'</div>':'')+'</div></div>'+
+      '<div class="mono" style="font-size:12.5px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(dyid||'—')+'</div>'+
+      '<div style="font-size:12.5px; color:#94a4bb;">'+esc(L.ip||'—')+'</div>'+
+      '<div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“'+esc(L.content||'')+'”</div>'+
+      '<div style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(src)+'</div>'+
+      '<div class="hv-gold" '+pm+' style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:'+(userUrl?'pointer':'default')+'; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>'+
+    '</div>';
+  }
+  function renderLeads(leads){
+    if(!leads || !leads.length){
+      rows.innerHTML='<div style="padding:54px 22px; text-align:center; color:#94a4bb; font-size:13.5px;">本次没从评论里过滤到精准客户，换个关键词或加大采集量再试。</div>';
+      cntLabel.textContent=''; return;
+    }
+    rows.innerHTML=leads.map(rowHTML).join('');
+    cntLabel.textContent='（共 '+leads.length+' 条）';
+  }
+  function busy(b){ running=b; goBtn.style.opacity=b?'.65':'1'; goBtn.style.pointerEvents=b?'none':'auto'; goBtn.textContent=b?'获客中…':'开始获客'; }
+
+  function start(){
+    if(running) return;
+    var kw=(input.value||'').trim();
+    if(!kw){ setStatus('请先输入关键词','#f4708a'); input.focus(); return; }
+    busy(true); setStatus('提交任务中…','#2dd4bf');
+    rows.innerHTML='<div style="padding:64px 22px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑抖音 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12.5px;margin-top:7px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
+    var fd=new FormData(); fd.append('password',PW); fd.append('keyword',kw); fd.append('count',cntSel.value); fd.append('mode','search'); fd.append('deep_dig','0');
+    fetch('/api/submit',{method:'POST',body:fd}).then(function(r){ return r.json().then(function(d){return {ok:r.ok,d:d};}); }).then(function(res){
+      if(res.ok && res.d.job_id){ watch(res.d.job_id); }
+      else { busy(false); setStatus('提交失败：'+((res.d&&res.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; }
+    }).catch(function(){ busy(false); setStatus('网络错误，请重试','#f4708a'); rows.innerHTML=''; });
+  }
+  function watch(id){
+    var t0=Date.now();
+    if(poll) clearInterval(poll);
+    setStatus('搜索中…抖音抓取+评论过滤','#2dd4bf');
+    poll=setInterval(function(){
+      fetch('/api/job/'+id).then(function(r){return r.json();}).then(function(d){
+        var sec=Math.round((Date.now()-t0)/1000);
+        if(d.status==='done'){
+          clearInterval(poll); busy(false);
+          var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
+          setStatus('完成 · '+(r.leads_count||0)+' 个精准客户（'+sec+'s）','#2bd576');
+        }else if(d.status==='error'){
+          clearInterval(poll); busy(false);
+          setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
+          rows.innerHTML='<div style="padding:54px 22px; text-align:center; color:#f4708a; font-size:13.5px;">'+esc(d.error||'任务失败')+'</div>';
+        }else{
+          setStatus('搜索中…（'+sec+'s · '+(d.status||'running')+'）','#2dd4bf');
+        }
+      }).catch(function(){});
+    },3000);
+  }
+
+  goBtn.onclick=start;
+  input.addEventListener('keydown',function(e){ if(e.key==='Enter') start(); });
+  document.querySelectorAll('.kwchip').forEach(function(c){ c.onclick=function(){
+    document.querySelectorAll('.kwchip').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.3)';
+    input.value=c.textContent.trim(); input.focus();
+  };});
+})();
+</script>
 </body>
 </html>
