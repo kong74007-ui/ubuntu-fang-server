@@ -31,7 +31,7 @@
         <button style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>灵感描述</button>
       </div>
       <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
-        <textarea rows="3" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
+        <textarea id="bPrompt" rows="3" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
         <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:6px;"><span style="font-family:'JetBrains Mono',monospace;">62 / 500</span><span style="cursor:pointer;">清空</span></div>
       </div>
 
@@ -43,7 +43,7 @@
       </div>
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
-      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
+      <div id="ratioRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:9px; height:13px; border:1.4px solid #e7b24c; border-radius:2px;"></span>9:16</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:11px; height:11px; border:1.4px solid #94a4bb; border-radius:2px;"></span>1:1</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:13px; height:9px; border:1.4px solid #94a4bb; border-radius:2px;"></span>16:9</div>
@@ -96,14 +96,14 @@
         <img src="../assets/comic.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
       </div>
 
-      <button class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（340 点）</button>
-      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">340</span> 点 · 失败自动退点</div>
+      <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（12 点）</button>
+      <div id="bNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">12</span> 点 · 失败自动退点</div>
     </div>
 
     <div style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
       <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
       <div style="position:relative; border-radius:14px; overflow:hidden; border:1px solid rgba(231,178,76,.18);">
-        <img src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
+        <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
         <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
       <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
@@ -132,5 +132,45 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=8"></script>
+<script>
+/* 作图页接后端能力中心 /api/gen/image：提示词+比例 → 真出图 → 显示，点数后端统一扣 */
+(function(){
+  var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
+      res=document.getElementById('bResult'), note=document.getElementById('bNote');
+  if(!gen) return;
+  var ratio='9:16', orig=gen.textContent;
+  document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
+    document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)';
+    var m=c.textContent.match(/\d+:\d+/); if(m) ratio=m[0];
+  };});
+  function tok(){ return localStorage.getItem('hq_token')||''; }
+  function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
+  function reset(){ gen.textContent=orig; gen.style.pointerEvents='auto'; gen.style.opacity='1'; res.style.filter='none'; }
+  gen.onclick=function(){
+    var prompt=(pr.value||'').trim();
+    if(!prompt){ setNote('请先输入提示词','#f4708a'); return; }
+    if(!tok()){ location.href='../login.html?redirect=banana'; return; }
+    gen.textContent='生成中…'; gen.style.pointerEvents='none'; gen.style.opacity='.7'; res.style.filter='blur(3px) brightness(.6)';
+    setNote('正在生成 · gpt-image-2 高清出图约 1-2 分钟','#2dd4bf');
+    var t0=Date.now();
+    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt,ratio:ratio})})
+      .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+      .then(function(x){
+        if(x.s===401){ location.href='../login.html?redirect=banana'; return; }
+        if(x.s===402){ reset(); setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
+        if(!x.d.job_id){ reset(); setNote('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        (function poll(id){ var iv=setInterval(function(){
+          fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
+            var sec=Math.round((Date.now()-t0)/1000);
+            if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); reset(); setNote('✅ 出图完成（'+sec+'s）· 剩余点数已更新','#2bd576'); }
+            else if(d.status==='error'){ clearInterval(iv); reset(); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); }
+            else setNote('生成中…（'+sec+'s）','#2dd4bf');
+          }).catch(function(){});
+        },4000); })(x.d.job_id);
+      }).catch(function(){ reset(); setNote('网络错误，请重试','#f4708a'); });
+  };
+})();
+</script>
 </body>
 </html>
