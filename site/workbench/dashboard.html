@@ -17,6 +17,17 @@
   @media (max-width:1200px){ .gKpi{ grid-template-columns:repeat(3,1fr);} .gTri{ grid-template-columns:1fr;} }
   @media (max-width:900px){ .gKpi{ grid-template-columns:repeat(2,1fr);} .gTwo{ grid-template-columns:1fr;} }
 </style>
+<script>
+  /* 今日看板仅管理员可见：非管理员直接访问 → 跳转灵感。?admin=1 可临时开管理员视图测试 */
+  (function(){ try{
+    var q=new URLSearchParams(location.search);
+    if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+    if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+    var admin = localStorage.getItem('hq_role')==='admin';
+    if(!admin){ var u=JSON.parse(localStorage.getItem('hq_user')||'null'); admin=!!(u&&u.role==='admin'); }
+    if(!admin) location.replace('inspiration.html');
+  }catch(e){} })();
+</script>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>

@@ -44,15 +44,30 @@
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:'+(w||'100%')+';height:'+(w||'100%')+'">'+p+'</svg>';
   }
 
+  // 灵感置顶(紧跟今日)；今日仅管理员可见
   var NAV=[
-    {k:'dashboard',l:'今日',i:'home'}, {k:'leads',l:'获客',i:'search'}, {k:'banana',l:'作图',i:'image'},
+    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感',i:'sparkles'},
+    {k:'leads',l:'获客',i:'search'}, {k:'banana',l:'作图',i:'image'},
     {k:'video',l:'视频',i:'video'}, {k:'audio',l:'音频',i:'mic'}, {k:'script',l:'编导',i:'edit'},
     {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'}, {k:'cost',l:'成本',i:'coins'},
-    {k:'inspiration',l:'灵感',i:'sparkles'}, {k:'settings',l:'设置',i:'gear'}
+    {k:'settings',l:'设置',i:'gear'}
   ];
 
+  // 管理员判定：hq_user.role==='admin'；支持 ?admin=1/0 测试开关 + 本地 hq_role 覆盖
+  function isAdmin(){
+    try{
+      var q=new URLSearchParams(location.search);
+      if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+      if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+      if(localStorage.getItem('hq_role')==='admin') return true;
+      var u=JSON.parse(localStorage.getItem('hq_user')||'null');
+      return !!(u && u.role==='admin');
+    }catch(e){ return false; }
+  }
+
   function navHTML(active){
-    return NAV.map(function(it){
+    var admin=isAdmin();
+    return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
       var on=it.k===active;
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
       return '<a href="'+it.k+'.html" class="hq-navitem" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
@@ -134,6 +149,6 @@
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
   }
 
-  window.HQ={ icon:icon, nav:NAV };
+  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',build); else build();
 })();
