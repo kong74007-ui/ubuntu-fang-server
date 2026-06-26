@@ -27,6 +27,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 COST = {"image": 12, "copy": 3, "video": 13}
+OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 
 # ============ 任务库 ============
 def jdb():
@@ -70,23 +71,49 @@ def verify(token):
         return None
 
 # ============ 图片能力：gpt-image-2 ============
+# 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
+SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
+
+def _multipart(fields, files):
+    """手搓 multipart/form-data；files=[(name, filename, bytes)]"""
+    b = "----hqcontent7e3f"
+    out = []
+    for k, v in fields.items():
+        out.append(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, k, v)).encode())
+    for name, fn, data in files:
+        out.append(('--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\nContent-Type: image/png\r\n\r\n' % (b, name, fn)).encode())
+        out.append(data); out.append(b"\r\n")
+    out.append(("--%s--\r\n" % b).encode())
+    return b"".join(out), "multipart/form-data; boundary=" + b
+
+def _post(path, data, ctype):
+    req = urllib.request.Request(OPENAI_BASE + path, data=data,
+                                 headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return json.loads(r.read())
+
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
     ratio = payload.get("ratio") or "1:1"
-    size  = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}.get(ratio, "1024x1024")
-    body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size,
-                       "quality": "high", "n": 1}).encode()
-    req = urllib.request.Request("https://api.openai.com/v1/images/generations", data=body,
-                                 headers={"Authorization": "Bearer " + OPENAI_KEY,
-                                          "Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=300) as r:
-        d = json.loads(r.read())
-    b64 = d["data"][0]["b64_json"]
+    size  = SIZES.get(ratio, "1024x1024")
+    img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
+    mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
+    if img:
+        files = [("image", "in.png", base64.b64decode(img))]
+        if mask:
+            files.append(("mask", "mask.png", base64.b64decode(mask)))
+        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": "high", "n": "1"}, files)
+        d = _post("/v1/images/edits", body, ct)
+        mode = "inpaint" if mask else "img2img"
+    else:
+        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": "high", "n": 1}).encode()
+        d = _post("/v1/images/generations", body, "application/json")
+        mode = "text2img"
     fn = "img_%d.png" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(base64.b64decode(b64))
-    return {"type": "image", "file": fn, "url": "/api/gen/file/" + fn, "ratio": ratio, "prompt": prompt}
+    (OUT_DIR / fn).write_bytes(base64.b64decode(d["data"][0]["b64_json"]))
+    return {"type": "image", "mode": mode, "file": fn, "url": "/api/gen/file/" + fn, "ratio": ratio, "prompt": prompt}
 
 HANDLERS = {"image": gen_image}  # P2/P3: 在此注册 copy / video
 
