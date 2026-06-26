@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/cloud.css?v=5">
+<link rel="stylesheet" href="../assets/cloud.css?v=6">
 <style>
   body{ overflow:hidden; }
   .gKpi{ grid-template-columns:repeat(5,1fr); }
@@ -25,8 +25,8 @@
     var q=new URLSearchParams(location.search);
     if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
     if(q.get('admin')==='0') localStorage.removeItem('hq_role');
-    var admin = localStorage.getItem('hq_role')==='admin';
-    if(!admin){ var u=JSON.parse(localStorage.getItem('hq_user')||'null'); admin=!!(u&&u.role==='admin'); }
+    var u=JSON.parse(localStorage.getItem('hq_user')||'null');
+    var admin = u ? (u.role==='admin') : (localStorage.getItem('hq_role')==='admin');
     if(!admin) location.replace('inspiration.html');
   }catch(e){} })();
 </script>
@@ -251,7 +251,7 @@
   </div>
 </div></div>
 
-<script src="../assets/cloud.js?v=5"></script>
-<script src="cloud-shell.js?v=5"></script>
+<script src="../assets/cloud.js?v=6"></script>
+<script src="cloud-shell.js?v=6"></script>
 </body>
 </html>

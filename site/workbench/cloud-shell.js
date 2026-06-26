@@ -53,15 +53,16 @@
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'设置',i:'gear'}
   ];
 
-  // 管理员判定：hq_user.role==='admin'；支持 ?admin=1/0 测试开关 + 本地 hq_role 覆盖
+  // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
+  // 仅在"未登录预览"时才用 ?admin=1/0 测试开关(写入 hq_role)。
   function isAdmin(){
     try{
       var q=new URLSearchParams(location.search);
       if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
       if(q.get('admin')==='0') localStorage.removeItem('hq_role');
-      if(localStorage.getItem('hq_role')==='admin') return true;
       var u=JSON.parse(localStorage.getItem('hq_user')||'null');
-      return !!(u && u.role==='admin');
+      if(u) return u.role==='admin';                    // 已登录：真实角色说了算
+      return localStorage.getItem('hq_role')==='admin';  // 未登录：仅预览开关
     }catch(e){ return false; }
   }
 

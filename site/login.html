@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/cloud.css?v=5">
+<link rel="stylesheet" href="assets/cloud.css?v=6">
 <style>
   .gLogin{ grid-template-columns:1.05fr .95fr; }
   @media (max-width:900px){
@@ -108,7 +108,7 @@
   </div>
 </div>
 
-<script src="assets/cloud.js?v=5"></script>
+<script src="assets/cloud.js?v=6"></script>
 <script>
 (function(){
   "use strict";
@@ -145,7 +145,7 @@
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
     }).then(function(res){
       if(res.ok && res.d && res.d.token){
-        try{ localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
+        try{ localStorage.removeItem("hq_role"); localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
         setMsg("登录成功，正在进入…","ok");
         var role=(res.d.user && res.d.user.role) || "member";
         var rd=new URLSearchParams(location.search).get("redirect");
