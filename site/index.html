@@ -4,321 +4,249 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>黄雀 AI · 评论区获客，AI 内容成交</title>
-<meta name="description" content="黄雀 AI —— 关键词进，抖音/小红书评论区扒出精准客户名单；同一套工作台 AI 作图、数字人口播、内容成交。为美业/电商/IP 生意降本增效。">
-<link rel="icon" href="assets/logo_sparrow.png">
+<meta name="description" content="黄雀 AI —— 从抖音/小红书评论区精准挖掘高意向客户，AI 一站式生产图文、视频、数字人内容，助力生意快速成交。为美业/电商/IP 降本增效。">
+<link rel="icon" href="assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/cloud.css">
 <style>
-  :root{
-    --bg:#050811; --bg2:#0a0f1b; --panel:#0d1320; --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
-    --txt:#eaf0fb; --muted:#aeb8cc; --faint:#6f7a92;
-    --gold:#e7b24c; --gold2:#f4cd6f; --gold-deep:#caa23e; --cyan:#35d6c6; --green:#39d98a;
-    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
-    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;
+  .wrap{ max-width:1320px; margin:0 auto; }
+  .gHero{ grid-template-columns:1.08fr .92fr; }
+  .gTri{ grid-template-columns:repeat(3,1fr); }
+  .gQuad{ grid-template-columns:repeat(4,1fr); }
+  .gFooter{ grid-template-columns:1.5fr 1fr 1fr 1fr 1.4fr; }
+  .hero-title{ font-size:52px; }
+  @media (max-width:1080px){
+    .nav-menu{ display:none !important; }
+    .gHero{ grid-template-columns:1fr; gap:34px !important; }
+    .gTri{ grid-template-columns:1fr; }
+    .gQuad{ grid-template-columns:repeat(2,1fr); }
+    .gFooter{ grid-template-columns:1fr 1fr; }
+    .hero-title{ font-size:38px; }
   }
-  *{margin:0;padding:0;box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{
-    background:var(--bg); color:var(--txt); font-family:var(--sans); line-height:1.6;
-    -webkit-font-smoothing:antialiased; overflow-x:hidden;
-    background-image:
-      radial-gradient(1100px 520px at 78% -8%, rgba(231,178,76,.10), transparent 60%),
-      radial-gradient(900px 600px at 8% 22%, rgba(53,214,198,.06), transparent 55%);
+  @media (max-width:600px){
+    .gQuad{ grid-template-columns:1fr; }
+    .hero-stats{ grid-template-columns:1fr 1fr !important; }
+    .hero-title{ font-size:31px; }
   }
-  a{color:inherit;text-decoration:none}
-  .wrap{max-width:1240px;margin:0 auto;padding:0 28px}
-
-  /* ===== Nav ===== */
-  .nav{position:sticky;top:0;z-index:40;backdrop-filter:blur(16px);background:rgba(5,8,17,.72);border-bottom:1px solid var(--line)}
-  .nav-in{display:flex;align-items:center;gap:30px;height:64px}
-  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.5px}
-  .brand img{width:30px;height:30px}
-  .brand b{color:var(--gold)}
-  .menu{display:flex;gap:26px;font-size:14.5px;color:var(--muted)}
-  .menu a:hover{color:var(--txt)}
-  .nav .spacer{flex:1}
-  .nav-cta{display:flex;align-items:center;gap:14px}
-  .login-link{font-size:14.5px;color:var(--muted)}
-  .login-link:hover{color:var(--txt)}
-  .btn{display:inline-flex;align-items:center;gap:8px;border-radius:11px;font-weight:700;font-size:14.5px;transition:.16s;cursor:pointer;white-space:nowrap}
-  .btn-gold{background:linear-gradient(135deg,var(--gold2),var(--gold));color:#0a0e16;padding:10px 20px;box-shadow:0 8px 24px rgba(231,178,76,.26)}
-  .btn-gold:hover{transform:translateY(-1px);box-shadow:0 12px 30px rgba(231,178,76,.34)}
-  .btn-ghost{border:1px solid var(--line2);color:var(--txt);padding:10px 20px;background:rgba(255,255,255,.02)}
-  .btn-ghost:hover{border-color:var(--gold);color:var(--gold2)}
-
-  /* ===== Hero ===== */
-  .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:70px 0 60px}
-  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:2px;color:var(--gold2);text-transform:uppercase;border:1px solid rgba(231,178,76,.28);border-radius:999px;padding:6px 14px;margin-bottom:22px}
-  .eyebrow i{width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 10px var(--gold)}
-  h1.hero-title{font-size:52px;line-height:1.12;font-weight:900;letter-spacing:-1px}
-  h1.hero-title b{color:var(--gold)}
-  .hero-sub{margin:22px 0 30px;font-size:16.5px;color:var(--muted);max-width:520px}
-  .hero-cta{display:flex;gap:14px;margin-bottom:38px}
-  .hero-cta .btn{padding:13px 26px;font-size:15px}
-  .stats{display:grid;grid-template-columns:repeat(4,auto);gap:34px}
-  .stat .n{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--gold2);line-height:1}
-  .stat .n.cyan{color:var(--cyan)}
-  .stat .l{font-size:12.5px;color:var(--faint);margin-top:7px}
-
-  /* ===== Hero product card ===== */
-  .showcase{position:relative;border:1px solid var(--line);border-radius:22px;overflow:hidden;background:#070c16;box-shadow:0 30px 80px rgba(0,0,0,.5)}
-  .showcase .badge{position:absolute;left:16px;top:16px;z-index:3;font-size:11.5px;font-weight:700;color:var(--gold2);background:rgba(7,12,22,.7);border:1px solid rgba(231,178,76,.3);border-radius:999px;padding:5px 12px;backdrop-filter:blur(8px)}
-  .showcase .hero-img{position:relative}
-  .showcase .hero-img img{width:100%;display:block;aspect-ratio:4/3.4;object-fit:cover}
-  .showcase .hero-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 40%,rgba(5,8,17,.86) 100%)}
-  .showcase .overlay-title{position:absolute;left:22px;bottom:96px;z-index:2}
-  .showcase .overlay-title b{display:block;font-size:26px;font-weight:900;color:#fff;text-shadow:0 2px 18px rgba(0,0,0,.6)}
-  .showcase .overlay-title span{display:block;font-size:13px;color:var(--gold2);margin-top:4px;letter-spacing:3px}
-  .showcase .foot{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;align-items:center;gap:14px;padding:16px 20px;border-top:1px solid var(--line);background:rgba(7,12,22,.55);backdrop-filter:blur(10px)}
-  .showcase .foot .cap b{font-size:13px;color:var(--txt);display:block}
-  .showcase .foot .cap span{font-size:11.5px;color:var(--faint)}
-  .showcase .foot .mini{margin-left:auto;display:flex;gap:18px}
-  .showcase .foot .mini div{text-align:right}
-  .showcase .foot .mini b{font-family:var(--mono);font-size:15px;color:var(--gold2)}
-  .showcase .foot .mini span{font-size:10.5px;color:var(--faint)}
-
-  /* ===== Section head ===== */
-  .sec-head{text-align:center;margin:30px 0 36px}
-  .sec-head .k{font-size:12px;letter-spacing:2px;color:var(--cyan);text-transform:uppercase}
-  .sec-head h2{font-size:32px;font-weight:850;margin-top:10px}
-  .sec-head p{color:var(--muted);margin-top:10px;font-size:15px}
-
-  /* ===== Features ===== */
-  .features{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;padding-bottom:30px}
-  .fcard{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,var(--panel),rgba(8,12,20,.6));padding:26px;transition:.18s}
-  .fcard:hover{transform:translateY(-4px);border-color:rgba(231,178,76,.4);box-shadow:0 18px 44px rgba(0,0,0,.4)}
-  .fcard .ic{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:rgba(231,178,76,.12);border:1px solid rgba(231,178,76,.25);margin-bottom:18px}
-  .fcard .ic svg{width:24px;height:24px;stroke:var(--gold2);fill:none;stroke-width:1.8}
-  .fcard h3{font-size:18px;font-weight:800;margin-bottom:9px}
-  .fcard p{font-size:14px;color:var(--muted)}
-  .fcard .tags{margin-top:16px;display:flex;flex-wrap:wrap;gap:7px}
-  .fcard .tag{font-size:11px;font-family:var(--mono);color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:3px 8px}
-
-  /* ===== Pipeline ===== */
-  .pipe{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:14px 0 56px}
-  .step{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:22px 20px;position:relative}
-  .step .num{font-family:var(--mono);font-size:13px;color:var(--gold);border:1px solid rgba(231,178,76,.3);border-radius:8px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
-  .step h4{font-size:15.5px;font-weight:800;margin-bottom:6px}
-  .step p{font-size:13px;color:var(--faint)}
-
-  /* ===== CTA band ===== */
-  .cta-band{border:1px solid rgba(231,178,76,.3);border-radius:22px;background:linear-gradient(135deg,rgba(231,178,76,.1),rgba(53,214,198,.05));padding:46px;text-align:center;margin-bottom:60px}
-  .cta-band h2{font-size:30px;font-weight:850}
-  .cta-band p{color:var(--muted);margin:12px 0 26px}
-  .cta-band .hero-cta{justify-content:center;margin-bottom:0}
-
-  /* ===== Footer ===== */
-  footer{border-top:1px solid var(--line);background:rgba(6,10,18,.7)}
-  .foot-in{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:30px;padding:48px 0 30px}
-  .foot-brand .brand{margin-bottom:14px}
-  .foot-brand p{font-size:13px;color:var(--faint);max-width:260px}
-  .foot-col h5{font-size:13px;color:var(--muted);margin-bottom:14px;font-weight:700}
-  .foot-col a{display:block;font-size:13.5px;color:var(--faint);margin-bottom:10px}
-  .foot-col a:hover{color:var(--cyan)}
-  .foot-bottom{border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:18px 0;font-size:12.5px;color:var(--faint)}
-  .foot-bottom a{color:var(--faint)}
-  .foot-bottom a:hover{color:var(--cyan)}
-  .foot-bottom .spacer{flex:1}
-
-  @media (max-width:980px){
-    .hero{grid-template-columns:1fr;gap:34px;padding:46px 0}
-    h1.hero-title{font-size:40px}
-    .features,.pipe,.foot-in{grid-template-columns:1fr 1fr}
-    .menu{display:none}
-  }
-  @media (max-width:620px){
-    .features,.pipe,.foot-in{grid-template-columns:1fr}
-    h1.hero-title{font-size:33px}
-    .stats{grid-template-columns:1fr 1fr;gap:22px}
-    .nav-cta .login-link{display:none}
-  }
-
-  /* ===== premium 动效：金色粒子背景 + 滚动入场 ===== */
-  #bgFx{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.6;}
-  .nav,main,footer{position:relative;z-index:1;}
-  html.fx .reveal{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.22,1,.36,1),transform .7s cubic-bezier(.22,1,.36,1);will-change:opacity,transform;}
-  html.fx .reveal.in{opacity:1;transform:none;}
-  @media (prefers-reduced-motion:reduce){html.fx .reveal{opacity:1;transform:none;transition:none;}}
 </style>
 </head>
 <body>
-<canvas id="bgFx" aria-hidden="true"></canvas>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
-<header class="nav">
-  <div class="wrap nav-in">
-    <a class="brand" href="#top"><img src="assets/logo_sparrow.png" alt="黄雀">黄雀 <b>AI</b></a>
-    <nav class="menu">
-      <a href="#products">产品</a>
-      <a href="workbench/inspiration">灵感案例</a>
-      <a href="#how">解决方案</a>
-      <a href="workbench/recharge">价格</a>
-      <a href="#about">关于</a>
+<div style="position:relative; z-index:1; min-height:100vh;">
+  <!-- ===== 顶部导航 ===== -->
+  <div style="position:sticky; top:0; z-index:30; display:flex; align-items:center; gap:34px; padding:16px 40px; backdrop-filter:blur(14px); background:linear-gradient(180deg, rgba(7,11,19,.86), rgba(7,11,19,.55)); border-bottom:1px solid rgba(148,164,187,.08);">
+    <a href="index.html" style="display:flex; align-items:center; gap:11px; cursor:pointer;">
+      <div style="height:30px; display:flex; align-items:center;"><img src="assets/cloud/logo-bird.png" alt="黄雀" style="height:100%; width:auto; display:block; filter:drop-shadow(0 0 6px rgba(231,178,76,.4));"></div>
+      <div style="line-height:1;">
+        <div style="font-size:19px; font-weight:700; letter-spacing:.5px;">黄雀 <span style="color:#94a4bb; font-weight:400;">AI</span></div>
+        <div style="font-size:10px; color:#5c6b82; letter-spacing:2px; margin-top:3px;">评论区获客 · AI 内容成交</div>
+      </div>
+    </a>
+    <nav class="nav-menu" style="display:flex; align-items:center; gap:6px; margin-left:18px;">
+      <a href="#products" class="hv-soft" style="display:flex; align-items:center; gap:5px; padding:8px 14px; font-size:14px; color:#94a4bb; border-radius:9px; cursor:pointer;">产品<span style="color:#5c6b82; font-size:10px;">▾</span></a>
+      <a href="#how" class="hv-soft" style="display:flex; align-items:center; gap:5px; padding:8px 14px; font-size:14px; color:#94a4bb; border-radius:9px; cursor:pointer;">解决方案<span style="color:#5c6b82; font-size:10px;">▾</span></a>
+      <a href="workbench/recharge.html" class="hv-soft" style="display:flex; align-items:center; gap:5px; padding:8px 14px; font-size:14px; color:#94a4bb; border-radius:9px; cursor:pointer;">价格</a>
+      <a href="workbench/inspiration.html" class="hv-soft" style="display:flex; align-items:center; gap:5px; padding:8px 14px; font-size:14px; color:#94a4bb; border-radius:9px; cursor:pointer;">灵感案例</a>
+      <a href="#about" class="hv-soft" style="display:flex; align-items:center; gap:5px; padding:8px 14px; font-size:14px; color:#94a4bb; border-radius:9px; cursor:pointer;">关于</a>
     </nav>
-    <div class="spacer"></div>
-    <div class="nav-cta">
-      <a class="login-link" href="login">登录</a>
-      <a class="btn btn-gold" href="#contact">预约演示</a>
+    <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
+      <a href="login.html" class="hv-gold" style="padding:9px 20px; font-size:14px; font-weight:500; color:#eaf1fa; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.16); border-radius:10px; cursor:pointer;">登录</a>
+      <a href="login.html" class="btn-gold" style="display:flex; align-items:center; gap:7px; padding:9px 20px; font-size:14px; font-weight:600; border-radius:10px; box-shadow:0 8px 24px -8px rgba(231,178,76,.6);"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span>预约演示</a>
     </div>
   </div>
-</header>
 
-<main id="top">
-  <!-- Hero -->
-  <section class="wrap hero">
-    <div class="hero-left">
-      <span class="eyebrow"><i></i> AI 获客 × 内容成交中台</span>
-      <h1 class="hero-title">评论区获客，<br><b>AI 内容</b>成交。</h1>
-      <p class="hero-sub">输入行业关键词，系统自动跑抖音 / 小红书评论区，过滤噪音、扒出正在表达需求的精准客户；同一套工作台继续生成文案、封面、活动图与数字人口播，一条龙完成成交。</p>
-      <div class="hero-cta">
-        <a class="btn btn-gold" href="workbench/dashboard">进入工作台 →</a>
-        <a class="btn btn-ghost" href="workbench/inspiration"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/></svg>看演示</a>
+  <!-- ===== Hero ===== -->
+  <section class="wrap gHero" style="padding:56px 40px 30px; display:grid; gap:56px; align-items:center;">
+    <div class="reveal">
+      <div style="display:inline-flex; align-items:center; gap:8px; padding:7px 15px; border:1px solid rgba(231,178,76,.28); border-radius:999px; font-size:12.5px; color:#e7b24c; margin-bottom:28px; font-style:italic;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.7 1.9L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.6z"/></svg></span>AI 驱动的新一代获客与内容生产平台</div>
+      <h1 class="hero-title" style="margin:0; line-height:1.08; font-weight:900; letter-spacing:-1px;">评论区获客，<br><span style="background:linear-gradient(120deg,#f6d488,#e7b24c 60%,#c8902f); -webkit-background-clip:text; background-clip:text; color:transparent;">AI 内容成交</span><span style="color:#e7b24c;">。</span></h1>
+      <p style="margin:24px 0 0; font-size:16px; line-height:1.85; color:#94a4bb; max-width:480px;">从抖音 / 小红书评论区精准挖掘高意向客户，<br>用 AI 一站式生产图文、视频、数字人内容，助力生意快速成交。</p>
+      <div style="display:flex; gap:14px; margin-top:34px;">
+        <a href="workbench/dashboard.html" class="btn-gold" style="display:flex; align-items:center; gap:9px; padding:15px 30px; font-size:15.5px; font-weight:700; border-radius:13px; box-shadow:0 14px 36px -10px rgba(231,178,76,.6);">进入工作台<span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+        <a href="workbench/inspiration.html" class="hv-gold" style="display:flex; align-items:center; gap:9px; padding:15px 26px; font-size:15.5px; font-weight:500; color:#eaf1fa; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.18); border-radius:13px; cursor:pointer;"><span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span>看演示视频</a>
       </div>
-      <div class="stats">
-        <div class="stat"><div class="n">1,770+</div><div class="l">采集评论</div></div>
-        <div class="stat"><div class="n cyan">3,168</div><div class="l">账号线索池</div></div>
-        <div class="stat"><div class="n">100+</div><div class="l">精准名单</div></div>
-        <div class="stat"><div class="n cyan">80%</div><div class="l">回复率</div></div>
+      <div class="hero-stats" style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:46px; padding:22px 6px; border-top:1px solid rgba(148,164,187,.1); border-bottom:1px solid rgba(148,164,187,.1);">
+        <div style="position:relative; padding:0 18px;"><div class="mono" style="font-size:26px; font-weight:700; color:#e7b24c; letter-spacing:-.5px;">1,770+</div><div style="font-size:12.5px; color:#94a4bb; margin-top:5px;">采集评论</div></div>
+        <div style="position:relative; padding:0 18px;"><div class="mono" style="font-size:26px; font-weight:700; color:#e7b24c; letter-spacing:-.5px;">3,168</div><div style="font-size:12.5px; color:#94a4bb; margin-top:5px;">账号线索池</div></div>
+        <div style="position:relative; padding:0 18px;"><div class="mono" style="font-size:26px; font-weight:700; color:#e7b24c; letter-spacing:-.5px;">100+</div><div style="font-size:12.5px; color:#94a4bb; margin-top:5px;">精准名单</div></div>
+        <div style="position:relative; padding:0 18px;"><div class="mono" style="font-size:26px; font-weight:700; color:#e7b24c; letter-spacing:-.5px;">80%</div><div style="font-size:12.5px; color:#94a4bb; margin-top:5px;">回复率</div></div>
       </div>
+      <div style="font-size:11.5px; color:#5c6b82; margin-top:14px;">* 数据来源于黄雀 AI 真实业务战绩</div>
     </div>
 
-    <div class="showcase">
-      <span class="badge">实时作品 · 可入库</span>
-      <div class="hero-img">
-        <img src="assets/meiye_poster.webp" alt="美业 AI 数字人内容样片">
-      </div>
-      <div class="overlay-title">
-        <b>科技焕肤 · 逆龄新生</b>
-        <span>美 业 活 动 主 视 觉</span>
-      </div>
-      <div class="foot">
-        <div class="cap">
-          <b>美业活动封面 + 数字人首帧</b>
-          <span>从文案到图像，再到 Seedance 口播视频</span>
+    <!-- Hero 产品预览卡 -->
+    <div class="reveal" style="position:relative;">
+      <div style="position:absolute; inset:-10% -6% -16% -6%; background:radial-gradient(circle at 60% 40%, rgba(231,178,76,.18), transparent 64%); filter:blur(28px); z-index:0;"></div>
+      <div style="position:relative; z-index:1; border:1px solid rgba(231,178,76,.22); border-radius:22px; padding:14px; background:linear-gradient(160deg, rgba(20,17,10,.92), rgba(10,13,20,.94)); box-shadow:0 40px 90px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.05);">
+        <div style="display:flex; gap:12px;">
+          <div style="flex:1; position:relative; border-radius:16px; overflow:hidden; border:1px solid rgba(231,178,76,.16); aspect-ratio:4/3.05;">
+            <img src="assets/meiye_poster.webp" alt="美业海报样片" style="width:100%; height:100%; object-fit:cover; display:block;">
+            <div style="position:absolute; top:12px; left:12px; display:flex; align-items:center; gap:7px; padding:6px 11px; background:rgba(7,11,19,.6); backdrop-filter:blur(6px); border:1px solid rgba(231,178,76,.2); border-radius:9px; font-size:11.5px; color:#eaf1fa;"><span style="display:flex; width:13px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>仙颜美容 · 皮肤管理中心</div>
+            <div class="mono" style="position:absolute; bottom:12px; left:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-size:11px; color:#94a4bb;">1024 × 1536 · 9:16</div>
+          </div>
+          <div style="width:74px; display:flex; flex-direction:column; gap:9px;">
+            <div style="width:74px; height:74px; border-radius:11px; overflow:hidden; border:1px solid rgba(148,164,187,.14);"><img src="assets/duanwu.webp" alt="" style="width:100%;height:100%;object-fit:cover;"></div>
+            <div style="width:74px; height:74px; border-radius:11px; overflow:hidden; border:1px solid rgba(148,164,187,.14);"><img src="assets/huangque_poster.webp" alt="" style="width:100%;height:100%;object-fit:cover;"></div>
+            <div style="width:74px; height:74px; border-radius:11px; overflow:hidden; border:1px solid rgba(148,164,187,.14);"><img src="assets/cyberpunk.webp" alt="" style="width:100%;height:100%;object-fit:cover;"></div>
+            <a href="login.html" style="width:74px; height:74px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; border:1px dashed rgba(231,178,76,.34); background:rgba(231,178,76,.05); border-radius:11px; color:#e7b24c; cursor:pointer;"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 5v14M5 12h14"/></svg></span><span style="font-size:10px; color:#94a4bb;">生成更多</span></a>
+          </div>
         </div>
-        <div class="mini">
-          <div><b>~40s</b><span>单张出图</span></div>
-          <div><b>340</b><span>剩余点数</span></div>
+        <div style="display:flex; align-items:center; gap:10px; margin-top:13px; padding:13px 15px; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.1); border-radius:14px;">
+          <div style="flex:1;"><div style="font-size:10.5px; color:#5c6b82;">模型</div><div class="mono" style="font-size:14px; font-weight:600; margin-top:4px;">gpt-image-2</div></div>
+          <div style="flex:1;"><div style="font-size:10.5px; color:#5c6b82;">出图耗时</div><div class="mono" style="font-size:14px; font-weight:600; margin-top:4px;">~40s</div></div>
+          <div style="flex:1;"><div style="font-size:10.5px; color:#5c6b82;">消耗点数</div><div class="mono" style="font-size:14px; font-weight:600; margin-top:4px; color:#e7b24c;">12</div></div>
+          <div style="display:flex; align-items:center; gap:7px; padding:9px 13px; background:rgba(45,212,191,.1); border:1px solid rgba(45,212,191,.28); border-radius:11px; color:#2dd4bf; font-size:12px; white-space:nowrap;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 6L9 17l-5-5"/></svg></span>已同步到飞书群</div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Products / Features -->
-  <section class="wrap" id="products">
-    <div class="sec-head">
-      <div class="k">Core Capabilities</div>
-      <h2>一套工作台，从找客户到出内容</h2>
-      <p>获客、文案、作图、数字人口播、资产与成本，统一在黄雀 AI 工作台里跑通。</p>
-    </div>
-    <div class="features">
-      <a class="fcard" href="workbench/leads">
-        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></div>
-        <h3>关键词获客</h3>
-        <p>关键词进，抖音/小红书评论区扒评论，AI 过滤中介噪音，输出带抖音号、属地、需求原话、主页链接的精准客户名单。</p>
-        <div class="tags"><span class="tag">意图过滤</span><span class="tag">可私信</span><span class="tag">名单导出</span></div>
+  <!-- ===== 三能力卡 ===== -->
+  <section class="wrap" style="padding:30px 40px;">
+    <div class="gTri" style="display:grid; gap:18px;">
+      <a href="workbench/leads.html" class="reveal hv-lift" style="position:relative; padding:26px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(160deg, rgba(16,24,39,.7), rgba(12,18,32,.55)); border-radius:18px; cursor:pointer; overflow:hidden; display:block;">
+        <div style="display:flex; align-items:flex-start; gap:14px;">
+          <div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:13px; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); color:#e7b24c;"><span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span></div>
+          <div style="flex:1;">
+            <div style="font-size:17px; font-weight:600;">关键词获客</div>
+            <p style="margin:9px 0 0; font-size:13.5px; line-height:1.7; color:#94a4bb;">关键词进，抖音 / 小红书评论区扒评论，AI 过滤中介噪音，输出带抖音号、属地、需求原话的精准客户名单。</p>
+          </div>
+          <div style="width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:9px; border:1px solid rgba(148,164,187,.14); color:#94a4bb;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+        </div>
       </a>
-      <a class="fcard" href="workbench/banana">
-        <div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg></div>
-        <h3>AI 作图</h3>
-        <p>用客户素材一键生成小红书封面、活动海报、品牌主视觉。gpt-image-2 出图，做同款模板，结果即资产。</p>
-        <div class="tags"><span class="tag">封面/海报</span><span class="tag">做同款</span><span class="tag">入库复用</span></div>
+      <a href="workbench/banana.html" class="reveal hv-lift" style="position:relative; padding:26px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(160deg, rgba(16,24,39,.7), rgba(12,18,32,.55)); border-radius:18px; cursor:pointer; overflow:hidden; display:block;">
+        <div style="display:flex; align-items:flex-start; gap:14px;">
+          <div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:13px; background:rgba(45,212,191,.1); border:1px solid rgba(45,212,191,.28); color:#2dd4bf;"><span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span></div>
+          <div style="flex:1;">
+            <div style="font-size:17px; font-weight:600;">AI 作图</div>
+            <p style="margin:9px 0 0; font-size:13.5px; line-height:1.7; color:#94a4bb;">用客户素材一键生成小红书封面、活动海报、品牌主视觉。gpt-image-2 出图，做同款模板，结果即资产。</p>
+          </div>
+          <div style="width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:9px; border:1px solid rgba(148,164,187,.14); color:#94a4bb;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+        </div>
       </a>
-      <a class="fcard" href="workbench/video">
-        <div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg></div>
-        <h3>数字人口播</h3>
-        <p>真人形象生成数字人首帧与口播视频，Seedance 驱动，适合美业老板出镜，一键回传客户飞书群。</p>
-        <div class="tags"><span class="tag">真人对口型</span><span class="tag">Seedance</span><span class="tag">发飞书</span></div>
+      <a href="workbench/video.html" class="reveal hv-lift" style="position:relative; padding:26px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(160deg, rgba(16,24,39,.7), rgba(12,18,32,.55)); border-radius:18px; cursor:pointer; overflow:hidden; display:block;">
+        <div style="display:flex; align-items:flex-start; gap:14px;">
+          <div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:13px; background:rgba(244,112,138,.1); border:1px solid rgba(244,112,138,.28); color:#f4708a;"><span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span></div>
+          <div style="flex:1;">
+            <div style="font-size:17px; font-weight:600;">数字人口播</div>
+            <p style="margin:9px 0 0; font-size:13.5px; line-height:1.7; color:#94a4bb;">真人形象生成数字人首帧与口播视频，Seedance 驱动，适合美业老板出镜，一键回传客户飞书群。</p>
+          </div>
+          <div style="width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:9px; border:1px solid rgba(148,164,187,.14); color:#94a4bb;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+        </div>
       </a>
     </div>
   </section>
 
-  <!-- How it works -->
-  <section class="wrap" id="how">
-    <div class="sec-head">
-      <div class="k">How It Works</div>
-      <h2>四步，从一个关键词到成交内容</h2>
+  <!-- ===== 四步管线 ===== -->
+  <section class="wrap" style="padding:46px 40px 30px;">
+    <div class="reveal" style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:30px; gap:20px; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:12px; letter-spacing:3px; color:#e7b24c; font-weight:600;">PIPELINE · 四步成交</div>
+        <h2 style="margin:12px 0 0; font-size:30px; font-weight:700; letter-spacing:-.5px;">从一个关键词，到一份精准客户名单</h2>
+      </div>
+      <div style="font-size:13px; color:#94a4bb; max-width:300px; text-align:right;">全流程自动化运转，意图过滤剔除中介与噪音</div>
     </div>
-    <div class="pipe">
-      <div class="step"><div class="num">1</div><h4>输入关键词</h4><p>如「美业获客」「皮肤管理」，选定行业与平台。</p></div>
-      <div class="step"><div class="num">2</div><h4>扒评论 · 过滤</h4><p>抓抖音/小红书评论区，AI 过滤中介与闲聊，留高意向真人。</p></div>
-      <div class="step"><div class="num">3</div><h4>出内容</h4><p>同台生成文案、封面、海报、数字人口播，做同款。</p></div>
-      <div class="step"><div class="num">4</div><h4>推送成交</h4><p>名单与作品一键回传客户飞书群，跟进转化。</p></div>
-    </div>
-  </section>
-
-  <!-- CTA -->
-  <section class="wrap" id="contact">
-    <div class="cta-band">
-      <h2>让 AI 帮你把客户和内容一起做出来</h2>
-      <p>为美业 / 电商 / IP 生意降本增效。预约一次演示，看真实名单与作品。</p>
-      <div class="hero-cta">
-        <a class="btn btn-gold" href="workbench/dashboard">进入工作台 →</a>
-        <a class="btn btn-ghost" href="login">登录账号</a>
+    <div class="gQuad" style="display:grid; gap:14px;">
+      <div class="reveal" style="position:relative; padding:24px 22px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(180deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); border-radius:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+          <div class="mono" style="font-size:30px; font-weight:700; color:rgba(231,178,76,.32);">01</div>
+          <div style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; border-radius:11px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span></div>
+        </div>
+        <div style="font-size:15.5px; font-weight:600;">输入关键词</div>
+        <p style="margin:8px 0 0; font-size:12.5px; line-height:1.65; color:#94a4bb;">如「美业获客」「皮肤管理」，选定行业与平台。</p>
+        <div style="position:absolute; top:50%; right:-9px; z-index:2; color:rgba(231,178,76,.5);"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+      </div>
+      <div class="reveal" style="position:relative; padding:24px 22px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(180deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); border-radius:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+          <div class="mono" style="font-size:30px; font-weight:700; color:rgba(231,178,76,.32);">02</div>
+          <div style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; border-radius:11px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg></span></div>
+        </div>
+        <div style="font-size:15.5px; font-weight:600;">扒评论 · 过滤</div>
+        <p style="margin:8px 0 0; font-size:12.5px; line-height:1.65; color:#94a4bb;">抓抖音 / 小红书评论区，AI 过滤中介与闲聊，留高意向真人。</p>
+        <div style="position:absolute; top:50%; right:-9px; z-index:2; color:rgba(231,178,76,.5);"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+      </div>
+      <div class="reveal" style="position:relative; padding:24px 22px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(180deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); border-radius:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+          <div class="mono" style="font-size:30px; font-weight:700; color:rgba(231,178,76,.32);">03</div>
+          <div style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; border-radius:11px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></div>
+        </div>
+        <div style="font-size:15.5px; font-weight:600;">一键出内容</div>
+        <p style="margin:8px 0 0; font-size:12.5px; line-height:1.65; color:#94a4bb;">同台生成文案、封面、海报、数字人口播，做同款。</p>
+        <div style="position:absolute; top:50%; right:-9px; z-index:2; color:rgba(231,178,76,.5);"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></div>
+      </div>
+      <div class="reveal" style="position:relative; padding:24px 22px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(180deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); border-radius:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+          <div class="mono" style="font-size:30px; font-weight:700; color:rgba(231,178,76,.32);">04</div>
+          <div style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; border-radius:11px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span></div>
+        </div>
+        <div style="font-size:15.5px; font-weight:600;">推送成交</div>
+        <p style="margin:8px 0 0; font-size:12.5px; line-height:1.65; color:#94a4bb;">名单与作品一键回传客户飞书群，跟进转化。</p>
       </div>
     </div>
   </section>
-</main>
 
-<footer id="about">
-  <div class="wrap">
-    <div class="foot-in">
-      <div class="foot-brand">
-        <a class="brand" href="#top"><img src="assets/logo_sparrow.png" alt="黄雀">黄雀 <b>AI</b></a>
-        <p>螳螂捕蝉，黄雀在后。AI 获客与内容中台，为实体与网络生意精准捕客、高效产出。</p>
+  <!-- ===== 行业背书 ===== -->
+  <section class="wrap" style="padding:40px 40px 20px;">
+    <div class="reveal" style="display:flex; align-items:center; flex-wrap:wrap; gap:14px 28px; padding:24px 30px; border:1px solid rgba(148,164,187,.1); background:linear-gradient(120deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); border-radius:18px;">
+      <div style="font-size:16px; font-weight:600; white-space:nowrap;">赋能行业 · 真实见证</div>
+      <div style="display:flex; flex-wrap:wrap; gap:9px; flex:1;">
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>美业</div>
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.6 13h11l2-8H6"/></svg></span>电商</div>
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 18l-5.9 3 1.2-6.5L2.5 9.9 9 9z"/></svg></span>IP 赋能</div>
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 20h10M12 20V10M12 10C12 7 9 4 5 5c-1 4 2 7 7 5zM12 12c0-3 3-5 6-4 .8 3.5-2 6-6 4z"/></svg></span>品牌孵化</div>
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 19V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zM6 17h13"/></svg></span>教育培训</div>
+        <div class="hv-gold" style="display:flex; align-items:center; gap:7px; padding:8px 14px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.04); border-radius:999px; font-size:13px; color:#94a4bb;"><span style="display:flex; width:14px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 9l1-5h16l1 5M4 9v11h16V9M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/></svg></span>本地生活</div>
       </div>
-      <div class="foot-col">
-        <h5>产品</h5>
-        <a href="workbench/leads">关键词获客</a>
-        <a href="workbench/banana">AI 作图</a>
-        <a href="workbench/video">数字人口播</a>
-        <a href="workbench/recharge">点数与价格</a>
-      </div>
-      <div class="foot-col">
-        <h5>平台</h5>
-        <a href="workbench/dashboard">今日工作台</a>
-        <a href="workbench/assets">资产库</a>
-        <a href="login">登录</a>
-        <a href="#contact">预约演示</a>
-      </div>
-      <div class="foot-col">
-        <h5>公司</h5>
-        <a href="#about">关于黄雀</a>
-        <a href="#about">联系合作</a>
-        <a href="#about">加入我们</a>
+      <div style="display:flex; align-items:center; gap:12px; white-space:nowrap;">
+        <span class="mono" style="font-size:18px; font-weight:700; color:#e7b24c;">2000+</span>
+        <span style="font-size:13px; color:#94a4bb;">企业与团队正在使用</span>
       </div>
     </div>
-    <div class="foot-bottom">
-      <span>© 2026 广州黄雀传媒有限公司</span>
-      <span>·</span>
-      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">粤ICP备2025447525号-2</a>
-      <span class="spacer"></span>
-      <span>正当商业触达 · 遵守平台规则</span>
-    </div>
-  </div>
-</footer>
+  </section>
 
-<script>
-(function(){
-  "use strict";
-  // ---- 金色粒子星网背景 ----
-  var cv=document.getElementById('bgFx');
-  if(cv&&cv.getContext){
-    var ctx=cv.getContext('2d');
-    var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
-    var w,h,dpr=Math.min(window.devicePixelRatio||1,2),ps=[],mouse={x:-9999,y:-9999},raf;
-    function rs(){w=innerWidth;h=innerHeight;cv.width=w*dpr;cv.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);var n=Math.min(78,Math.round(w*h/16000));ps=[];for(var i=0;i<Math.max(18,n);i++)ps.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.3,vy:(Math.random()-.5)*.3,r:Math.random()*1.5+.6});}
-    function frame(){ctx.clearRect(0,0,w,h);ctx.globalAlpha=.6;var i,a,b;for(i=0;i<ps.length;i++){var p=ps[i];if(!reduced){p.x+=p.vx;p.y+=p.vy;var dx=p.x-mouse.x,dy=p.y-mouse.y,d2=dx*dx+dy*dy;if(d2<14400){var d=Math.sqrt(d2)||1,f=(120-d)/120*.6;p.x+=dx/d*f;p.y+=dy/d*f;}if(p.x<0||p.x>w)p.vx*=-1;if(p.y<0||p.y>h)p.vy*=-1;}ctx.beginPath();ctx.fillStyle='rgba(231,178,76,.9)';ctx.shadowColor='rgba(231,178,76,.9)';ctx.shadowBlur=6;ctx.arc(p.x,p.y,p.r,0,6.283);ctx.fill();}ctx.shadowBlur=0;for(a=0;a<ps.length;a++)for(b=a+1;b<ps.length;b++){var A=ps[a],B=ps[b],qx=A.x-B.x,qy=A.y-B.y,dd=Math.sqrt(qx*qx+qy*qy);if(dd<130){ctx.globalAlpha=.6*(1-dd/130)*.45;ctx.strokeStyle='rgba(231,178,76,1)';ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();}}raf=reduced?0:requestAnimationFrame(frame);}
-    rs();frame();addEventListener('resize',rs);addEventListener('mousemove',function(e){mouse.x=e.clientX;mouse.y=e.clientY;});
-  }
-  // ---- 滚动入场 ----
-  try{
-    document.documentElement.classList.add('fx');
-    var els=[].slice.call(document.querySelectorAll('.hero-left,.showcase,.fcard,.step,.cta-band,.sec-head'));
-    els.forEach(function(el,i){el.classList.add('reveal');el.style.transitionDelay=(Math.min(i,6)*0.05)+'s';});
-    if('IntersectionObserver' in window){
-      var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}});},{threshold:.15});
-      els.forEach(function(el){io.observe(el);});
-    }else{els.forEach(function(el){el.classList.add('in');});}
-  }catch(e){}
-})();
-</script>
+  <!-- ===== 页脚 ===== -->
+  <footer id="about" style="margin-top:40px; border-top:1px solid rgba(148,164,187,.1); background:linear-gradient(180deg, transparent, rgba(7,11,19,.6));">
+    <div class="wrap gFooter" style="padding:48px 40px 22px; display:grid; gap:30px;">
+      <div>
+        <div style="display:flex; align-items:center; gap:10px;"><div style="height:26px; display:flex; align-items:center;"><img src="assets/cloud/logo-bird.png" alt="黄雀" style="height:100%;width:auto;display:block;filter:drop-shadow(0 0 6px rgba(231,178,76,.4));"></div><div style="font-size:17px; font-weight:700;">黄雀 AI</div></div>
+        <p style="margin:14px 0 0; font-size:12.5px; line-height:1.8; color:#5c6b82; max-width:200px;">评论区获客 · AI 内容成交<br>让每一条评论都成为生意机会</p>
+      </div>
+      <div>
+        <div style="font-size:13px; font-weight:600; color:#94a4bb; margin-bottom:14px;">产品</div>
+        <a href="workbench/leads.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">关键词获客</a>
+        <a href="workbench/banana.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">AI 作图</a>
+        <a href="workbench/video.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">数字人口播</a>
+        <a href="workbench/recharge.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">点数与价格</a>
+      </div>
+      <div>
+        <div style="font-size:13px; font-weight:600; color:#94a4bb; margin-bottom:14px;">平台</div>
+        <a href="workbench/dashboard.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">今日工作台</a>
+        <a href="workbench/assets.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">资产库</a>
+        <a href="login.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">登录</a>
+        <a href="login.html" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">预约演示</a>
+      </div>
+      <div>
+        <div style="font-size:13px; font-weight:600; color:#94a4bb; margin-bottom:14px;">公司</div>
+        <a href="#about" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">关于黄雀</a>
+        <a href="#about" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">联系合作</a>
+        <a href="#about" class="lk" style="display:block; font-size:12.5px; color:#5c6b82; margin-bottom:11px;">加入我们</a>
+      </div>
+      <div style="padding:20px; border:1px solid rgba(231,178,76,.2); background:rgba(231,178,76,.05); border-radius:15px;">
+        <div style="display:flex; align-items:center; gap:8px; font-size:14px; font-weight:600;"><span style="display:flex; width:16px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><path d="M5 14h1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1 2 2 0 0 1-2-2v-2a2 2 0 0 1 1-2zM19 14h-1a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1 2 2 0 0 0 2-2v-2a2 2 0 0 0-1-2z"/></svg></span>专属顾问 1 对 1 服务</div>
+        <div style="font-size:12px; color:#94a4bb; margin:9px 0 14px;">立即预约演示，获取专属方案</div>
+        <a href="login.html" class="btn-gold" style="display:block; text-align:center; width:100%; padding:11px; font-size:13.5px; font-weight:600; border-radius:10px;">立即预约</a>
+      </div>
+    </div>
+    <div class="wrap" style="padding:18px 40px; border-top:1px solid rgba(148,164,187,.08); display:flex; align-items:center; justify-content:space-between; font-size:11.5px; color:#5c6b82; flex-wrap:wrap; gap:8px;">
+      <div>© 2026 广州黄雀传媒有限公司 All rights reserved.</div>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" class="mono lk" style="color:#5c6b82;">粤ICP备2025447525号-2</a>
+    </div>
+  </footer>
+</div>
+
+<script src="assets/cloud.js"></script>
 </body>
 </html>

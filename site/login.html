@@ -4,159 +4,174 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>登录 · 黄雀 AI 工作台</title>
-<link rel="icon" href="assets/logo_sparrow.png">
+<link rel="icon" href="assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/cloud.css">
 <style>
-  :root{
-    --bg:#050811; --panel:#0d1320; --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.16);
-    --txt:#eaf0fb; --muted:#aeb8cc; --faint:#6f7a92;
-    --gold:#e7b24c; --gold2:#f4cd6f; --cyan:#35d6c6; --red:#ff5566; --green:#39d98a;
-    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
-    --mono:"SF Mono",ui-monospace,Menlo,monospace;
+  .gLogin{ grid-template-columns:1.05fr .95fr; }
+  @media (max-width:900px){
+    .brand-panel{ display:none !important; }
+    .gLogin{ grid-template-columns:1fr !important; }
+    .login-right{ margin-left:0 !important; }
   }
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{background:var(--bg);color:var(--txt);font-family:var(--sans);-webkit-font-smoothing:antialiased}
-  a{color:inherit;text-decoration:none}
-  .page{min-height:100vh;display:grid;grid-template-columns:1.05fr .95fr}
-
-  /* ===== Left brand panel ===== */
-  .brandside{
-    position:relative;overflow:hidden;padding:54px 56px;display:flex;flex-direction:column;
-    background:
-      radial-gradient(700px 460px at 25% 70%, rgba(231,178,76,.18), transparent 60%),
-      radial-gradient(600px 420px at 80% 12%, rgba(53,214,198,.10), transparent 55%),
-      #060a14;
-    border-right:1px solid var(--line);
-  }
-  .brandside .logo{display:flex;align-items:center;gap:11px;font-weight:800;font-size:20px}
-  .brandside .logo img{width:34px;height:34px}
-  .brandside .logo b{color:var(--gold)}
-  .brandside .mid{margin-top:auto}
-  .brandside h1{font-size:46px;line-height:1.15;font-weight:900;letter-spacing:-.5px}
-  .brandside h1 b{color:var(--gold)}
-  .brandside .sub{margin-top:18px;font-size:15px;color:var(--muted);max-width:420px}
-  .brandside .stats{display:flex;gap:34px;margin-top:34px}
-  .brandside .stats .n{font-family:var(--mono);font-size:26px;font-weight:800;color:var(--gold2);line-height:1}
-  .brandside .stats .n.cyan{color:var(--cyan)}
-  .brandside .stats .l{font-size:12px;color:var(--faint);margin-top:6px}
-  .sparrow-glow{position:absolute;right:-60px;bottom:-40px;width:360px;opacity:.18;filter:drop-shadow(0 0 40px var(--gold))}
-  .brandside .copyright{margin-top:42px;font-size:12px;color:var(--faint)}
-
-  /* ===== Right login ===== */
-  .loginside{display:flex;align-items:center;justify-content:center;padding:40px 28px;
-    background:radial-gradient(600px 500px at 70% 20%, rgba(231,178,76,.06), transparent 60%);}
-  .card{
-    width:100%;max-width:392px;border:1px solid var(--line2);border-radius:20px;
-    background:linear-gradient(180deg,rgba(16,22,34,.95),rgba(10,15,25,.95));
-    box-shadow:0 30px 80px rgba(0,0,0,.5);padding:38px 34px;
-  }
-  .card .top{text-align:center;margin-bottom:26px}
-  .card .top img{width:40px;height:40px}
-  .card .top h2{font-size:21px;font-weight:850;margin-top:12px}
-  .card .top p{font-size:13px;color:var(--faint);margin-top:7px}
-  .field{margin-bottom:16px}
-  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:8px}
-  .field input{
-    width:100%;background:#0a1018;border:1px solid var(--line2);border-radius:11px;
-    padding:13px 14px;color:var(--txt);font-size:14.5px;transition:.15s;
-  }
-  .field input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(231,178,76,.12)}
-  .field input::placeholder{color:#54607a}
-  .row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;margin:-4px 0 18px}
-  .row a{color:var(--faint)}
-  .row a:hover{color:var(--cyan)}
-  .row label{display:flex;align-items:center;gap:7px;color:var(--faint);cursor:pointer}
-  .submit{
-    width:100%;border:none;cursor:pointer;border-radius:12px;padding:14px;font-size:15.5px;font-weight:800;
-    color:#0a0e16;background:linear-gradient(135deg,var(--gold2),var(--gold));
-    box-shadow:0 10px 26px rgba(231,178,76,.28);transition:.16s;
-  }
-  .submit:hover{transform:translateY(-1px)}
-  .submit:disabled{opacity:.6;transform:none;cursor:default}
-  .msg{min-height:18px;margin-top:13px;font-size:12.5px;text-align:center}
-  .msg.err{color:var(--red)}
-  .msg.ok{color:var(--green)}
-  .alt{margin-top:20px;text-align:center;font-size:13px;color:var(--faint)}
-  .alt a{color:var(--gold2)}
-  .alt a:hover{text-decoration:underline}
-
-  @media (max-width:860px){
-    .page{grid-template-columns:1fr}
-    .brandside{display:none}
-    .loginside{min-height:100vh}
-  }
-  /* premium 动效：品牌区金色粒子 */
-  .brandside #bgFx{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.7;}
-  .brandside>.logo,.brandside>.mid,.brandside>.copyright{position:relative;z-index:1;}
-  .brandside>.sparrow-glow{z-index:1;}
 </style>
 </head>
-<body>
-<div class="page">
-  <!-- Brand panel -->
-  <aside class="brandside">
-    <canvas id="bgFx" aria-hidden="true"></canvas>
-    <a class="logo" href="/"><img src="assets/logo_sparrow.png" alt="黄雀">黄雀 <b>AI</b></a>
-    <img class="sparrow-glow" src="assets/logo_sparrow.png" alt="">
-    <div class="mid">
-      <h1>评论区获客，<br><b>AI 内容</b>成交。</h1>
-      <p class="sub">登录进入你的获客与内容工作台：关键词扒精准客户、AI 作图、数字人口播，一台搞定。</p>
-      <div class="stats">
-        <div><div class="n">1,770+</div><div class="l">采集评论</div></div>
-        <div><div class="n cyan">3,168</div><div class="l">账号线索池</div></div>
-        <div><div class="n">100+</div><div class="l">精准名单</div></div>
-        <div><div class="n cyan">80%</div><div class="l">回复率</div></div>
+<body style="overflow:hidden;">
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="gLogin" style="position:relative; z-index:1; min-height:100vh; display:grid; overflow:hidden;">
+  <!-- ===== 左 · 品牌场景区 ===== -->
+  <div class="brand-panel" style="position:relative; overflow:hidden; padding:54px 56px; display:flex; flex-direction:column;">
+    <div style="position:absolute; left:-10%; top:8%; width:70%; height:60%; background:radial-gradient(closest-side, rgba(231,178,76,.16), transparent 72%); filter:blur(28px); pointer-events:none;"></div>
+    <img src="assets/cloud/logo-bird.png" alt="" style="position:absolute; right:-6%; bottom:4%; width:46%; height:auto; opacity:.10; filter:drop-shadow(0 0 40px rgba(231,178,76,.4)); pointer-events:none;">
+    <a href="index.html" title="返回首页" style="position:relative; display:flex; align-items:center; gap:11px; cursor:pointer; z-index:2;">
+      <div style="height:46px; display:flex; align-items:center;"><img src="assets/cloud/logo-bird.png" alt="黄雀" style="height:100%;width:auto;display:block;filter:drop-shadow(0 0 8px rgba(231,178,76,.45));"></div>
+      <div style="font-size:24px; font-weight:700; letter-spacing:.5px; color:#e7b24c;">黄雀 <span style="font-weight:400;">AI</span></div>
+    </a>
+    <div style="position:relative; margin:auto 0; z-index:2;">
+      <div style="display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border:1px solid rgba(231,178,76,.26); background:rgba(231,178,76,.06); border-radius:999px; font-size:11.5px; color:#e7b24c; margin-bottom:22px;"><span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>黄雀 AI · 全栈 AI 服务平台</div>
+      <h1 style="margin:0; font-size:38px; line-height:1.2; font-weight:900; letter-spacing:-1px;">不止获客成交<br><span style="background:linear-gradient(120deg,#f6d488,#e7b24c 60%,#c8902f); -webkit-background-clip:text; background-clip:text; color:transparent;">全栈 AI 一站直达</span></h1>
+      <p style="margin:18px 0 0; font-size:13.5px; line-height:1.85; color:#94a4bb; max-width:400px;">关键词获客 · AI 作图 · 数字人视频 · 智能分发 —— 一个平台，覆盖内容生意全链路。</p>
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:26px; max-width:460px;">
+        <div style="display:flex; flex-direction:column; align-items:center; text-align:center;">
+          <div style="display:flex; width:20px; height:20px; color:#e7b24c; margin-bottom:8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="mono" style="font-size:20px; font-weight:700; color:#e7b24c; line-height:1;">1,770+</div>
+          <div style="font-size:11px; color:#94a4bb; margin-top:6px;">采集评论</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; text-align:center;">
+          <div style="display:flex; width:20px; height:20px; color:#e7b24c; margin-bottom:8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <div class="mono" style="font-size:20px; font-weight:700; color:#e7b24c; line-height:1;">3,168</div>
+          <div style="font-size:11px; color:#94a4bb; margin-top:6px;">账号线索池</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; text-align:center;">
+          <div style="display:flex; width:20px; height:20px; color:#e7b24c; margin-bottom:8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></div>
+          <div class="mono" style="font-size:20px; font-weight:700; color:#e7b24c; line-height:1;">100+</div>
+          <div style="font-size:11px; color:#94a4bb; margin-top:6px;">精准名单</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; text-align:center;">
+          <div style="display:flex; width:20px; height:20px; color:#e7b24c; margin-bottom:8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></div>
+          <div class="mono" style="font-size:20px; font-weight:700; color:#e7b24c; line-height:1;">80%</div>
+          <div style="font-size:11px; color:#94a4bb; margin-top:6px;">回复率</div>
+        </div>
       </div>
     </div>
-    <div class="copyright">© 2026 广州黄雀传媒有限公司 · 粤ICP备2025447525号-2</div>
-  </aside>
+    <div style="position:relative; z-index:2; font-size:11.5px; color:#5c6b82;">© 2026 黄雀传媒（广州）有限公司 · 版权所有 · <span class="mono">粤ICP备2025447525号-2</span></div>
+  </div>
 
-  <!-- Login card -->
-  <main class="loginside">
-    <form class="card" id="loginForm" autocomplete="on">
-      <div class="top">
-        <img src="assets/logo_sparrow.png" alt="黄雀">
-        <h2>黄雀 AI 工作台</h2>
-        <p>登录账号，进入获客与内容生产</p>
+  <!-- ===== 右 · 登录区 ===== -->
+  <div class="login-right" style="position:relative; z-index:1; display:flex; align-items:center; justify-content:center; padding:26px; margin-left:-4%;">
+    <div style="position:absolute; left:-22%; top:0; bottom:0; width:70%; background:radial-gradient(60% 75% at 30% 62%, rgba(231,178,76,.16), rgba(231,178,76,.05) 46%, transparent 74%); pointer-events:none;"></div>
+    <div style="position:absolute; right:-8%; top:50%; transform:translateY(-50%); width:860px; height:860px; background:radial-gradient(circle, rgba(231,178,76,.16), rgba(231,178,76,.05) 38%, transparent 66%); pointer-events:none;"></div>
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" style="position:absolute; right:-16%; top:50%; transform:translateY(-50%); width:1060px; height:1060px; pointer-events:none;">
+      <defs>
+        <radialGradient id="hq-arcfade" cx="50%" cy="50%" r="50%">
+          <stop offset="60%" stop-color="#e7b24c" stop-opacity="0"></stop>
+          <stop offset="82%" stop-color="#f4cd72" stop-opacity=".5"></stop>
+          <stop offset="100%" stop-color="#e7b24c" stop-opacity="0"></stop>
+        </radialGradient>
+        <linearGradient id="hq-sweep1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#f6d488" stop-opacity="0"></stop>
+          <stop offset="50%" stop-color="#f6d488" stop-opacity=".85"></stop>
+          <stop offset="100%" stop-color="#f6d488" stop-opacity="0"></stop>
+        </linearGradient>
+        <linearGradient id="hq-sweep2" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#e7b24c" stop-opacity="0"></stop>
+          <stop offset="50%" stop-color="#e7b24c" stop-opacity=".6"></stop>
+          <stop offset="100%" stop-color="#e7b24c" stop-opacity="0"></stop>
+        </linearGradient>
+        <filter id="hq-soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2"></feGaussianBlur></filter>
+      </defs>
+      <g fill="none" stroke="#e7b24c">
+        <circle cx="500" cy="500" r="150" stroke-opacity=".1" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="230" stroke-opacity=".08" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="320" stroke-opacity=".06" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="410" stroke-opacity=".045" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="500" stroke-opacity=".03" stroke-width="1.2"></circle>
+      </g>
+      <circle cx="500" cy="500" r="320" fill="none" stroke="url(#hq-arcfade)" stroke-width="42" opacity=".4"></circle>
+      <g filter="url(#hq-soft)" style="transform-box:fill-box; transform-origin:center; animation:hq-spin 72s linear infinite;">
+        <circle cx="500" cy="500" r="270" fill="none" stroke="url(#hq-sweep1)" stroke-width="2.4" stroke-dasharray="360 1340" stroke-linecap="round"></circle>
+        <circle cx="500" cy="500" r="270" fill="none" stroke="url(#hq-sweep2)" stroke-width="1.6" stroke-dasharray="120 1580" stroke-dashoffset="700" stroke-linecap="round"></circle>
+      </g>
+      <g filter="url(#hq-soft)" style="transform-box:fill-box; transform-origin:center; animation:hq-spin 108s linear infinite reverse;">
+        <circle cx="500" cy="500" r="400" fill="none" stroke="url(#hq-sweep2)" stroke-width="2" stroke-dasharray="460 2050" stroke-linecap="round"></circle>
+        <circle cx="500" cy="500" r="466" fill="none" stroke="url(#hq-sweep1)" stroke-width="1.4" stroke-dasharray="200 2730" stroke-dashoffset="1100" stroke-linecap="round"></circle>
+      </g>
+    </svg>
+
+    <div style="position:relative; width:100%; max-width:424px; padding:38px 38px 32px; border:1px solid rgba(231,178,76,.2); border-radius:24px; background:linear-gradient(165deg, rgba(28,23,13,.5), rgba(12,16,26,.42)); backdrop-filter:blur(26px) saturate(1.2); -webkit-backdrop-filter:blur(26px) saturate(1.2); box-shadow:0 40px 100px -30px rgba(0,0,0,.85), 0 0 0 1px rgba(231,178,76,.05), inset 0 1px 0 rgba(255,255,255,.08), inset 0 -1px 30px rgba(231,178,76,.04);">
+      <div style="text-align:center; font-size:21px; font-weight:700;">欢迎回来 👋</div>
+      <div style="text-align:center; font-size:13px; color:#94a4bb; margin-top:8px;">登录黄雀 AI 工作台，开启智能获客与内容创作</div>
+      <div style="display:flex; gap:28px; margin-top:26px; border-bottom:1px solid rgba(148,164,187,.1);">
+        <div id="tabPhone" style="padding:11px 2px; font-size:14.5px; font-weight:600; cursor:pointer; white-space:nowrap; border-bottom:2px solid #e7b24c; color:#eaf1fa; margin-bottom:-1px; transition:.18s;">手机号登录</div>
+        <div id="tabPwd" style="padding:11px 2px; font-size:14.5px; font-weight:600; cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; color:#94a4bb; margin-bottom:-1px; transition:.18s;">密码登录</div>
       </div>
-      <div class="field">
-        <label for="username">账号</label>
-        <input id="username" name="username" type="text" placeholder="手机号 / 用户名" autocomplete="username" required>
+      <div style="margin-top:22px; display:flex; flex-direction:column; gap:14px;">
+        <div style="display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+          <input id="username" placeholder="请输入手机号 / 账号" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
+        <div id="rowPhone" style="display:flex; gap:10px;">
+          <div style="flex:1; display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+            <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></span>
+            <input id="code" placeholder="请输入验证码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+          </div>
+          <button type="button" id="getCode" style="flex:none; padding:0 15px; height:48px; white-space:nowrap; font-size:13px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:12px; cursor:pointer; font-family:inherit; transition:.18s;">获取验证码</button>
+        </div>
+        <div id="rowPwd" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+          <input id="password" type="password" placeholder="请输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
       </div>
-      <div class="field">
-        <label for="password">密码</label>
-        <input id="password" name="password" type="password" placeholder="请输入密码" autocomplete="current-password" required>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px;">
+        <label id="remember" style="display:flex; align-items:center; gap:8px; font-size:13px; color:#94a4bb; cursor:pointer;">
+          <span id="rememberBox" style="width:16px; height:16px; border-radius:5px; border:1.5px solid rgba(148,164,187,.3); background:transparent; display:flex; align-items:center; justify-content:center; color:#1a1206; transition:.16s;"><span id="rememberMark" style="display:flex; width:11px; opacity:0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 6L9 17l-5-5"/></svg></span></span>记住我
+        </label>
+        <a class="lk" style="font-size:13px; color:#94a4bb; cursor:pointer;">忘记密码？</a>
       </div>
-      <div class="row">
-        <label><input type="checkbox" id="remember" checked> 记住我</label>
-        <a href="#">忘记密码？</a>
-      </div>
-      <button class="submit" type="submit" id="submitBtn">登 录</button>
-      <div class="msg" id="msg"></div>
-      <div class="alt">还没有账号？ <a href="#" id="toRegister">注册账号</a> &nbsp;·&nbsp; <a href="workbench/leads">团队口令登录</a></div>
-    </form>
-  </main>
+      <button type="button" id="submitBtn" class="btn-gold" style="width:100%; height:48px; margin-top:22px; font-size:15px; font-weight:700; letter-spacing:2px; border-radius:12px; box-shadow:0 14px 34px -12px rgba(231,178,76,.7);">登 录</button>
+      <div id="msg" style="text-align:center; font-size:12.5px; margin-top:12px; min-height:16px; color:#f4708a;"></div>
+      <div style="display:flex; align-items:center; gap:14px; margin:16px 0 16px; color:#5c6b82; font-size:12px;"><div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div>或<div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div></div>
+      <div id="teamLogin" style="text-align:center; font-size:14px; color:#2dd4bf; cursor:pointer; font-weight:500;">团队口令登录 →</div>
+      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:18px;">登录即代表您同意 <span style="color:#94a4bb;">《用户协议》</span> 与 <span style="color:#94a4bb;">《隐私政策》</span></div>
+    </div>
+  </div>
 </div>
 
+<script src="assets/cloud.js"></script>
 <script>
 (function(){
   "use strict";
-  var f=document.getElementById("loginForm");
-  var msg=document.getElementById("msg");
-  var btn=document.getElementById("submitBtn");
-  function setMsg(t,kind){ msg.textContent=t||""; msg.className="msg"+(kind?(" "+kind):""); }
+  var phone=true, remember=false;
+  var tabPhone=document.getElementById("tabPhone"), tabPwd=document.getElementById("tabPwd");
+  var rowPhone=document.getElementById("rowPhone"), rowPwd=document.getElementById("rowPwd");
+  var msg=document.getElementById("msg"), btn=document.getElementById("submitBtn");
+  function setMsg(t,kind){ msg.textContent=t||""; msg.style.color=(kind==="ok")?"#2bd576":(kind==="err"?"#f4708a":"#94a4bb"); }
+  function setTab(p){
+    phone=p;
+    tabPhone.style.borderBottomColor=p?"#e7b24c":"transparent"; tabPhone.style.color=p?"#eaf1fa":"#94a4bb";
+    tabPwd.style.borderBottomColor=p?"transparent":"#e7b24c"; tabPwd.style.color=p?"#94a4bb":"#eaf1fa";
+    rowPhone.style.display=p?"flex":"none"; rowPwd.style.display=p?"none":"flex";
+  }
+  tabPhone.onclick=function(){setTab(true);}; tabPwd.onclick=function(){setTab(false);};
+  document.getElementById("remember").onclick=function(){
+    remember=!remember;
+    document.getElementById("rememberBox").style.background=remember?"#e7b24c":"transparent";
+    document.getElementById("rememberBox").style.borderColor=remember?"#e7b24c":"rgba(148,164,187,.3)";
+    document.getElementById("rememberMark").style.opacity=remember?"1":"0";
+  };
+  document.getElementById("getCode").onclick=function(){ setMsg("验证码登录即将上线，请用密码登录","err"); };
 
-  // 若已登录则直接进工作台
-  try{ if(localStorage.getItem("hq_token")){ /* 可选：自动跳转，留给后端校验后再开 */ } }catch(e){}
-
-  f.addEventListener("submit", function(e){
-    e.preventDefault();
-    var username=document.getElementById("username").value.trim();
-    var password=document.getElementById("password").value;
-    if(!username||!password){ setMsg("请填写账号和密码","err"); return; }
-    btn.disabled=true; setMsg("登录中…");
+  function doLogin(){
+    var username=(document.getElementById("username").value||"").trim();
+    var secret=phone ? (document.getElementById("code").value||"") : (document.getElementById("password").value||"");
+    if(!username||!secret){ setMsg(phone?"请填写账号和验证码":"请填写账号和密码","err"); return; }
+    btn.disabled=true; btn.style.opacity=".7"; setMsg("登录中…");
     fetch("/api/auth/login",{
       method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({username:username,password:password})
+      body:JSON.stringify({username:username,password:secret})
     }).then(function(r){
       if(r.status===404){ throw new Error("__nobackend__"); }
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
@@ -166,32 +181,22 @@
         setMsg("登录成功，正在进入…","ok");
         var rd=new URLSearchParams(location.search).get("redirect");
         var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : "dashboard";
-        location.href="workbench/"+dest;
+        location.href="workbench/"+dest+".html";
       }else{
-        btn.disabled=false; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
+        btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
       }
     }).catch(function(err){
-      btn.disabled=false;
+      btn.disabled=false; btn.style.opacity="1";
       if(err&&err.message==="__nobackend__"){ setMsg("登录服务即将上线（账号体系开发中）","err"); }
       else{ setMsg("网络错误，请重试","err"); }
     });
+  }
+  btn.onclick=doLogin;
+  document.getElementById("teamLogin").onclick=doLogin;
+  [["username","code","password"]].forEach(function(){});
+  ["username","code","password"].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
   });
-
-  document.getElementById("toRegister").addEventListener("click", function(e){
-    e.preventDefault(); setMsg("注册开放中，请联系管理员开通账号","ok");
-  });
-})();
-</script>
-<script>
-(function(){
-  "use strict";
-  var cv=document.getElementById('bgFx'); if(!cv||!cv.getContext)return;
-  var ctx=cv.getContext('2d');
-  var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
-  var w,h,dpr=Math.min(window.devicePixelRatio||1,2),ps=[],mouse={x:-9999,y:-9999},raf;
-  function rs(){var par=cv.parentElement;w=par.clientWidth;h=par.clientHeight;if(w<2){requestAnimationFrame(rs);return;}cv.width=w*dpr;cv.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);var n=Math.min(56,Math.round(w*h/15000));ps=[];for(var i=0;i<Math.max(14,n);i++)ps.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.3,vy:(Math.random()-.5)*.3,r:Math.random()*1.5+.6});}
-  function frame(){ctx.clearRect(0,0,w,h);ctx.globalAlpha=.7;var i,a,b;for(i=0;i<ps.length;i++){var p=ps[i];if(!reduced){p.x+=p.vx;p.y+=p.vy;var dx=p.x-mouse.x,dy=p.y-mouse.y,d2=dx*dx+dy*dy;if(d2<12100){var d=Math.sqrt(d2)||1,f=(110-d)/110*.6;p.x+=dx/d*f;p.y+=dy/d*f;}if(p.x<0||p.x>w)p.vx*=-1;if(p.y<0||p.y>h)p.vy*=-1;}ctx.beginPath();ctx.fillStyle='rgba(231,178,76,.9)';ctx.shadowColor='rgba(231,178,76,.9)';ctx.shadowBlur=6;ctx.arc(p.x,p.y,p.r,0,6.283);ctx.fill();}ctx.shadowBlur=0;for(a=0;a<ps.length;a++)for(b=a+1;b<ps.length;b++){var A=ps[a],B=ps[b],qx=A.x-B.x,qy=A.y-B.y,dd=Math.sqrt(qx*qx+qy*qy);if(dd<120){ctx.globalAlpha=.7*(1-dd/120)*.5;ctx.strokeStyle='rgba(231,178,76,1)';ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();}}raf=reduced?0:requestAnimationFrame(frame);}
-  rs();frame();addEventListener('resize',rs);cv.parentElement.addEventListener('mousemove',function(e){var r=cv.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;});
 })();
 </script>
 </body>

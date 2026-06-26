@@ -3,164 +3,189 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>黄雀 AI 工作台 · 点数充值</title>
-<link rel="icon" href="assets/logo_sparrow.png">
-<link rel="stylesheet" href="shell.css">
+<title>充值 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/cloud.css">
 <style>
-  .rc-wrap{padding:22px 26px 50px;max-width:1180px;}
-  .balance{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:14px;margin-bottom:26px;}
-  .bcard{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:20px;position:relative;overflow:hidden;}
-  .bcard.main{background:linear-gradient(135deg,rgba(231,178,76,.10),var(--panel));border-color:rgba(231,178,76,.3);}
-  .bcard .l{font-size:12.5px;color:var(--txt-dim);font-weight:600;}
-  .bcard .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:34px;font-weight:800;line-height:1;margin-top:10px;color:var(--txt);}
-  .bcard.main .v{color:var(--gold-soft);font-size:42px;}
-  .bcard .h{font-size:11px;color:var(--txt-faint);margin-top:7px;}
-  .bcard .glow{position:absolute;top:-40px;right:-30px;width:120px;height:120px;border-radius:50%;background:var(--gold);filter:blur(50px);opacity:.16;}
-
-  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:10px;}
-  .tier{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:22px 20px;position:relative;transition:.16s;text-align:center;}
-  .tier:hover{border-color:var(--line-strong);transform:translateY(-3px);}
-  .tier.reco{border-color:rgba(231,178,76,.5);background:linear-gradient(180deg,rgba(231,178,76,.07),var(--panel));}
-  .tier .rtag{position:absolute;top:-10px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:800;color:#0a0e16;background:linear-gradient(135deg,var(--gold-soft),var(--gold));padding:3px 13px;border-radius:999px;letter-spacing:1px;}
-  .tier .pn{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--gold-soft);line-height:1;}
-  .tier .pn small{font-size:13px;color:var(--txt-dim);font-weight:600;}
-  .tier .price{font-size:24px;font-weight:800;margin:12px 0 3px;}
-  .tier .price .c{font-size:15px;color:var(--txt-dim);font-weight:600;}
-  .tier .bonus{font-size:12px;color:var(--green);min-height:17px;font-weight:600;}
-  .tier .buy{margin-top:16px;width:100%;padding:11px;border-radius:10px;font-weight:800;font-size:14px;background:var(--surface);border:1px solid var(--line);color:var(--txt);transition:.15s;}
-  .tier.reco .buy{background:linear-gradient(135deg,var(--gold-soft),var(--gold));color:#0a0e16;border:0;}
-  .tier .buy:hover{border-color:var(--gold);color:var(--gold-soft);}
-  .tier.reco .buy:hover{color:#0a0e16;filter:brightness(1.05);}
-
-  .pay-row{display:flex;gap:12px;margin-top:4px;}
-  .pay{display:flex;align-items:center;gap:10px;padding:12px 18px;border-radius:11px;background:var(--surface-2);border:1px solid var(--line);font-size:13.5px;cursor:pointer;transition:.15s;}
-  .pay.on{border-color:var(--gold);box-shadow:0 0 0 2px rgba(231,178,76,.12);}
-  .pay .dot{width:15px;height:15px;border-radius:50%;border:2px solid var(--line-strong);flex:0 0 auto;}
-  .pay.on .dot{border-color:var(--gold);background:radial-gradient(circle,var(--gold) 38%,transparent 42%);}
-  .pay .wx{color:#3eb96f;font-weight:700;} .pay .zfb{color:#2f8fe6;font-weight:700;}
-
-  .htable{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;overflow:hidden;}
-  .htable th{text-align:left;font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--txt-faint);padding:11px 16px;background:var(--surface-2);border-bottom:1px solid var(--line-soft);white-space:nowrap;}
-  .htable td{padding:11px 16px;border-bottom:1px solid var(--line-soft);color:var(--txt-dim);}
-  .htable tr:last-child td{border-bottom:none;}
-  .htable .out{color:var(--red);font-family:var(--mono);}
-  .htable .in{color:var(--green);font-family:var(--mono);}
-  .htable .bal{font-family:var(--mono);color:var(--txt);}
-
-  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;padding:12px 18px;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;box-shadow:0 16px 44px rgba(0,0,0,.5);z-index:50;}
-  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
-  .demo-note{font-size:11.5px;color:var(--warn);background:rgba(224,169,60,.1);border:1px solid rgba(224,169,60,.28);border-radius:8px;padding:4px 10px;}
-
-  @media (max-width:1080px){ .balance{grid-template-columns:1fr 1fr;} .tiers{grid-template-columns:1fr 1fr;} }
+  body{ overflow:hidden; }
+  .gPkg{ grid-template-columns:repeat(4,1fr); }
+  .gPay{ grid-template-columns:repeat(2,1fr); }
+  .txrow{ transition:.14s; }
+  .txrow:hover{ background:rgba(231,178,76,.03); }
+  .txscroll{ max-height:368px; overflow:auto; }
+  .txhead{ position:sticky; top:0; z-index:2; background:rgba(10,15,26,.96); backdrop-filter:blur(8px); }
+  @media (max-width:1100px){ .gPkg{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:620px){ .gPkg{ grid-template-columns:1fr;} .gPay{ grid-template-columns:1fr;} }
 </style>
-<script src="auth-guard.js"></script>
 </head>
 <body>
-<div class="app">
-  <aside class="rail">
-    <div class="logo"><img src="assets/logo_sparrow.png" alt="黄雀"></div>
-    <a class="navbtn" href="inspiration"><svg viewBox="0 0 24 24"><path d="M12 3l2.3 5.3 5.7.5-4.3 3.8 1.3 5.6L12 20.3 7 18l1.3-5.6L4 8.6l5.7-.5z"/></svg><span class="lb">灵感</span></a>
-    <a class="navbtn" href="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="lb">今日</span></a>
-    <a class="navbtn" href="leads"><svg viewBox="0 0 24 24"><path d="M4 17c4-9 12-9 16 0"/><path d="M8 17c2-4 6-4 8 0"/><path d="M12 7v10"/></svg><span class="lb">获客</span></a>
-    <a class="navbtn" href="banana"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M5 19l5-5 4 3 3-3 2 2"/></svg><span class="lb">作图</span></a>
-    <a class="navbtn" href="script"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span class="lb">编导</span></a>
-    <a class="navbtn" href="audio"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></svg><span class="lb">音频</span></a>
-    <a class="navbtn" href="canvas"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg><span class="lb">画布</span></a>
-    <a class="navbtn" href="video"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg><span class="lb">视频</span></a>
-    <a class="navbtn" href="assets"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="lb">资产</span></a>
-    <a class="navbtn active" href="cost"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><span class="lb">成本</span></a>
-    <div class="spacer"></div>
-    <a class="pts" href="recharge"><b class="mono" id="railPts">340</b><span>剩余点数</span></a>
-    <a class="navbtn" href="/"><svg viewBox="0 0 24 24"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg><span class="lb">首页</span></a>
-  </aside>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
-  <div class="main">
-    <header class="topbar">
-      <div class="title">点数充值 <span class="sub">/ 余额 · 套餐 · 消费明细</span></div>
-      <div class="spacer"></div>
-      <span class="demo-note">示例环境 · 模拟支付</span>
-      <div class="client-chip"><span class="k">账号</span><span class="v" id="acctName">—</span><span class="ar">▾</span></div>
-      <a class="tbtn" href="cost"><svg viewBox="0 0 24 24"><path d="M3 12h7l2 5 4-12 2 7h3"/></svg>成本明细</a>
-    </header>
+<div class="hq-app"><div class="hq-content" data-active="recharge">
+  <div>
+    <h1 style="margin:0 0 20px; font-size:27px; font-weight:700;">点数充值</h1>
 
-    <div class="page">
-      <div class="rc-wrap">
+    <!-- 余额卡 -->
+    <div style="position:relative; display:flex; align-items:center; gap:30px; padding:24px 28px; border:1px solid rgba(231,178,76,.22); border-radius:18px; background:linear-gradient(120deg, rgba(231,178,76,.1), rgba(20,17,10,.4)); overflow:hidden; margin-bottom:26px; flex-wrap:wrap;">
+      <div style="position:absolute; right:-30px; top:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(231,178,76,.16), transparent 70%);"></div>
+      <div style="display:flex; align-items:center; gap:18px; padding-right:30px; border-right:1px solid rgba(231,178,76,.18);">
+        <div style="width:52px; height:52px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none; box-shadow:0 8px 22px -6px rgba(231,178,76,.6);"></div>
+        <div><div style="font-size:13px; color:#94a4bb;">剩余点数</div><div style="font-family:'JetBrains Mono',monospace; font-size:48px; font-weight:700; color:#e7b24c; line-height:1; letter-spacing:1px;">340</div></div>
+      </div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月已消耗</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#eaf1fa;">1,280</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月毛利</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#2bd576;">¥8,960</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">套餐到期</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#e7b24c;">2026-12-31</div></div>
+    </div>
 
-        <!-- 余额 -->
-        <div class="balance">
-          <div class="bcard main"><div class="glow"></div><div class="l">剩余点数</div><div class="v" id="balPts">340</div><div class="h">1 点 ≈ 一次轻量生成；作图 4 点 / 获客 5 点</div></div>
-          <div class="bcard"><div class="l">本月已消耗</div><div class="v mono" style="font-size:30px">1,280</div><div class="h">点</div></div>
-          <div class="bcard"><div class="l">本月成本</div><div class="v mono" style="font-size:30px">¥9,960</div><div class="h">毛利率约 72%</div></div>
-          <div class="bcard"><div class="l">套餐到期</div><div class="v mono" style="font-size:24px">2026-09-30</div><div class="h">到期前续费不断点</div></div>
+    <!-- 点数套餐 -->
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">点数套餐</div>
+    <div class="gPkg" style="display:grid; gap:16px; margin-bottom:28px;">
+      <!-- 100 点 -->
+      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">100 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥39</div>
+        <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">适合首次体验</div>
+        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+      </div>
+      <!-- 500 点 -->
+      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">500 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥168</div>
+        <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">送 50 点</div>
+        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+      </div>
+      <!-- 2000 点 · 推荐 -->
+      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="position:absolute; top:0; right:0; padding:5px 13px; font-size:11px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-radius:0 16px 0 12px;">推荐</div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">2000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥598</div>
+        <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">送 400 点</div>
+        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+      </div>
+      <!-- 企业版 -->
+      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(45,212,191,.2); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="font-size:26px; font-weight:700; margin-top:6px;">企业版</div>
+        <div style="font-size:20px; font-weight:600; color:#eaf1fa; margin:20px 0 18px;">定制方案</div>
+        <div style="font-size:12.5px; color:#94a4bb; margin-bottom:22px;">联系销售获取专属优惠</div>
+        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#2dd4bf; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.25); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">联系销售</button>
+      </div>
+    </div>
+
+    <!-- 支付方式 -->
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">支付方式</div>
+    <div class="gPay" style="display:grid; gap:16px; max-width:660px; margin-bottom:28px;">
+      <div style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
+        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#07c160; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">微</div>
+        <span style="flex:1; font-size:14.5px; font-weight:500;">微信支付</span>
+        <span style="width:18px; height:18px; border-radius:50%; border:2px solid #e7b24c; display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(1); transition:.14s;"></span></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(148,164,187,.14); border-radius:14px; background:rgba(148,164,187,.04); cursor:pointer; transition:.16s;">
+        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#1677ff; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">支</div>
+        <span style="flex:1; font-size:14.5px; font-weight:500;">支付宝</span>
+        <span style="width:18px; height:18px; border-radius:50%; border:2px solid rgba(148,164,187,.3); display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(0); transition:.14s;"></span></span>
+      </div>
+    </div>
+
+    <!-- 消费明细 -->
+    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
+        <div style="font-size:15.5px; font-weight:600;">消费明细</div>
+        <div class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">查看全部 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
+      </div>
+      <div class="txscroll">
+        <div class="txhead" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);">
+          <div>时间</div><div>项目</div><div>类型</div><div>消耗点数</div><div>余额</div><div>订单号</div>
         </div>
 
-        <!-- 套餐 -->
-        <div class="sec-title"><span class="bar"></span>点数充值套餐</div>
-        <div class="tiers">
-          <div class="tier"><div class="pn">100 <small>点</small></div><div class="price"><span class="c">¥</span>39</div><div class="bonus">&nbsp;</div><button class="buy" data-pts="100" data-price="39">立即充值</button></div>
-          <div class="tier"><div class="pn">500 <small>点</small></div><div class="price"><span class="c">¥</span>168</div><div class="bonus">额外赠 30 点</div><button class="buy" data-pts="530" data-price="168">立即充值</button></div>
-          <div class="tier reco"><div class="rtag">最划算</div><div class="pn">2000 <small>点</small></div><div class="price"><span class="c">¥</span>598</div><div class="bonus">额外赠 400 点</div><button class="buy" data-pts="2400" data-price="598">立即充值</button></div>
-          <div class="tier"><div class="pn">企业版</div><div class="price" style="font-size:18px;margin-top:18px">不限量 · 专属</div><div class="bonus">&nbsp;</div><button class="buy" data-enterprise="1">联系销售</button></div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 14:32</div>
+          <div>AI 作图-美业海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">340</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-1432</div>
         </div>
-
-        <!-- 支付方式 -->
-        <div class="sec-title" style="margin-top:24px"><span class="bar"></span>支付方式</div>
-        <div class="pay-row">
-          <div class="pay on" data-pay="wx"><span class="dot"></span><span class="wx">微信支付</span></div>
-          <div class="pay" data-pay="zfb"><span class="dot"></span><span class="zfb">支付宝</span></div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 11:18</div>
+          <div>数字人口播-开业邀约</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">352</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-1118</div>
         </div>
-
-        <!-- 消费明细 -->
-        <div class="sec-title" style="margin-top:26px"><span class="bar"></span>消费明细</div>
-        <table class="htable">
-          <thead><tr><th>时间</th><th>项目</th><th>类型</th><th>点数</th><th>余额</th></tr></thead>
-          <tbody>
-            <tr><td>06-26 09:12</td><td>AI 作图 · 美业海报</td><td>消耗</td><td class="out">-4</td><td class="bal">340</td></tr>
-            <tr><td>06-26 08:40</td><td>关键词获客 · 美业获客</td><td>消耗</td><td class="out">-5</td><td class="bal">344</td></tr>
-            <tr><td>06-25 21:30</td><td>套餐充值 · 2000 点</td><td>充值</td><td class="in">+2400</td><td class="bal">349</td></tr>
-            <tr><td>06-25 18:05</td><td>数字人口播 · 首帧</td><td>消耗</td><td class="out">-8</td><td class="bal">-2051</td></tr>
-            <tr><td>06-25 16:22</td><td>AI 作图 · 节日活动图</td><td>消耗</td><td class="out">-4</td><td class="bal">-2043</td></tr>
-          </tbody>
-        </table>
-
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 09:45</div>
+          <div>配音-门店宣传片</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-4</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">365</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-0945</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 18:20</div>
+          <div>AI 作图-节日海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">369</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1820</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 16:07</div>
+          <div>数字人口播-产品介绍（生成失败）</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">退点</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#2bd576;">+13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">381</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1607</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 15:52</div>
+          <div>数字人口播-产品介绍</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">368</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1552</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 14:10</div>
+          <div>AI 作图-团购海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">381</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1410</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 19:30</div>
+          <div>配音-活动口播</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-4</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">393</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1930</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 17:05</div>
+          <div>数字人口播-门店日常</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">397</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1705</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 15:40</div>
+          <div>AI 作图-开业海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">410</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1540</div>
+        </div>
       </div>
     </div>
   </div>
-</div>
+</div></div>
 
-<div class="toast" id="toast"></div>
-
-<script src="tasks.js"></script>
-<script>
-(function(){
-  "use strict";
-  // 读登录用户，显示真实账号与点数
-  var pts=340, name="—";
-  try{
-    var u=JSON.parse(localStorage.getItem("hq_user")||"{}");
-    if(u){ if(u.points!=null) pts=u.points; if(u.name) name=u.name; }
-  }catch(e){}
-  document.getElementById("balPts").textContent=Number(pts).toLocaleString();
-  document.getElementById("railPts").textContent=Number(pts).toLocaleString();
-  document.getElementById("acctName").textContent=name;
-
-  // 支付方式切换
-  document.querySelectorAll(".pay").forEach(function(p){
-    p.addEventListener("click",function(){ document.querySelectorAll(".pay").forEach(function(x){x.classList.remove("on")}); p.classList.add("on"); });
-  });
-
-  // 模拟支付
-  var toast=document.getElementById("toast");
-  function showToast(t){ toast.textContent=t; toast.classList.add("show"); setTimeout(function(){toast.classList.remove("show")},2600); }
-  document.querySelectorAll(".buy").forEach(function(b){
-    b.addEventListener("click",function(){
-      if(b.getAttribute("data-enterprise")){ showToast("企业版请联系黄雀销售开通，享专属点数与优先算力"); return; }
-      var p=b.getAttribute("data-pts"), price=b.getAttribute("data-price");
-      var pay=(document.querySelector(".pay.on")||{}).getAttribute&&document.querySelector(".pay.on").getAttribute("data-pay")==="zfb"?"支付宝":"微信";
-      showToast("示例环境：将用"+pay+"支付 ¥"+price+" 充值 "+p+" 点（接入真实支付后生效，当前不扣款）");
-    });
-  });
-})();
-</script>
+<script src="../assets/cloud.js"></script>
+<script src="cloud-shell.js"></script>
 </body>
 </html>

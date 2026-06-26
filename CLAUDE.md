@@ -1,4 +1,4 @@
-# CLAUDE.md — 抖音评论区获客系统
+# CLAUDE.md — 这个是黄雀传媒的主站建设
 
 > 🧭 **开工先读方案卡**：动手改获客系统前，先读 `~/AI-Memory/systems/douyin-leadgen.md`（端到端拓扑/脚本路径/踩坑/验收基准）+ `~/AI-Memory/SYSTEM.md`。命中即复用、禁止重写；造完回写方案卡。详见 `~/AI-Memory/systems/operating-loop.md`。
 
