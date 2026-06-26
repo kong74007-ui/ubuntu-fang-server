@@ -3,23 +3,158 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>音频 · 配音 · 黄雀 AI 工作台</title>
+<title>AI 配音 · 黄雀 AI 工作台</title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/cloud.css">
-<style>body{overflow:hidden;}</style>
+<style>
+  body{ overflow:hidden; }
+  .gAud{ grid-template-columns:1.45fr 1fr; }
+  @media (max-width:1100px){ .gAud{ grid-template-columns:1fr; } }
+</style>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
 <div class="hq-app"><div class="hq-content" data-active="audio">
-  <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:66vh; text-align:center;">
-    <div style="width:84px; height:84px; display:flex; align-items:center; justify-content:center; border-radius:24px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c; margin-bottom:22px;"><span style="display:flex; width:38px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span></div>
-    <div style="font-size:22px; font-weight:700;">音频 · 配音</div>
-    <p style="margin:12px 0 22px; font-size:14px; color:#94a4bb; max-width:360px;">该模块正在精心打磨中，敬请期待。你可以先体验今日看板、获客中心与 AI 作图。</p>
-    <a href="dashboard.html" class="btn-gold" style="padding:11px 22px; font-size:14px; font-weight:600; border-radius:11px;">返回今日看板</a>
+  <div class="gAud" style="display:grid; gap:18px; align-items:start;">
+
+    <!-- ===== 左：创作面板 ===== -->
+    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+        <div><h1 style="margin:0; font-size:21px; font-weight:700;">AI 配音</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">输入文案，选择音色，一键生成真实口播配音</p></div>
+        <button class="hv-gold" style="width:34px; height:34px; display:flex; align-items:center; justify-content:center; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer; transition:.16s;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
+      </div>
+
+      <!-- 配音文案 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+        <span style="font-size:13.5px; font-weight:600;">配音文案</span>
+        <button style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>套用文案</button>
+      </div>
+      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
+        <textarea rows="4" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.75; font-family:inherit;">仙颜美容温馨提醒：本周末「科技焕肤」体验官名额仅剩 8 席，到店即享冷光嫩肤 + 小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美～</textarea>
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:8px;"><span class="mono">68 / 500</span><span style="cursor:pointer;">清空</span></div>
+      </div>
+
+      <!-- 音色 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+        <span style="font-size:13.5px; font-weight:600;">选择音色</span>
+        <a href="settings.html" style="display:flex; align-items:center; gap:4px; font-size:12px; color:#94a4bb; text-decoration:none; cursor:pointer;">管理音色 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+        <div style="padding:13px 13px; border-radius:13px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
+          <div style="display:flex; align-items:center; gap:9px;">
+            <span style="width:30px; height:30px; border-radius:50%; flex:none; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">鹏</span>
+            <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">大鹏 IVC</div><div style="font-size:11px; color:#c8902f;">克隆 · 亲切</div></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:5px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:11px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:17px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:14px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:13px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:8px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(231,178,76,.55);"></span></div>
+        </div>
+        <div style="padding:13px 13px; border-radius:13px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
+          <div style="display:flex; align-items:center; gap:9px;">
+            <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">龙</span>
+            <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">泽龙 IVC</div><div style="font-size:11px; color:#5c6b82;">克隆 · 磁性</div></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:13px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:17px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:11px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:15px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:10px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span></div>
+        </div>
+        <div style="padding:13px 13px; border-radius:13px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
+          <div style="display:flex; align-items:center; gap:9px;">
+            <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">P</span>
+            <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">Paul 男声</div><div style="font-size:11px; color:#5c6b82;">官方 · 沉稳</div></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:8px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:14px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:16px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:10px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:12px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:5px; border-radius:2px; background:rgba(148,164,187,.3);"></span></div>
+        </div>
+      </div>
+
+      <!-- 语速 + 情绪 -->
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
+        <div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">语速</div>
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">偏慢</div>
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">正常</div>
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">偏快</div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">情绪</div>
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">自然</div>
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">热情</div>
+            <div style="padding:11px 4px; text-align:center; font-size:12.5px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">温柔</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="hv-lift" style="width:100%; height:54px; margin-top:24px; display:flex; align-items:center; justify-content:center; gap:10px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">
+        生成配音
+        <span class="mono" style="display:inline-flex; align-items:center; padding:3px 10px; font-size:13px; font-weight:600; background:rgba(26,18,6,.18); border-radius:8px;">4 点</span>
+      </button>
+      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span class="mono" style="color:#e7b24c;">4</span> 点 · 数秒出声 · 失败自动退点</div>
+    </div>
+
+    <!-- ===== 右：结果检视 ===== -->
+    <div style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
+
+      <!-- 大金色波形 空态 -->
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:34px 22px; border:1px dashed rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.4);">
+        <div style="display:flex; align-items:center; justify-content:center; gap:4px; height:64px;">
+          <span style="width:4px; height:8px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:14px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:22px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:32px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:42px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:30px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:20px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:13px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:26px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:38px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:48px; border-radius:2px; background:rgba(231,178,76,.5);"></span>
+          <span style="width:4px; height:38px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:26px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:18px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:28px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:40px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:30px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:22px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:14px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:9px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:6px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+        </div>
+        <div style="font-size:13px; color:#94a4bb; font-weight:500;">生成后在此预览音频波形</div>
+        <div style="font-size:11.5px; color:#5c6b82; line-height:1.6;">填写文案、选好音色，点击「生成配音」</div>
+      </div>
+
+      <!-- 播放器 空态 -->
+      <div style="display:flex; align-items:center; gap:12px; margin-top:14px; padding:12px 14px; border:1px solid rgba(148,164,187,.1); border-radius:12px; background:rgba(7,11,19,.4);">
+        <span style="width:36px; height:36px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:50%; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.24); color:rgba(231,178,76,.55);"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></span>
+        <div style="flex:1; height:5px; border-radius:99px; background:rgba(148,164,187,.12); position:relative; overflow:hidden;"><div style="position:absolute; left:0; top:0; bottom:0; width:0; background:linear-gradient(90deg,#f4cd72,#e7b24c);"></div></div>
+        <span class="mono" style="font-size:12px; color:#5c6b82;">00:00 / 00:00</span>
+      </div>
+
+      <!-- 试听记录 空态 -->
+      <div style="font-size:15px; font-weight:600; margin:24px 0 12px;">试听记录</div>
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:26px 18px; border:1px dashed rgba(148,164,187,.18); border-radius:14px; background:rgba(148,164,187,.02);">
+        <span style="display:flex; width:28px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+        <div style="font-size:12.5px; color:#94a4bb;">暂无试听记录，生成后可逐条回放对比</div>
+      </div>
+
+      <!-- 最近音频 空态 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 12px;">
+        <span style="font-size:15px; font-weight:600;">最近音频</span>
+        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部音频 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:26px 18px; border:1px dashed rgba(148,164,187,.18); border-radius:14px; background:rgba(148,164,187,.02);">
+        <span style="display:flex; width:28px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>
+        <div style="font-size:12.5px; color:#94a4bb;">暂无音频，生成后自动入库</div>
+      </div>
+    </div>
+
   </div>
 </div></div>
+
 <script src="../assets/cloud.js"></script>
 <script src="cloud-shell.js"></script>
 </body>
