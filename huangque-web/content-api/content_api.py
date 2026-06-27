@@ -449,15 +449,26 @@ def check_clone_status(username, slot_id):
     st = resp.get("status")
     demo = resp.get("demo_audio")
     if st == 2:
-        preview_url = demo
-        preview_file = None
         try:
             preview = generate_doubao_preview(slot_id)
-            preview_url = preview.get("url") or demo
+            preview_url = preview.get("url")
             preview_file = preview.get("file")
         except Exception as e:
+            err = "\u6d4b\u8bd5\u97f3\u9891\u751f\u6210\u5931\u8d25: " + str(e)[:220]
             print("[check_clone_status] preview tts failed username=%s slot_id=%s error=%s" %
                   (username, slot_id, str(e)[:240]), flush=True)
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (err, int(time.time()), username, slot_id))
+                c.commit()
+            return {"status": "failed", "clone_error": err, "doubao_status": st, "doubao_demo_audio": demo}
+        if not preview_url:
+            err = "\u6d4b\u8bd5\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a"
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (err, int(time.time()), username, slot_id))
+                c.commit()
+            return {"status": "failed", "clone_error": err, "doubao_status": st, "doubao_demo_audio": demo}
         v = finalize_ready_voice(username, slot_id, voice["display_name"] if voice else None, preview_url, preview_file)
         return {"status": "ready", "preview_url": preview_url, "voice": v, "doubao_status": st, "doubao_demo_audio": demo}
     if st == 3:
