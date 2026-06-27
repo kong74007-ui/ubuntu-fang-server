@@ -32,7 +32,7 @@
     <div style="display:flex; align-items:center; gap:18px; font-size:13px; color:#94a4bb;">
       <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">素材</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
       <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
-      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">作品</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">作品</span><span id="cntWorks" class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
       <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
       <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">交付</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
     </div>
@@ -56,8 +56,11 @@
     <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">配音</span>
   </div>
 
+  <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
+  <div id="assetGrid" class="gAsset" style="display:none; gap:16px; margin-bottom:26px;"></div>
+
   <!-- 居中大空态 -->
-  <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:44px 24px 40px; border:1px solid rgba(148,164,187,.1); border-radius:20px; background:linear-gradient(165deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); margin-bottom:26px;">
+  <div id="assetEmpty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:44px 24px 40px; border:1px solid rgba(148,164,187,.1); border-radius:20px; background:linear-gradient(165deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); margin-bottom:26px;">
     <div style="position:relative; width:88px; height:88px; display:flex; align-items:center; justify-content:center; border-radius:24px; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.22); color:#2dd4bf; margin-bottom:22px;">
       <span style="display:flex; width:40px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
       <span style="position:absolute; right:-6px; top:-6px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:#0c1220; border:1px solid rgba(231,178,76,.3); color:#e7b24c;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></span>
@@ -68,11 +71,11 @@
   </div>
 
   <!-- 即将上线的资产类型 · 骨架占位 -->
-  <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+  <div id="skelHdr" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
     <span style="display:flex; width:15px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
     <span style="font-size:14px; font-weight:600; color:#94a4bb;">即将上线的资产类型</span>
   </div>
-  <div class="gAsset" style="display:grid; gap:16px;">
+  <div id="skelGrid" class="gAsset" style="display:grid; gap:16px;">
     <!-- 卡片 1 -->
     <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
       <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">美业海报</span>
@@ -114,5 +117,28 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=8"></script>
+<script>
+/* 资产库读真实生成历史（生成即自动入库） */
+(function(){
+  var tok=localStorage.getItem('hq_token')||''; if(!tok) return;
+  var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
+      skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
+  var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
+  fetch('/api/gen/history?limit=60',{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+    var it=d.items||[]; if(cnt) cnt.textContent=it.length;
+    if(!it.length) return;
+    if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    grid.innerHTML=it.map(function(x){
+      var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
+      return '<div style="position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">'
+        +'<span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+label+'</span>'
+        +'<img src="'+x.url+'" loading="lazy" style="display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;" onclick="window.open(this.src,&quot;_blank&quot;)">'
+        +'<div style="padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;"><div style="font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+p+'</div><a href="'+x.url+'" download="huangque.png" style="flex:none; font-size:11.5px; color:#e7b24c; text-decoration:none;">下载</a></div>'
+        +'</div>';
+    }).join('');
+  }).catch(function(){});
+})();
+</script>
 </body>
 </html>

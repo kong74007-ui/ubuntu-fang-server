@@ -191,6 +191,21 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers(); self.wfile.write(data); return
+        if p == "/api/gen/history":   # 本人生成历史（资产/最近作品都读这）
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try: lim = min(120, int(self.path.split("limit=")[1].split("&")[0])) if "limit=" in self.path else 60
+            except Exception: lim = 60
+            with closing(jdb()) as c:
+                rows = c.execute("SELECT id,result,created_at FROM jobs WHERE username=? AND status='done' AND kind='image' ORDER BY id DESC LIMIT ?",
+                                 (user["username"], lim)).fetchall()
+            items = []
+            for r in rows:
+                try: res = json.loads(r["result"])
+                except Exception: continue
+                items.append({"job_id": r["id"], "url": res.get("url"), "mode": res.get("mode"),
+                              "prompt": res.get("prompt"), "created_at": r["created_at"]})
+            return self._send(200, {"items": items})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "has_openai": bool(OPENAI_KEY)})
         self._send(404, {"detail": "not found"})

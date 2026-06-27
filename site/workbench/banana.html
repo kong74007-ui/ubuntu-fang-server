@@ -106,7 +106,7 @@
         <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
         <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
-      <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
+      <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">再生成</span></div>
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">继续改</span></div>
         <a href="video.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">转视频</span></a>
@@ -118,13 +118,8 @@
         <span style="font-size:15px; font-weight:600;">最近作品</span>
         <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部作品 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
       </div>
-      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:9px;">
-        <img src="../assets/meiye_poster.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/guofeng_search.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/huangque_poster.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/cyberpunk.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/comic.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/duanwu.webp" alt="最近作品" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
+      <div id="recentGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:9px;">
+        <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12.5px; color:#5c6b82;">还没有作品，生成第一张吧</div>
       </div>
     </div>
   </div>
@@ -161,12 +156,7 @@
       var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
       cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s);
       cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      var url=cv.toDataURL('image/png'); refImg=url.split(',')[1]; refW=cv.width; refH=cv.height;
-      upBox.style.backgroundImage='url('+url+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
-      if(upIcon) upIcon.style.display='none';
-      if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-      if(upHint) upHint.textContent='(已上传 ·「图生图」改全图，或点「局部修改」只改涂抹处)';
-      showInp(true);
+      setRef(cv.toDataURL('image/png'), cv.width, cv.height);
     }; im.src=URL.createObjectURL(f);
   };}
   if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
@@ -175,11 +165,23 @@
     if(upHint) upHint.textContent='(可选 · 上传后变「图生图」，在参考图基础上改)'; showInp(false);
   } }); }
 
-  // 共享：提交 → 轮询 → 显示（文生图/图生图/局部修改都走这）
+  // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
+  var lastPayload=null, lastResultUrl=null;
+  function poll(id, t0, label){
+    var iv=setInterval(function(){
+      fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
+        if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
+        var sec=Math.round((Date.now()-t0)/1000);
+        if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); loadHistory(); }
+        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
+      }).catch(function(){});
+    },4000);
+  }
   function submit(payload, label){
     if(!payload.prompt){ setNote('请先输入提示词','#f4708a'); return; }
     if(!tok()){ location.href='../login.html?redirect=banana'; return; }
-    busy(true); setNote(label+' · gpt-image-2 高清约 1-2 分钟','#2dd4bf');
+    lastPayload=payload; busy(true); setNote(label+' · gpt-image-2 高清约 1-2 分钟','#2dd4bf');
     var t0=Date.now();
     fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
@@ -187,14 +189,8 @@
         if(x.s===401){ location.href='../login.html?redirect=banana'; return; }
         if(x.s===402){ busy(false); setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
         if(!x.d.job_id){ busy(false); setNote('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
-        var iv=setInterval(function(){
-          fetch('/api/gen/job/'+x.d.job_id).then(function(r){return r.json();}).then(function(d){
-            var sec=Math.round((Date.now()-t0)/1000);
-            if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); }
-            else if(d.status==='error'){ clearInterval(iv); busy(false); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); }
-            else setNote('生成中…（'+sec+'s）','#2dd4bf');
-          }).catch(function(){});
-        },4000);
+        localStorage.setItem('hq_active_job', JSON.stringify({id:x.d.job_id, t0:t0, label:(label||'生成中').replace(/（.*$/,'')}));
+        poll(x.d.job_id, t0, label);
       }).catch(function(){ busy(false); setNote('网络错误，请重试','#f4708a'); });
   }
 
@@ -257,6 +253,42 @@
     };
     modal.style.display='flex';
   }
+
+  // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
+  function setRef(dataUrl, w, h){
+    refImg=dataUrl.split(',')[1]; refW=w; refH=h;
+    upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
+    if(upIcon) upIcon.style.display='none';
+    if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
+    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图，或「局部修改」只改涂抹处)';
+    showInp(true);
+  }
+  // 最近作品：读真实历史（生成即自动入库）
+  function loadHistory(){
+    var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
+    fetch('/api/gen/history?limit=12',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      if(!d.items||!d.items.length) return;
+      grid.innerHTML=d.items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      grid.querySelectorAll('img').forEach(function(im){ im.onclick=function(){ var u=im.getAttribute('data-url'); res.src=u+'?t='+Date.now(); lastResultUrl=u; }; });
+    }).catch(function(){});
+  }
+  loadHistory();
+  // 续传：切回页面时接上进行中的任务（后端没中断）
+  try{ var aj=JSON.parse(localStorage.getItem('hq_active_job')||'null'); if(aj&&aj.id){ busy(true); poll(aj.id, aj.t0||Date.now(), aj.label); } }catch(e){}
+
+  // 结果区 6 按钮
+  function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
+  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
+  if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中'); };
+  if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
+    setNote('正在把当前图载入为参考…','#2dd4bf');
+    var im=new Image(); im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas'); cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      try{ setRef(cv.toDataURL('image/png'),cv.width,cv.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败：'+err,'#f4708a'); } };
+    im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
+  };
+  if(bDl) bDl.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; } var a=document.createElement('a'); a.href=lastResultUrl; a.download='huangque_'+Date.now()+'.png'; document.body.appendChild(a); a.click(); a.remove(); };
+  if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
+  if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
 })();
 </script>
 </body>
