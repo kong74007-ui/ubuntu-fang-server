@@ -95,7 +95,7 @@
         '<div style="position:relative; padding:15px 16px; border:1px solid rgba(231,178,76,.2); border-radius:14px; background:linear-gradient(150deg, rgba(231,178,76,.1), rgba(231,178,76,.02)); overflow:hidden;">'+
           '<div style="position:absolute; right:-14px; top:-10px; width:62px; height:62px; color:rgba(231,178,76,.22);">'+icon('coins','62px')+'</div>'+
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
-          '<div class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">340</div>'+
+          '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
           '<a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a></div>'+
         '<a href="bots.html" style="display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(45,212,191,.05);">'+
           '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
@@ -120,7 +120,7 @@
       '<div style="margin-left:auto; display:flex; align-items:center; gap:12px;">'+
         '<a href="recharge.html" style="display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid rgba(231,178,76,.26); border-radius:11px; background:rgba(231,178,76,.07); cursor:pointer;">'+
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
-          '<span class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">340</span></a>'+
+          '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<div style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb;">'+icon('bell','17px')+'<span style="position:absolute; top:9px; right:10px; width:7px; height:7px; border-radius:50%; background:#f4708a; border:1.5px solid #070b13;"></span></div>'+
         '<div style="width:38px; height:38px; border-radius:11px; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:14px; font-weight:600; cursor:pointer;">仙</div></div>';
 
@@ -148,8 +148,19 @@
     burger.onclick=function(){ open=!open; aside.style.transform=open?'translateX(0)':'translateX(-100%)'; };
     window.addEventListener('resize',applyResp); applyResp();
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
+    refreshPoints();
   }
 
-  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin };
+  // 拉真实点数填到侧边+顶栏（生成后页面调 window.HQ.refreshPoints() 刷新）
+  function refreshPoints(){
+    var tok=localStorage.getItem('hq_token'); if(!tok) return;
+    fetch('/api/auth/me',{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+      var p=d&&d.user&&d.user.points; if(p==null) return;
+      var a=document.getElementById('hqPointsSide'), b=document.getElementById('hqPointsTop');
+      if(a) a.textContent=p; if(b) b.textContent=p;
+    }).catch(function(){});
+  }
+
+  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',build); else build();
 })();
