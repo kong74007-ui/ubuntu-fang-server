@@ -172,7 +172,7 @@
       fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
-        if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); loadHistory(); }
+        if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); localStorage.setItem('hq_last_result', d.result.url); loadHistory(); }
         else if(d.status==='error'){ clearInterval(iv); busy(false); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); localStorage.removeItem('hq_active_job'); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
       }).catch(function(){});
@@ -269,10 +269,12 @@
     fetch('/api/gen/history?limit=12',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
       if(!d.items||!d.items.length) return;
       grid.innerHTML=d.items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
-      grid.querySelectorAll('img').forEach(function(im){ im.onclick=function(){ var u=im.getAttribute('data-url'); res.src=u+'?t='+Date.now(); lastResultUrl=u; }; });
+      grid.querySelectorAll('img').forEach(function(im){ im.onclick=function(){ var u=im.getAttribute('data-url'); res.src=u+'?t='+Date.now(); lastResultUrl=u; localStorage.setItem('hq_last_result',u); }; });
     }).catch(function(){});
   }
   loadHistory();
+  // 刷新还原：把上次的结果图放回结果区，刷新后也能直接「继续改 / 再生成」
+  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
   // 续传：切回页面时接上进行中的任务（后端没中断）
   try{ var aj=JSON.parse(localStorage.getItem('hq_active_job')||'null'); if(aj&&aj.id){ busy(true); poll(aj.id, aj.t0||Date.now(), aj.label); } }catch(e){}
 

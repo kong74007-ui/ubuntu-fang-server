@@ -46,14 +46,11 @@
     </div>
     <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>排序</button>
   </div>
-  <div style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
-    <span class="chip" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">全部</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">美业海报</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">数字人口播</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">小红书封面</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">节日营销</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">活动促销</span>
-    <span class="chip" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">配音</span>
+  <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
+    <span class="chip" data-cat="all" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">全部</span>
+    <span class="chip" data-cat="text2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">文生图</span>
+    <span class="chip" data-cat="img2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">图生图</span>
+    <span class="chip" data-cat="inpaint" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">局部修改</span>
   </div>
 
   <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
@@ -118,25 +115,40 @@
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=8"></script>
 <script>
-/* 资产库读真实生成历史（生成即自动入库） */
+/* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
   var tok=localStorage.getItem('hq_token')||''; if(!tok) return;
   var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
-  fetch('/api/gen/history?limit=60',{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
-    var it=d.items||[]; if(cnt) cnt.textContent=it.length;
-    if(!it.length) return;
+  var ALL=[], cat='all';
+  function card(x){
+    var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
+    var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
+    var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
+    var im=document.createElement('img'); im.src=x.url; im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
+    var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;';
+    var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.style.cssText='flex:none; font-size:11.5px; color:#e7b24c; text-decoration:none;';
+    foot.appendChild(pt); foot.appendChild(dl); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return w;
+  }
+  function render(){
+    var list = cat==='all' ? ALL : ALL.filter(function(x){ return (x.mode||'text2img')===cat; });
+    grid.innerHTML='';
+    if(!ALL.length){ grid.style.display='none'; if(empty) empty.style.display='flex'; return; }
     if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
     grid.style.display='grid';
-    grid.innerHTML=it.map(function(x){
-      var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
-      return '<div style="position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">'
-        +'<span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+label+'</span>'
-        +'<img src="'+x.url+'" loading="lazy" style="display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;" onclick="window.open(this.src,&quot;_blank&quot;)">'
-        +'<div style="padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;"><div style="font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+p+'</div><a href="'+x.url+'" download="huangque.png" style="flex:none; font-size:11.5px; color:#e7b24c; text-decoration:none;">下载</a></div>'
-        +'</div>';
-    }).join('');
+    if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类下暂无作品'; grid.appendChild(e); return; }
+    list.forEach(function(x){ grid.appendChild(card(x)); });
+  }
+  document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
+    cat=ch.getAttribute('data-cat');
+    document.querySelectorAll('#catRow .chip').forEach(function(c){ c.style.color='#94a4bb'; c.style.background='rgba(148,164,187,.04)'; c.style.borderColor='rgba(148,164,187,.14)'; c.style.fontWeight='400'; });
+    ch.style.color='#e7b24c'; ch.style.background='rgba(231,178,76,.1)'; ch.style.borderColor='rgba(231,178,76,.3)'; ch.style.fontWeight='600';
+    render();
+  };});
+  fetch('/api/gen/history?limit=120',{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+    ALL=d.items||[]; if(cnt) cnt.textContent=ALL.length; render();
   }).catch(function(){});
 })();
 </script>
