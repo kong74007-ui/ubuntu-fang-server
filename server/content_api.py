@@ -172,6 +172,22 @@ def run_job(job_id):
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
                       (str(e)[:300], int(time.time()), job_id)); c.commit()
 
+# ============ 超时清道夫：running 超 6 分钟的僵尸任务自动判失败 + 退点 ============
+def reaper():
+    while True:
+        try:
+            cutoff = int(time.time()) - 360
+            with closing(jdb()) as c:
+                stuck = c.execute("SELECT id, username, cost FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
+                for r in stuck:
+                    add_points(r["username"], r["cost"])  # 退点
+                    c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
+                              (int(time.time()), r["id"]))
+                if stuck: c.commit()
+        except Exception:
+            pass
+        time.sleep(60)
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -251,5 +267,6 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
