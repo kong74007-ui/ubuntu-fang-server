@@ -14,7 +14,7 @@
 环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
          OPENAI_API_KEY / OPENAI_BASE（口播 ASR 用，与 content_api 同源）。
 """
-import os, re, json, time, urllib.request, urllib.parse, urllib.error
+import os, re, json, time, threading, urllib.request, urllib.parse, urllib.error
 
 KEY  = os.environ.get("TIKHUB_KEY", "")
 BASE = os.environ.get("TIKHUB_BASE", "https://api.tikhub.io").rstrip("/")
@@ -34,10 +34,22 @@ class TikHubError(Exception):
     pass
 
 
+# ============ 全局限流：TikHub QPS 10/s，跨线程排队稳在 ~7/s，避免突发被限流返回错笔记/空 ============
+_RL_LOCK = threading.Lock()
+_RL_LAST = [0.0]
+def _ratelimit(min_gap=0.14):
+    with _RL_LOCK:
+        wait = min_gap - (time.time() - _RL_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        _RL_LAST[0] = time.time()
+
+
 # ============ HTTP（统一信封 {code,message,data}；带浏览器 UA 防 Cloudflare 1010）============
 def _call(method, path, query=None, body=None, timeout=45):
     if not KEY:
         raise TikHubError("TIKHUB_KEY 未配置")
+    _ratelimit()
     url = BASE + path
     if query:
         url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
@@ -147,7 +159,13 @@ def dy_search(keyword, cursor=0, video_only=True):
 
 def dy_detail(id_or_url):
     aid = dy_aweme_id(id_or_url)
-    a = (_g(DY + "/web/fetch_one_video", aweme_id=aid) or {}).get("aweme_detail") or {}
+    a = {}
+    for att in range(4):  # 偶发返回空，重试(带间隔)通常即恢复
+        if att:
+            time.sleep(0.5)
+        a = (_g(DY + "/web/fetch_one_video", aweme_id=aid) or {}).get("aweme_detail") or {}
+        if a:
+            break
     vid = a.get("video") or {}
     stat = a.get("statistics") or {}
     au = a.get("author") or {}
@@ -220,17 +238,24 @@ def _xhs_fetch(note_id, kind):
     return root[0] if root else {}
 
 def xhs_detail(note_id, note_type="video"):
-    # 贴链接时未必知道图文还是视频。坑：对错类型的 note_id 调详情，TikHub 会返回**无关的随机笔记**
-    # （且有标题，骗过"有内容"判断）→ 必须校验返回笔记 .id == 请求 note_id 才接受，否则换另一种。
+    # 贴链接时未必知道图文还是视频。坑：① 对错类型的 note_id 调详情，TikHub 会返回**无关随机笔记**
+    # （有标题骗过"有内容"判断）→ 必须校验 .id==note_id；② 偶发对正确请求也返回错笔记（间歇性）
+    # → id 不匹配就重试，通常一次即恢复。命中即停，正常只 1 次调用。
+    order = ["image", "video"] if note_type == "image" else ["video", "image"]
     n = {}
-    for kind in (["image", "video"] if note_type == "image" else ["video", "image"]):
-        try:
-            cand = _xhs_fetch(note_id, kind) or {}
-        except TikHubError:
-            cand = {}
-        if cand and str(cand.get("id") or "") == str(note_id):
-            n = cand
-            note_type = kind
+    for att in range(4):
+        if att:
+            time.sleep(0.5)  # 给 TikHub 喘口气，transient 错通常即恢复
+        for kind in order:
+            try:
+                cand = _xhs_fetch(note_id, kind) or {}
+            except TikHubError:
+                cand = {}
+            if cand and str(cand.get("id") or "") == str(note_id):
+                n = cand
+                note_type = kind
+                break
+        if n:
             break
     desc = n.get("desc") or ""
     tags = [t.get("name") or t.get("link") for t in (n.get("hash_tag") or []) if isinstance(t, dict)] or _tags_from_text(desc)

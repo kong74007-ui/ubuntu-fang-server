@@ -190,6 +190,9 @@ def gen_collect(payload):
         raise ValueError("未知平台")
     want = payload.get("want") or ["copy", "comments"]
     det = tikhub.detail(platform, ident, note_type=note_type)
+    if not (det.get("title") or det.get("desc") or det.get("images")):
+        # 内容全空 = TikHub 偶发限流/抽风 或 私密/已删 → 报错退点，让前端提示重试，别甩空卡片
+        raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
