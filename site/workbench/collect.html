@@ -131,12 +131,21 @@
               <div id="vcTitle" style="font-size:14px; font-weight:600; line-height:1.5; margin-bottom:8px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;"></div>
               <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
                 <img id="vcAvatar" src="" alt="" style="width:20px; height:20px; border-radius:50%; object-fit:cover; background:rgba(148,164,187,.2);">
-                <span id="vcAuthor" style="font-size:12.5px; color:#94a4bb;"></span>
+                <a id="vcAuthor" style="font-size:12.5px; color:#94a4bb; text-decoration:none;" target="_blank" rel="noopener"></a>
               </div>
               <div id="vcStats" style="display:flex; gap:12px; flex-wrap:wrap;"></div>
               <div id="vcMeta" style="font-size:11px; color:#5c6b82; margin-top:8px; font-family:'JetBrains Mono',monospace;"></div>
             </div>
           </div>
+        </div>
+
+        <!-- Image gallery (图文笔记) -->
+        <div id="galleryBlock" style="display:none; border:1px solid rgba(148,164,187,.1); border-radius:14px; padding:14px 16px; margin-bottom:10px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:13.5px; font-weight:600;">图文 <span id="galCount" style="font-size:12px; color:#5c6b82; font-weight:400;"></span></span>
+            <button id="galDownloadBtn" class="copy-btn" style="display:none;">下载全部图</button>
+          </div>
+          <div id="galleryGrid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:8px;"></div>
         </div>
 
         <!-- Copy block -->
@@ -502,7 +511,11 @@
     if (vcCover)  { vcCover.src = v.cover || ''; }
     if (vcTitle)  vcTitle.textContent = v.title || '无标题';
     if (vcAvatar) { vcAvatar.src = v.authorAvatar || ''; vcAvatar.style.display = v.authorAvatar ? '' : 'none'; }
-    if (vcAuthor) vcAuthor.textContent = '@' + (v.author || '');
+    if (vcAuthor) {
+      vcAuthor.textContent = '@' + (v.author || '');
+      if (v.profile_url) { vcAuthor.href = v.profile_url; vcAuthor.style.cursor = 'pointer'; }
+      else { vcAuthor.removeAttribute('href'); vcAuthor.style.cursor = 'default'; }
+    }
     if (vcStats && v.stats) {
       var s = v.stats;
       vcStats.innerHTML = [
@@ -516,7 +529,38 @@
       var parts = [];
       if (v.duration)     parts.push(v.duration + 's');
       if (v.publish_time) parts.push(v.publish_time);
-      vcMeta.textContent = parts.join(' · ');
+      var metaHtml = escHtml(parts.join(' · '));
+      if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
+      vcMeta.innerHTML = metaHtml;
+    }
+
+    /* image gallery (图文笔记) */
+    var galBlock = document.getElementById('galleryBlock');
+    var imgs = r.images || [];
+    if (galBlock) {
+      if (imgs.length) {
+        document.getElementById('galCount').textContent = '共 ' + imgs.length + ' 张';
+        document.getElementById('galleryGrid').innerHTML = imgs.map(function (u) {
+          return '<a href="' + escHtml(u) + '" target="_blank" rel="noopener" style="display:block; aspect-ratio:3/4; border-radius:8px; overflow:hidden; background:rgba(148,164,187,.06);">' +
+            '<img src="' + escHtml(u) + '" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.opacity=.25"></a>';
+        }).join('');
+        galBlock.style.display = '';
+        var galDlBtn = document.getElementById('galDownloadBtn');
+        if (galDlBtn) {
+          galDlBtn.style.display = '';
+          galDlBtn.onclick = function () {
+            imgs.forEach(function (u, i) {
+              var a = document.createElement('a');
+              a.href = u; a.download = 'img_' + (i + 1) + '.jpg'; a.target = '_blank'; a.rel = 'noopener';
+              document.body.appendChild(a); a.click(); a.remove();
+            });
+          };
+        }
+      } else {
+        galBlock.style.display = 'none';
+        var galDlBtn2 = document.getElementById('galDownloadBtn');
+        if (galDlBtn2) galDlBtn2.style.display = 'none';
+      }
     }
 
     /* copy block */
@@ -589,13 +633,18 @@
         cmtList.innerHTML = '<div style="padding:16px 0; text-align:center; font-size:12.5px; color:#5c6b82;">暂无评论数据</div>';
       } else {
         cmtList.innerHTML = comments.slice(0, 20).map(function (c) {
-          var avatar = c.avatar
+          var prof = c.profile_url ? esc(c.profile_url) : '';
+          var avatarInner = c.avatar
             ? '<img src="' + esc(c.avatar) + '" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex:none;margin-top:1px;background:rgba(148,164,187,.2);" onerror="this.style.display=\'none\'">'
             : '<div style="width:28px;height:28px;border-radius:50%;flex:none;background:rgba(148,164,187,.15);display:flex;align-items:center;justify-content:center;font-size:11px;color:#5c6b82;">' + escHtml((c.user || '?').charAt(0)) + '</div>';
+          var avatar = prof ? '<a href="' + prof + '" target="_blank" rel="noopener" style="display:contents;">' + avatarInner + '</a>' : avatarInner;
+          var userEl = prof
+            ? '<a href="' + prof + '" target="_blank" rel="noopener" style="font-weight:500;color:#94a4bb;text-decoration:none;">' + escHtml(c.user || '匿名') + '</a>'
+            : '<span style="font-weight:500;">' + escHtml(c.user || '匿名') + '</span>';
           return '<div class="cmt-item">' + avatar +
             '<div style="flex:1;min-width:0;">' +
               '<div style="font-size:12px;color:#94a4bb;margin-bottom:3px;display:flex;align-items:center;gap:8px;">' +
-                '<span style="font-weight:500;">' + escHtml(c.user || '匿名') + '</span>' +
+                userEl +
                 (c.likes ? '<span style="font-size:11px;color:#5c6b82;font-family:\'JetBrains Mono\',monospace;">♥ ' + fmtNum(c.likes) + '</span>' : '') +
                 (c.time  ? '<span style="font-size:11px;color:#3d4f62;">' + escHtml(c.time) + '</span>' : '') +
               '</div>' +

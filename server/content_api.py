@@ -186,10 +186,12 @@ def gen_collect(payload):
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
+                  "profile_url": au.get("profile_url"),
                   "cover": det.get("cover"), "play_url": det.get("play_url"), "url": det.get("url"),
                   "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                   "stats": det.get("stats")},
         "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
+        "images": det.get("images") or [],   # 图文笔记的全部图片
         "transcript": None, "comments": [], "comments_more": False,
         "url": det.get("cover"), "prompt": det.get("title"),  # 给通用 history 用（封面+标题）
     }
@@ -235,7 +237,7 @@ def gen_leads(payload):
             for c in cm["items"]:
                 raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
                             "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
-                            "platform": platform, "source": title})
+                            "profile_url": c.get("profile_url"), "platform": platform, "source": title})
             if not cm.get("has_more"):
                 break
 
@@ -281,7 +283,8 @@ def gen_leads(payload):
     leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
     out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                   "ip_location": c.get("ip_location"), "content": c.get("content"),
-                  "title": c.get("source"), "platform": c.get("platform")} for c in leads]
+                  "title": c.get("source"), "platform": c.get("platform"),
+                  "profile_url": c.get("profile_url")} for c in leads]
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
             "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
@@ -408,7 +411,7 @@ class H(BaseHTTPRequestHandler):
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
             if get_points(user["username"]) < 1: return self._send(402, {"detail": "点数不足", "need": 1})
             try:
-                r = tikhub.search(platform, keyword, page=page)
+                r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
                 return self._send(502, {"detail": str(e)[:160]})
             add_points(user["username"], -1)

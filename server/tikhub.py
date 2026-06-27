@@ -80,6 +80,22 @@ def _url0(node):
 def _tags_from_text(text):
     return re.findall(r"#([^#\s]{1,20})", text or "")
 
+def _xhs_img(im):
+    # 小红书图片字典是 .url 直给（不是抖音那种 url_list）
+    if isinstance(im, dict):
+        return im.get("url") or im.get("url_size_large") or im.get("url_default") or _url0(im)
+    return im
+
+def _profile_url(platform, user_id):
+    # 用户/评论者主页链接（视频号 finder 号无公开网页主页 → None）
+    if not user_id:
+        return None
+    if platform == "douyin":
+        return "https://www.douyin.com/user/%s" % user_id
+    if platform == "xhs":
+        return "https://www.xiaohongshu.com/user/profile/%s" % user_id
+    return None
+
 
 # ====================================================================
 # 抖音 Douyin
@@ -97,33 +113,36 @@ def _dy_item(a):
     stat = a.get("statistics") or {}
     au = a.get("author") or {}
     desc = a.get("desc") or ""
+    imgs = [u for u in (_url0(im) for im in (a.get("images") or [])) if u]
+    is_img = bool(imgs) or a.get("aweme_type") in (68, 2)
     return {
         "platform": "douyin",
         "id": a.get("aweme_id"),
         "url": "https://www.douyin.com/video/%s" % a.get("aweme_id"),
         "title": desc,
-        "cover": _url0(vid.get("cover") or vid.get("origin_cover")),
+        "cover": (imgs[0] if is_img and imgs else _url0(vid.get("cover") or vid.get("origin_cover"))),
         "author": _first(au, "nickname", default=""),
         "author_id": au.get("sec_uid") or au.get("uid"),
         "like": stat.get("digg_count"),
         "comment": stat.get("comment_count"),
         "duration": vid.get("duration"),
-        "note_type": "video",
+        "note_type": "image" if is_img else "video",
     }
 
 def dy_search(keyword, cursor=0, video_only=True):
     d = _p(DY + "/search/fetch_general_search_v1",
            keyword=keyword, cursor=int(cursor), sort_type="0",
-           publish_time="0", filter_duration="0", content_type="1")
+           publish_time="0", filter_duration="0", content_type=("1" if video_only else "0"))
     items = []
     for it in (d.get("data") or []):
         if it.get("type") != 1:
             continue
         a = it.get("aweme_info") or {}
+        if not a.get("aweme_id"):
+            continue
         if video_only and not ((a.get("video") or {}).get("duration")):
-            continue  # 滤掉图文/图集（duration=0，play_addr 是 audio）
-        if a.get("aweme_id"):
-            items.append(_dy_item(a))
+            continue  # 只要视频时滤掉图文/图集；video_only=False 时连图文一起返回
+        items.append(_dy_item(a))
     return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more")}
 
 def dy_detail(id_or_url):
@@ -133,20 +152,24 @@ def dy_detail(id_or_url):
     stat = a.get("statistics") or {}
     au = a.get("author") or {}
     desc = a.get("desc") or ""
+    images = [u for u in (_url0(im) for im in (a.get("images") or [])) if u]
+    is_img = bool(images) or a.get("aweme_type") in (68, 2)
+    sec = au.get("sec_uid") or au.get("uid")
     return {
         "platform": "douyin", "id": aid,
         "url": "https://www.douyin.com/video/%s" % aid,
         "title": desc, "desc": desc, "tags": _tags_from_text(desc),
-        "author": {"name": au.get("nickname"), "id": au.get("sec_uid") or au.get("uid"),
+        "author": {"name": au.get("nickname"), "id": sec,
                    "fans": au.get("follower_count"), "ip": au.get("ip_location"),
-                   "signature": au.get("signature")},
+                   "signature": au.get("signature"), "profile_url": _profile_url("douyin", sec)},
         "stats": {"like": stat.get("digg_count"), "comment": stat.get("comment_count"),
                   "share": stat.get("share_count"), "collect": stat.get("collect_count")},
-        "cover": _url0(vid.get("cover")),
-        "play_url": _url0(vid.get("play_addr") or vid.get("play_addr_h264")),
+        "cover": (images[0] if is_img and images else _url0(vid.get("cover"))),
+        "images": images,
+        "play_url": None if is_img else _url0(vid.get("play_addr") or vid.get("play_addr_h264")),
         "subtitle_url": None, "decode_key": None,
         "duration": vid.get("duration"), "publish_time": a.get("create_time"),
-        "note_type": "video",
+        "note_type": "image" if is_img else "video",
     }
 
 def dy_comments(id_or_url, cursor=0, count=20):
@@ -155,9 +178,11 @@ def dy_comments(id_or_url, cursor=0, count=20):
     items = []
     for c in (d.get("comments") or []):
         u = c.get("user") or {}
+        uid = u.get("sec_uid") or u.get("uid")
         items.append({"text": c.get("text"), "ip": c.get("ip_label"),
                       "likes": c.get("digg_count"), "time": c.get("create_time"),
-                      "user": u.get("nickname"), "user_id": u.get("sec_uid") or u.get("uid"),
+                      "user": u.get("nickname"), "user_id": uid,
+                      "avatar": _url0(u.get("avatar_thumb")), "profile_url": _profile_url("douyin", uid),
                       "cid": c.get("cid"), "replies": c.get("reply_comment_total")})
     return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("total")}
 
@@ -179,7 +204,7 @@ def xhs_search(keyword, page=1, note_type=""):
             "platform": "xhs", "id": n.get("id"),
             "url": "https://www.xiaohongshu.com/explore/%s" % n.get("id"),
             "title": n.get("title") or (n.get("desc") or "")[:30],
-            "cover": _url0((n.get("images_list") or [{}])[0]),
+            "cover": _xhs_img((n.get("images_list") or [{}])[0]),
             "author": (n.get("user") or {}).get("nickname"),
             "author_id": (n.get("user") or {}).get("userid"),
             "like": n.get("liked_count"), "comment": n.get("comments_count"),
@@ -218,16 +243,20 @@ def xhs_detail(note_id, note_type="video"):
             play = (stream[codec][0] or {}).get("master_url")
             if play:
                 break
+    imgs = [u for u in (_xhs_img(im) for im in (n.get("images_list") or [])) if u]
+    vimg = ((n.get("video_info_v2") or {}).get("image") or {})
+    cover = vimg.get("first_frame") or vimg.get("thumbnail") or (imgs[0] if imgs else None)
     return {
         "platform": "xhs", "id": note_id,
         "url": "https://www.xiaohongshu.com/explore/%s" % note_id,
         "title": n.get("title") or desc[:30], "desc": desc, "tags": tags,
         "author": {"name": (n.get("user") or {}).get("nickname"),
                    "id": (n.get("user") or {}).get("userid"),
-                   "fans": None, "ip": n.get("ip_location"), "signature": None},
+                   "fans": None, "ip": n.get("ip_location"), "signature": None,
+                   "profile_url": _profile_url("xhs", (n.get("user") or {}).get("userid"))},
         "stats": {"like": n.get("liked_count"), "comment": n.get("comments_count"),
                   "share": n.get("shared_count"), "collect": n.get("collected_count")},
-        "cover": _url0((n.get("images_list") or [{}])[0]),
+        "cover": cover, "images": imgs,
         "play_url": play, "subtitle_url": sub, "decode_key": None,
         "duration": None, "publish_time": n.get("time"),
         "note_type": n.get("type") or note_type,
@@ -238,9 +267,11 @@ def xhs_comments(note_id, cursor=None, count=20):
     items = []
     for c in (d.get("comments") or []):
         u = c.get("user") or {}
+        uid = u.get("userid")
         items.append({"text": c.get("content"), "ip": c.get("ip_location"),
                       "likes": c.get("like_count"), "time": c.get("time"),
-                      "user": u.get("nickname"), "user_id": u.get("userid"),
+                      "user": u.get("nickname"), "user_id": uid,
+                      "avatar": _xhs_img(u.get("images")), "profile_url": _profile_url("xhs", uid),
                       "cid": c.get("id"), "replies": c.get("sub_comment_count")})
     return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("comment_count")}
 
@@ -298,6 +329,7 @@ def ch_comments(object_id, last_buffer=""):
         items.append({"text": c.get("content"), "ip": c.get("ip_region"),
                       "likes": c.get("like_count"), "time": c.get("create_time"),
                       "user": c.get("nickname"), "user_id": c.get("username"),
+                      "avatar": c.get("head_url"), "profile_url": None,  # 视频号 finder 号无网页主页
                       "cid": c.get("comment_id"), "replies": c.get("reply_count")})
     return {"items": items, "cursor": d.get("last_buffer"), "has_more": d.get("down_continue"), "total": None}
 
