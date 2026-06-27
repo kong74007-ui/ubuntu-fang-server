@@ -61,13 +61,17 @@ ssh dapeng-server "sudo systemctl restart huangque-content"
 
 前端页面也必须走 git。**不要从旧目录、旧分支、AI 临时目录直接覆盖线上 HTML。**
 
-当前工作台页面对应关系：
+> 🚩 **前端唯一正本目录 = `site/workbench/`（已和强哥确认 2026-06-28）。** 历史上散落的根 `workbench/`、文档曾误写的 `huangque-web/workbench/` 都已废弃删除，别再用。所有工作台页面 + 它们的依赖（`shell.css`、`assets/`）都在 `site/workbench/` 里。
 
-| 页面 | Git 文件 | 线上位置 |
-|---|---|---|
-| 资产库 | `huangque-web/workbench/assets.html` | `/var/www/huangquechuanmei/workbench/assets.html` |
-| 音频模块 | `huangque-web/workbench/audio.html` | `/var/www/huangquechuanmei/workbench/audio.html` |
-| 视频模块 | `huangque-web/workbench/video.html` | `/var/www/huangquechuanmei/workbench/video.html` |
+当前工作台页面对应关系（线上位置统一在 `/var/www/huangquechuanmei/workbench/`）：
+
+| 页面 | Git 文件（正本） |
+|---|---|
+| 资产库 | `site/workbench/assets.html` |
+| 音频模块（音色卡片/克隆） | `site/workbench/audio.html` |
+| 视频模块 | `site/workbench/video.html` |
+| 作图 | `site/workbench/banana.html` |
+| 采集 / 获客 | `site/workbench/collect.html` · `leads.html` |
 
 前端部署前必须确认：
 
