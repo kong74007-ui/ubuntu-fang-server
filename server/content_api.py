@@ -16,6 +16,7 @@ import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, 
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
+import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -27,9 +28,10 @@ OUT_DIR    = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "video": 13}  # 定额能力；collect/leads 走 cost_of() 动态算
+COST = {"image": 12, "copy": 3, "audio": 4, "video": 13}  # 定额能力；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 COPY_MODEL  = os.environ.get("COPY_MODEL", "gpt-4o")
+TTS_MODEL   = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")  # 配音(同事的 audio 能力)
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
@@ -103,6 +105,12 @@ def _post(path, data, ctype):
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
     with urllib.request.urlopen(req, timeout=300) as r:
         return json.loads(r.read())
+
+def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
+    req = urllib.request.Request(OPENAI_BASE + path, data=data,
+                                 headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return r.read()
 
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
@@ -289,7 +297,49 @@ def gen_leads(payload):
             "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
 
-HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads}
+# ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
+VOICE_MAP = {
+    "dapeng": os.environ.get("VOICE_DAPENG", "alloy"),
+    "zelong": os.environ.get("VOICE_ZELONG", "onyx"),
+    "paul": os.environ.get("VOICE_PAUL", "echo"),
+    "personal": os.environ.get("VOICE_PERSONAL", "alloy"),
+    "alloy": "alloy", "ash": "ash", "ballad": "ballad", "coral": "coral", "echo": "echo",
+    "fable": "fable", "nova": "nova", "onyx": "onyx", "sage": "sage", "shimmer": "shimmer",
+}
+SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
+
+def gen_audio(payload):
+    text = (payload.get("text") or payload.get("prompt") or "").strip()
+    if not text:
+        raise ValueError("配音文案不能为空")
+    if len(text) > 1200:
+        raise ValueError("配音文案过长，请控制在 1200 字以内")
+    voice_key = (payload.get("voice") or "dapeng").strip().lower()
+    voice = VOICE_MAP.get(voice_key, VOICE_MAP["dapeng"])
+    raw_speed = payload.get("speed")
+    if isinstance(raw_speed, (int, float)):
+        speed = max(0.5, min(2.0, round(float(raw_speed), 1)))
+    else:
+        speed = SPEED_MAP.get(raw_speed or "normal", 1.0)
+    def knob(name, minv, maxv, default):
+        try:
+            return max(minv, min(maxv, int(float(payload.get(name, default)))))
+        except Exception:
+            return default
+    pitch = knob("pitch", -12, 12, 0)
+    volume = knob("volume", -50, 100, 0)
+    instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"
+    body = json.dumps({
+        "model": TTS_MODEL, "voice": voice, "input": text,
+        "instructions": instructions, "response_format": "mp3", "speed": speed,
+    }, ensure_ascii=False).encode()
+    data = _post_bytes("/v1/audio/speech", body, "application/json")
+    fn = "aud_%d.mp3" % int(time.time() * 1000)
+    (OUT_DIR / fn).write_bytes(data)
+    return {"type": "audio", "file": fn, "url": "/api/gen/file/" + fn, "voice": voice_key,
+            "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
+
+HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio}
 
 # ============ 后台 worker（串行跑任务，失败退点） ============
 def run_job(job_id):
@@ -379,7 +429,8 @@ class H(BaseHTTPRequestHandler):
             fn = os.path.basename(p.rsplit("/", 1)[1]); fp = OUT_DIR / fn
             if not fp.exists(): return self._send(404, {"detail": "no file"})
             data = fp.read_bytes()
-            self.send_response(200); self.send_header("Content-Type", "image/png")
+            ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
+            self.send_response(200); self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers(); self.wfile.write(data); return
         if p == "/api/gen/history":   # 本人生成历史（资产/最近作品都读这）
@@ -398,6 +449,8 @@ class H(BaseHTTPRequestHandler):
                 except Exception: continue
                 items.append({"job_id": r["id"], "url": res.get("url"), "mode": res.get("mode"),
                               "prompt": res.get("prompt"), "text": res.get("text"), "ctype": res.get("ctype"),
+                              "voice": res.get("voice"), "speed": res.get("speed"), "pitch": res.get("pitch"),
+                              "volume": res.get("volume"), "emotion": res.get("emotion"),
                               "created_at": r["created_at"]})
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
