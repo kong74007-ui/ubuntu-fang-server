@@ -624,14 +624,14 @@ def clone_vip_voice(username, payload):
             VALUES(?,?,?,?,?,?,?,?)""",
             (username, "personal", voice_key, name, slot_id, slot_id, now, now))
         c.execute("""UPDATE audio_voices
-            SET display_name=?, provider_voice=?, preview_url=NULL, slot_id=?, updated_at=?
+            SET display_name=?, provider_voice=?, preview_file=NULL, preview_url=NULL, slot_id=?, updated_at=?
             WHERE username=? AND scope='personal' AND voice_key=?""",
             (name, slot_id, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', clone_upload_at=?, clone_error=NULL, updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, now, now, username, slot_id))
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', clone_started_at=COALESCE(clone_started_at, ?), clone_upload_at=?, clone_error=NULL, updated_at=?
+            WHERE username=? AND slot_id=?""", (voice_id, now, now, now, username, slot_id))
         c.commit()
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training"}
 
