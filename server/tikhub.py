@@ -220,14 +220,16 @@ def _xhs_fetch(note_id, kind):
     return root[0] if root else {}
 
 def xhs_detail(note_id, note_type="video"):
-    # 贴链接时未必知道图文还是视频：先按提示取，拿不到内容再换另一种兜底
+    # 贴链接时未必知道图文还是视频。坑：对错类型的 note_id 调详情，TikHub 会返回**无关的随机笔记**
+    # （且有标题，骗过"有内容"判断）→ 必须校验返回笔记 .id == 请求 note_id 才接受，否则换另一种。
     n = {}
     for kind in (["image", "video"] if note_type == "image" else ["video", "image"]):
         try:
-            n = _xhs_fetch(note_id, kind) or {}
+            cand = _xhs_fetch(note_id, kind) or {}
         except TikHubError:
-            n = {}
-        if n.get("desc") or n.get("title"):
+            cand = {}
+        if cand and str(cand.get("id") or "") == str(note_id):
+            n = cand
             note_type = kind
             break
     desc = n.get("desc") or ""
@@ -256,10 +258,10 @@ def xhs_detail(note_id, note_type="video"):
                    "profile_url": _profile_url("xhs", (n.get("user") or {}).get("userid"))},
         "stats": {"like": n.get("liked_count"), "comment": n.get("comments_count"),
                   "share": n.get("shared_count"), "collect": n.get("collected_count")},
-        "cover": cover, "images": (imgs if (n.get("type") or note_type) == "image" else []),  # 画廊只给图文笔记
+        "cover": cover, "images": (imgs if note_type == "image" else []),  # 画廊只给图文笔记(其type=normal，用循环匹配到的kind门控)
         "play_url": play, "subtitle_url": sub, "decode_key": None,
         "duration": None, "publish_time": n.get("time"),
-        "note_type": n.get("type") or note_type,
+        "note_type": note_type,
     }
 
 def xhs_comments(note_id, cursor=None, count=20):
