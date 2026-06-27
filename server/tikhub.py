@@ -14,7 +14,8 @@
 环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
          OPENAI_API_KEY / OPENAI_BASE（口播 ASR 用，与 content_api 同源）。
 """
-import os, re, json, time, threading, urllib.request, urllib.parse, urllib.error
+import os, re, json, time, threading, sqlite3, urllib.request, urllib.parse, urllib.error
+from contextlib import closing
 
 KEY  = os.environ.get("TIKHUB_KEY", "")
 BASE = os.environ.get("TIKHUB_BASE", "https://api.tikhub.io").rstrip("/")
@@ -28,6 +29,33 @@ PLATFORMS = ("douyin", "xhs", "channels")
 # 会 SSL EOF；TikHub API + CDN 下载都强制绕过代理直连（已实测 .io/.dev 直连均 200）。
 # 仅 OpenAI whisper 仍走默认 urlopen（吃环境代理）。
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+# ============ 缓存：同一条链接/关键词别人爬过就直接给，省 TikHub 调用(限流+花钱) ============
+# 内容(详情)发布即固定→缓存靠谱；评论/搜索会变→短存；play_url 带时效→跟详情 1h 内安全。
+_CACHE_DB = os.environ.get("TIKHUB_CACHE_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tikhub_cache.db"))
+_CACHE_LOCK = threading.Lock()
+def _cache_conn():
+    c = sqlite3.connect(_CACHE_DB, timeout=5)
+    c.execute("CREATE TABLE IF NOT EXISTS cache(k TEXT PRIMARY KEY, v TEXT, exp INTEGER)")
+    return c
+def _cache_get(key):
+    try:
+        with _CACHE_LOCK, closing(_cache_conn()) as c:
+            r = c.execute("SELECT v, exp FROM cache WHERE k=?", (key,)).fetchone()
+            if r and r[1] > time.time():
+                return json.loads(r[0])
+    except Exception:
+        pass
+    return None
+def _cache_set(key, val, ttl):
+    try:
+        with _CACHE_LOCK, closing(_cache_conn()) as c:
+            c.execute("INSERT OR REPLACE INTO cache(k, v, exp) VALUES(?,?,?)",
+                      (key, json.dumps(val, ensure_ascii=False), int(time.time()) + ttl))
+            c.execute("DELETE FROM cache WHERE exp < ?", (int(time.time()),))  # 顺手清过期
+            c.commit()
+    except Exception:
+        pass
 
 
 class TikHubError(Exception):
@@ -387,24 +415,53 @@ def parse_link(text):
 # ====================================================================
 # 统一调度（content_api 用这层，不直接碰平台函数）
 # ====================================================================
-def search(platform, keyword, page=1, video_only=True):
+def _search(platform, keyword, page=1, video_only=True):
     if platform == "douyin": return dy_search(keyword, cursor=(page - 1) * 10, video_only=video_only)
     if platform == "xhs":    return xhs_search(keyword, page=page, note_type="视频笔记" if video_only else "")
     if platform == "channels":
         raise TikHubError("视频号无全网关键词搜索，请用 sph 短号/finder 走盯号采集")
     raise TikHubError("未知平台 " + str(platform))
 
-def detail(platform, id_or_url, note_type="video"):
+def _detail(platform, id_or_url, note_type="video"):
     if platform == "douyin":   return dy_detail(id_or_url)
     if platform == "xhs":      return xhs_detail(id_or_url, note_type=note_type)
     if platform == "channels": return ch_detail(id_or_url)
     raise TikHubError("未知平台 " + str(platform))
 
-def comments(platform, id_or_url, cursor=None, count=20):
+def _comments(platform, id_or_url, cursor=None, count=20):
     if platform == "douyin":   return dy_comments(id_or_url, cursor=cursor or 0, count=count)
     if platform == "xhs":      return xhs_comments(id_or_url)
     if platform == "channels": return ch_comments(id_or_url, last_buffer=cursor or "")
     raise TikHubError("未知平台 " + str(platform))
+
+# 带缓存的对外入口：内容(详情)发布即固定→存 1h；评论会增→存 1h；搜索会变→存 30min。
+# 任一函数传 fresh=True 可绕过缓存强制重取（给"刷新最新"用）。
+def search(platform, keyword, page=1, video_only=True, fresh=False):
+    key = "srch:%s:%s:%s:%d" % (platform, keyword, page, int(video_only))
+    if not fresh:
+        hit = _cache_get(key)
+        if hit is not None: return hit
+    r = _search(platform, keyword, page=page, video_only=video_only)
+    _cache_set(key, r, 1800)
+    return r
+
+def detail(platform, id_or_url, note_type="video", fresh=False):
+    key = "det:%s:%s" % (platform, id_or_url)
+    if not fresh:
+        hit = _cache_get(key)
+        if hit is not None: return hit
+    r = _detail(platform, id_or_url, note_type=note_type)
+    _cache_set(key, r, 3600)
+    return r
+
+def comments(platform, id_or_url, cursor=None, count=20, fresh=False):
+    key = "cmt:%s:%s:%s:%s" % (platform, id_or_url, cursor, count)
+    if not fresh:
+        hit = _cache_get(key)
+        if hit is not None: return hit
+    r = _comments(platform, id_or_url, cursor=cursor, count=count)
+    _cache_set(key, r, 3600)
+    return r
 
 
 # ====================================================================
