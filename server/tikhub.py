@@ -256,7 +256,7 @@ def xhs_detail(note_id, note_type="video"):
                    "profile_url": _profile_url("xhs", (n.get("user") or {}).get("userid"))},
         "stats": {"like": n.get("liked_count"), "comment": n.get("comments_count"),
                   "share": n.get("shared_count"), "collect": n.get("collected_count")},
-        "cover": cover, "images": imgs,
+        "cover": cover, "images": (imgs if (n.get("type") or note_type) == "image" else []),  # 画廊只给图文笔记
         "play_url": play, "subtitle_url": sub, "decode_key": None,
         "duration": None, "publish_time": n.get("time"),
         "note_type": n.get("type") or note_type,

@@ -48,7 +48,7 @@
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
   var NAV=[
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感',i:'sparkles'},
-    {k:'leads',l:'获客',i:'search'}, {k:'collect',l:'采集拆解',i:'link'}, {k:'banana',l:'作图',i:'image'},
+    {k:'leads',l:'获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'作图',i:'image'},
     {k:'video',l:'视频',i:'video'}, {k:'audio',l:'音频',i:'mic'}, {k:'script',l:'编导',i:'edit'},
     {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'设置',i:'gear'}

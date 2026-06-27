@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>采集拆解 · 黄雀 AI 工作台</title>
+<title>内容爬取 · 黄雀 AI 工作台</title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,7 +14,6 @@
   .gCollect { grid-template-columns: 1.1fr 1fr; }
   @media (max-width: 1100px) { .gCollect { grid-template-columns: 1fr; } }
   @keyframes hq-spin { to { transform: rotate(360deg); } }
-  .want-chip { padding: 7px 14px; font-size: 12.5px; border-radius: 8px; cursor: pointer; transition: .16s; user-select: none; }
   .sr-card { border: 1px solid rgba(148,164,187,.14); border-radius: 11px; overflow: hidden; cursor: pointer; transition: .16s; background: rgba(148,164,187,.03); }
   .sr-card:hover { border-color: rgba(231,178,76,.3); background: rgba(231,178,76,.05); }
   .sr-card.selected { border-color: rgba(231,178,76,.5); background: rgba(231,178,76,.08); }
@@ -33,16 +32,8 @@
     <!-- ===== LEFT: Controls ===== -->
     <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
       <div>
-        <h1 style="margin:0; font-size:21px; font-weight:700;">采集拆解</h1>
-        <p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">一键拆解视频文案、评论、口播，沉淀可复用的内容素材</p>
-      </div>
-
-      <!-- Platform tabs -->
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">平台</div>
-      <div id="platformRow" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
-        <div class="hv-gold" data-plat="douyin" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">抖音</div>
-        <div class="hv-gold" data-plat="xhs" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">小红书</div>
-        <div class="hv-gold" data-plat="channels" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">视频号</div>
+        <h1 style="margin:0; font-size:21px; font-weight:700;">内容爬取</h1>
+        <p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">支持爬取抖音、小红书的图文及视频</p>
       </div>
 
       <!-- Mode toggle -->
@@ -51,19 +42,26 @@
         <button id="tabKw" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:9px; cursor:pointer; font-family:inherit; transition:.16s; color:#94a4bb; background:transparent;">关键词搜</button>
       </div>
 
-      <!-- Link mode -->
+      <!-- Link mode — hero -->
       <div id="linkMode">
-        <div style="font-size:13.5px; font-weight:600; margin-bottom:9px;">分享链接</div>
-        <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
-          <textarea id="urlInput" rows="3" placeholder="粘贴抖音 / 小红书 / 视频号分享链接，支持 App 复制的带文字短链…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
-          <div style="display:flex; align-items:center; justify-content:flex-end; margin-top:4px;">
+        <div style="position:relative; border:1px solid rgba(231,178,76,.22); background:rgba(7,11,19,.5); border-radius:14px; padding:16px 16px 12px;">
+          <textarea id="urlInput" rows="4" placeholder="粘贴抖音 / 小红书 分享链接，支持 App 复制的带文字短链…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; line-height:1.75; font-family:inherit;"></textarea>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
+            <span style="font-size:11.5px; color:#3d4f62;">支持抖音、小红书完整链接或短链</span>
             <span id="urlClear" class="hv-gold" style="font-size:11.5px; color:#5c6b82; cursor:pointer; transition:.16s;">清空</span>
           </div>
         </div>
       </div>
 
-      <!-- Keyword mode -->
+      <!-- Keyword mode — includes platform selector -->
       <div id="kwMode" style="display:none;">
+        <!-- Platform selector only needed for keyword search -->
+        <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">平台</div>
+        <div id="kwPlatformRow" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">
+          <div class="hv-gold" data-plat="douyin" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">抖音</div>
+          <div class="hv-gold" data-plat="xhs" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">小红书</div>
+        </div>
+
         <div style="font-size:13.5px; font-weight:600; margin-bottom:9px;">关键词</div>
         <div style="display:flex; gap:8px;">
           <input id="kwInput" placeholder="输入关键词，如：美甲 最新款" style="flex:1; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:11px; padding:11px 14px; color:#eaf1fa; font-size:13.5px; outline:none; font-family:inherit; transition:.16s;">
@@ -83,16 +81,8 @@
         </div>
       </div>
 
-      <!-- Want options -->
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">采集内容</div>
-      <div id="wantRow" style="display:flex; flex-wrap:wrap; gap:8px;">
-        <div class="want-chip" data-want="copy" data-on="1" style="color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32);">文案</div>
-        <div class="want-chip" data-want="comments" data-on="1" style="color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32);">评论区</div>
-        <div class="want-chip" data-want="transcript" data-on="1" style="color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32);">口播文案</div>
-      </div>
-
-      <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">采集（约 5 点）</button>
-      <div id="colNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗约 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">5</span> 点 · 失败自动退点</div>
+      <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">爬取</button>
+      <div id="colNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">文案 + 评论默认提取 · 失败自动退点</div>
     </div>
 
     <!-- ===== RIGHT: Results + History ===== -->
@@ -105,8 +95,8 @@
           <div style="display:flex; justify-content:center; margin-bottom:14px; color:rgba(148,164,187,.25);">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:48px; height:48px;"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
           </div>
-          <div style="font-size:14px; color:#5c6b82; font-weight:500;">粘贴视频链接开始采集</div>
-          <div style="font-size:12px; color:#3d4f62; margin-top:6px;">或切换「关键词搜」找到目标视频后点采集</div>
+          <div style="font-size:14px; color:#5c6b82; font-weight:500;">粘贴视频链接开始爬取</div>
+          <div style="font-size:12px; color:#3d4f62; margin-top:6px;">或切换「关键词搜」找到目标视频后点爬取</div>
         </div>
       </div>
 
@@ -157,23 +147,29 @@
           <div id="copyContent"></div>
         </div>
 
-        <!-- Transcript block -->
-        <div id="transcriptBlock" style="border:1px solid rgba(148,164,187,.1); border-radius:14px; padding:14px 16px; margin-bottom:10px; background:rgba(7,11,19,.3);">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-            <span style="font-size:13.5px; font-weight:600;">口播文案</span>
-            <button class="copy-btn" id="copyTranscriptBtn" style="display:none;">复制</button>
-          </div>
-          <div id="transcriptText" style="font-size:13px; line-height:1.8; color:#5c6b82;"></div>
-        </div>
-
         <!-- Comments block -->
-        <div style="border:1px solid rgba(148,164,187,.1); border-radius:14px; padding:14px 16px; background:rgba(7,11,19,.3);">
+        <div style="border:1px solid rgba(148,164,187,.1); border-radius:14px; padding:14px 16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
             <span style="font-size:13.5px; font-weight:600;">评论区 <span id="cmtCount" style="font-size:12px; color:#5c6b82; font-weight:400;"></span></span>
             <button class="copy-btn" id="exportCmtBtn">导出评论</button>
           </div>
           <div id="cmtList"></div>
           <div id="cmtMore" style="display:none; font-size:12px; color:#5c6b82; text-align:center; padding:8px 0; margin-top:8px; border-top:1px solid rgba(148,164,187,.08);">仅展示部分评论，导出可获取更多</div>
+        </div>
+
+        <!-- Extract transcript button (on-demand) -->
+        <div id="transcriptExtractWrap" style="display:none; margin-bottom:10px;">
+          <button id="transcriptExtractBtn" class="hv-lift" style="width:100%; padding:14px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; transition:.2s;">提取文案 <span style="font-size:12px; font-weight:400; opacity:.75;">约 6 点</span></button>
+          <div id="transcriptExtractNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:7px;">口播提取约 20-40 秒 · 按需点击</div>
+        </div>
+
+        <!-- Transcript block (hidden until extracted) -->
+        <div id="transcriptBlock" style="display:none; border:1px solid rgba(148,164,187,.1); border-radius:14px; padding:14px 16px; margin-bottom:10px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:13.5px; font-weight:600;">口播文案</span>
+            <button class="copy-btn" id="copyTranscriptBtn" style="display:none;">复制</button>
+          </div>
+          <div id="transcriptText" style="font-size:13px; line-height:1.8; color:#5c6b82;"></div>
         </div>
       </div>
 
@@ -201,7 +197,7 @@
         </div>
         <div id="actRetry" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
           <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span>
-          <span style="font-size:11px; color:#94a4bb;">再采集</span>
+          <span style="font-size:11px; color:#94a4bb;">再爬取</span>
         </div>
       </div>
 
@@ -219,7 +215,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=10"></script>
+<script src="cloud-shell.js?v=11"></script>
 <script>
 (function () {
   'use strict';
@@ -228,6 +224,7 @@
   var platform = 'douyin';
   var mode = 'link';       // 'link' | 'keyword'
   var selectedUrl = '';    // set when user picks from search grid
+  var currentUrl  = '';    // ponytail: saved at submit time, reused for transcript extraction
   var currentResult = null;
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
@@ -244,12 +241,12 @@
 
   /* ---- busy state ---- */
   var colBtn = document.getElementById('colBtn');
-  var origBtnText = colBtn ? colBtn.textContent : '采集';
+  var origBtnText = colBtn ? colBtn.textContent : '爬取';
   function busy(on) {
     if (!colBtn) return;
     colBtn.style.pointerEvents = on ? 'none' : 'auto';
     colBtn.style.opacity = on ? '.7' : '1';
-    colBtn.textContent = on ? '采集中…' : origBtnText;
+    colBtn.textContent = on ? '爬取中…' : origBtnText;
   }
 
   /* ---- panel switcher ---- */
@@ -264,10 +261,10 @@
     if (el) el.textContent = t;
   }
 
-  /* ---- platform tabs ---- */
-  document.querySelectorAll('#platformRow > div').forEach(function (c) {
+  /* ---- platform tabs (keyword mode only) ---- */
+  document.querySelectorAll('#kwPlatformRow > div').forEach(function (c) {
     c.onclick = function () {
-      document.querySelectorAll('#platformRow > div').forEach(function (x) {
+      document.querySelectorAll('#kwPlatformRow > div').forEach(function (x) {
         x.style.color = '#94a4bb';
         x.style.background = 'rgba(148,164,187,.05)';
         x.style.borderColor = 'rgba(148,164,187,.14)';
@@ -287,11 +284,6 @@
 
   function setMode(m) {
     mode = m;
-    var onCss  = 'color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c);';
-    var offCss = 'color:#94a4bb; background:transparent;';
-    tabLink.style.cssText = tabLink.style.cssText + (m === 'link' ? onCss : offCss);
-    tabKw.style.cssText   = tabKw.style.cssText   + (m === 'keyword' ? onCss : offCss);
-    // simpler: just swap the two properties
     tabLink.style.color      = m === 'link' ? '#1a1206' : '#94a4bb';
     tabLink.style.background = m === 'link' ? 'linear-gradient(135deg,#f4cd72,#e7b24c)' : 'transparent';
     tabKw.style.color        = m === 'keyword' ? '#1a1206' : '#94a4bb';
@@ -307,25 +299,6 @@
   var urlInput = document.getElementById('urlInput');
   var urlClear = document.getElementById('urlClear');
   if (urlClear) urlClear.onclick = function () { if (urlInput) urlInput.value = ''; };
-
-  /* ---- want chips ---- */
-  document.querySelectorAll('.want-chip').forEach(function (c) {
-    c.onclick = function () {
-      var on = c.getAttribute('data-on') === '1';
-      c.setAttribute('data-on', on ? '0' : '1');
-      c.style.color      = on ? '#94a4bb' : '#e7b24c';
-      c.style.background = on ? 'rgba(148,164,187,.05)' : 'rgba(231,178,76,.1)';
-      c.style.borderColor = on ? 'rgba(148,164,187,.14)' : 'rgba(231,178,76,.32)';
-    };
-  });
-
-  function getWant() {
-    var w = [];
-    document.querySelectorAll('.want-chip').forEach(function (c) {
-      if (c.getAttribute('data-on') === '1') w.push(c.getAttribute('data-want'));
-    });
-    return w.length ? w : ['copy'];
-  }
 
   /* ---- keyword search ---- */
   var kwSearch  = document.getElementById('kwSearch');
@@ -390,7 +363,6 @@
       '</div>';
     }).join('');
 
-    // store items for click handler
     srGrid.querySelectorAll('.sr-card').forEach(function (card) {
       var idx = parseInt(card.getAttribute('data-idx'), 10);
       var it  = items[idx] || {};
@@ -404,7 +376,7 @@
     });
   }
 
-  /* ---- poll ---- */
+  /* ---- poll (main collect job) ---- */
   function poll(id, t0) {
     if (pollIv) clearInterval(pollIv);
     pollIv = setInterval(function () {
@@ -423,21 +395,21 @@
             busy(false);
             localStorage.removeItem('hq_active_collect_job');
             if (d.result) { currentResult = d.result; renderResult(d.result); }
-            setNote('✅ 采集完成（' + sec + 's）· 点数已更新', '#2bd576');
+            setNote('✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
             if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
             loadHistory();
           } else if (d.status === 'error') {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
-            setNote('采集失败：' + (d.error || '') + ' · 已退点', '#f4708a');
+            setNote('爬取失败：' + (d.error || '') + ' · 已退点', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
           } else if (sec > 400) {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
-            setNote('采集超时（' + sec + 's）· 已自动退点，请重试', '#f4708a');
+            setNote('爬取超时（' + sec + 's）· 已自动退点，请重试', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
           } else {
-            setLoadNote('采集中（' + sec + 's）');
+            setLoadNote('爬取中（' + sec + 's）');
           }
         }).catch(function () {});
     }, 4000);
@@ -447,14 +419,16 @@
   function submitCollect(url) {
     if (!url) { setNote('请粘贴视频链接或选择视频', '#f4708a'); return; }
     if (!tok()) { location.href = '../login.html?redirect=collect'; return; }
+    currentUrl = url;  // ponytail: save for on-demand transcript extraction
     busy(true);
     showState('loadingState');
-    setLoadNote('提交采集任务…');
+    setLoadNote('提交爬取任务…');
     var t0 = Date.now();
+    // ponytail: no platform in body — backend auto-detects from URL
     fetch('/api/gen/collect', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: platform, url: url, want: getWant() })
+      body: JSON.stringify({ url: url, want: ['comments'] })
     })
     .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
     .then(function (x) {
@@ -470,7 +444,7 @@
         return;
       }
       localStorage.setItem('hq_active_collect_job', JSON.stringify({ id: x.d.job_id, t0: t0, url: url }));
-      setLoadNote('采集任务已提交，正在处理…');
+      setLoadNote('爬取任务已提交，正在处理…');
       poll(x.d.job_id, t0);
     })
     .catch(function () {
@@ -495,10 +469,10 @@
   /* ---- render result ---- */
   function renderResult(r) {
     showState('resultState');
-    var v        = r.video || {};
-    var copy     = r.copy  || {};
-    var tr       = r.transcript || null;
-    var comments = r.comments   || [];
+    var v        = r.video    || {};
+    var copy     = r.copy     || {};
+    var comments = r.comments || [];
+    var imgs     = r.images   || [];
 
     /* video card */
     var vcCover  = document.getElementById('vcCover');
@@ -536,7 +510,6 @@
 
     /* image gallery (图文笔记) */
     var galBlock = document.getElementById('galleryBlock');
-    var imgs = r.images || [];
     if (galBlock) {
       if (imgs.length) {
         document.getElementById('galCount').textContent = '共 ' + imgs.length + ' 张';
@@ -589,7 +562,6 @@
       if (!html) html = '<span style="font-size:13px; color:#5c6b82;">无文案数据</span>';
       copyContent.innerHTML = html;
 
-      // bind copy-field buttons
       copyContent.querySelectorAll('.copy-field-btn').forEach(function (btn) {
         btn.onclick = function () {
           var text = copyFields[btn.getAttribute('data-field')] || '';
@@ -598,30 +570,11 @@
       });
     }
 
-    /* copy all */
     var copyAllBtn = document.getElementById('copyAllBtn');
     if (copyAllBtn) copyAllBtn.onclick = function () {
       var all = [copy.title, copy.desc, copyFields.tags].filter(Boolean).join('\n\n');
       copyText(all, copyAllBtn);
     };
-
-    /* transcript */
-    var transcriptText      = document.getElementById('transcriptText');
-    var copyTranscriptBtn   = document.getElementById('copyTranscriptBtn');
-    if (transcriptText) {
-      if (tr && tr.text) {
-        transcriptText.style.color = '#eaf1fa';
-        transcriptText.textContent = tr.text;
-        if (copyTranscriptBtn) {
-          copyTranscriptBtn.style.display = '';
-          copyTranscriptBtn.onclick = function () { copyText(tr.text, copyTranscriptBtn); };
-        }
-      } else {
-        transcriptText.style.color = '#5c6b82';
-        transcriptText.innerHTML = '<span style="font-style:italic;">未提取 / 该视频无口播内容</span>';
-        if (copyTranscriptBtn) copyTranscriptBtn.style.display = 'none';
-      }
-    }
 
     /* comments */
     var cmtList  = document.getElementById('cmtList');
@@ -655,11 +608,114 @@
     }
     if (cmtMore) cmtMore.style.display = (r.comments_more || comments.length >= 20) ? '' : 'none';
 
-    /* export button in block */
     var exportCmtBtn = document.getElementById('exportCmtBtn');
     if (exportCmtBtn) exportCmtBtn.onclick = function () { exportComments(comments, v.title); };
+
+    /* reset transcript area + configure extract button */
+    var trBlock  = document.getElementById('transcriptBlock');
+    var trText   = document.getElementById('transcriptText');
+    var trCopyBtn = document.getElementById('copyTranscriptBtn');
+    if (trBlock)   trBlock.style.display = 'none';
+    if (trText)    { trText.textContent = ''; trText.style.color = '#5c6b82'; }
+    if (trCopyBtn) trCopyBtn.style.display = 'none';
+
+    var extractWrap = document.getElementById('transcriptExtractWrap');
+    var extractBtn  = document.getElementById('transcriptExtractBtn');
+    var extractNote = document.getElementById('transcriptExtractNote');
+    var hasImages = imgs.length > 0;
+    if (extractWrap) extractWrap.style.display = '';
+    if (extractBtn) {
+      extractBtn.disabled = hasImages;
+      extractBtn.style.opacity       = hasImages ? '.4' : '1';
+      extractBtn.style.cursor        = hasImages ? 'not-allowed' : 'pointer';
+      extractBtn.style.pointerEvents = hasImages ? 'none' : 'auto';
+      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      if (!hasImages) extractBtn.onclick = submitTranscript;
+    }
+    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20-40 秒 · 按需点击';
+    if (extractNote) extractNote.style.color = '#5c6b82';
   }
 
+  /* ---- transcript extraction (on-demand) ---- */
+  function submitTranscript() {
+    if (!currentUrl) return;
+    if (!tok()) { location.href = '../login.html?redirect=collect'; return; }
+    var btn  = document.getElementById('transcriptExtractBtn');
+    var note = document.getElementById('transcriptExtractNote');
+    if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
+    if (note) { note.textContent = '口播提取约 20-40 秒，请稍候…'; note.style.color = '#2dd4bf'; }
+    var t0 = Date.now();
+    fetch('/api/gen/collect', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: currentUrl, want: ['transcript'] })
+    })
+    .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+    .then(function (x) {
+      if (x.s === 401) { location.href = '../login.html?redirect=collect'; return; }
+      if (x.s === 402) { resetTranscriptBtn('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', true); return; }
+      if (!x.d || !x.d.job_id) { resetTranscriptBtn('提交失败：' + ((x.d && x.d.detail) || ''), true); return; }
+      pollTranscript(x.d.job_id, t0);
+    })
+    .catch(function () { resetTranscriptBtn('网络错误，请重试', true); });
+  }
+
+  function resetTranscriptBtn(msg, isErr) {
+    var btn  = document.getElementById('transcriptExtractBtn');
+    var note = document.getElementById('transcriptExtractNote');
+    if (btn) {
+      btn.disabled = false; btn.style.opacity = '1'; btn.style.pointerEvents = 'auto';
+      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      btn.onclick = submitTranscript;
+    }
+    if (note) {
+      note.innerHTML = msg || '口播提取约 20-40 秒 · 按需点击';
+      note.style.color = isErr ? '#f4708a' : '#5c6b82';
+    }
+  }
+
+  function pollTranscript(id, t0) {
+    var iv = setInterval(function () {
+      fetch('/api/gen/job/' + id, { headers: { 'Authorization': 'Bearer ' + tok() } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var sec = Math.round((Date.now() - t0) / 1000);
+          if (!d.status) { clearInterval(iv); resetTranscriptBtn('提取失败', true); return; }
+          if (d.status === 'done') {
+            clearInterval(iv);
+            var tr = d.result && d.result.transcript;
+            if (tr && tr.text) {
+              showTranscript(tr.text);
+            } else {
+              resetTranscriptBtn('该内容无口播文案', true);
+            }
+            if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+          } else if (d.status === 'error') {
+            clearInterval(iv);
+            resetTranscriptBtn('提取失败：' + (d.error || ''), true);
+          } else if (sec > 120) {
+            clearInterval(iv);
+            resetTranscriptBtn('提取超时，请重试', true);
+          }
+          // else: pending, keep polling
+        }).catch(function () {});
+    }, 4000);
+  }
+
+  function showTranscript(text) {
+    var block   = document.getElementById('transcriptBlock');
+    var textEl  = document.getElementById('transcriptText');
+    var copyBtn = document.getElementById('copyTranscriptBtn');
+    if (block)  block.style.display = '';
+    if (textEl) { textEl.style.color = '#eaf1fa'; textEl.textContent = text; }
+    if (copyBtn) {
+      copyBtn.style.display = '';
+      copyBtn.onclick = function () { copyText(text, copyBtn); };
+    }
+    resetTranscriptBtn();  // restore button (allow re-extract)
+  }
+
+  /* ---- helpers ---- */
   function copyFieldHtml(label, text, field) {
     return '<div style="margin-bottom:10px;">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;">' +
@@ -678,7 +734,6 @@
     '</div>';
   }
 
-  /* ---- copy helper ---- */
   function copyText(text, btn) {
     var origText = btn ? btn.textContent : '';
     function done() { if (btn) { btn.textContent = '已复制'; setTimeout(function () { btn.textContent = origText; }, 1500); } }
@@ -695,7 +750,6 @@
     }
   }
 
-  /* ---- export comments ---- */
   function exportComments(comments, videoTitle) {
     if (!comments || !comments.length) { setNote('没有评论数据可导出', '#f4708a'); return; }
     var rows = ['序号,用户,点赞,时间,内容'];
@@ -721,18 +775,18 @@
   var actRetry  = document.getElementById('actRetry');
 
   if (actCopy) actCopy.onclick = function () {
-    if (!currentResult) { setNote('先采集一条视频', '#f4708a'); return; }
+    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
     var c = currentResult.copy || {};
     var all = [c.title, c.desc, copyFields.tags].filter(Boolean).join('\n\n');
     copyText(all, null);
     setNote('✅ 文案已复制到剪贴板', '#2bd576');
   };
   if (actExport) actExport.onclick = function () {
-    if (!currentResult) { setNote('先采集一条视频', '#f4708a'); return; }
+    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
     exportComments(currentResult.comments, currentResult.video && currentResult.video.title);
   };
   if (actBanana) actBanana.onclick = function () {
-    if (!currentResult || !currentResult.video) { setNote('先采集一条视频', '#f4708a'); return; }
+    if (!currentResult || !currentResult.video) { setNote('先爬取一条视频', '#f4708a'); return; }
     // ponytail: localStorage handoff — banana.html 侧加 hq_collect_to_banana 读取逻辑即可
     try {
       localStorage.setItem('hq_collect_to_banana', JSON.stringify({
@@ -743,11 +797,10 @@
     location.href = 'banana.html';
   };
   if (actFeishu) actFeishu.onclick = function () {
-    // TODO: 接入 /api/gen/... 飞书推送（bot 接入阶段）
     setNote('飞书推送即将上线（bot 接入阶段）', '#f4cd72');
   };
   if (actStore) actStore.onclick = function () {
-    if (!currentResult) { setNote('先采集一条视频', '#f4708a'); return; }
+    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
     setNote('✅ 采集即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>', '#2bd576');
   };
   if (actRetry) actRetry.onclick = function () {
@@ -807,8 +860,9 @@
     if (aj && aj.id) {
       busy(true);
       showState('loadingState');
-      setLoadNote('接上进行中的采集任务…');
+      setLoadNote('接上进行中的爬取任务…');
       if (aj.url && urlInput) urlInput.value = aj.url;
+      if (aj.url) currentUrl = aj.url;
       poll(aj.id, aj.t0 || Date.now());
     }
   } catch (e) {}
