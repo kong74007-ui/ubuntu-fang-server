@@ -202,13 +202,17 @@
     if(slot.preview_url){
       var playBtn=document.createElement('button');
       playBtn.type='button';
+      var previewSrc=slot.preview_url+(slot.preview_url.indexOf('?')>=0?'&':'?')+'v='+(slot.updated_at||Date.now());
+      playBtn.setAttribute('data-preview-url', previewSrc);
       playBtn.title='\u64ad\u653e\u8bd5\u542c';
       playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
       playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
       playBtn.style.cssText='position:absolute;right:16px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:none;border-radius:50%;background:linear-gradient(135deg,#2dd4bf,#4ade80);color:#06130f;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 12px 30px rgba(45,212,191,.22);';
-      var previewAudio=new Audio(slot.preview_url);
+      var previewAudio=null;
       playBtn.onclick=function(e){
         e.preventDefault(); e.stopPropagation();
+        var src=playBtn.getAttribute('data-preview-url');
+        if(!previewAudio || previewAudio.src.indexOf(src)<0) previewAudio=new Audio(src);
         if(previewAudio.paused){
           previewAudio.play();
           playBtn.title='\u6682\u505c\u8bd5\u542c';
