@@ -448,30 +448,6 @@ def check_clone_status(username, slot_id):
         raise
     st = resp.get("status")
     demo = resp.get("demo_audio")
-    create_time = resp.get("create_time") or 0
-    try:
-        create_time_s = int(create_time) / 1000 if int(create_time) > 100000000000 else int(create_time)
-    except Exception:
-        create_time_s = 0
-    started_at = int(slot["clone_started_at"] or 0)
-    if st == 2 and started_at and create_time_s and create_time_s < started_at - 3:
-        if int(time.time()) - int(slot["clone_upload_at"] or started_at) > 900:
-            err = "Doubao returned previous clone result for more than 15 minutes"
-            with closing(adb()) as c:
-                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
-                          (err, int(time.time()), username, slot_id))
-                c.commit()
-            return {"status": "failed", "clone_error": err, "doubao_status": st, "stale_result": True}
-        return {"status": "training", "doubao_status": st, "stale_result": True}
-    if st == 2 and same_preview_asset(demo, slot["previous_preview_url"]):
-        if int(time.time()) - int(slot["clone_upload_at"] or started_at or time.time()) > 900:
-            err = "Doubao returned previous preview for more than 15 minutes"
-            with closing(adb()) as c:
-                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
-                          (err, int(time.time()), username, slot_id))
-                c.commit()
-            return {"status": "failed", "clone_error": err, "doubao_status": st, "stale_preview": True}
-        return {"status": "training", "doubao_status": st, "stale_preview": True}
     if st == 2:
         preview_url = demo
         preview_file = None
