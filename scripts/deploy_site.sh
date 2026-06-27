@@ -26,4 +26,10 @@ if [ -z "$PW" ]; then echo "  ⚠ 没读到 LEADGEN_PASSWORD，获客页口令�
 sudo sed -i "s/__LEADGEN_PW__/$PW/" '"$WEBROOT"'/workbench/leads.html
 if grep -q "__LEADGEN_PW__" '"$WEBROOT"'/workbench/leads.html; then echo "  ⚠ 注入失败(占位符仍在)"; else echo "  ✓ 口令已注入(长度 ${#PW})"; fi
 '
+echo "▸ 4/4 部署内容后端 content_api.py + 重启 huangque-content"
+rsync -az --rsync-path="sudo rsync" \
+  -e "ssh -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes" \
+  "$ROOT/server/content_api.py" "$HOST:/home/ubuntu/content-api/content_api.py"
+$SSH "sudo systemctl restart huangque-content && sleep 1 && echo '  content-api:' \$(systemctl is-active huangque-content)"
+
 echo "✅ 部署完成 → https://huangquechuanmei.com"
