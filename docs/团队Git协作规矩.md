@@ -57,6 +57,32 @@ ssh dapeng-server "sudo systemctl restart huangque-content"
 
 ---
 
+## 前端部署约束（防止旧页面覆盖新页面）
+
+前端页面也必须走 git。**不要从旧目录、旧分支、AI 临时目录直接覆盖线上 HTML。**
+
+当前工作台页面对应关系：
+
+| 页面 | Git 文件 | 线上位置 |
+|---|---|---|
+| 资产库 | `huangque-web/workbench/assets.html` | `/var/www/huangquechuanmei/workbench/assets.html` |
+| 音频模块 | `huangque-web/workbench/audio.html` | `/var/www/huangquechuanmei/workbench/audio.html` |
+| 视频模块 | `huangque-web/workbench/video.html` | `/var/www/huangquechuanmei/workbench/video.html` |
+
+前端部署前必须确认：
+
+```bash
+git branch --show-current   # 必须是 design-sync，或双方确认过的当前协作分支
+git pull                    # 必须先拉最新
+git status                  # 必须确认没有未提交的本地脏改动
+```
+
+部署前端只允许从 GitHub 最新代码对应的文件同步到线上。**如果只是改音频页，就只部署 `audio.html`；如果只是改资产页，就只部署 `assets.html`。不要整站 rsync 旧目录。**
+
+> 谁最后部署前端，谁负责先确认自己手里的 HTML 包含对方已经 push 的最新改动。否则很容易把别人的新功能（比如音频资产入口、个人音色卡片）用旧页面盖掉。
+
+---
+
 ## 几条小规矩
 
 - **commit 说人话**：`fix: 修好图生图卡死` 比 `update` 强一百倍。出事好查。
