@@ -516,6 +516,7 @@
       if (v.publish_time) parts.push(v.publish_time);
       var metaHtml = escHtml(parts.join(' · '));
       if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
+      if (v.play_url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="/api/gen/dl?url=' + encodeURIComponent(v.play_url) + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30)) + '" style="color:#2dd4bf;text-decoration:none;font-weight:600;">⬇ 下载无水印视频</a>';
       vcMeta.innerHTML = metaHtml;
     }
 

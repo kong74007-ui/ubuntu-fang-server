@@ -428,6 +428,39 @@ class H(BaseHTTPRequestHandler):
                 try: d["result"] = json.loads(d["result"])
                 except Exception: pass
             return self._send(200, d)
+        if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            url = (q.get("url", [""])[0]).strip()
+            raw_name = ((q.get("name", ["video"])[0])[:40]) or "video"
+            ascii_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", raw_name).strip("_") or "video"  # header 必须 ASCII
+            host = (urllib.parse.urlparse(url).hostname or "").lower()
+            ALLOW = (".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
+                     ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
+                     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com")  # 防 SSRF：只允许已知视频 CDN
+            if not (url.startswith("http") and any(host.endswith(h) for h in ALLOW)):
+                return self._send(400, {"detail": "不支持的下载地址"})
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": tikhub.UA})
+                up = tikhub._OPENER.open(req, timeout=120)  # 直连，绕过环境代理
+            except Exception as e:
+                return self._send(502, {"detail": "下载失败:" + str(e)[:80]})
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Disposition",
+                             "attachment; filename=\"%s.mp4\"; filename*=UTF-8''%s" % (ascii_name, urllib.parse.quote(raw_name + ".mp4")))
+            clen = up.headers.get("Content-Length")
+            if clen: self.send_header("Content-Length", clen)
+            self.end_headers()
+            try:
+                while True:
+                    chunk = up.read(65536)
+                    if not chunk: break
+                    self.wfile.write(chunk)
+            except Exception:
+                pass
+            finally:
+                up.close()
+            return
         if p.startswith("/api/gen/file/"):
             fn = os.path.basename(p.rsplit("/", 1)[1]); fp = OUT_DIR / fn
             if not fp.exists(): return self._send(404, {"detail": "no file"})
