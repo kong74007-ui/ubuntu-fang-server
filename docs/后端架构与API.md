@@ -13,6 +13,7 @@
 |---|---|---|---|---|
 | **采集获客** | 8100 | Tang | `server/leadgen_api.py` | 采集 collect · 获客 leads · 关键词搜 |
 | **视频下载** | 8097 | Tang | `server/dl_service.py` | 无水印视频下载代理 |
+| **作图(nano banana)** | 8101 | Tang | `server/imggen_api.py` | Gemini 出图(NB2/NB Pro)·走 mihomo 代理出墙 |
 | **内容生成 + 公共核心** | 8096 | 共用 | `server/content_api.py` | 作图 image · 文案 copy · 配音 audio(豆包) · 任务轮询 · 资产/历史 · 文件服务 |
 | **登录鉴权** | 8095 | 共用 | `auth_server.py` | 登录 · 点数 |
 | (旧)抖音获客 | 8090 | — | leadgen(legacy) | 历史遗留，逐步下线 |
@@ -70,6 +71,12 @@ location ^~ /api/auth/               → 8095  (登录)
 
 ### 视频下载（8097）
 - `GET /api/gen/dl?url=<无水印play_url>&name=<文件名>` → 直接下载 mp4（附件，强制下载，限定视频CDN域名防SSRF）
+
+### 作图 nano banana（8101）
+- `POST /api/gen/banana` body `{prompt, model:"nb2"|"pro", ratio}` → `{job_id, cost, points_left}`；轮询 result `{type:"image", url, ratio, model}`
+  - `nb2`=gemini-3.1-flash-image(主力,10点)·`pro`=gemini-3-pro-image(精品,18点)；ratio 支持 1:1/9:16/16:9/3:4 等
+  - 大陆服务器走 mihomo 代理(content.env 的 HTTPS_PROXY)出墙到 Google；key=`GEMINI_API_KEY`(env)
+  - 作图页 gpt-image-2 仍走 `/api/gen/image`(8096)，引擎可切
 
 ### 内容生成 / 公共（8096）
 - `POST /api/gen/image`（作图，12点）· `POST /api/gen/copy`（文案，3点）· `POST /api/gen/audio`（配音，4点）
