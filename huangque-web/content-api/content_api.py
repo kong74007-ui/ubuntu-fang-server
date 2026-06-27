@@ -370,7 +370,7 @@ def finalize_ready_voice(username, slot_id, display_name=None, demo_audio=None, 
             VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (username, "personal", voice_key, name, slot_id, preview_file, demo_audio, slot_id, now, now))
         c.execute("""UPDATE audio_voices
-            SET display_name=?, provider_voice=?, preview_file=COALESCE(?, preview_file), preview_url=COALESCE(?, preview_url), slot_id=?, updated_at=?
+            SET display_name=?, provider_voice=?, preview_file=?, preview_url=?, slot_id=?, updated_at=?
             WHERE username=? AND scope='personal' AND voice_key=?""",
             (name, slot_id, preview_file, demo_audio, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
