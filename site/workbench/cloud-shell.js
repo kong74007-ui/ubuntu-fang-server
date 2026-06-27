@@ -37,7 +37,8 @@
     download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
     play:'<path d="M7 4v16l13-8z"/>',
     plus:'<path d="M12 5v14M5 12h14"/>',
-    logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'
+    logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+    link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'
   };
   function icon(name, w){
     var p=I[name]||I.search;
@@ -47,7 +48,7 @@
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
   var NAV=[
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感',i:'sparkles'},
-    {k:'leads',l:'获客',i:'search'}, {k:'banana',l:'作图',i:'image'},
+    {k:'leads',l:'获客',i:'search'}, {k:'collect',l:'采集拆解',i:'link'}, {k:'banana',l:'作图',i:'image'},
     {k:'video',l:'视频',i:'video'}, {k:'audio',l:'音频',i:'mic'}, {k:'script',l:'编导',i:'edit'},
     {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'设置',i:'gear'}

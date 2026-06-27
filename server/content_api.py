@@ -12,9 +12,10 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error
+import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -26,9 +27,19 @@ OUT_DIR    = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "video": 13}
+COST = {"image": 12, "copy": 3, "video": 13}  # 定额能力；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 COPY_MODEL  = os.environ.get("COPY_MODEL", "gpt-4o")
+
+def cost_of(kind, body):
+    """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
+    if kind == "collect":
+        return 3 + (3 if "transcript" in (body.get("want") or []) else 0)
+    if kind == "leads":
+        n = max(1, min(30, int(body.get("count") or 12)))
+        p = max(1, min(3, int(body.get("pages") or 1)))
+        return 6 + (n * p) // 4
+    return COST.get(kind, 0)
 
 # ============ 任务库 ============
 def jdb():
@@ -151,7 +162,121 @@ def gen_copy(payload):
     if not text: raise ValueError("文案生成为空")
     return {"type": "copy", "ctype": ctype, "text": text, "prompt": brief}
 
-HANDLERS = {"image": gen_image, "copy": gen_copy}  # P3: 在此注册 video
+# ============ 采集能力：TikHub 单条视频 → 视频+文案+口播+评论 ============
+def gen_collect(payload):
+    platform = (payload.get("platform") or "douyin").strip()
+    if platform not in tikhub.PLATFORMS:
+        raise ValueError("未知平台")
+    ident = (payload.get("url") or payload.get("id") or "").strip()
+    if not ident:
+        raise ValueError("缺少链接或 id")
+    want = payload.get("want") or ["copy", "comments"]
+    det = tikhub.detail(platform, ident, note_type=payload.get("note_type") or "video")
+    au = det.get("author") or {}
+    out = {
+        "type": "collect", "platform": platform, "source": det.get("url") or ident,
+        "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
+                  "cover": det.get("cover"), "play_url": det.get("play_url"), "url": det.get("url"),
+                  "duration": det.get("duration"), "publish_time": det.get("publish_time"),
+                  "stats": det.get("stats")},
+        "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
+        "transcript": None, "comments": [], "comments_more": False,
+        "url": det.get("cover"), "prompt": det.get("title"),  # 给通用 history 用（封面+标题）
+    }
+    if "comments" in want:
+        cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
+        out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
+    if "transcript" in want:
+        try:
+            out["transcript"] = tikhub.transcript(det)
+        except tikhub.TikHubError as e:
+            out["transcript"] = {"text": None, "error": str(e)[:120]}
+    return out
+
+# ============ 获客能力：关键词→搜视频→扒评论→意图过滤→客户名单 ============
+# 意图规则镜像 scripts/leads_filter.py（调词两边同步）。
+_SPAM = ["需要我推荐", "推荐给你", "先帮店做出业绩", "做出业绩再合作", "做出业绩再分润",
+         "不需要店家出成本", "不需要我先出成本", "W的业绩", "万的业绩", "免费送模式",
+         "0成本启动", "感兴趣的老板", "一起交流交流", "下店来打版"]
+_HIGH = ["怎么拓客", "怎么收费", "怎么弄", "怎么做", "怎么操作", "怎么整", "怎么合作", "怎么矩阵",
+         "多少钱", "价位", "求带", "带带", "带一带", "想学", "有偿", "预算", "求助", "求推荐",
+         "靠谱的拓客", "有没有靠谱", "哪里下载", "谁能帮我", "我也想", "没开单", "怎么收费的",
+         "想找", "教一下", "怎么回", "我该怎么", "到底", "求带带", "也想",
+         "有效果吗", "效果怎么样", "会反弹", "反弹吗", "能瘦", "痛吗", "维持多久", "做一次",
+         "几次", "安全吗", "在哪做", "怎么预约", "约一个", "想做", "想咨询", "哪家好",
+         "怎么联系", "贵吗", "价格", "多少钱一次", "可以瘦吗", "有用吗", "求地址"]
+def _is_spam(t): return any(k in t for k in _SPAM)
+def _is_high(t): return any(k in t for k in _HIGH)
+
+def gen_leads(payload):
+    keyword   = (payload.get("keyword") or "").strip()
+    platforms = payload.get("platforms") or ["douyin"]
+    nvid      = max(1, min(30, int(payload.get("count") or 12)))
+    pages     = max(1, min(3, int(payload.get("pages") or 1)))
+    targets   = payload.get("channels_targets") or []   # 视频号盯号：sph 短号 / finder username 列表
+    raw = []   # 评论汇总（字段对齐 _is_spam/_is_high 过滤）
+
+    def pull(platform, vid_id, title):
+        for pg in range(pages):
+            try:
+                cm = tikhub.comments(platform, vid_id, cursor=(pg * 20 if platform == "douyin" else None), count=20)
+            except tikhub.TikHubError:
+                break
+            for c in cm["items"]:
+                raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
+                            "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
+                            "platform": platform, "source": title})
+            if not cm.get("has_more"):
+                break
+
+    for platform in platforms:
+        if platform == "channels":
+            continue  # 视频号无全网搜，走下面盯号
+        if not keyword:
+            continue
+        try:
+            sr = tikhub.search(platform, keyword)
+        except tikhub.TikHubError:
+            continue
+        for v in sr["items"][:nvid]:
+            pull(platform, v["id"], v.get("title"))
+
+    if "channels" in platforms:
+        for tgt in targets:
+            try:
+                uname = tgt if "@finder" in tgt else (tikhub.ch_id_to_username(tgt).get("username"))
+                if not uname:
+                    continue
+                for v in tikhub.ch_user_videos(uname)["items"][:nvid]:
+                    pull("channels", v["id"], v.get("title"))
+            except tikhub.TikHubError:
+                continue
+
+    leads, spam, chat, seen = [], 0, 0, set()
+    for c in raw:
+        t = (c.get("content") or "").strip()
+        if not t:
+            continue
+        if _is_spam(t):
+            spam += 1; continue
+        if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
+            chat += 1; continue
+        if _is_high(t):
+            k = (c.get("user_id"), t)
+            if k in seen:
+                continue
+            seen.add(k); leads.append(c)
+        else:
+            chat += 1
+    leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
+    out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+                  "ip_location": c.get("ip_location"), "content": c.get("content"),
+                  "title": c.get("source"), "platform": c.get("platform")} for c in leads]
+    return {"type": "leads", "keyword": keyword, "platforms": platforms,
+            "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
+            "leads": out_leads, "url": None, "prompt": keyword}
+
+HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads}
 
 # ============ 后台 worker（串行跑任务，失败退点） ============
 def run_job(job_id):
@@ -206,15 +331,16 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
-        if p.startswith("/api/gen/") and p[9:] in COST:
+        if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
-            cost = COST[kind]
+            body = self._json_body()
+            cost = cost_of(kind, body)
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
             add_points(user["username"], -cost)  # 预扣
-            body = self._json_body(); now = int(time.time())
+            now = int(time.time())
             with closing(jdb()) as c:
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                                 (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
@@ -249,7 +375,7 @@ class H(BaseHTTPRequestHandler):
             try: lim = min(120, int(self.path.split("limit=")[1].split("&")[0])) if "limit=" in self.path else 60
             except Exception: lim = 60
             kind = self.path.split("kind=")[1].split("&")[0] if "kind=" in self.path else "image"
-            if kind not in COST: kind = "image"
+            if kind not in HANDLERS: kind = "image"
             with closing(jdb()) as c:
                 rows = c.execute("SELECT id,result,created_at FROM jobs WHERE username=? AND status='done' AND kind=? ORDER BY id DESC LIMIT ?",
                                  (user["username"], kind, lim)).fetchall()
@@ -261,8 +387,29 @@ class H(BaseHTTPRequestHandler):
                               "prompt": res.get("prompt"), "text": res.get("text"), "ctype": res.get("ctype"),
                               "created_at": r["created_at"]})
             return self._send(200, {"items": items})
+        if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            platform = (q.get("platform", ["douyin"])[0]).strip()
+            keyword  = (q.get("keyword", [""])[0]).strip()
+            try: page = int(q.get("page", ["1"])[0] or 1)
+            except Exception: page = 1
+            if not keyword: return self._send(400, {"detail": "缺少关键词"})
+            if get_points(user["username"]) < 1: return self._send(402, {"detail": "点数不足", "need": 1})
+            try:
+                r = tikhub.search(platform, keyword, page=page)
+            except tikhub.TikHubError as e:
+                return self._send(502, {"detail": str(e)[:160]})
+            add_points(user["username"], -1)
+            items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
+                      "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
+                      "note_type": it.get("note_type"),
+                      "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
+            return self._send(200, {"items": items, "cost": 1, "points_left": get_points(user["username"])})
         if p == "/api/gen/health":
-            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "has_openai": bool(OPENAI_KEY)})
+            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
+                                    "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
 if __name__ == "__main__":

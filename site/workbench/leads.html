@@ -26,7 +26,7 @@
   <div>
     <div style="margin-bottom:22px;">
       <h1 style="margin:0; font-size:27px; font-weight:700;">关键词获客</h1>
-      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">关键词进 → 跑抖音搜视频、扒评论区、AI 意图过滤 → 真实精准客户名单</p>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">关键词进 → 抖音/小红书搜视频、扒评论区、AI 意图过滤 → 真实精准客户名单（含 IP 属地）</p>
     </div>
 
     <!-- KPI 概览条 -->
@@ -64,6 +64,26 @@
       </div>
     </div>
 
+    <!-- 平台选择 -->
+    <div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <span style="font-size:13px; color:#94a4bb; white-space:nowrap; line-height:32px;">采集平台</span>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        <label style="display:flex; align-items:center; gap:6px; padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="douyin" checked style="display:none;">抖音
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="xhs" checked style="display:none;">小红书
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; padding:7px 14px; font-size:13px; border-radius:9px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="channels" style="display:none;">视频号
+        </label>
+      </div>
+      <div id="chTargetsRow" style="display:none; flex:0 0 100%; margin-top:8px; align-items:flex-start; gap:10px;">
+        <input id="chTargets" placeholder="视频号目标(sph短号或finder username，多个用逗号分隔)" style="flex:1; height:36px; padding:0 12px; background:rgba(7,11,19,.5); color:#eaf1fa; border:1px solid rgba(148,164,187,.16); border-radius:9px; font-size:13px; font-family:inherit; outline:none;">
+        <span style="font-size:11.5px; color:#5c6b82; line-height:1.5; padding-top:10px; white-space:nowrap;">视频号需指定目标号（关键词搜不了全网）</span>
+      </div>
+    </div>
+
     <!-- 行业关键词 chips -->
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap;">
       <span style="font-size:13px; color:#94a4bb; white-space:nowrap;">行业关键词推荐</span>
@@ -84,7 +104,7 @@
         <div id="statusLine" style="display:flex; align-items:center; gap:7px; font-size:12px; color:#5c6b82;"><span id="statusDot" style="width:6px; height:6px; border-radius:50%; background:#5c6b82;"></span><span id="statusText">待开始 · 输入关键词点「开始获客」</span></div>
       </div>
       <div class="lrowg" style="position:sticky; top:0; z-index:2; padding:12px 22px; font-size:12px; color:#5c6b82; background:rgba(13,20,34,.96); border-bottom:1px solid rgba(148,164,187,.07);">
-        <div>#</div><div>昵称 <span style="font-size:10.5px;">(点击进主页)</span></div><div>抖音号</div><div>IP属地</div><div>需求原话</div><div>来源视频</div><div>操作</div>
+        <div>#</div><div>昵称</div><div>平台账号</div><div>IP属地</div><div>需求原话</div><div>来源视频</div><div>操作</div>
       </div>
       <div id="rows">
         <div style="padding:64px 22px; text-align:center; color:#5c6b82;">
@@ -98,39 +118,46 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=9"></script>
+<script src="cloud-shell.js?v=10"></script>
 <script>
 (function(){
   "use strict";
-  var PW = "__LEADGEN_PW__"; // 团队获客口令：部署时由服务器侧从 systemd env 注入，repo/源码不含明文
   var input=document.getElementById('kw'), goBtn=document.getElementById('goBtn'), cntSel=document.getElementById('cnt');
   var rows=document.getElementById('rows'), cntLabel=document.getElementById('cntLabel');
   var dot=document.getElementById('statusDot'), stat=document.getElementById('statusText');
   var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
   var poll=null, running=false;
   var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
+
+  function tok(){ return localStorage.getItem('hq_token')||''; }
+  function getPlatforms(){ return Array.from(document.querySelectorAll('.plChk:checked')).map(function(el){return el.value;}); }
+  function getChannelsTargets(){
+    var el=document.getElementById('chTargets'); if(!el||!el.value.trim()) return [];
+    return el.value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+  }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
-  function setStatus(t,c){ stat.textContent=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
+  function setStatus(t,c){ stat.innerHTML=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
   function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
   function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); }
 
+  function platformBadge(p){
+    var map={douyin:{t:'抖音',bg:'rgba(232,72,72,.12)',c:'#e84848'},xhs:{t:'小红书',bg:'rgba(255,77,93,.12)',c:'#ff4d5d'},channels:{t:'视频号',bg:'rgba(7,193,96,.12)',c:'#07c160'}};
+    var m=map[p]||{t:esc(p||''),bg:'rgba(148,164,187,.08)',c:'#94a4bb'};
+    return m.t?('<span style="font-size:10px; padding:2px 7px; border-radius:5px; background:'+m.bg+'; color:'+m.c+'; display:inline-block; margin-top:3px;">'+m.t+'</span>'):'';
+  }
+
   function rowHTML(L,i){
     var n=L.nickname||'匿名', g=GRAD[i%GRAD.length], first=(n.trim()[0]||'客');
-    var profile=L.profile||'', secuid=L.sec_uid||'', dyid=L.douyin_id||'';
-    var userUrl = profile || (secuid?('https://www.douyin.com/user/'+encodeURIComponent(secuid)):'');
-    var src=L.source||L.aweme_id||'—';
-    var pm = userUrl ? ('onclick="window.open(\''+esc(userUrl)+'\',\'_blank\')"') : '';
-    var nameLink = userUrl
-      ? '<a href="'+esc(userUrl)+'" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:5px; font-size:13.5px; font-weight:600; color:#eaf1fa;">'+esc(n)+'<span style="display:flex; width:12px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span></a>'
-      : '<div style="font-size:13.5px; font-weight:600;">'+esc(n)+'</div>';
+    var uid=L.user_unique_id||'—';
+    var src=L.title||'—';
     return '<div class="hqRow lrowg" style="padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05);">'+
       '<div class="mono" style="font-size:13px; color:#5c6b82;">'+(i+1<10?'0':'')+(i+1)+'</div>'+
-      '<div style="display:flex; align-items:center; gap:11px; min-width:0;"><div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient('+g+'); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">'+esc(first)+'</div><div style="min-width:0;">'+nameLink+(L.like?'<div class="mono" style="font-size:10.5px; color:#5c6b82; margin-top:3px;">👍 '+esc(L.like)+'</div>':'')+'</div></div>'+
-      '<div class="mono" style="font-size:12.5px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(dyid||'—')+'</div>'+
-      '<div style="font-size:12.5px; color:#94a4bb;">'+esc(L.ip||'—')+'</div>'+
-      '<div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">“'+esc(L.content||'')+'”</div>'+
+      '<div style="display:flex; align-items:center; gap:11px; min-width:0;"><div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient('+g+'); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">'+esc(first)+'</div><div style="min-width:0;"><div style="font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(n)+'</div></div></div>'+
+      '<div style="min-width:0;"><div class="mono" style="font-size:12.5px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(uid)+'</div>'+platformBadge(L.platform)+'</div>'+
+      '<div style="font-size:12.5px; color:#94a4bb;">'+esc(L.ip_location||'—')+'</div>'+
+      '<div style="font-size:12.5px; color:#cdd7e6; line-height:1.55;">"'+esc(L.content||'')+'"</div>'+
       '<div style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(src)+'</div>'+
-      '<div class="hv-gold" '+pm+' style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:'+(userUrl?'pointer':'default')+'; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>'+
+      '<div class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:6px 11px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:default; white-space:nowrap;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>私信</div>'+
     '</div>';
   }
   function renderLeads(leads){
@@ -146,35 +173,55 @@
   function start(){
     if(running) return;
     var kw=(input.value||'').trim();
-    if(!kw){ setStatus('请先输入关键词','#f4708a'); input.focus(); return; }
+    var platforms=getPlatforms();
+    if(!platforms.length){ setStatus('请至少选择一个平台','#f4708a'); return; }
+    var chTargets=getChannelsTargets();
+    if(platforms.length===1 && platforms[0]==='channels' && !chTargets.length){
+      setStatus('视频号需填写目标号（视频号搜不了全网）','#f4708a');
+      document.getElementById('chTargets').focus(); return;
+    }
+    if(!kw && !chTargets.length){ setStatus('请先输入关键词或视频号目标','#f4708a'); input.focus(); return; }
+    var t=tok(); if(!t){ location.href='../login.html?redirect=leads'; return; }
     busy(true); setStatus('提交任务中…','#2dd4bf');
-    rows.innerHTML='<div style="padding:64px 22px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑抖音 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12.5px;margin-top:7px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
-    var fd=new FormData(); fd.append('password',PW); fd.append('keyword',kw); fd.append('count',cntSel.value); fd.append('mode','search'); fd.append('deep_dig','0');
-    fetch('/api/submit',{method:'POST',body:fd}).then(function(r){ return r.json().then(function(d){return {ok:r.ok,d:d};}); }).then(function(res){
-      if(res.ok && res.d.job_id){ watch(res.d.job_id); }
-      else { busy(false); setStatus('提交失败：'+((res.d&&res.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; }
-    }).catch(function(){ busy(false); setStatus('网络错误，请重试','#f4708a'); rows.innerHTML=''; });
-  }
-  function watch(id){
+    rows.innerHTML='<div style="padding:64px 22px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑多平台 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12.5px;margin-top:7px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
+    var body={keyword:kw, platforms:platforms, count:parseInt(cntSel.value)||50, pages:1, channels_targets:chTargets};
     var t0=Date.now();
+    fetch('/api/gen/leads',{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
+      .then(function(x){
+        if(x.s===401){ location.href='../login.html?redirect=leads'; return; }
+        if(x.s===402){ busy(false); setStatus('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); rows.innerHTML=''; return; }
+        if(!x.d.job_id){ busy(false); setStatus('提交失败：'+((x.d&&x.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; return; }
+        if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+        watch(x.d.job_id, t0);
+      }).catch(function(){ busy(false); setStatus('网络错误，请重试','#f4708a'); rows.innerHTML=''; });
+  }
+
+  function watch(id, t0){
     if(poll) clearInterval(poll);
-    setStatus('搜索中…抖音抓取+评论过滤','#2dd4bf');
+    setStatus('搜索中…多平台抓取+评论过滤','#2dd4bf');
+    var t=tok();
     poll=setInterval(function(){
-      fetch('/api/job/'+id).then(function(r){return r.json();}).then(function(d){
+      fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.json();}).then(function(d){
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){
           clearInterval(poll); busy(false);
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
           setStatus('完成 · '+(r.leads_count||0)+' 个精准客户（'+sec+'s）','#2bd576');
         }else if(d.status==='error'){
           clearInterval(poll); busy(false);
           setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
           rows.innerHTML='<div style="padding:54px 22px; text-align:center; color:#f4708a; font-size:13.5px;">'+esc(d.error||'任务失败')+'</div>';
+        }else if(sec>400){
+          clearInterval(poll); busy(false);
+          setStatus('获客超时（'+sec+'s）· 请重试','#f4708a');
+          rows.innerHTML='<div style="padding:54px 22px; text-align:center; color:#94a4bb; font-size:13.5px;">超时，请换关键词或缩小采集量重试</div>';
         }else{
           setStatus('搜索中…（'+sec+'s · '+(d.status||'running')+'）','#2dd4bf');
         }
       }).catch(function(){});
-    },3000);
+    },4000);
   }
 
   goBtn.onclick=start;
@@ -184,6 +231,19 @@
     c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.3)';
     input.value=c.textContent.trim(); input.focus();
   };});
+  // Platform chip toggle + channels-targets visibility
+  document.querySelectorAll('.plChk').forEach(function(cb){
+    var lbl=cb.parentElement;
+    function sync(){
+      if(cb.checked){ lbl.style.color='#e7b24c'; lbl.style.background='rgba(231,178,76,.1)'; lbl.style.borderColor='rgba(231,178,76,.3)'; }
+      else { lbl.style.color='#94a4bb'; lbl.style.background='rgba(148,164,187,.05)'; lbl.style.borderColor='rgba(148,164,187,.14)'; }
+      var chRow=document.getElementById('chTargetsRow');
+      var chCb=document.querySelector('.plChk[value="channels"]');
+      if(chRow && chCb) chRow.style.display=chCb.checked?'flex':'none';
+    }
+    lbl.onclick=function(){ cb.checked=!cb.checked; sync(); };
+    sync();
+  });
 })();
 </script>
 </body>

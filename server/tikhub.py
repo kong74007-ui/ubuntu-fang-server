@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+黄雀 AI · TikHub 客户端 —— 抖音 / 小红书 / 视频号 的「采集 + 评论区获客」统一出口。
+=====================================================================
+被 content_api.py 的 collect / leads 能力调用。零第三方依赖（只用 stdlib + 现有 OpenAI 代理跑 whisper）。
+
+字段路径全部来自 2026-06-27 的 live 实测（见 scratchpad/tikhub-probe/*.md），不是文档臆测。
+三平台各自的坑已在下方封死：
+  抖音   search=POST+字符串参数；按 duration>0 滤真视频；下载用 play_addr 不用 download_addr；评论带 ip_label。
+  小红书 走 app_v2（web_v3 全挂）；详情/评论只要 note_id 不要 xsec_token；视频笔记白送 .srt 字幕；评论带 ip_location。
+  视频号 无全网关键词搜（盯号型）；下载地址加密(decode_key)→口播 v1 先跳过；评论带评论者 finder username + ip_region。
+
+环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
+         OPENAI_API_KEY / OPENAI_BASE（口播 ASR 用，与 content_api 同源）。
+"""
+import os, re, json, time, urllib.request, urllib.parse, urllib.error
+
+KEY  = os.environ.get("TIKHUB_KEY", "")
+BASE = os.environ.get("TIKHUB_BASE", "https://api.tikhub.io").rstrip("/")
+UA   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+OPENAI_KEY  = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
+
+PLATFORMS = ("douyin", "xhs", "channels")
+
+# 直连 opener：服务器 content.env 设了 HTTPS_PROXY(给 OpenAI 用)，但该代理转 TikHub 的 Cloudflare
+# 会 SSL EOF；TikHub API + CDN 下载都强制绕过代理直连（已实测 .io/.dev 直连均 200）。
+# 仅 OpenAI whisper 仍走默认 urlopen（吃环境代理）。
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class TikHubError(Exception):
+    pass
+
+
+# ============ HTTP（统一信封 {code,message,data}；带浏览器 UA 防 Cloudflare 1010）============
+def _call(method, path, query=None, body=None, timeout=45):
+    if not KEY:
+        raise TikHubError("TIKHUB_KEY 未配置")
+    url = BASE + path
+    if query:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Authorization": "Bearer " + KEY, "User-Agent": UA}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:  # 直连，绕过环境代理
+            d = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise TikHubError("HTTP %s %s :: %s" % (e.code, path.rsplit("/", 1)[-1], e.read()[:160].decode("u8", "ignore")))
+    except Exception as e:
+        raise TikHubError("REQ %s :: %s" % (path.rsplit("/", 1)[-1], str(e)[:160]))
+    if not isinstance(d, dict) or ("data" not in d and d.get("code") not in (200, 0, None)):
+        raise TikHubError("API %s :: %s" % (path.rsplit("/", 1)[-1], str(d)[:160]))
+    return d.get("data") or {}
+
+def _g(path, **query): return _call("GET", path, query=query)
+def _p(path, **body):  return _call("POST", path, body=body)
+
+
+# ---- 小工具 ----
+def _first(d, *keys, default=None):
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) not in (None, "", []):
+            return d[k]
+    return default
+
+def _url0(node):
+    """抖音/小红书常见的 {url_list:[...]} 结构取第一个。"""
+    if isinstance(node, dict):
+        ul = node.get("url_list") or node.get("urlList") or []
+        return ul[0] if ul else None
+    if isinstance(node, list):
+        return node[0] if node else None
+    return node
+
+def _tags_from_text(text):
+    return re.findall(r"#([^#\s]{1,20})", text or "")
+
+
+# ====================================================================
+# 抖音 Douyin
+# ====================================================================
+DY = "/api/v1/douyin"
+
+def dy_aweme_id(s):
+    """从分享链/纯 id 里抠 aweme_id。"""
+    s = (s or "").strip()
+    m = re.search(r"/video/(\d+)", s) or re.search(r"(\d{15,21})", s)
+    return m.group(1) if m else s
+
+def _dy_item(a):
+    vid = a.get("video") or {}
+    stat = a.get("statistics") or {}
+    au = a.get("author") or {}
+    desc = a.get("desc") or ""
+    return {
+        "platform": "douyin",
+        "id": a.get("aweme_id"),
+        "url": "https://www.douyin.com/video/%s" % a.get("aweme_id"),
+        "title": desc,
+        "cover": _url0(vid.get("cover") or vid.get("origin_cover")),
+        "author": _first(au, "nickname", default=""),
+        "author_id": au.get("sec_uid") or au.get("uid"),
+        "like": stat.get("digg_count"),
+        "comment": stat.get("comment_count"),
+        "duration": vid.get("duration"),
+        "note_type": "video",
+    }
+
+def dy_search(keyword, cursor=0, video_only=True):
+    d = _p(DY + "/search/fetch_general_search_v1",
+           keyword=keyword, cursor=int(cursor), sort_type="0",
+           publish_time="0", filter_duration="0", content_type="1")
+    items = []
+    for it in (d.get("data") or []):
+        if it.get("type") != 1:
+            continue
+        a = it.get("aweme_info") or {}
+        if video_only and not ((a.get("video") or {}).get("duration")):
+            continue  # 滤掉图文/图集（duration=0，play_addr 是 audio）
+        if a.get("aweme_id"):
+            items.append(_dy_item(a))
+    return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more")}
+
+def dy_detail(id_or_url):
+    aid = dy_aweme_id(id_or_url)
+    a = (_g(DY + "/web/fetch_one_video", aweme_id=aid) or {}).get("aweme_detail") or {}
+    vid = a.get("video") or {}
+    stat = a.get("statistics") or {}
+    au = a.get("author") or {}
+    desc = a.get("desc") or ""
+    return {
+        "platform": "douyin", "id": aid,
+        "url": "https://www.douyin.com/video/%s" % aid,
+        "title": desc, "desc": desc, "tags": _tags_from_text(desc),
+        "author": {"name": au.get("nickname"), "id": au.get("sec_uid") or au.get("uid"),
+                   "fans": au.get("follower_count"), "ip": au.get("ip_location"),
+                   "signature": au.get("signature")},
+        "stats": {"like": stat.get("digg_count"), "comment": stat.get("comment_count"),
+                  "share": stat.get("share_count"), "collect": stat.get("collect_count")},
+        "cover": _url0(vid.get("cover")),
+        "play_url": _url0(vid.get("play_addr") or vid.get("play_addr_h264")),
+        "subtitle_url": None, "decode_key": None,
+        "duration": vid.get("duration"), "publish_time": a.get("create_time"),
+        "note_type": "video",
+    }
+
+def dy_comments(id_or_url, cursor=0, count=20):
+    aid = dy_aweme_id(id_or_url)
+    d = _g(DY + "/web/fetch_video_comments", aweme_id=aid, cursor=int(cursor), count=int(count))
+    items = []
+    for c in (d.get("comments") or []):
+        u = c.get("user") or {}
+        items.append({"text": c.get("text"), "ip": c.get("ip_label"),
+                      "likes": c.get("digg_count"), "time": c.get("create_time"),
+                      "user": u.get("nickname"), "user_id": u.get("sec_uid") or u.get("uid"),
+                      "cid": c.get("cid"), "replies": c.get("reply_comment_total")})
+    return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("total")}
+
+
+# ====================================================================
+# 小红书 Xiaohongshu（统一走 app_v2）
+# ====================================================================
+XHS = "/api/v1/xiaohongshu/app_v2"
+
+def xhs_search(keyword, page=1, note_type=""):
+    # note_type 可选：不限 / 视频笔记 / 普通笔记 / 直播笔记
+    d = _g(XHS + "/search_notes", keyword=keyword, page=page, note_type=note_type or None)
+    items = []
+    for it in ((d.get("data") or {}).get("items") or []):
+        n = it.get("note") or {}
+        if not n.get("id"):
+            continue
+        items.append({
+            "platform": "xhs", "id": n.get("id"),
+            "url": "https://www.xiaohongshu.com/explore/%s" % n.get("id"),
+            "title": n.get("title") or (n.get("desc") or "")[:30],
+            "cover": _url0((n.get("images_list") or [{}])[0]),
+            "author": (n.get("user") or {}).get("nickname"),
+            "author_id": (n.get("user") or {}).get("userid"),
+            "like": n.get("liked_count"), "comment": n.get("comments_count"),
+            "note_type": "video" if n.get("type") == "video" else "image",
+        })
+    return {"items": items, "next_page": d.get("next_page")}
+
+def xhs_detail(note_id, note_type="video"):
+    if note_type == "image":
+        root = (_g(XHS + "/get_image_note_detail", note_id=note_id) or {}).get("data") or []
+        n = ((root[0] if root else {}).get("note_list") or [{}])[0]
+    else:
+        root = (_g(XHS + "/get_video_note_detail", note_id=note_id) or {}).get("data") or []
+        n = root[0] if root else {}
+    desc = n.get("desc") or ""
+    tags = [t.get("name") or t.get("link") for t in (n.get("hash_tag") or []) if isinstance(t, dict)] or _tags_from_text(desc)
+    sub = None
+    zh = (((n.get("video_info_v2") or {}).get("media") or {}).get("video") or {}).get("subtitles") or {}
+    if zh.get("zh-CN"):
+        sub = _first(zh["zh-CN"][0], "url") if isinstance(zh["zh-CN"][0], dict) else None
+    play = None
+    stream = (((n.get("video_info_v2") or {}).get("media") or {}).get("stream") or {})
+    for codec in ("h264", "h265", "h266", "av1"):
+        if stream.get(codec):
+            play = (stream[codec][0] or {}).get("master_url")
+            if play:
+                break
+    return {
+        "platform": "xhs", "id": note_id,
+        "url": "https://www.xiaohongshu.com/explore/%s" % note_id,
+        "title": n.get("title") or desc[:30], "desc": desc, "tags": tags,
+        "author": {"name": (n.get("user") or {}).get("nickname"),
+                   "id": (n.get("user") or {}).get("userid"),
+                   "fans": None, "ip": n.get("ip_location"), "signature": None},
+        "stats": {"like": n.get("liked_count"), "comment": n.get("comments_count"),
+                  "share": n.get("shared_count"), "collect": n.get("collected_count")},
+        "cover": _url0((n.get("images_list") or [{}])[0]),
+        "play_url": play, "subtitle_url": sub, "decode_key": None,
+        "duration": None, "publish_time": n.get("time"),
+        "note_type": n.get("type") or note_type,
+    }
+
+def xhs_comments(note_id, cursor=None, count=20):
+    d = (_g(XHS + "/get_note_comments", note_id=note_id) or {}).get("data") or {}
+    items = []
+    for c in (d.get("comments") or []):
+        u = c.get("user") or {}
+        items.append({"text": c.get("content"), "ip": c.get("ip_location"),
+                      "likes": c.get("like_count"), "time": c.get("time"),
+                      "user": u.get("nickname"), "user_id": u.get("userid"),
+                      "cid": c.get("id"), "replies": c.get("sub_comment_count")})
+    return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("comment_count")}
+
+
+# ====================================================================
+# 视频号 WeChat Channels（盯号型：无全网搜，全 POST + raw=false）
+# ====================================================================
+CH = "/api/v1/wechat_channels/v2"
+
+def ch_id_to_username(channel_id):
+    """sph 短号 / channel_id → finder username（冷启动拿号入口）。"""
+    d = _p(CH + "/fetch_channel_id_to_username", channel_id=channel_id, raw=False)
+    return {"username": d.get("username"), "nickname": d.get("nickname"), "desc": d.get("desc")}
+
+def ch_user_videos(username, last_buffer=""):
+    d = _p(CH + "/fetch_user_videos", username=username, raw=False, last_buffer=last_buffer)
+    items = []
+    for v in (d.get("videos") or []):
+        media = v.get("media") or {}
+        items.append({
+            "platform": "channels", "id": v.get("id"),
+            "url": None, "title": v.get("title"),
+            "cover": media.get("cover_url"),
+            "author": d.get("nickname"), "author_id": d.get("username"),
+            "like": v.get("like_count"), "comment": v.get("comment_count"),
+            "duration": media.get("duration"), "note_type": "video",
+        })
+    return {"items": items, "nickname": d.get("nickname"), "username": d.get("username"),
+            "last_buffer": d.get("last_buffer"), "has_more": d.get("up_continue")}
+
+def ch_detail(object_id):
+    d = _p(CH + "/fetch_video_detail", object_id=str(object_id), raw=False)
+    media = d.get("media") or {}
+    title = d.get("title") or ""
+    return {
+        "platform": "channels", "id": d.get("id") or object_id, "url": None,
+        "title": title, "desc": title, "tags": _tags_from_text(title),
+        "author": {"name": d.get("nickname"), "id": d.get("username"),
+                   "fans": None, "ip": None, "signature": None},
+        "stats": {"like": d.get("like_count"), "comment": d.get("comment_count"),
+                  "share": d.get("forward_count"), "collect": d.get("fav_count")},
+        "cover": media.get("cover_url"),
+        # ponytail: 视频号下载地址加密(decode_key)+时效，v1 不接口播 ASR；评论/文案已够获客用。
+        "play_url": None, "subtitle_url": None, "decode_key": media.get("decode_key"),
+        "duration": media.get("duration"), "publish_time": d.get("create_time"),
+        "note_type": "video",
+    }
+
+def ch_comments(object_id, last_buffer=""):
+    d = _p(CH + "/fetch_video_comments", object_id=str(object_id), raw=False, last_buffer=last_buffer)
+    items = []
+    for c in (d.get("comments") or []):
+        items.append({"text": c.get("content"), "ip": c.get("ip_region"),
+                      "likes": c.get("like_count"), "time": c.get("create_time"),
+                      "user": c.get("nickname"), "user_id": c.get("username"),
+                      "cid": c.get("comment_id"), "replies": c.get("reply_count")})
+    return {"items": items, "cursor": d.get("last_buffer"), "has_more": d.get("down_continue"), "total": None}
+
+
+# ====================================================================
+# 统一调度（content_api 用这层，不直接碰平台函数）
+# ====================================================================
+def search(platform, keyword, page=1, video_only=True):
+    if platform == "douyin": return dy_search(keyword, cursor=(page - 1) * 10, video_only=video_only)
+    if platform == "xhs":    return xhs_search(keyword, page=page, note_type="视频笔记" if video_only else "")
+    if platform == "channels":
+        raise TikHubError("视频号无全网关键词搜索，请用 sph 短号/finder 走盯号采集")
+    raise TikHubError("未知平台 " + str(platform))
+
+def detail(platform, id_or_url, note_type="video"):
+    if platform == "douyin":   return dy_detail(id_or_url)
+    if platform == "xhs":      return xhs_detail(id_or_url, note_type=note_type)
+    if platform == "channels": return ch_detail(id_or_url)
+    raise TikHubError("未知平台 " + str(platform))
+
+def comments(platform, id_or_url, cursor=None, count=20):
+    if platform == "douyin":   return dy_comments(id_or_url, cursor=cursor or 0, count=count)
+    if platform == "xhs":      return xhs_comments(id_or_url)
+    if platform == "channels": return ch_comments(id_or_url, last_buffer=cursor or "")
+    raise TikHubError("未知平台 " + str(platform))
+
+
+# ====================================================================
+# 口播文案：小红书优先白嫖 .srt 字幕；抖音下载 mp4 跑 whisper；视频号 v1 跳过
+# ====================================================================
+def _http_get(url, max_bytes=26_000_000, timeout=60):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with _OPENER.open(req, timeout=timeout) as r:  # CDN 直连，绕过环境代理
+        return r.read(max_bytes)
+
+def _srt_to_text(srt):
+    out = []
+    for line in srt.splitlines():
+        line = line.strip()
+        if not line or line.isdigit() or "-->" in line:
+            continue
+        out.append(line)
+    return " ".join(out)
+
+def _whisper(mp4_bytes, filename="v.mp4"):
+    if not OPENAI_KEY:
+        raise TikHubError("OPENAI_API_KEY 未配置，无法 ASR")
+    b = "----hqtikhub7e3f"
+    parts = [("--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n" % b).encode(),
+             ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: video/mp4\r\n\r\n" % (b, filename)).encode(),
+             mp4_bytes, b"\r\n", ("--%s--\r\n" % b).encode()]
+    body = b"".join(parts)
+    req = urllib.request.Request(OPENAI_BASE + "/v1/audio/transcriptions", data=body,
+                                 headers={"Authorization": "Bearer " + OPENAI_KEY,
+                                          "Content-Type": "multipart/form-data; boundary=" + b}, method="POST")
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return json.loads(r.read()).get("text", "").strip()
+
+def transcript(det):
+    """det = detail() 的返回。返回 {text, source} 或 None。"""
+    if det.get("subtitle_url"):  # 小红书视频笔记白送逐字稿
+        try:
+            return {"text": _srt_to_text(_http_get(det["subtitle_url"]).decode("u8", "ignore")), "source": "subtitle"}
+        except Exception:
+            pass
+    if det.get("play_url"):  # 抖音：下载无水印 mp4 → whisper（短视频普遍 <25MB）
+        try:
+            return {"text": _whisper(_http_get(det["play_url"])), "source": "asr"}
+        except Exception as e:
+            raise TikHubError("ASR 失败：" + str(e)[:120])
+    return None  # 视频号加密，v1 无口播
+
+
+# ====================================================================
+# selftest：live 验三平台（复诊铁律——真调，贴结果）
+# ====================================================================
+def _selftest():
+    bal = _g("/api/v1/tikhub/user/get_user_info")
+    print("✓ user_info  余额:", (bal.get("user_data") or {}).get("balance") if isinstance(bal, dict) else bal)
+    r = dy_search("美甲加盟")
+    assert r["items"], "抖音搜索空"
+    print("✓ douyin.search  %d 条，样例: %s" % (len(r["items"]), (r["items"][0]["title"] or "")[:24]))
+    aid = r["items"][0]["id"]
+    cm = dy_comments(aid, count=5)
+    assert cm["items"], "抖音评论空"
+    print("✓ douyin.comments  %d 条，ip 样例: %s" % (len(cm["items"]), cm["items"][0].get("ip")))
+    x = xhs_search("美甲", note_type="视频笔记")
+    assert x["items"], "小红书搜索空"
+    print("✓ xhs.search  %d 条，样例: %s" % (len(x["items"]), (x["items"][0]["title"] or "")[:24]))
+    xd = xhs_detail(x["items"][0]["id"], note_type="video")
+    print("✓ xhs.detail  有字幕:%s 有正文:%s" % (bool(xd.get("subtitle_url")), bool(xd.get("desc"))))
+    xc = xhs_comments(x["items"][0]["id"])
+    print("✓ xhs.comments  %d 条，ip 样例: %s" % (len(xc["items"]), (xc["items"][0].get("ip") if xc["items"] else None)))
+    u = ch_id_to_username("sphi9BjV8GK0Zsl")  # 人民日报 sph 短号 → finder
+    assert u.get("username"), "视频号 id→username 空"
+    print("✓ channels.id_to_username  %s (%s)" % (u.get("nickname"), (u.get("username") or "")[:18] + "…"))
+    print("\n全部 live 通过 ✅  base=%s" % BASE)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        _selftest()
+    else:
+        print("tikhub client. platforms=%s  base=%s  key=%s" % (PLATFORMS, BASE, "set" if KEY else "MISSING"))
