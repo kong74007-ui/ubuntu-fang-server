@@ -187,13 +187,24 @@ def xhs_search(keyword, page=1, note_type=""):
         })
     return {"items": items, "next_page": d.get("next_page")}
 
-def xhs_detail(note_id, note_type="video"):
-    if note_type == "image":
+def _xhs_fetch(note_id, kind):
+    if kind == "image":
         root = (_g(XHS + "/get_image_note_detail", note_id=note_id) or {}).get("data") or []
-        n = ((root[0] if root else {}).get("note_list") or [{}])[0]
-    else:
-        root = (_g(XHS + "/get_video_note_detail", note_id=note_id) or {}).get("data") or []
-        n = root[0] if root else {}
+        return ((root[0] if root else {}).get("note_list") or [{}])[0]
+    root = (_g(XHS + "/get_video_note_detail", note_id=note_id) or {}).get("data") or []
+    return root[0] if root else {}
+
+def xhs_detail(note_id, note_type="video"):
+    # 贴链接时未必知道图文还是视频：先按提示取，拿不到内容再换另一种兜底
+    n = {}
+    for kind in (["image", "video"] if note_type == "image" else ["video", "image"]):
+        try:
+            n = _xhs_fetch(note_id, kind) or {}
+        except TikHubError:
+            n = {}
+        if n.get("desc") or n.get("title"):
+            note_type = kind
+            break
     desc = n.get("desc") or ""
     tags = [t.get("name") or t.get("link") for t in (n.get("hash_tag") or []) if isinstance(t, dict)] or _tags_from_text(desc)
     sub = None
@@ -261,7 +272,9 @@ def ch_user_videos(username, last_buffer=""):
             "last_buffer": d.get("last_buffer"), "has_more": d.get("up_continue")}
 
 def ch_detail(object_id):
-    d = _p(CH + "/fetch_video_detail", object_id=str(object_id), raw=False)
+    s = str(object_id)
+    loc = {"share_url": s} if ("://" in s or "weixin" in s) else {"object_id": s}
+    d = _p(CH + "/fetch_video_detail", raw=False, **loc)
     media = d.get("media") or {}
     title = d.get("title") or ""
     return {
@@ -287,6 +300,29 @@ def ch_comments(object_id, last_buffer=""):
                       "user": c.get("nickname"), "user_id": c.get("username"),
                       "cid": c.get("comment_id"), "replies": c.get("reply_count")})
     return {"items": items, "cursor": d.get("last_buffer"), "has_more": d.get("down_continue"), "total": None}
+
+
+# ====================================================================
+# 链接解析：贴任意分享链/短链 → {platform, id, note_type}
+# ====================================================================
+def dy_resolve(url):
+    m = re.search(r"/video/(\d+)", url) or re.search(r"(\d{15,21})", url)
+    if m:
+        return m.group(1)
+    r = _g("/api/v1/douyin/web/get_aweme_id", url=url)  # v.douyin.com 短链等→aweme_id
+    return r if isinstance(r, str) else (r.get("aweme_id") if isinstance(r, dict) else None)
+
+def parse_link(text):
+    m = re.search(r"https?://[^\s]+", text or "")
+    url = m.group(0) if m else (text or "").strip()
+    low = url.lower()
+    if "xiaohongshu.com" in low or "xhslink" in low:
+        nm = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", url)
+        nid = nm.group(1) if nm else (_g("/api/v1/xiaohongshu/app/extract_share_info", share_link=url) or {}).get("note_id")
+        return {"platform": "xhs", "id": nid, "note_type": None}
+    if "weixin.qq.com" in low or "/sph" in low or "channels" in low or "finder" in low:
+        return {"platform": "channels", "id": url, "note_type": "video"}
+    return {"platform": "douyin", "id": dy_resolve(url), "note_type": "video"}
 
 
 # ====================================================================

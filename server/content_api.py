@@ -165,13 +165,23 @@ def gen_copy(payload):
 # ============ 采集能力：TikHub 单条视频 → 视频+文案+口播+评论 ============
 def gen_collect(payload):
     platform = (payload.get("platform") or "douyin").strip()
+    raw = (payload.get("url") or payload.get("id") or "").strip()
+    if not raw:
+        raise ValueError("缺少链接或 id")
+    note_type = payload.get("note_type") or "video"
+    if payload.get("url") and not payload.get("id"):   # 贴链接：解析出平台+id+类型（短链也认）
+        info = tikhub.parse_link(payload["url"])
+        platform = info.get("platform") or platform
+        ident = info.get("id")
+        note_type = info.get("note_type")
+        if not ident:
+            raise ValueError("链接无法解析，请检查链接或改用关键词搜索")
+    else:
+        ident = raw
     if platform not in tikhub.PLATFORMS:
         raise ValueError("未知平台")
-    ident = (payload.get("url") or payload.get("id") or "").strip()
-    if not ident:
-        raise ValueError("缺少链接或 id")
     want = payload.get("want") or ["copy", "comments"]
-    det = tikhub.detail(platform, ident, note_type=payload.get("note_type") or "video")
+    det = tikhub.detail(platform, ident, note_type=note_type)
     au = det.get("author") or {}
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
