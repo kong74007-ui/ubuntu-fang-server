@@ -49,3 +49,8 @@ site/_logo_gen/
 generated_layers/
 config/
 docs/黄雀网站主站图预览（对标）/
+
+# 设计源料 / 生成图临时件 / 大参考图（不进库）
+System design polish*/
+黄雀主站生成图片实例/
+site/assets/cloud/_ref3.png
