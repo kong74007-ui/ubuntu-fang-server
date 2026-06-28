@@ -125,7 +125,7 @@
   var params=new URLSearchParams(location.search);
   var AUDIO_TAB=params.get('audioTab')||'public';
   var ALL=[], cat=params.get('cat')||'all';
-  var personalVoiceLoadSeq=0, activePreviewAudio=null;
+  var personalVoiceLoadSeq=0, activePreviewAudio=null, latestReadyVoiceBySlot={};
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
   }
@@ -268,6 +268,7 @@
       voice_updated_at: voice.updated_at || Date.now(),
       updated_at: Date.now()
     });
+    latestReadyVoiceBySlot[slotId]=next;
     var card=slotAssetCard(next), old=null;
     [].slice.call(grid.children).some(function(n){
       if(n.getAttribute && n.getAttribute('data-slot-id')===slotId){ old=n; return true; }
@@ -348,6 +349,12 @@
       grid.appendChild(buySlotCard());
       slots.forEach(function(slot){
         if(slot.slot_id) slotIds[slot.slot_id]=true;
+        if(slot.slot_id && latestReadyVoiceBySlot[slot.slot_id]){
+          slot=Object.assign({}, slot, latestReadyVoiceBySlot[slot.slot_id], {
+            reclone_count: slot.reclone_count,
+            created_at: slot.created_at
+          });
+        }
         grid.appendChild(slotAssetCard(slot));
       });
       fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
@@ -494,6 +501,7 @@
             note.style.color='#e7b24c';
             note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
             stopActivePreviewAudio();
+            delete latestReadyVoiceBySlot[slot.slot_id];
             renderAudioTab('personal');
             pollCloneReady(slot.slot_id, note, 0, close, slot);
           }).catch(function(e){
