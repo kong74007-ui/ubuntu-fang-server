@@ -182,6 +182,7 @@
     var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
     var recloneRemain=Math.max(0, 10-recloneCount);
     var w=document.createElement('div');
+    if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
     if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
     w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+((readonly||completed)?'default':'pointer')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
     if(!readonly && !completed){
@@ -249,6 +250,27 @@
       w.appendChild(playBtn);
     }
     return w;
+  }
+  function replacePersonalVoiceSlotCard(slotId, result, fallbackSlot){
+    if(!slotId || !result || !result.preview_url) return;
+    stopActivePreviewAudio();
+    personalVoiceLoadSeq++;
+    var voice=result.voice||{};
+    var next=Object.assign({}, fallbackSlot||{}, {
+      slot_id: slotId,
+      status: 'ready',
+      voice_id: voice.voice_id || (fallbackSlot&&fallbackSlot.voice_id) || 1,
+      voice_name: voice.display_name || (fallbackSlot&&fallbackSlot.voice_name) || '\u6211\u7684\u590d\u523b\u97f3\u8272',
+      preview_url: result.preview_url,
+      updated_at: Date.now()
+    });
+    var card=slotAssetCard(next), old=null;
+    [].slice.call(grid.children).some(function(n){
+      if(n.getAttribute && n.getAttribute('data-slot-id')===slotId){ old=n; return true; }
+      return false;
+    });
+    if(old) grid.replaceChild(card, old);
+    else grid.appendChild(card);
   }
   function personalVoiceAssetCard(voice){
     return slotAssetCard({
@@ -388,7 +410,7 @@
       wrap.addEventListener('click',function(e){ if(e.target===wrap) done(false); });
     });
   }
-  function pollCloneReady(slotId, note, tries, onReady){
+  function pollCloneReady(slotId, note, tries, onReady, currentSlot){
     tries=tries||0;
     fetch(freshUrl('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
       .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
@@ -398,6 +420,7 @@
         if(result.status==='ready'){
           note.style.color='#2bd576';
           note.textContent=result.preview_url?'\u590d\u523b\u5b8c\u6210\uff0c\u5df2\u751f\u6210\u6d4b\u8bd5\u97f3\u9891':'\u590d\u523b\u5b8c\u6210';
+          replacePersonalVoiceSlotCard(slotId, result, currentSlot);
           setTimeout(function(){ if(onReady) onReady(); renderAudioTab('personal'); },500);
           return;
         }
@@ -406,7 +429,7 @@
         note.textContent=result.stale_result
           ? '\u8c46\u5305\u4ecd\u8fd4\u56de\u4e0a\u4e00\u6b21\u590d\u523b\u7ed3\u679c\uff0c\u6b63\u5728\u7b49\u5f85\u672c\u6b21\u65b0\u7ed3\u679c...'
           : '\u590d\u523b\u5904\u7406\u4e2d\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
-        if(tries<60){ setTimeout(function(){ pollCloneReady(slotId,note,tries+1,onReady); },5000); }
+        if(tries<60){ setTimeout(function(){ pollCloneReady(slotId,note,tries+1,onReady,currentSlot); },5000); }
         else{ note.style.color='#f4708a'; note.textContent='\u8c46\u5305\u6682\u672a\u8fd4\u56de\u672c\u6b21\u65b0\u590d\u523b\u7ed3\u679c\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u6216\u91cd\u65b0\u63d0\u4ea4'; renderAudioTab('personal'); }
       }).catch(function(e){
         note.style.color='#f4708a';
@@ -466,7 +489,7 @@
             note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
             stopActivePreviewAudio();
             renderAudioTab('personal');
-            pollCloneReady(slot.slot_id, note, 0, close);
+            pollCloneReady(slot.slot_id, note, 0, close, slot);
           }).catch(function(e){
             vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'VIP\u590d\u523b\u5931\u8d25';
           });
