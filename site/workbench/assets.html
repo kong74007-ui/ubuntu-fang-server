@@ -414,7 +414,7 @@
           stopActivePreviewAudio();
           setTimeout(function(){
             note.textContent='\u590d\u523b\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u8d44\u4ea7\u9875...';
-            setTimeout(function(){ if(onReady) onReady(); reloadPersonalVoiceAssets(); },10000);
+            setTimeout(function(){ if(onReady) onReady(true); reloadPersonalVoiceAssets(); },10000);
           },500);
           return;
         }
@@ -449,12 +449,28 @@
       +'</div>'
       +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" style="height:38px;padding:0 18px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:rgba(231,178,76,.08);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;">\u590d\u523b</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
     wrap.appendChild(modal); document.body.appendChild(wrap);
-    function close(){ wrap.remove(); }
+    var cloneSubmitting=false;
+    function close(force){ if(cloneSubmitting && force!==true) return; wrap.remove(); }
     wrap.querySelectorAll('[data-close-clone]').forEach(function(b){ b.onclick=close; });
     wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
     document.addEventListener('keydown',function esc(e){ if(e.key==='Escape'&&document.getElementById('cloneVoiceModal')){ close(); document.removeEventListener('keydown',esc); } });
     var picker=wrap.querySelector('#cloneVoiceFile'), fileName=wrap.querySelector('#cloneVoiceFileName'), preview=wrap.querySelector('#cloneVoicePreview'), note=wrap.querySelector('#cloneVoiceNote'), voiceName=wrap.querySelector('#cloneVoiceName');
-    picker.parentNode.onclick=function(e){ e.preventDefault(); e.stopPropagation(); picker.click(); };
+    var basicBtn=wrap.querySelector('#cloneVoiceBasic'), vipBtn=wrap.querySelector('#cloneVoiceVip');
+    var closeBtns=[].slice.call(wrap.querySelectorAll('[data-close-clone]'));
+    function setCloneBusy(on){
+      cloneSubmitting=!!on;
+      vipBtn.disabled=!!on;
+      basicBtn.disabled=!!on;
+      picker.disabled=!!on;
+      closeBtns.forEach(function(b){ b.disabled=!!on; b.style.opacity=on?'.45':'1'; b.style.cursor=on?'not-allowed':'pointer'; });
+      vipBtn.style.opacity=on?'.72':'1';
+      vipBtn.style.cursor=on?'wait':'pointer';
+      basicBtn.style.opacity=on?'.45':'1';
+      basicBtn.style.cursor=on?'not-allowed':'pointer';
+      picker.parentNode.style.pointerEvents=on?'none':'auto';
+      picker.parentNode.style.opacity=on?'.72':'1';
+    }
+    picker.parentNode.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(cloneSubmitting) return; picker.click(); };
     picker.onclick=function(e){ e.stopPropagation(); };
     picker.onchange=function(){
       var f=picker.files&&picker.files[0]; if(!f) return;
@@ -463,13 +479,13 @@
       preview.style.display='block';
       note.textContent='已选择样音，可以先试听确认人声清晰。';
     };
-    wrap.querySelector('#cloneVoiceBasic').onclick=function(){
+    basicBtn.onclick=function(){
+      if(cloneSubmitting) return;
       note.style.color='#e7b24c';
       note.textContent='\u666e\u901a\u590d\u523b\u8bf7\u6c42\u5f85\u63a5\u5165\u3002';
     };
-    var vipBtn=wrap.querySelector('#cloneVoiceVip');
     function submitVipFile(file, ext){
-      vipBtn.disabled=true; vipBtn.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5904\u7406\u6837\u97f3\u5e76\u63d0\u4ea4VIP\u590d\u523b...';
+      setCloneBusy(true); note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5904\u7406\u6837\u97f3\u5e76\u63d0\u4ea4VIP\u590d\u523b...';
       trimAudioTo60(file).then(function(sendFile){
       var reader=new FileReader();
       reader.onload=function(){
@@ -485,19 +501,21 @@
             renderAudioTab('personal');
             pollCloneReady(slot.slot_id, note, 0, close, slot);
           }).catch(function(e){
-            vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'VIP\u590d\u523b\u5931\u8d25';
+            setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'VIP\u590d\u523b\u5931\u8d25';
           });
       };
-      reader.onerror=function(){ vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent='\u6837\u97f3\u8bfb\u53d6\u5931\u8d25'; };
+      reader.onerror=function(){ setCloneBusy(false); note.style.color='#f4708a'; note.textContent='\u6837\u97f3\u8bfb\u53d6\u5931\u8d25'; };
       reader.readAsDataURL(sendFile);
       }).catch(function(e){
-        vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u6837\u97f3\u5904\u7406\u5931\u8d25';
+        setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'\u6837\u97f3\u5904\u7406\u5931\u8d25';
       });
     }
     vipBtn.onclick=function(){
+      if(cloneSubmitting) return;
       if(!slot||!slot.slot_id){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u5151\u6362\u97f3\u8272\u69fd\u4f4d'; return; }
       var f=picker.files&&picker.files[0];
       if(!f){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u9009\u62e9\u6837\u97f3\u6587\u4ef6'; return; }
+      setCloneBusy(true);
       note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u68c0\u67e5\u97f3\u9891\u65f6\u957f...';
       getAudioDuration(f).then(function(sec){
         if(sec>60){
@@ -505,11 +523,11 @@
           return submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
         }
         if(sec<40){
-          return confirmShortAudio().then(function(ok){ if(ok) submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase()); else note.textContent='\u5df2\u53d6\u6d88VIP\u590d\u523b'; });
+          return confirmShortAudio().then(function(ok){ if(ok) submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase()); else { setCloneBusy(false); note.textContent='\u5df2\u53d6\u6d88VIP\u590d\u523b'; } });
         }
         submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
       }).catch(function(e){
-        vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u97f3\u9891\u5904\u7406\u5931\u8d25';
+        setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'\u97f3\u9891\u5904\u7406\u5931\u8d25';
       });
     };
   }
