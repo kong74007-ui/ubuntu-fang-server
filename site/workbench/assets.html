@@ -213,8 +213,8 @@
     if(slot.preview_url){
       var playBtn=document.createElement('button');
       playBtn.type='button';
-      var previewSrc=slot.preview_url+(slot.preview_url.indexOf('?')>=0?'&':'?')+'v='+(slot.updated_at||Date.now())+'-'+Date.now();
-      playBtn.setAttribute('data-preview-url', previewSrc);
+      playBtn.setAttribute('data-preview-url', slot.preview_url);
+      playBtn.setAttribute('data-preview-version', String(slot.voice_updated_at||slot.updated_at||slot.preview_file||Date.now()));
       playBtn.title='\u64ad\u653e\u8bd5\u542c';
       playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
       playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
@@ -222,7 +222,9 @@
       var previewAudio=null;
       playBtn.onclick=function(e){
         e.preventDefault(); e.stopPropagation();
-        var src=playBtn.getAttribute('data-preview-url');
+        var baseSrc=playBtn.getAttribute('data-preview-url')||'';
+        var version=playBtn.getAttribute('data-preview-version')||Date.now();
+        var src=baseSrc+(baseSrc.indexOf('?')>=0?'&':'?')+'v='+encodeURIComponent(version)+'-'+Date.now();
         if(!previewAudio || previewAudio.src.indexOf(src)<0){
           previewAudio=new Audio(src);
           previewAudio.onended=function(){
@@ -262,6 +264,8 @@
       voice_id: voice.voice_id || (fallbackSlot&&fallbackSlot.voice_id) || 1,
       voice_name: voice.display_name || (fallbackSlot&&fallbackSlot.voice_name) || '\u6211\u7684\u590d\u523b\u97f3\u8272',
       preview_url: result.preview_url,
+      preview_file: voice.preview_file || result.preview_file || '',
+      voice_updated_at: voice.updated_at || Date.now(),
       updated_at: Date.now()
     });
     var card=slotAssetCard(next), old=null;
@@ -278,6 +282,8 @@
       voice_id:voice.id,
       voice_name:voice.display_name,
       preview_url:voice.preview_url,
+      preview_file:voice.preview_file,
+      voice_updated_at:voice.updated_at,
       slot_id:voice.slot_id || '',
       readonly:!voice.slot_id
     });

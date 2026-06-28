@@ -238,7 +238,7 @@ def redeem_audio_voice_slot(username, code):
 def list_user_audio_voice_slots(username):
     with closing(adb()) as c:
         rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
-                   s.created_at, s.updated_at, v.display_name AS voice_name, v.preview_url
+                   s.created_at, s.updated_at, v.display_name AS voice_name, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
             FROM audio_voice_slots s
             LEFT JOIN audio_voices v ON v.id = s.voice_id
             WHERE s.username=?
@@ -433,6 +433,23 @@ def check_clone_status(username, slot_id):
         raise
     st = resp.get("status")
     demo = resp.get("demo_audio")
+    create_time = resp.get("create_time") or resp.get("createTime") or resp.get("created_at")
+    try:
+        create_time_i = int(create_time or 0)
+    except Exception:
+        create_time_i = 0
+    clone_started_at = int(slot["clone_started_at"] or 0)
+    clone_upload_at = int(slot["clone_upload_at"] or 0)
+    started_ms = max(clone_started_at, clone_upload_at) * 1000
+    if st == 2 and started_ms and create_time_i and create_time_i < started_ms:
+        return {
+            "status": "training",
+            "doubao_status": st,
+            "doubao_create_time": create_time_i,
+            "clone_started_at": clone_started_at,
+            "clone_upload_at": clone_upload_at,
+            "stale_result": True,
+        }
     if st == 2:
         try:
             preview = generate_doubao_preview(slot_id)
@@ -455,7 +472,7 @@ def check_clone_status(username, slot_id):
                 c.commit()
             return {"status": "failed", "clone_error": err, "doubao_status": st, "doubao_demo_audio": demo}
         v = finalize_ready_voice(username, slot_id, voice["display_name"] if voice else None, preview_url, preview_file)
-        return {"status": "ready", "preview_url": preview_url, "voice": v, "doubao_status": st, "doubao_demo_audio": demo}
+        return {"status": "ready", "preview_url": preview_url, "voice": v, "doubao_status": st, "doubao_demo_audio": demo, "doubao_create_time": create_time_i}
     if st == 3:
         with closing(adb()) as c:
             c.execute("UPDATE audio_voice_slots SET status='failed', updated_at=? WHERE username=? AND slot_id=?",
@@ -1148,7 +1165,13 @@ class H(BaseHTTPRequestHandler):
             data = fp.read_bytes()
             ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
             self.send_response(200); self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(data)))
+            if fn.startswith("voice_preview_"):
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
+            else:
+                self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers(); self.wfile.write(data); return
         if p == "/api/gen/audio/voices":
             user = verify(self._token())
