@@ -687,10 +687,12 @@ def clone_vip_voice(username, payload):
 
 def ensure_audio_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or "dapeng").strip().lower()
+    voice_key = (voice_key or "dapeng").strip()
     public_keys = {"dapeng", "zelong", "paul"}
+    public_key = voice_key.lower()
     now = int(time.time())
-    if voice_key in public_keys:
+    if public_key in public_keys:
+        voice_key = public_key
         with closing(adb()) as c:
             r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
                           (voice_key,)).fetchone()
@@ -716,11 +718,12 @@ def ensure_audio_voice(username, voice_key):
 
 def resolve_audio_provider_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or "dapeng").strip().lower()
+    voice_key = (voice_key or "dapeng").strip()
     public_keys = {"dapeng", "zelong", "paul"}
-    if voice_key in public_keys:
-        ensure_audio_voice(username, voice_key)
-        return VOICE_MAP.get(voice_key, VOICE_MAP["dapeng"])
+    public_key = voice_key.lower()
+    if public_key in public_keys:
+        ensure_audio_voice(username, public_key)
+        return VOICE_MAP.get(public_key, VOICE_MAP["dapeng"])
     if voice_key == "personal":
         ensure_audio_voice(username, voice_key)
         return VOICE_MAP.get("personal", VOICE_MAP["dapeng"])
@@ -1040,7 +1043,8 @@ def gen_audio(payload):
     if len(text) > 1200:
         raise ValueError("配音文案过长，请控制在 1200 字以内")
     username = (payload.get("_username") or "").strip()
-    voice_key = (payload.get("voice") or "dapeng").strip().lower()
+    raw_voice_key = (payload.get("voice") or "dapeng").strip()
+    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in {"dapeng", "zelong", "paul"} else raw_voice_key
     voice = resolve_audio_provider_voice(username, voice_key)
     raw_speed = payload.get("speed")
     if isinstance(raw_speed, (int, float)):
