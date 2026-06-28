@@ -126,7 +126,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=12"></script>
+<script src="cloud-shell.js?v=13"></script>
 <script>
 (function(){
   "use strict";
@@ -212,7 +212,7 @@
       document.getElementById('chTargets').focus(); return;
     }
     if(!kw && !chTargets.length){ setStatus('请先输入关键词或视频号目标','#f4708a'); input.focus(); return; }
-    var t=tok(); if(!t){ location.href='../login.html?redirect=leads'; return; }
+    var t=tok(); if(!t){ HQ.login(); return; }
     busy(true); setStatus('提交任务中…','#2dd4bf');
     rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑多平台 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12px;margin-top:8px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
     var body={keyword:kw, platforms:platforms, count:parseInt(cntSel.value)||50, pages:1, channels_targets:chTargets};
@@ -220,7 +220,7 @@
     fetch('/api/gen/leads',{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
       .then(function(x){
-        if(x.s===401){ location.href='../login.html?redirect=leads'; return; }
+        if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ busy(false); setStatus('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); rows.innerHTML=''; return; }
         if(!x.d.job_id){ busy(false); setStatus('提交失败：'+((x.d&&x.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; return; }
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();

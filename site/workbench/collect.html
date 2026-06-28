@@ -226,7 +226,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=12"></script>
+<script src="cloud-shell.js?v=13"></script>
 <script>
 (function () {
   'use strict';
@@ -326,7 +326,7 @@
   function doSearch() {
     var kw = kwInput ? kwInput.value.trim() : '';
     if (!kw) return;
-    if (!tok()) { location.href = '../login.html?redirect=collect'; return; }
+    if (!tok()) { HQ.login(); return; }
     kwSearch.textContent = '搜索中…';
     kwSearch.style.opacity = '.7';
     kwSearch.style.pointerEvents = 'none';
@@ -338,7 +338,7 @@
       kwSearch.textContent = '搜索';
       kwSearch.style.opacity = '1';
       kwSearch.style.pointerEvents = 'auto';
-      if (x.s === 401) { location.href = '../login.html?redirect=collect'; return; }
+      if (x.s === 401) { HQ.login(); return; }
       if (x.s === 402) { setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a'); return; }
       renderSearchResults((x.d && x.d.items) || []);
       if (x.d && x.d.points_left != null && window.HQ) window.HQ.refreshPoints();
@@ -429,7 +429,7 @@
   /* ---- submit collect ---- */
   function submitCollect(url) {
     if (!url) { setNote('请粘贴视频链接或选择视频', '#f4708a'); return; }
-    if (!tok()) { location.href = '../login.html?redirect=collect'; return; }
+    if (!tok()) { HQ.login(); return; }
     currentUrl = url;  // ponytail: save for on-demand transcript extraction
     busy(true);
     showState('loadingState');
@@ -443,7 +443,7 @@
     })
     .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
     .then(function (x) {
-      if (x.s === 401) { location.href = '../login.html?redirect=collect'; return; }
+      if (x.s === 401) { HQ.login(); return; }
       if (x.s === 402) {
         busy(false); showState('emptyState');
         setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a');
@@ -651,7 +651,7 @@
   /* ---- transcript extraction (on-demand) ---- */
   function submitTranscript() {
     if (!currentUrl) return;
-    if (!tok()) { location.href = '../login.html?redirect=collect'; return; }
+    if (!tok()) { HQ.login(); return; }
     var btn  = document.getElementById('transcriptExtractBtn');
     var note = document.getElementById('transcriptExtractNote');
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
@@ -664,7 +664,7 @@
     })
     .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
     .then(function (x) {
-      if (x.s === 401) { location.href = '../login.html?redirect=collect'; return; }
+      if (x.s === 401) { HQ.login(); return; }
       if (x.s === 402) { resetTranscriptBtn('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', true); return; }
       if (!x.d || !x.d.job_id) { resetTranscriptBtn('提交失败：' + ((x.d && x.d.detail) || ''), true); return; }
       pollTranscript(x.d.job_id, t0);

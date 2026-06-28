@@ -114,7 +114,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11"></script>
+<script src="cloud-shell.js?v=13"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -325,7 +325,7 @@
       fetch('/api/gen/audio/redeem-slot',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({code:code})})
         .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
         .then(function(res){
-          if(res.status===401){ location.href='../login.html?redirect=assets'; return; }
+          if(res.status===401){ HQ.login(); return; }
           if(!res.data.ok){ throw new Error(res.data.detail||'\u5151\u6362\u5931\u8d25'); }
           note.style.color='#2bd576'; note.textContent='\u5151\u6362\u6210\u529f\uff0c\u5df2\u5206\u914d\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d';
           setTimeout(function(){ close(); renderAudioTab('personal'); },700);
@@ -345,7 +345,7 @@
       .then(function(r){ return r.json().then(function(d){ return {status:r.status,data:d}; }); })
       .then(function(res){
       if(seq!==personalVoiceLoadSeq) return;
-      if(res.status===401){ location.href='../login.html?redirect=assets&cat=audio&audioTab=personal'; return; }
+      if(res.status===401){ HQ.login(); return; }
       loading.remove();
       var slots=res.data.items||[];
       var slotIds={};
@@ -512,7 +512,7 @@
         fetch('/api/gen/audio/clone-vip',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:(voiceName&&voiceName.value)||'',audio:audio,audio_format:'wav'})})
           .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
           .then(function(res){
-            if(res.status===401){ location.href='../login.html?redirect=assets'; return; }
+            if(res.status===401){ HQ.login(); return; }
             if(!res.data.ok){ throw new Error(res.data.detail||'VIP\u590d\u523b\u5931\u8d25'); }
             note.style.color='#e7b24c';
             note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';

@@ -202,7 +202,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=12"></script>
+<script src="cloud-shell.js?v=13"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
 (function(){
@@ -236,7 +236,7 @@
   gen.onclick=function(){
     var t=(topic.value||'').trim(), s=(sell.value||'').trim();
     if(!t){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先填「选题」</div>'; return; }
-    if(!tok()){ location.href='../login.html?redirect=script'; return; }
+    if(!tok()){ HQ.login(); return; }
     var style=pick('segStyle','.sc-opt','口播'), dur=pick('segDur','.sc-opt','30s'), plat=pick('platRow','.sc-chip','抖音');
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
@@ -244,7 +244,7 @@
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ location.href='../login.html?redirect=script'; return; }
+        if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
         var iv=setInterval(function(){

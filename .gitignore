@@ -54,3 +54,6 @@ docs/黄雀网站主站图预览（对标）/
 System design polish*/
 黄雀主站生成图片实例/
 site/assets/cloud/_ref3.png
+
+# 本地预览/原型页（不部署）
+site/_*.html

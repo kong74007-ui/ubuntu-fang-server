@@ -102,7 +102,7 @@
           '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
           '<span style="font-size:13px; color:#94a4bb; flex:1;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
           '<span style="display:flex; width:13px; color:#2dd4bf;">'+icon('arrowMini')+'</span></a>'+
-        '<a href="../login.html" style="display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer; border-radius:10px;">'+
+        '<a href="../login.html" onclick="event.preventDefault();if(window.HQ&&HQ.login)HQ.login();" style="display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer; border-radius:10px;">'+
           '<div style="width:34px; height:34px; border-radius:50%; flex:none; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">仙</div>'+
           '<div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">仙颜美容 · 示例</div><div style="font-size:11px; color:#e7b24c;">旗舰版</div></div></a>'+
       '</div>';
@@ -162,6 +162,81 @@
     }).catch(function(){});
   }
 
-  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints };
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',build); else build();
+  // ===== 登录弹窗（全站共用，替代跳 /login 页）=====
+  var _hqPhone=true;
+  function buildLoginModal(){
+    if(document.getElementById('hqLoginOv')) return;
+    var st=document.createElement('style');
+    st.textContent=
+      '.hqlo{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(4,5,9,.62);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);opacity:0;transition:opacity .22s}'+
+      '.hqlo.on{display:flex;opacity:1}'+
+      '.hqlm{position:relative;width:100%;max-width:392px;padding:38px;border-radius:22px;background:linear-gradient(180deg,rgba(28,28,32,.94),rgba(14,14,18,.94));border:1px solid rgba(255,255,255,.08);box-shadow:0 40px 90px -30px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.06) inset,0 -50px 70px -56px rgba(231,178,76,.22) inset;transform:translateY(10px) scale(.985);transition:transform .24s cubic-bezier(.2,.7,.2,1);font-family:inherit}'+
+      '.hqlo.on .hqlm{transform:none}'+
+      '.hqlx{position:absolute;top:15px;right:15px;width:30px;height:30px;border:0;border-radius:9px;cursor:pointer;color:#9a9ba2;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;transition:.16s}'+
+      '.hqlx:hover{color:#f4f5f7;background:rgba(255,255,255,.1)}'+
+      '.hqlt{display:flex;gap:24px;margin-top:24px;border-bottom:1px solid rgba(255,255,255,.07)}'+
+      '.hqlt>div{padding:10px 1px;font-size:14px;font-weight:500;cursor:pointer;color:#9a9ba2;border-bottom:2px solid transparent;margin-bottom:-1px;transition:.2s}'+
+      '.hqlt>div.on{color:#f4f5f7;border-bottom-color:#e7b24c}'+
+      '.hqlf{display:flex;align-items:center;gap:11px;height:48px;padding:0 15px;border:1px solid rgba(255,255,255,.07);background:rgba(0,0,0,.28);border-radius:13px;transition:.2s}'+
+      '.hqlf:focus-within{border-color:rgba(231,178,76,.5);box-shadow:0 0 0 3px rgba(231,178,76,.12)}'+
+      '.hqlf input{flex:1;background:transparent;border:0;outline:0;color:#f4f5f7;font-size:14px;font-family:inherit}'+
+      '.hqlf input::placeholder{color:#65666c}'+
+      '.hqlb{width:100%;height:48px;margin-top:20px;border:0;border-radius:13px;cursor:pointer;font-family:inherit;font-size:15px;font-weight:600;letter-spacing:.18em;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);box-shadow:0 14px 30px -12px rgba(231,178,76,.55);transition:.18s}'+
+      '.hqlb:hover{transform:translateY(-1px);filter:brightness(1.05)}';
+    document.head.appendChild(st);
+    var SI='width:16px;height:16px;color:#65666c;display:flex;flex:none;';
+    var ov=document.createElement('div'); ov.className='hqlo'; ov.id='hqLoginOv';
+    ov.innerHTML=
+      '<div class="hqlm" role="dialog" aria-modal="true">'+
+      '<button class="hqlx" id="hqLx" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>'+
+      '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><span style="width:8px;height:8px;border-radius:50%;background:#e7b24c;box-shadow:0 0 10px #e7b24c;"></span><span style="font-size:14px;font-weight:600;">黄雀 AI</span></div>'+
+      '<div style="font-size:20px;font-weight:600;">欢迎回来</div>'+
+      '<div style="font-size:13px;color:#9a9ba2;margin-top:8px;">登录后开启智能获客与内容创作</div>'+
+      '<div class="hqlt"><div class="on" id="hqTP">手机号登录</div><div id="hqTW">密码登录</div></div>'+
+      '<div style="margin-top:20px;display:flex;flex-direction:column;gap:12px;">'+
+        '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span><input id="hqU" placeholder="请输入手机号 / 账号"></div>'+
+        '<div id="hqRP" style="display:flex;gap:10px;"><div class="hqlf" style="flex:1;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11v1a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14l-3-3"/></svg></span><input id="hqC" placeholder="请输入验证码"></div><button type="button" id="hqGc" style="height:48px;padding:0 14px;white-space:nowrap;font-size:13px;color:#e7b24c;background:rgba(231,178,76,.08);border:1px solid rgba(231,178,76,.26);border-radius:13px;cursor:pointer;font-family:inherit;">获取验证码</button></div>'+
+        '<div id="hqRW" class="hqlf" style="display:none;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP" type="password" placeholder="请输入密码"></div>'+
+      '</div>'+
+      '<button type="button" class="hqlb" id="hqSub">登 录</button>'+
+      '<div id="hqMsg" style="text-align:center;font-size:12.5px;margin-top:11px;min-height:15px;color:#f4708a;"></div>'+
+      '<div id="hqTeam" style="text-align:center;font-size:13.5px;color:#e7b24c;cursor:pointer;font-weight:500;margin-top:6px;">团队口令登录 →</div>'+
+      '<div style="text-align:center;font-size:11px;color:#65666c;margin-top:16px;">登录即代表您同意《用户协议》与《隐私政策》</div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click',function(e){ if(e.target===ov) closeLogin(); });
+    document.getElementById('hqLx').onclick=closeLogin;
+    var tP=document.getElementById('hqTP'),tW=document.getElementById('hqTW'),rP=document.getElementById('hqRP'),rW=document.getElementById('hqRW');
+    tP.onclick=function(){_hqPhone=true;tP.classList.add('on');tW.classList.remove('on');rP.style.display='flex';rW.style.display='none';};
+    tW.onclick=function(){_hqPhone=false;tW.classList.add('on');tP.classList.remove('on');rP.style.display='none';rW.style.display='flex';};
+    document.getElementById('hqGc').onclick=function(){ hqMsg('验证码登录即将上线，请用密码登录','err'); };
+    document.getElementById('hqSub').onclick=hqDoLogin;
+    document.getElementById('hqTeam').onclick=hqDoLogin;
+    ['hqU','hqC','hqP'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('keydown',function(e){if(e.key==='Enter')hqDoLogin();});});
+  }
+  function hqMsg(t,k){ var m=document.getElementById('hqMsg'); if(m){ m.textContent=t||''; m.style.color=k==='ok'?'#2bd576':'#f4708a'; } }
+  function openLogin(){ buildLoginModal(); var ov=document.getElementById('hqLoginOv'); if(ov){ ov.classList.add('on'); var u=document.getElementById('hqU'); if(u) setTimeout(function(){try{u.focus();}catch(e){}},60); } }
+  function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
+  function hqDoLogin(){
+    var username=(document.getElementById('hqU').value||'').trim();
+    var secret=_hqPhone?(document.getElementById('hqC').value||''):(document.getElementById('hqP').value||'');
+    if(!username||!secret){ hqMsg(_hqPhone?'请填写账号和验证码':'请填写账号和密码','err'); return; }
+    var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('登录中…');
+    fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:secret})})
+    .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,d:d};}); })
+    .then(function(res){
+      b.disabled=false; b.style.opacity='1';
+      if(res.ok&&res.d&&res.d.token){
+        try{ localStorage.removeItem('hq_role'); localStorage.setItem('hq_token',res.d.token); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
+        var m=document.getElementById('hqMsg'); if(m){ m.style.color='#2bd576'; m.textContent='登录成功'; }
+        setTimeout(function(){ closeLogin(); refreshPoints(); },450);
+      } else { hqMsg((res.d&&res.d.detail)||'账号或密码错误','err'); }
+    })
+    .catch(function(err){ b.disabled=false; b.style.opacity='1'; hqMsg(err&&err.message==='__nobackend__'?'登录服务即将上线（账号体系开发中）':'网络错误，请重试','err'); });
+  }
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeLogin(); });
+
+  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, closeLogin:closeLogin };
+  function _hqInit(){ build(); buildLoginModal(); }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
