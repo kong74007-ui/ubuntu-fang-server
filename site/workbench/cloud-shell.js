@@ -102,9 +102,7 @@
           '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
           '<span style="font-size:13px; color:#94a4bb; flex:1;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
           '<span style="display:flex; width:13px; color:#2dd4bf;">'+icon('arrowMini')+'</span></a>'+
-        '<a href="../login.html" onclick="event.preventDefault();if(window.HQ&&HQ.login)HQ.login();" style="display:flex; align-items:center; gap:10px; padding:8px 6px; cursor:pointer; border-radius:10px;">'+
-          '<div style="width:34px; height:34px; border-radius:50%; flex:none; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">仙</div>'+
-          '<div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">仙颜美容 · 示例</div><div style="font-size:11px; color:#e7b24c;">旗舰版</div></div></a>'+
+        '<div id="hqUserCard"></div>'+
       '</div>';
 
     var header=document.createElement('header');
@@ -112,7 +110,7 @@
     header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
     header.innerHTML=
       '<button class="hq-burger" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
-      '<div style="display:flex; align-items:center; gap:9px; padding:7px 14px 7px 9px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04); cursor:pointer;">'+
+      '<div id="hqBizSwitch" style="display:none; align-items:center; gap:9px; padding:7px 14px 7px 9px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04); cursor:pointer;">'+
         '<div style="width:24px; height:24px; border-radius:7px; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:11px; font-weight:600;">仙</div>'+
         '<span style="font-size:13.5px; font-weight:500;">仙颜美容 · 示例</span><span style="display:flex; width:13px; color:#94a4bb;">'+icon('chevronDown')+'</span></div>'+
       '<div class="hq-botpill" style="display:flex; align-items:center; gap:8px; padding:8px 13px; border:1px solid rgba(45,212,191,.2); border-radius:11px; background:rgba(45,212,191,.05);">'+
@@ -123,7 +121,7 @@
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<div style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb;">'+icon('bell','17px')+'<span style="position:absolute; top:9px; right:10px; width:7px; height:7px; border-radius:50%; background:#f4708a; border:1.5px solid #070b13;"></span></div>'+
-        '<div style="width:38px; height:38px; border-radius:11px; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:14px; font-weight:600; cursor:pointer;">仙</div></div>';
+        '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
     // 重组 DOM：aside | main(topbar + scroll(content))
     var main=document.createElement('main');
@@ -149,7 +147,7 @@
     burger.onclick=function(){ open=!open; aside.style.transform=open?'translateX(0)':'translateX(-100%)'; };
     window.addEventListener('resize',applyResp); applyResp();
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
-    refreshPoints();
+    refreshPoints(); renderUser();
   }
 
   // 拉真实点数填到侧边+顶栏（生成后页面调 window.HQ.refreshPoints() 刷新）
@@ -229,14 +227,45 @@
       if(res.ok&&res.d&&res.d.token){
         try{ localStorage.removeItem('hq_role'); localStorage.setItem('hq_token',res.d.token); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
         var m=document.getElementById('hqMsg'); if(m){ m.style.color='#2bd576'; m.textContent='登录成功'; }
-        setTimeout(function(){ closeLogin(); refreshPoints(); },450);
+        setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
       } else { hqMsg((res.d&&res.d.detail)||'账号或密码错误','err'); }
     })
     .catch(function(err){ b.disabled=false; b.style.opacity='1'; hqMsg(err&&err.message==='__nobackend__'?'登录服务即将上线（账号体系开发中）':'网络错误，请重试','err'); });
   }
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeLogin(); });
 
-  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, closeLogin:closeLogin };
+  // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
+  function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
+  function _logout(){ try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){} location.reload(); }
+  function renderUser(){
+    var u=currentUser(), inn=!!localStorage.getItem('hq_token');
+    var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea'), biz=document.getElementById('hqBizSwitch');
+    var av='linear-gradient(150deg,#9a6a3a,#5a3d22)';
+    if(inn){
+      var name=(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
+      var role=(u&&u.role==='admin')?'管理员':'会员';
+      if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
+        '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;">'+ch+'</div>'+
+        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+name+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
+        '<span data-logout="1" title="退出登录" style="display:flex;width:16px;color:#5c6b82;cursor:pointer;">'+icon('logout')+'</span></div>';
+      if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;">'+ch+'</div>';
+      if(biz) biz.style.display='flex';
+    } else {
+      if(card) card.innerHTML='<div data-login="1" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);">'+
+        '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
+        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;color:#eaf1fa;">未登录</div><div style="font-size:11px;color:#94a4bb;">登录后开启全部功能</div></div>'+
+        '<span style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></div>';
+      if(auth) auth.innerHTML='<button data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
+        '<button data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
+      if(biz) biz.style.display='none';
+    }
+    [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
+      var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout]'):null; if(!t) return;
+      if(t.getAttribute('data-logout')) _logout(); else if(window.HQ&&HQ.login) HQ.login();
+    };});
+  }
+
+  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
