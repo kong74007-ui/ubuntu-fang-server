@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="assets/cloud.css?v=8">
 <style>
   .gLogin{ grid-template-columns:1.05fr .95fr; }
-  /* 窄屏/重度缩放：设计图不再消失，收成顶部横幅，登录框移到下方，整页可滚动 */
+  /* 窄屏/重度缩放：收成顶部横幅，登录框移到下方，整页可滚动 */
   @media (max-width:900px){
     body{ overflow:auto !important; }
     .gLogin{
@@ -20,15 +20,26 @@
       overflow:visible !important;
     }
     .brand-panel{ height:38vh; min-height:188px; }
-    .brand-panel img{
-      object-position:center 30% !important;   /* 横幅里对准黄雀主体 */
+    .brand-panel > img{
+      object-position:center 30% !important;
       -webkit-mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
               mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
     }
     .login-right{ margin-left:0 !important; padding:20px 26px 32px !important; }
+    /* 横幅模式：只保留 logo + 主标题，副标题/药丸/数字行收起 */
+    .brand-subtitle,.brand-pill,.brand-stats{ display:none !important; }
+    .brand-text{ padding:16px 22px 20px !important; justify-content:flex-end !important; }
   }
   @media (max-width:520px){
     .brand-panel{ height:30vh; min-height:150px; }
+    .brand-text{ padding:12px 16px 14px !important; }
+  }
+  /* 品牌 DOM 文字层 */
+  .brand-text{
+    position:absolute; inset:0; z-index:2;
+    display:flex; flex-direction:column;
+    padding:7% 9%;
+    box-sizing:border-box;
   }
 </style>
 </head>
@@ -36,10 +47,54 @@
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="gLogin" style="position:relative; z-index:1; min-height:100vh; display:grid; overflow:hidden;">
-  <!-- ===== 左 · 品牌场景区（原设计稿 login-left.png）===== -->
+  <!-- ===== 左 · 品牌场景区（场景图 + DOM 文字层）===== -->
   <div class="brand-panel" style="position:relative; overflow:hidden;">
-    <img src="assets/cloud/login-left.png" alt="黄雀 AI · 全栈 AI 获客与内容创作平台" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center top; -webkit-mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%); mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%);">
-    <a href="index.html" title="返回首页" style="position:absolute; left:5%; top:3%; width:210px; height:64px; cursor:pointer; z-index:2;"></a>
+    <!-- 纯场景背景图（无文字） -->
+    <img src="assets/cloud/login-scene.png" alt="黄雀 AI · 全栈 AI 获客与内容创作平台" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center top; -webkit-mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%); mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%);">
+    <!-- 暗化叠层，提升文字对比度 -->
+    <div style="position:absolute; inset:0; z-index:1; background:linear-gradient(180deg,rgba(4,6,12,.54) 0%,rgba(4,6,12,.12) 38%,rgba(4,6,12,.60) 100%); pointer-events:none;"></div>
+    <!-- DOM 文字层 -->
+    <div class="brand-text">
+      <!-- Logo -->
+      <a href="workbench/inspiration.html" style="display:inline-flex; align-items:center; gap:9px; text-decoration:none; margin-bottom:18px; align-self:flex-start;">
+        <img src="assets/cloud/logo-bird.png" alt="黄雀" style="width:26px; height:26px; object-fit:contain;">
+        <span style="font-size:17px; font-weight:700; color:#f0d080; letter-spacing:.4px;">黄雀 AI</span>
+      </a>
+      <!-- 中间内容区（药丸 + 主标题 + 副标题），flex:1 让 stats 自然沉底 -->
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+        <!-- 药丸标签 -->
+        <div class="brand-pill" style="display:inline-flex; align-items:center; padding:5px 13px; border:1px solid rgba(244,205,114,.30); border-radius:999px; background:rgba(244,205,114,.07); color:rgba(244,205,114,.78); font-size:12px; letter-spacing:.25px; margin-bottom:20px; align-self:flex-start; white-space:nowrap;">✦ 黄雀 AI · 全栈 AI 获客与内容创作平台</div>
+        <!-- 主标题 第一行（白） -->
+        <div style="font-size:clamp(22px,3vw,40px); font-weight:900; line-height:1.22; color:#eaf1fa; letter-spacing:-.3px; margin-bottom:5px;">不止获客成交</div>
+        <!-- 主标题 第二行（金色渐变，与 login-left.png 一致） -->
+        <div style="font-size:clamp(22px,3vw,40px); font-weight:900; line-height:1.22; background:linear-gradient(90deg,#f4cd72 0%,#e7b24c 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:18px;">全栈 AI 一站直达</div>
+        <!-- 副标题 -->
+        <div class="brand-subtitle" style="font-size:clamp(11.5px,1vw,13.5px); color:rgba(234,241,250,.56); line-height:1.75; max-width:340px;">关键词获客 · AI 作图 · 数字人视频 · 智能分发 —— 一个平台，覆盖内容生意全链路，让 AI 成为你增长路上的最佳拍档。</div>
+      </div>
+      <!-- 统计数字行（count-up 目标） -->
+      <div class="brand-stats" style="display:flex; gap:clamp(16px,2vw,30px); flex-wrap:nowrap; margin-top:4px;">
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="1770" data-suffix="+"
+            style="display:inline-block; min-width:5ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">评论采集</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="3168" data-suffix="+"
+            style="display:inline-block; min-width:5ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">账号线索</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="100" data-suffix="+"
+            style="display:inline-block; min-width:4ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">精准客户</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="80" data-suffix="%"
+            style="display:inline-block; min-width:3ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0%</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">回复率提升</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ===== 右 · 登录区 ===== -->
@@ -180,6 +235,26 @@
   ["username","code","password"].forEach(function(id){
     var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
   });
+
+  // count-up 动画：页面加载时数字从 0 递增到目标值
+  (function(){
+    var els=document.querySelectorAll(".cu-num");
+    if(!els.length) return;
+    function fmt(n,suffix){ return n.toLocaleString("en")+suffix; }
+    function run(el){
+      var target=parseInt(el.dataset.target,10)||0;
+      var suffix=el.dataset.suffix||"";
+      var dur=1400; // ms，ease-out cubic
+      var t0=performance.now();
+      (function step(now){
+        var p=Math.min((now-t0)/dur,1);
+        var eased=1-Math.pow(1-p,3);
+        el.textContent=fmt(Math.round(eased*target),suffix);
+        if(p<1) requestAnimationFrame(step);
+      })(t0);
+    }
+    els.forEach(run);
+  })();
 })();
 </script>
 </body>
