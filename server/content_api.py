@@ -268,7 +268,7 @@ def list_user_audio_voice_slots(username):
         items.append(d)
     return items
 
-def generate_doubao_preview(speaker_id, text=None):
+def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=0, pitch_rate=0):
     text = (text or "\u4f60\u597d\uff0c\u8fd9\u662f\u6211\u7684\u4e13\u5c5e\u590d\u523b\u97f3\u8272\u8bd5\u542c\u3002\u58f0\u97f3\u6e05\u6670\u81ea\u7136\uff0c\u9002\u5408\u7528\u4e8e\u77ed\u89c6\u9891\u53e3\u64ad\u548c\u6587\u6848\u914d\u97f3\u3002").strip()
     reqid = "hq_preview_%d" % int(time.time() * 1000)
     body = json.dumps({
@@ -279,9 +279,9 @@ def generate_doubao_preview(speaker_id, text=None):
             "audio_params": {
                 "format": "mp3",
                 "sample_rate": 24000,
-                "speech_rate": 0,
-                "loudness_rate": 0,
-                "pitch_rate": 0,
+                "speech_rate": int(speech_rate or 0),
+                "loudness_rate": int(loudness_rate or 0),
+                "pitch_rate": int(pitch_rate or 0),
             },
             "additions": json.dumps({"explicit_language": "zh", "disable_markdown_filter": True}),
         },
@@ -1054,6 +1054,12 @@ def gen_audio(payload):
             return default
     pitch = knob("pitch", -12, 12, 0)
     volume = knob("volume", -50, 100, 0)
+    if str(voice).startswith("S_"):
+        speech_rate = int(round((speed - 1.0) * 100))
+        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
+        fn = preview.get("file")
+        return {"type": "audio", "file": fn, "url": preview.get("url"), "voice": voice_key,
+                "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
     instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"
     body = json.dumps({
         "model": TTS_MODEL, "voice": voice, "input": text,
