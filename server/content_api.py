@@ -138,6 +138,9 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_error", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_response", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
         public = [
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
@@ -419,7 +422,9 @@ def check_clone_status(username, slot_id):
     username = (username or "").strip()
     slot_id = (slot_id or "").strip()
     with closing(adb()) as c:
-        slot = c.execute("""SELECT id, slot_id, status, voice_id, clone_started_at, clone_upload_at, clone_error FROM audio_voice_slots
+        slot = c.execute("""SELECT id, slot_id, status, voice_id, clone_started_at, clone_upload_at, clone_error,
+                   clone_baseline_version, clone_baseline_icl_speaker_id, clone_baseline_demo_audio
+            FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
         voice = c.execute("""SELECT display_name, preview_url FROM audio_voices
             WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
@@ -437,6 +442,8 @@ def check_clone_status(username, slot_id):
         raise
     st = resp.get("status")
     demo = resp.get("demo_audio")
+    version = str(resp.get("version") or "")
+    icl_speaker_id = str(resp.get("icl_speaker_id") or "")
     create_time = resp.get("create_time") or resp.get("createTime") or resp.get("created_at")
     try:
         create_time_i = int(create_time or 0)
@@ -444,12 +451,21 @@ def check_clone_status(username, slot_id):
         create_time_i = 0
     clone_started_at = int(slot["clone_started_at"] or 0)
     clone_upload_at = int(slot["clone_upload_at"] or 0)
-    started_ms = max(clone_started_at, clone_upload_at) * 1000
-    if st == 2 and started_ms and create_time_i and create_time_i < started_ms:
+    baseline_version = str(slot["clone_baseline_version"] or "")
+    baseline_icl = str(slot["clone_baseline_icl_speaker_id"] or "")
+    baseline_demo = str(slot["clone_baseline_demo_audio"] or "")
+    same_as_baseline = bool(baseline_version or baseline_icl or baseline_demo) and (
+        (not baseline_version or version == baseline_version) and
+        (not baseline_icl or icl_speaker_id == baseline_icl) and
+        (not baseline_demo or str(demo or "") == baseline_demo)
+    )
+    if st == 2 and same_as_baseline:
         return {
             "status": "training",
             "doubao_status": st,
             "doubao_create_time": create_time_i,
+            "doubao_version": version,
+            "doubao_icl_speaker_id": icl_speaker_id,
             "clone_started_at": clone_started_at,
             "clone_upload_at": clone_upload_at,
             "stale_result": True,
@@ -590,6 +606,15 @@ def clone_vip_voice(username, payload):
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
     audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
+    baseline_version = baseline_icl = baseline_demo = ""
+    try:
+        baseline = query_doubao_clone_status(slot_id)
+        baseline_version = str(baseline.get("version") or "")
+        baseline_icl = str(baseline.get("icl_speaker_id") or "")
+        baseline_demo = str(baseline.get("demo_audio") or "")
+    except Exception as e:
+        print("[clone_vip_voice] baseline status skipped username=%s slot_id=%s error=%s" %
+              (username, slot_id, str(e)[:200]), flush=True)
     body = json.dumps({
         "appid": DOUBAO_APPID,
         "speaker_id": slot_id,
@@ -649,9 +674,12 @@ def clone_vip_voice(username, payload):
         voice_id = r["id"] if r else None
         c.execute("""UPDATE audio_voice_slots
             SET voice_id=?, status='training', clone_started_at=?, clone_upload_at=?, clone_error=NULL,
-                clone_upload_speaker_id=?, clone_upload_response=?, updated_at=?
+                clone_upload_speaker_id=?, clone_upload_response=?,
+                clone_baseline_version=?, clone_baseline_icl_speaker_id=?, clone_baseline_demo_audio=?,
+                updated_at=?
             WHERE username=? AND slot_id=?""",
-            (voice_id, now, now, returned_speaker_id, upload_resp, now, username, slot_id))
+            (voice_id, now, now, returned_speaker_id, upload_resp,
+             baseline_version, baseline_icl, baseline_demo, now, username, slot_id))
         c.commit()
     print("[clone_vip_voice] upload ok username=%s slot_id=%s returned_speaker_id=%s response=%s" %
           (username, slot_id, returned_speaker_id or "", upload_resp[:500]), flush=True)
