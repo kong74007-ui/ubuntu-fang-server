@@ -11,10 +11,24 @@
 <link rel="stylesheet" href="assets/cloud.css?v=8">
 <style>
   .gLogin{ grid-template-columns:1.05fr .95fr; }
+  /* 窄屏/重度缩放：设计图不再消失，收成顶部横幅，登录框移到下方，整页可滚动 */
   @media (max-width:900px){
-    .brand-panel{ display:none !important; }
-    .gLogin{ grid-template-columns:1fr !important; }
-    .login-right{ margin-left:0 !important; }
+    body{ overflow:auto !important; }
+    .gLogin{
+      grid-template-columns:1fr !important;
+      grid-template-rows:auto 1fr !important;
+      overflow:visible !important;
+    }
+    .brand-panel{ height:38vh; min-height:188px; }
+    .brand-panel img{
+      object-position:center 30% !important;   /* 横幅里对准黄雀主体 */
+      -webkit-mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
+              mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
+    }
+    .login-right{ margin-left:0 !important; padding:20px 26px 32px !important; }
+  }
+  @media (max-width:520px){
+    .brand-panel{ height:30vh; min-height:150px; }
   }
 </style>
 </head>
