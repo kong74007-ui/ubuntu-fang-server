@@ -125,6 +125,9 @@
   var params=new URLSearchParams(location.search);
   var AUDIO_TAB=params.get('audioTab')||'public';
   var ALL=[], cat=params.get('cat')||'all';
+  function freshUrl(url){
+    return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
+  }
   function card(x){
     var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
     var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
@@ -202,7 +205,7 @@
     if(slot.preview_url){
       var playBtn=document.createElement('button');
       playBtn.type='button';
-      var previewSrc=slot.preview_url+(slot.preview_url.indexOf('?')>=0?'&':'?')+'v='+(slot.updated_at||Date.now());
+      var previewSrc=slot.preview_url+(slot.preview_url.indexOf('?')>=0?'&':'?')+'v='+(slot.updated_at||Date.now())+'-'+Date.now();
       playBtn.setAttribute('data-preview-url', previewSrc);
       playBtn.title='\u64ad\u653e\u8bd5\u542c';
       playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
@@ -293,7 +296,7 @@
     loading.style.cssText='grid-column:1/-1; padding:18px; text-align:center; font-size:12.5px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);';
     loading.textContent='\u6b63\u5728\u8bfb\u53d6\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d...';
     grid.appendChild(loading);
-    fetch('/api/gen/audio/slots',{headers:{'Authorization':'Bearer '+tok}})
+    fetch(freshUrl('/api/gen/audio/slots'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
       .then(function(r){ return r.json().then(function(d){ return {status:r.status,data:d}; }); })
       .then(function(res){
       if(res.status===401){ location.href='../login.html?redirect=assets&cat=audio&audioTab=personal'; return; }
@@ -305,7 +308,7 @@
         if(slot.slot_id) slotIds[slot.slot_id]=true;
         grid.appendChild(slotAssetCard(slot));
       });
-      fetch('/api/gen/audio/voices',{headers:{'Authorization':'Bearer '+tok}})
+      fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
         .then(function(r){ return r.json(); })
         .then(function(d){
           var voices=(d.items||[]).filter(function(v){ return v.scope==='personal'; });
@@ -371,7 +374,7 @@
   }
   function pollCloneReady(slotId, note, tries, onReady){
     tries=tries||0;
-    fetch('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId),{headers:{'Authorization':'Bearer '+tok}})
+    fetch(freshUrl('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
       .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
         if(!res.data.ok){ throw new Error(res.data.detail||'\u590d\u523b\u72b6\u6001\u67e5\u8be2\u5931\u8d25'); }
