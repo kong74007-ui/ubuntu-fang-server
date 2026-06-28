@@ -50,9 +50,9 @@
   <!-- ===== 左 · 品牌场景区（场景图 + DOM 文字层）===== -->
   <div class="brand-panel" style="position:relative; overflow:hidden;">
     <!-- 纯场景背景图（无文字） -->
-    <img src="assets/cloud/login-scene.png" alt="黄雀 AI · 全栈 AI 获客与内容创作平台" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center top; -webkit-mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%); mask-image:linear-gradient(90deg, #000 60%, rgba(0,0,0,.45) 84%, transparent 100%);">
-    <!-- 暗化叠层，提升文字对比度 -->
-    <div style="position:absolute; inset:0; z-index:1; background:linear-gradient(180deg,rgba(4,6,12,.54) 0%,rgba(4,6,12,.12) 38%,rgba(4,6,12,.60) 100%); pointer-events:none;"></div>
+    <img src="assets/cloud/login-scene.png" alt="黄雀 AI · 全栈 AI 获客与内容创作平台" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center top; -webkit-mask-image:linear-gradient(90deg, #000 38%, rgba(0,0,0,.55) 66%, rgba(0,0,0,.16) 88%, transparent 100%); mask-image:linear-gradient(90deg, #000 38%, rgba(0,0,0,.55) 66%, rgba(0,0,0,.16) 88%, transparent 100%);">
+    <!-- 暗化叠层，提升文字对比度（右缘同样淡出，消除与背景图错位的硬边线） -->
+    <div style="position:absolute; inset:0; z-index:1; background:linear-gradient(180deg,rgba(4,6,12,.54) 0%,rgba(4,6,12,.12) 38%,rgba(4,6,12,.60) 100%); -webkit-mask-image:linear-gradient(90deg,#000 44%,rgba(0,0,0,.5) 74%,transparent 96%); mask-image:linear-gradient(90deg,#000 44%,rgba(0,0,0,.5) 74%,transparent 96%); pointer-events:none;"></div>
     <!-- DOM 文字层 -->
     <div class="brand-text">
       <!-- Logo -->
