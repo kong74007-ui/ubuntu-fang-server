@@ -136,6 +136,8 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "previous_preview_url", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_at", "INTEGER")
         _ensure_column(c, "audio_voice_slots", "clone_error", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_upload_speaker_id", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_upload_response", "TEXT")
         public = [
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
@@ -238,7 +240,9 @@ def redeem_audio_voice_slot(username, code):
 def list_user_audio_voice_slots(username):
     with closing(adb()) as c:
         rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
-                   s.created_at, s.updated_at, v.display_name AS voice_name, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
+                   s.created_at, s.updated_at, s.clone_started_at, s.clone_upload_at, s.clone_error,
+                   s.clone_upload_speaker_id, s.clone_upload_response,
+                   v.display_name AS voice_name, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
             FROM audio_voice_slots s
             LEFT JOIN audio_voices v ON v.id = s.voice_id
             WHERE s.username=?
@@ -618,6 +622,15 @@ def clone_vip_voice(username, payload):
     if code_i not in (0,):
         msg = base.get("StatusMessage") or base.get("status_message") or resp.get("message") or json.dumps(resp, ensure_ascii=False)[:200]
         raise ValueError("\u8c46\u5305VIP\u590d\u523b\u5931\u8d25: " + str(msg)[:200])
+    returned_speaker_id = (resp.get("speaker_id") or resp.get("speakerId") or "").strip()
+    if returned_speaker_id and returned_speaker_id != slot_id:
+        raise ValueError("\u8c46\u5305VIP\u590d\u523b\u8fd4\u56de\u7684\u97f3\u8272ID\u4e0e\u69fd\u4f4dID\u4e0d\u4e00\u81f4")
+    upload_resp = json.dumps({
+        "BaseResp": base,
+        "speaker_id": returned_speaker_id,
+        "message": resp.get("message"),
+        "code": resp.get("code"),
+    }, ensure_ascii=False)[:1000]
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\\-]", "_", slot_id)
     with closing(adb()) as c:
@@ -632,10 +645,15 @@ def clone_vip_voice(username, payload):
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', clone_started_at=COALESCE(clone_started_at, ?), clone_upload_at=?, clone_error=NULL, updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, now, now, now, username, slot_id))
+        c.execute("""UPDATE audio_voice_slots
+            SET voice_id=?, status='training', clone_started_at=?, clone_upload_at=?, clone_error=NULL,
+                clone_upload_speaker_id=?, clone_upload_response=?, updated_at=?
+            WHERE username=? AND slot_id=?""",
+            (voice_id, now, now, returned_speaker_id, upload_resp, now, username, slot_id))
         c.commit()
-    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training"}
+    print("[clone_vip_voice] upload ok username=%s slot_id=%s returned_speaker_id=%s response=%s" %
+          (username, slot_id, returned_speaker_id or "", upload_resp[:500]), flush=True)
+    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "speaker_id": returned_speaker_id or slot_id}
 
 def ensure_audio_voice(username, voice_key):
     username = (username or "").strip()
