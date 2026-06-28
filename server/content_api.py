@@ -492,13 +492,15 @@ def mark_clone_training(username, slot_id, name):
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\\-]", "_", slot_id)
     with closing(adb()) as c:
-        slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count FROM audio_voice_slots
+        slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count, updated_at, clone_upload_at FROM audio_voice_slots
             WHERE username=? AND slot_id=?""",
             (username, slot_id)).fetchone()
         if not slot:
             raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
         if slot["status"] == "training":
-            raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
+            last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
+            if last_at and now - last_at < 600:
+                raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
         is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
         reclone_count = int(slot["reclone_count"] or 0)
         if is_reclone and reclone_count >= 10:
