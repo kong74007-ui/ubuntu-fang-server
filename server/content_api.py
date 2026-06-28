@@ -132,6 +132,10 @@ def init_audio_db():
         )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
+        _ensure_column(c, "audio_voice_slots", "previous_preview_url", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_upload_at", "INTEGER")
+        _ensure_column(c, "audio_voice_slots", "clone_error", "TEXT")
         public = [
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
@@ -356,26 +360,26 @@ def query_doubao_clone_status(slot_id):
         raise ValueError("\u8c46\u5305\u590d\u523b\u72b6\u6001\u5f02\u5e38: " + str(msg)[:200])
     return resp
 
-def finalize_ready_voice(username, slot_id, display_name=None, demo_audio=None):
+def finalize_ready_voice(username, slot_id, display_name=None, demo_audio=None, preview_file=None):
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\\-]", "_", slot_id)
     name = (display_name or "\u6211\u7684VIP\u590d\u523b\u97f3\u8272").strip()[:40]
     with closing(adb()) as c:
         c.execute("""INSERT OR IGNORE INTO audio_voices
-            (username, scope, voice_key, display_name, provider_voice, preview_url, slot_id, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?)""",
-            (username, "personal", voice_key, name, slot_id, demo_audio, slot_id, now, now))
+            (username, scope, voice_key, display_name, provider_voice, preview_file, preview_url, slot_id, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (username, "personal", voice_key, name, slot_id, preview_file, demo_audio, slot_id, now, now))
         c.execute("""UPDATE audio_voices
-            SET display_name=?, provider_voice=?, preview_url=COALESCE(?, preview_url), slot_id=?, updated_at=?
+            SET display_name=?, provider_voice=?, preview_file=?, preview_url=?, slot_id=?, updated_at=?
             WHERE username=? AND scope='personal' AND voice_key=?""",
-            (name, slot_id, demo_audio, slot_id, now, username, voice_key))
+            (name, slot_id, preview_file, demo_audio, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='ready', updated_at=?
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='ready', clone_started_at=NULL, previous_preview_url=NULL, clone_error=NULL, updated_at=?
             WHERE username=? AND slot_id=?""", (voice_id, now, username, slot_id))
         c.commit()
-    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "preview_url": demo_audio, "status": "ready"}
+    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "preview_file": preview_file, "preview_url": demo_audio, "status": "ready"}
 
 def clear_voice_preview(username, slot_id):
     username = (username or "").strip()
@@ -411,13 +415,15 @@ def check_clone_status(username, slot_id):
     username = (username or "").strip()
     slot_id = (slot_id or "").strip()
     with closing(adb()) as c:
-        slot = c.execute("""SELECT id, slot_id, status, voice_id FROM audio_voice_slots
+        slot = c.execute("""SELECT id, slot_id, status, voice_id, clone_started_at, clone_upload_at, clone_error FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
         voice = c.execute("""SELECT display_name, preview_url FROM audio_voices
             WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
-    if slot["status"] == "ready" and voice and voice["preview_url"]:
+    if slot["status"] == "failed":
+        return {"status": "failed", "clone_error": slot["clone_error"] or "\u8c46\u5305\u590d\u523b\u5931\u8d25", "doubao_status": None}
+    if slot["status"] == "ready" and voice and voice["preview_url"] and not slot["clone_started_at"]:
         return {"status": "ready", "preview_url": voice["preview_url"], "doubao_status": 2}
     try:
         resp = query_doubao_clone_status(slot_id)
@@ -428,8 +434,28 @@ def check_clone_status(username, slot_id):
     st = resp.get("status")
     demo = resp.get("demo_audio")
     if st == 2:
-        v = finalize_ready_voice(username, slot_id, voice["display_name"] if voice else None, demo)
-        return {"status": "ready", "preview_url": demo, "voice": v, "doubao_status": st}
+        try:
+            preview = generate_doubao_preview(slot_id)
+            preview_url = preview.get("url")
+            preview_file = preview.get("file")
+        except Exception as e:
+            err = "\u6d4b\u8bd5\u97f3\u9891\u751f\u6210\u5931\u8d25: " + str(e)[:220]
+            print("[check_clone_status] preview tts failed username=%s slot_id=%s error=%s" %
+                  (username, slot_id, str(e)[:240]), flush=True)
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (err, int(time.time()), username, slot_id))
+                c.commit()
+            return {"status": "failed", "clone_error": err, "doubao_status": st, "doubao_demo_audio": demo}
+        if not preview_url:
+            err = "\u6d4b\u8bd5\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a"
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status='failed', clone_error=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (err, int(time.time()), username, slot_id))
+                c.commit()
+            return {"status": "failed", "clone_error": err, "doubao_status": st, "doubao_demo_audio": demo}
+        v = finalize_ready_voice(username, slot_id, voice["display_name"] if voice else None, preview_url, preview_file)
+        return {"status": "ready", "preview_url": preview_url, "voice": v, "doubao_status": st, "doubao_demo_audio": demo}
     if st == 3:
         with closing(adb()) as c:
             c.execute("UPDATE audio_voice_slots SET status='failed', updated_at=? WHERE username=? AND slot_id=?",
@@ -468,8 +494,8 @@ def mark_clone_training(username, slot_id, name):
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', reclone_count=?, updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, username, slot_id))
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', reclone_count=?, clone_started_at=?, clone_upload_at=NULL, clone_error=NULL, updated_at=?
+            WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, now, username, slot_id))
         c.commit()
     clear_voice_preview(username, slot_id)
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count, "reclone_remaining": max(0, 10 - next_reclone_count)}
@@ -583,14 +609,14 @@ def clone_vip_voice(username, payload):
             VALUES(?,?,?,?,?,?,?,?)""",
             (username, "personal", voice_key, name, slot_id, slot_id, now, now))
         c.execute("""UPDATE audio_voices
-            SET display_name=?, provider_voice=?, preview_url=NULL, slot_id=?, updated_at=?
+            SET display_name=?, provider_voice=?, preview_file=NULL, preview_url=NULL, slot_id=?, updated_at=?
             WHERE username=? AND scope='personal' AND voice_key=?""",
             (name, slot_id, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, now, username, slot_id))
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', clone_started_at=COALESCE(clone_started_at, ?), clone_upload_at=?, clone_error=NULL, updated_at=?
+            WHERE username=? AND slot_id=?""", (voice_id, now, now, now, username, slot_id))
         c.commit()
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training"}
 
