@@ -412,7 +412,10 @@
           note.style.color='#2bd576';
           note.textContent=result.preview_url?'\u590d\u523b\u5b8c\u6210\uff0c\u5df2\u751f\u6210\u6d4b\u8bd5\u97f3\u9891':'\u590d\u523b\u5b8c\u6210';
           stopActivePreviewAudio();
-          setTimeout(function(){ if(onReady) onReady(); reloadPersonalVoiceAssets(); },500);
+          setTimeout(function(){
+            note.textContent='\u590d\u523b\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u8d44\u4ea7\u9875...';
+            setTimeout(function(){ if(onReady) onReady(); reloadPersonalVoiceAssets(); },5000);
+          },500);
           return;
         }
         if(result.status==='failed'){ throw new Error(result.clone_error||'\u8c46\u5305\u590d\u523b\u5931\u8d25'); }
