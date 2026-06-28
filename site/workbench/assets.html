@@ -125,7 +125,7 @@
   var params=new URLSearchParams(location.search);
   var AUDIO_TAB=params.get('audioTab')||'public';
   var ALL=[], cat=params.get('cat')||'all';
-  var personalVoiceLoadSeq=0, activePreviewAudio=null;
+  var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
   }
@@ -134,6 +134,20 @@
       try{ activePreviewAudio.pause(); activePreviewAudio.currentTime=0; }catch(e){}
       activePreviewAudio=null;
     }
+    if(activePreviewButton) resetPreviewButton(activePreviewButton);
+    activePreviewButton=null;
+  }
+  function resetPreviewButton(btn){
+    if(!btn) return;
+    btn.title='\u64ad\u653e\u8bd5\u542c';
+    btn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+  }
+  function setPreviewButtonPlaying(btn){
+    if(!btn) return;
+    btn.title='\u6682\u505c\u8bd5\u542c';
+    btn.setAttribute('aria-label','\u6682\u505c\u8bd5\u542c');
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
   }
   function card(x){
     var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
@@ -215,9 +229,7 @@
       playBtn.type='button';
       playBtn.setAttribute('data-preview-url', slot.preview_url);
       playBtn.setAttribute('data-preview-version', String(slot.voice_updated_at||slot.updated_at||slot.preview_file||Date.now()));
-      playBtn.title='\u64ad\u653e\u8bd5\u542c';
-      playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
-      playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+      resetPreviewButton(playBtn);
       playBtn.style.cssText='position:absolute;right:16px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:none;border-radius:50%;background:linear-gradient(135deg,#2dd4bf,#4ade80);color:#06130f;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 12px 30px rgba(45,212,191,.22);';
       var previewAudio=null;
       playBtn.onclick=function(e){
@@ -228,25 +240,25 @@
         if(!previewAudio || previewAudio.src.indexOf(src)<0){
           previewAudio=new Audio(src);
           previewAudio.onended=function(){
-            playBtn.title='\u64ad\u653e\u8bd5\u542c';
-            playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
-            playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+            resetPreviewButton(playBtn);
+            if(activePreviewAudio===previewAudio) activePreviewAudio=null;
+            if(activePreviewButton===playBtn) activePreviewButton=null;
           };
         }
         if(previewAudio.paused){
           if(activePreviewAudio && activePreviewAudio!==previewAudio){
             try{ activePreviewAudio.pause(); activePreviewAudio.currentTime=0; }catch(e){}
+            if(activePreviewButton) resetPreviewButton(activePreviewButton);
           }
           activePreviewAudio=previewAudio;
+          activePreviewButton=playBtn;
           previewAudio.play();
-          playBtn.title='\u6682\u505c\u8bd5\u542c';
-          playBtn.setAttribute('aria-label','\u6682\u505c\u8bd5\u542c');
-          playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
+          setPreviewButtonPlaying(playBtn);
         }else{
           previewAudio.pause();
-          playBtn.title='\u64ad\u653e\u8bd5\u542c';
-          playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
-          playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+          if(activePreviewAudio===previewAudio) activePreviewAudio=null;
+          if(activePreviewButton===playBtn) activePreviewButton=null;
+          resetPreviewButton(playBtn);
         }
       };
       w.appendChild(playBtn);
