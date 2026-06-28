@@ -234,6 +234,13 @@
       var previewAudio=null;
       playBtn.onclick=function(e){
         e.preventDefault(); e.stopPropagation();
+        if(activePreviewButton===playBtn && activePreviewAudio && !activePreviewAudio.paused){
+          activePreviewAudio.pause();
+          activePreviewAudio=null;
+          activePreviewButton=null;
+          resetPreviewButton(playBtn);
+          return;
+        }
         var baseSrc=playBtn.getAttribute('data-preview-url')||'';
         var version=playBtn.getAttribute('data-preview-version')||Date.now();
         var src=baseSrc+(baseSrc.indexOf('?')>=0?'&':'?')+'v='+encodeURIComponent(version)+'-'+Date.now();
