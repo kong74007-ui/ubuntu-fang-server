@@ -158,14 +158,18 @@
           <span class="label">视频参数</span>
           <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:13px;">
+        <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:13px;">
           <div>
             <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-            <div class="seg"><button class="on" data-resolution="1080p">1080p</button><button data-resolution="720p">720p</button></div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-resolution="720p">720p</button><button class="on" data-resolution="1080p">1080p</button><button data-resolution="4k">4K</button></div>
           </div>
           <div>
-            <div class="faint" style="font-size:12px;margin-bottom:8px;">比例</div>
-            <div class="seg"><button class="on" data-ratio="9:16">9:16</button><button data-ratio="16:9">16:9</button></div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+            <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-ratio="9:16">9:16</button><button data-ratio="16:9">16:9</button><button data-ratio="1:1">1:1</button><button data-ratio="4:5">4:5</button><button data-ratio="5:4">5:4</button></div>
+          </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">表情动作强度</div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-motion="low">低</button><button class="on" data-motion="medium">中等</button><button data-motion="high">高</button></div>
           </div>
         </div>
       </div>
