@@ -254,8 +254,15 @@
     media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); display:flex; align-items:center; justify-content:center; color:#5c6b82; overflow:hidden;';
     if(videoUrl){
       var v=document.createElement('video');
-      v.src=videoUrl; v.controls=true; v.preload='metadata';
+      v.controls=true; v.preload='none'; v.dataset.src=videoUrl;
+      if(imageUrl) v.poster=imageUrl;
       v.style.cssText='width:100%;height:100%;object-fit:cover;display:block;background:#050812;';
+      var hydrateVideo=function(){
+        if(!v.getAttribute('src')) v.setAttribute('src',v.dataset.src);
+      };
+      v.addEventListener('pointerdown',hydrateVideo);
+      v.addEventListener('click',hydrateVideo);
+      v.addEventListener('play',hydrateVideo);
       media.appendChild(v);
     }else if(imageUrl){
       var im=document.createElement('img');
