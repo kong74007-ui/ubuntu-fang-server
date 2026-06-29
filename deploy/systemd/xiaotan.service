@@ -1,0 +1,15 @@
+[Unit]
+Description=XiaoTan (Douyin Scraper API) for Dapeng AI
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/douyin-scraper
+ExecStart=/home/ubuntu/douyin-scraper/.venv/bin/python start.py
+Restart=always
+RestartSec=5
+Environment=TZ=Asia/Shanghai
+
+[Install]
+WantedBy=multi-user.target
