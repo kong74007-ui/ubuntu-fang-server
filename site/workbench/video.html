@@ -10,144 +10,321 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <style>
-  body{ overflow:hidden; }
-  .gVid{ grid-template-columns:1.45fr 1fr; }
-  @media (max-width:1100px){ .gVid{ grid-template-columns:1fr; } }
+  body{overflow:hidden}
+  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:start}
+  .vid-card{border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
+  .vid-side{position:sticky;top:0;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
+  .muted{color:#94a4bb}.faint{color:#5c6b82}
+  .label{font-size:13.5px;font-weight:700;color:#eaf1fa}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .mode-tabs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:22px}
+  .mode-tab{border:1px solid rgba(148,164,187,.14);border-radius:14px;background:rgba(148,164,187,.05);color:#94a4bb;text-align:left;padding:14px 15px;cursor:pointer;font-family:inherit;transition:.16s}
+  .mode-tab:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  .mode-tab.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
+  .mode-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;color:#eaf1fa}
+  .mode-tab.on .mode-title{color:#e7b24c}
+  .mode-desc{font-size:11.5px;line-height:1.55;color:#5c6b82;margin-top:6px}
+  .mode-tab.on .mode-desc{color:#c8902f}
+  .form-grid{display:grid;grid-template-columns:168px 1fr;gap:16px;margin-top:22px;align-items:start}
+  .upload-box{position:relative;aspect-ratio:3/4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:16px;border:1px dashed rgba(148,164,187,.26);background:rgba(148,164,187,.04);border-radius:14px;color:#94a4bb;cursor:pointer;overflow:hidden;transition:.16s}
+  .upload-box:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
+  .upload-box img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .upload-box.has-img:after{content:"更换图片";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
+  .panel{margin-top:18px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:16px}
+  .hidden{display:none!important}
+  textarea,.text-input{box-sizing:border-box;width:100%;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;font-family:inherit;font-size:13.5px}
+  textarea{resize:none;line-height:1.75;padding:13px 14px}
+  .text-input{height:40px;padding:0 12px}
+  .voice-tabs{display:flex;gap:8px;padding:4px;border:1px solid rgba(148,164,187,.13);border-radius:12px;background:rgba(7,11,19,.36);margin:10px 0 12px}
+  .voice-tab{flex:1;height:34px;border:0;border-radius:9px;background:transparent;color:#94a4bb;font:700 12.5px inherit;cursor:pointer}
+  .voice-tab.on{color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c)}
+  .voice-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .voice-card{position:relative;min-height:92px;padding:12px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;transition:.16s}
+  .voice-card:hover{border-color:rgba(231,178,76,.35);transform:translateY(-1px)}
+  .voice-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
+  .voice-top{display:flex;align-items:center;gap:9px;padding-right:30px}
+  .voice-avatar{width:30px;height:30px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#eaf1fa;font-size:12px;font-weight:800}
+  .voice-card.on .voice-avatar{background:linear-gradient(150deg,#9a6a3a,#5a3d22)}
+  .voice-name{font-size:13px;font-weight:700;color:#eaf1fa;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .voice-sub{font-size:11px;color:#5c6b82;margin-top:2px;line-height:1.35}
+  .voice-card.on .voice-sub{color:#c8902f}
+  .voice-play{position:absolute;right:10px;top:10px;width:26px;height:26px;border:1px solid rgba(148,164,187,.18);border-radius:50%;background:rgba(7,11,19,.45);color:#94a4bb;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .voice-play:hover{color:#e7b24c;border-color:rgba(231,178,76,.36)}
+  .audio-source{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .source-card{border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.05);padding:13px;cursor:pointer;color:#94a4bb;transition:.16s}
+  .source-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
+  .source-title{font-size:13px;font-weight:800;color:#eaf1fa}.source-card.on .source-title{color:#e7b24c}
+  .source-desc{font-size:11px;color:#5c6b82;line-height:1.55;margin-top:5px}.source-card.on .source-desc{color:#c8902f}
+  .file-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px dashed rgba(148,164,187,.2);border-radius:12px;background:rgba(148,164,187,.03);color:#94a4bb;cursor:pointer}
+  .file-row:hover{border-color:rgba(231,178,76,.36);color:#e7b24c}
+  .seg{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  .seg button{height:40px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.05);color:#94a4bb;font:700 13px inherit;cursor:pointer}
+  .seg button.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
+  .check-list{display:flex;flex-direction:column;gap:9px;margin-top:16px}
+  .check-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid rgba(148,164,187,.11);border-radius:12px;background:rgba(148,164,187,.04)}
+  .check-item strong{font-size:12.5px;color:#eaf1fa}.check-item span{font-size:11px;color:#5c6b82}
+  .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
+  .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
+  .action-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:16px}
+  .mini-action{display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 4px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;cursor:pointer;transition:.16s}
+  .mini-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
+  .mini-action span{font-size:11px}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
+  .toast.show{opacity:1;transform:translateX(-50%)}
+  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.audio-source{grid-template-columns:1fr}.vid-side{position:static}}
 </style>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="video">
-  <div class="gVid" style="display:grid; gap:18px; align-items:start;">
-
-    <!-- ===== 左：创作面板 ===== -->
-    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
-      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
-        <div><h1 style="margin:0; font-size:21px; font-weight:700;">数字人口播</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">上传客户正脸图 + 口播脚本，一键生成真实数字人口播视频</p></div>
-        <button class="hv-gold" style="width:34px; height:34px; display:flex; align-items:center; justify-content:center; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer; transition:.16s;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
-      </div>
-
-      <!-- 上传正脸图 + 口播脚本 -->
-      <div style="display:grid; grid-template-columns:158px 1fr; gap:16px; margin-top:22px; align-items:start;">
+  <div class="gVid">
+    <section class="vid-card">
+      <div class="row">
         <div>
-          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">正脸图</div>
-          <div class="hv-gold" style="aspect-ratio:3/4; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:16px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:14px; color:#94a4bb; cursor:pointer; transition:.16s;">
-            <span style="display:flex; width:34px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M5.5 20.5a7 7 0 0 1 13 0"/></svg></span>
-            <div style="font-size:12.5px; font-weight:500;">上传客户正脸图</div>
-            <div style="font-size:11px; color:#5c6b82; line-height:1.6;">拖入或点击<br>jpg · png</div>
-          </div>
+          <h1 style="margin:0;font-size:21px;font-weight:800;">数字人口播</h1>
+          <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">上传人物图，选择文案配音或现成音频，生成口播视频</p>
         </div>
+      </div>
+
+      <div class="mode-tabs">
+        <button class="mode-tab on" data-mode="text">
+          <div class="mode-title">文案配音生成</div>
+          <div class="mode-desc">上传人物形象图，输入口播文案，选择资产库音色，直接生成口播视频。</div>
+        </button>
+        <button class="mode-tab" data-mode="audio">
+          <div class="mode-title">现成音频生成</div>
+          <div class="mode-desc">上传人物形象图，选择本地音频或资产库音频，直接生成口播视频。</div>
+        </button>
+      </div>
+
+      <div class="form-grid">
         <div>
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-            <span style="font-size:13.5px; font-weight:600;">口播脚本</span>
-            <button style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>套用文案</button>
-          </div>
-          <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
-            <textarea rows="6" placeholder="姐妹们好呀，给大家介绍一个我们家本月主推的项目…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.75; font-family:inherit;">姐妹们好呀～仙颜美容本月「科技焕肤 · 逆龄新生」体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁，名额有限先到先得哦。</textarea>
-            <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:8px;"><span class="mono">112 / 800</span><span style="cursor:pointer;">清空</span></div>
-          </div>
+          <div class="label" style="margin-bottom:10px;">人物形象图片</div>
+          <label id="imageDrop" class="upload-box">
+            <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <span id="imageIcon" style="display:flex;width:34px;color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M5.5 20.5a7 7 0 0 1 13 0"/></svg></span>
+            <div id="imageMain" style="font-size:12.5px;font-weight:700;">上传人物正脸图</div>
+            <div id="imageSub" style="font-size:11px;color:#5c6b82;line-height:1.6;">清晰正面效果更好<br>jpg · png · webp</div>
+          </label>
         </div>
-      </div>
 
-      <!-- 驱动模块 -->
-      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
-        <span style="font-size:13.5px; font-weight:600;">驱动模块</span>
-        <span style="font-size:11.5px; color:#5c6b82;">三项叠加 · 共 <span class="mono" style="color:#e7b24c;">13</span> 点 / 条</span>
-      </div>
-      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
-        <div style="padding:13px 10px; text-align:center; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
-          <span style="display:block; width:18px; margin:0 auto 8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M5.5 20.5a7 7 0 0 1 13 0"/></svg></span>
-          <div style="font-size:13px; font-weight:500;">形象驱动</div>
-          <div class="mono" style="font-size:11px; margin-top:3px; color:#c8902f;">5 点</div>
-        </div>
-        <div style="padding:13px 10px; text-align:center; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
-          <span style="display:block; width:18px; margin:0 auto 8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>
-          <div style="font-size:13px; font-weight:500;">声音驱动</div>
-          <div class="mono" style="font-size:11px; margin-top:3px; color:#c8902f;">4 点</div>
-        </div>
-        <div style="padding:13px 10px; text-align:center; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
-          <span style="display:block; width:18px; margin:0 auto 8px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
-          <div style="font-size:13px; font-weight:500;">口型同步</div>
-          <div class="mono" style="font-size:11px; margin-top:3px; color:#c8902f;">4 点</div>
-        </div>
-      </div>
-
-      <!-- 分辨率 + 比例 -->
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
         <div>
-          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">分辨率</div>
-          <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;" class="mono">1080p</div>
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;" class="mono">720p</div>
+          <div id="textMode">
+            <div class="row" style="margin-bottom:10px;">
+              <span class="label">口播文案</span>
+              <button id="clearScript" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">清空</button>
+            </div>
+            <textarea id="scriptText" rows="6" maxlength="1200" placeholder="输入要生成口播视频的文案...">姐妹们好呀～仙颜美容本月科技焕肤体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁。</textarea>
+            <div class="row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1200</span></div>
           </div>
-        </div>
-        <div>
-          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">比例</div>
-          <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-            <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;"><span style="width:9px; height:13px; border:1.4px solid #e7b24c; border-radius:2px;"></span><span class="mono">9:16</span></div>
-            <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;"><span style="width:13px; height:9px; border:1.4px solid #94a4bb; border-radius:2px;"></span><span class="mono">16:9</span></div>
+
+          <div id="audioMode" class="hidden">
+            <div class="label" style="margin-bottom:10px;">音频来源</div>
+            <div class="audio-source">
+              <div class="source-card on" data-source="local">
+                <div class="source-title">本地上传音频</div>
+                <div class="source-desc">上传 mp3 / wav / m4a，直接驱动人物图口型。</div>
+              </div>
+              <div class="source-card" data-source="asset">
+                <div class="source-title">资产库音频</div>
+                <div class="source-desc">后续读取配音资产或上传过的音频素材。</div>
+              </div>
+            </div>
+            <label id="audioFileBox" class="file-row" style="margin-top:12px;">
+              <input id="audioFile" type="file" accept="audio/*" hidden>
+              <span style="display:flex;width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 21h16"/></svg></span>
+              <span id="audioFileName" style="font-size:12.5px;font-weight:700;">选择本地口播音频</span>
+            </label>
+            <div id="assetAudioBox" class="hidden" style="margin-top:12px;padding:16px;border:1px dashed rgba(148,164,187,.16);border-radius:13px;color:#94a4bb;font-size:12.5px;text-align:center;">从配音资产或音频素材中选择一条口播音频</div>
           </div>
         </div>
       </div>
 
-      <!-- 音色 -->
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">音色</div>
-      <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-        <div style="display:flex; align-items:center; gap:10px; padding:11px 13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
-          <span style="width:30px; height:30px; border-radius:50%; flex:none; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">P</span>
-          <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:600;">Paul 男声</div><div style="font-size:11px; color:#c8902f;">官方中文 · 沉稳</div></div>
+      <div id="voicePanel" class="panel">
+        <div class="row">
+          <span class="label">选择资产库音色</span>
+          <a href="assets.html?cat=audio&audioTab=personal" style="font-size:12px;color:#94a4bb;text-decoration:none;">管理个人音色 ›</a>
         </div>
-        <div style="display:flex; align-items:center; gap:10px; padding:11px 13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
-          <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">鹏</span>
-          <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:600;">大鹏 IVC</div><div style="font-size:11px; color:#5c6b82;">克隆男声 · 亲切</div></div>
+        <div class="voice-tabs">
+          <button class="voice-tab on" data-voice-tab="public">公共音色</button>
+          <button class="voice-tab" data-voice-tab="personal">个人音色</button>
+        </div>
+        <div id="voiceGrid" class="voice-grid"></div>
+      </div>
+
+      <div class="panel">
+        <div class="row">
+          <span class="label">视频参数</span>
+          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:13px;">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
+            <div class="seg"><button class="on" data-resolution="1080p">1080p</button><button data-resolution="720p">720p</button></div>
+          </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">比例</div>
+            <div class="seg"><button class="on" data-ratio="9:16">9:16</button><button data-ratio="16:9">16:9</button></div>
+          </div>
         </div>
       </div>
 
-      <button class="hv-lift" style="width:100%; height:54px; margin-top:24px; display:flex; align-items:center; justify-content:center; gap:10px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">
-        生成口播
-        <span class="mono" style="display:inline-flex; align-items:center; padding:3px 10px; font-size:13px; font-weight:600; background:rgba(26,18,6,.18); border-radius:8px;">13 点</span>
+      <div class="check-list" id="mainChecklist">
+        <div class="check-item"><strong>人物形象</strong><span id="imageCheck">未上传</span></div>
+        <div class="check-item"><strong id="inputCheckTitle">口播文案</strong><span id="inputCheck">已填写</span></div>
+        <div class="check-item"><strong>生成结果</strong><span>完成后自动入库</span></div>
+      </div>
+
+      <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+        生成口播视频
       </button>
-      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span class="mono" style="color:#e7b24c;">13</span> 点 · 约 3 分钟出片 · 失败自动退点</div>
-    </div>
+      <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+    </section>
 
-    <!-- ===== 右：结果检视 ===== -->
-    <div style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
-      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
-
-      <!-- 9:16 竖版空态预览 -->
-      <div style="display:flex; justify-content:center;">
-        <div style="height:420px; aspect-ratio:9/16; max-width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:15px; text-align:center; padding:24px; border:1px dashed rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.4);">
-          <span style="display:flex; width:46px; color:rgba(231,178,76,.55);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z"/></svg></span>
-          <div style="font-size:13px; color:#94a4bb; font-weight:500;">生成后在此预览口播视频</div>
-          <div style="font-size:11.5px; color:#5c6b82; line-height:1.6;">上传正脸图、填写脚本<br>点击「生成口播」即可</div>
+    <aside class="vid-card vid-side">
+      <div style="font-size:16px;font-weight:700;margin-bottom:14px;">生成结果</div>
+      <div style="display:flex;justify-content:center;">
+        <div id="previewFrame" class="preview-frame">
+          <span id="previewIcon" style="display:flex;width:46px;color:rgba(231,178,76,.55);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z"/></svg></span>
+          <div id="previewTitle" style="font-size:13px;color:#94a4bb;font-weight:700;">生成后在此预览口播视频</div>
+          <div id="previewSub" style="font-size:11.5px;color:#5c6b82;line-height:1.6;">先上传人物图，再选择文案音色或上传音频</div>
         </div>
       </div>
 
-      <!-- 操作行 -->
-      <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:16px;">
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">重新生成</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">继续改</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">转飞书</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">下载</span></div>
-        <a href="assets.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span style="font-size:11px; color:#94a4bb;">入库</span></a>
+      <div class="action-grid">
+        <div class="mini-action"><span>重新生成</span></div>
+        <div class="mini-action"><span>继续改</span></div>
+        <div class="mini-action"><span>转飞书</span></div>
+        <div class="mini-action"><span>下载</span></div>
+        <a href="assets.html" class="mini-action"><span>入库</span></a>
       </div>
 
-      <!-- 最近口播 空态 -->
-      <div style="display:flex; align-items:center; justify-content:space-between; margin:24px 0 12px;">
-        <span style="font-size:15px; font-weight:600;">最近口播</span>
-        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部作品 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      <div class="row" style="margin:24px 0 12px;">
+        <span style="font-size:15px;font-weight:700;">素材检查</span>
+        <span id="modeName" class="mono" style="font-size:11.5px;color:#e7b24c;">文案配音</span>
       </div>
-      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:30px 18px; border:1px dashed rgba(148,164,187,.18); border-radius:14px; background:rgba(148,164,187,.02);">
-        <span style="display:flex; width:30px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>
-        <div style="font-size:12.5px; color:#94a4bb;">暂无作品，生成后自动入库</div>
-      </div>
-    </div>
+      <div id="sideChecklist" style="display:flex;flex-direction:column;gap:9px;"></div>
 
+      <div class="row" style="margin:24px 0 12px;">
+        <span style="font-size:15px;font-weight:700;">最近口播</span>
+        <a href="assets.html?cat=video" style="font-size:12.5px;color:#94a4bb;text-decoration:none;">全部作品 ›</a>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:28px 18px;border:1px dashed rgba(148,164,187,.18);border-radius:14px;background:rgba(148,164,187,.02);">
+        <span style="display:flex;width:30px;color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>
+        <div style="font-size:12.5px;color:#94a4bb;">暂无作品，生成后自动入库</div>
+      </div>
+    </aside>
   </div>
 </div></div>
+<div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=14"></script>
+<script>
+(function(){
+  var token=localStorage.getItem('hq_token')||'';
+  var mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
+  var publicFallback=[
+    {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
+    {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
+    {scope:'public',voice_key:'paul',display_name:'Paul 男声',provider_voice:'paul',sub:'官方中文 · 沉稳'}
+  ];
+  var voices=publicFallback.slice();
+  var $=function(id){return document.getElementById(id);};
+  function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
+  function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
+  function updateMode(next){
+    mode=next;
+    document.querySelectorAll('.mode-tab').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);});
+    $('textMode').classList.toggle('hidden',mode!=='text');
+    $('voicePanel').classList.toggle('hidden',mode!=='text');
+    $('audioMode').classList.toggle('hidden',mode!=='audio');
+    $('modeSummary').textContent=mode==='text'?'上传人物图，输入文案并选择音色生成口播视频':'上传人物图，选择本地或资产库音频生成口播视频';
+    $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
+    $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
+    updateChecklist();
+  }
+  function updateChecklist(){
+    var hasImage=$('imageDrop').classList.contains('has-img');
+    var textReady=$('scriptText').value.trim().length>0;
+    var audioReady=($('audioFile').files&&$('audioFile').files[0]) || document.querySelector('.source-card[data-source="asset"].on');
+    $('imageCheck').textContent=hasImage?'已上传':'未上传';
+    $('inputCheck').textContent=mode==='text'?(textReady?'已填写':'未填写'):(audioReady?'已选择':'未选择');
+    var items=[
+      ['人物形象',hasImage?'已上传':'待上传'],
+      [mode==='text'?'口播文案':'口播音频',mode==='text'?(textReady?'已准备':'待填写'):(audioReady?'已准备':'待选择')],
+      [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择比例和清晰度']
+    ];
+    $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
+  }
+  function stopPreview(){
+    if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
+    if(activePreviewBtn) activePreviewBtn.textContent='▶';
+    activePreview=null; activePreviewBtn=null;
+  }
+  function playPreview(url,btn){
+    if(activePreviewBtn===btn && activePreview && !activePreview.paused){stopPreview();return;}
+    stopPreview();
+    activePreview=new Audio(fresh(url)); activePreviewBtn=btn; btn.textContent='Ⅱ';
+    activePreview.onended=stopPreview;
+    activePreview.play().catch(function(){stopPreview();toast('试听失败');});
+  }
+  function renderVoices(){
+    var grid=$('voiceGrid'), list=voices.filter(function(v){return v.scope===voiceTab;});
+    grid.innerHTML='';
+    if(voiceTab==='personal' && !list.length){
+      grid.innerHTML='<div style="grid-column:1/-1;padding:18px;border:1px dashed rgba(148,164,187,.16);border-radius:14px;color:#94a4bb;text-align:center;font-size:13px;">暂无个人音色，复刻完成后会显示在这里</div>';
+      return;
+    }
+    list.forEach(function(v){
+      var key=v.voice_key, card=document.createElement('div'), on=key===selectedVoice;
+      card.className='voice-card'+(on?' on':'');
+      card.innerHTML='<div class="voice-top"><div class="voice-avatar">'+esc((v.display_name||key).charAt(0).toUpperCase())+'</div><div style="min-width:0"><div class="voice-name">'+esc(v.display_name||key)+'</div><div class="voice-sub">'+esc(v.sub||(v.scope==='personal'?'个人音色':'公共音色'))+'</div></div></div>'
+        +(v.preview_url?'<button class="voice-play" type="button">▶</button>':'');
+      card.onclick=function(){selectedVoice=key;renderVoices();};
+      var btn=card.querySelector('.voice-play');
+      if(btn){btn.onclick=function(e){e.stopPropagation();playPreview(v.preview_url,btn);};}
+      grid.appendChild(card);
+    });
+  }
+  function loadVoices(){
+    if(!token){renderVoices();return;}
+    fetch(fresh('/api/gen/audio/voices'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
+      .then(function(r){return r.ok?r.json():Promise.reject();})
+      .then(function(d){
+        var got=d.items||[];
+        var publics=got.filter(function(v){return v.scope==='public';});
+        var personals=got.filter(function(v){return v.scope==='personal' && v.provider_voice;});
+        voices=(publics.length?publics:publicFallback).concat(personals);
+        if(!voices.some(function(v){return v.voice_key===selectedVoice;})) selectedVoice=(voices[0]||publicFallback[0]).voice_key;
+        renderVoices();
+      }).catch(function(){voices=publicFallback;renderVoices();});
+  }
+  document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
+  document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
+  document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);updateChecklist();};});
+  document.querySelectorAll('.seg button').forEach(function(b){b.onclick=function(){b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});};});
+  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
+  $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
+  $('imageFile').onchange=function(){
+    var f=this.files&&this.files[0]; if(!f)return;
+    var url=URL.createObjectURL(f), box=$('imageDrop');
+    box.classList.add('has-img');
+    box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
+    $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
+    box.querySelector('input').onchange=arguments.callee;
+    updateChecklist();
+  };
+  $('audioFile').onchange=function(){var f=this.files&&this.files[0];if(f)$('audioFileName').textContent=f.name;updateChecklist();};
+  $('generateBtn').onclick=function(){
+    toast('视频生成功能即将接入');
+  };
+  $('scriptText').dispatchEvent(new Event('input'));
+  updateMode('text');
+  loadVoices();
+})();
+</script>
 </body>
 </html>
