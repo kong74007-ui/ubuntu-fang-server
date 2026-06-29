@@ -38,6 +38,10 @@ DOUBAO_TOKEN = os.environ.get("DOUBAO_TOKEN", "")
 DOUBAO_CLONE_RESOURCE = os.environ.get("DOUBAO_CLONE_RESOURCE", "volc.megatts.voiceclone")
 DOUBAO_CLONE_MODEL_TYPE = int(os.environ.get("DOUBAO_CLONE_MODEL_TYPE", "4"))
 DOUBAO_TTS_RESOURCE = os.environ.get("DOUBAO_TTS_RESOURCE", "seed-icl-2.0")
+HEYGEN_API_KEY = os.environ.get("HEYGEN_API_KEY", "")
+HEYGEN_API_BASE = os.environ.get("HEYGEN_API_BASE", "https://api.heygen.com/v3")
+HEYGEN_POLL_INTERVAL = max(3, int(os.environ.get("HEYGEN_POLL_INTERVAL", "8")))
+HEYGEN_TIMEOUT = max(60, int(os.environ.get("HEYGEN_TIMEOUT", "1200")))
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
@@ -1151,6 +1155,112 @@ def _save_data_file(data_url, prefix, allowed_ext):
     (OUT_DIR / fn).write_bytes(data)
     return fn
 
+def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
+    if not HEYGEN_API_KEY:
+        raise ValueError("视频生成服务未配置")
+    h = {"x-api-key": HEYGEN_API_KEY}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(HEYGEN_API_BASE + path, data=body, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:600]
+        raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail))
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise RuntimeError("HeyGen返回解析失败: %s" % raw[:300].decode("utf-8", "replace"))
+
+def _heygen_upload_asset(file_path):
+    path = pathlib.Path(file_path)
+    if not path.is_file():
+        raise ValueError("视频素材文件不存在")
+    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    boundary = "----huangque-heygen-%d" % int(time.time() * 1000)
+    head = (
+        "--%s\r\n"
+        'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
+        "Content-Type: %s\r\n\r\n"
+    ) % (boundary, path.name.replace('"', ''), mime)
+    body = head.encode() + path.read_bytes() + ("\r\n--%s--\r\n" % boundary).encode()
+    data = _heygen_request_json("POST", "/assets", body, {
+        "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+        "Content-Length": str(len(body)),
+    }, timeout=240)
+    asset_id = ((data.get("data") or {}).get("asset_id") or "").strip()
+    if not asset_id:
+        raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return asset_id
+
+def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
+    title = "huangque video %d" % int(time.time())
+    body = json.dumps({
+        "title": title,
+        "type": "image",
+        "image": {"type": "asset_id", "asset_id": image_asset_id},
+        "audio_asset_id": audio_asset_id,
+        "resolution": resolution,
+        "aspect_ratio": ratio,
+        "fit": "cover",
+        "expressiveness": motion,
+        "output_format": "mp4",
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/videos", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return video_id
+
+def _heygen_poll_video(video_id):
+    deadline = time.time() + HEYGEN_TIMEOUT
+    last_status = ""
+    while time.time() < deadline:
+        data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90)
+        info = data.get("data") or {}
+        status = str(info.get("status") or "").lower()
+        if status != last_status:
+            print("[heygen] video_id=%s status=%s" % (video_id, status), flush=True)
+            last_status = status
+        if status == "completed":
+            if not info.get("video_url"):
+                raise RuntimeError("HeyGen完成但未返回video_url")
+            return info
+        if status in {"failed", "error"}:
+            raise RuntimeError("HeyGen视频生成失败: %s" % json.dumps(info, ensure_ascii=False)[:500])
+        time.sleep(HEYGEN_POLL_INTERVAL)
+    raise TimeoutError("HeyGen视频生成超时")
+
+def _download_video_file(url, prefix="vid"):
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    with urllib.request.urlopen(req, timeout=360) as r:
+        data = r.read()
+    if not data:
+        raise RuntimeError("视频下载失败")
+    fn = "%s_%d.mp4" % (prefix, int(time.time() * 1000))
+    (OUT_DIR / fn).write_bytes(data)
+    return fn
+
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
+    image_asset_id = _heygen_upload_asset(OUT_DIR / image_file)
+    audio_asset_id = _heygen_upload_asset(OUT_DIR / audio_file)
+    video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
+    info = _heygen_poll_video(video_id)
+    video_file = _download_video_file(info["video_url"], "heygen")
+    return {
+        "video_id": video_id,
+        "image_asset_id": image_asset_id,
+        "audio_asset_id": audio_asset_id,
+        "video_file": video_file,
+        "video_url": "/api/gen/file/" + video_file,
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration"),
+    }
+
 def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio"}:
@@ -1193,12 +1303,16 @@ def gen_video(payload):
         ratio = "9:16"
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
-        "type": "video", "status": "pending", "mode": mode,
+        "type": "video", "status": "done", "mode": mode,
         "image_file": image_file, "image_url": "/api/gen/file/" + image_file,
         "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
+        "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
+        "provider_video_id": video_result.get("video_id"),
+        "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
-        "message": "视频任务已创建"
+        "message": "视频生成完成"
     }
 
 HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio, "video": gen_video}
@@ -1234,7 +1348,7 @@ def reaper():
         try:
             cutoff = int(time.time()) - 360
             with closing(jdb()) as c:
-                stuck = c.execute("SELECT id, username, cost FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
+                stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
                 for r in stuck:
                     add_points(r["username"], r["cost"])  # 退点
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
