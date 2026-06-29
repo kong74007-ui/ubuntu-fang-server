@@ -191,7 +191,7 @@
     },
     "/api/gen/image": {
       "post": {
-        "tags": ["内容生成 / 公共"], "summary": "作图 gpt-image-2（OpenAI，写实/局部改，12点）",
+        "tags": ["作图"], "summary": "作图 gpt-image-2（OpenAI，写实/局部改，12点；8096）",
         "requestBody": { "content": { "application/json": { "schema": {
           "type": "object", "properties": { "prompt": { "type": "string" }, "ratio": { "type": "string" } }
         } } } },

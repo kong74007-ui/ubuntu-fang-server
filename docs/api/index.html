@@ -25,7 +25,11 @@
 <script>
   window.onload = function(){
     window.ui = SwaggerUIBundle({
-      url: 'openapi.json',
+      urls: [
+        { url: 'openapi.json', name: '黄雀后端 API（我们的接口）' },
+        { url: 'openapi-tikhub.json', name: 'TikHub（我们在用的外部接口）' }
+      ],
+      "urls.primaryName": '黄雀后端 API（我们的接口）',
       dom_id: '#swagger-ui',
       deepLinking: true,
       persistAuthorization: true,
