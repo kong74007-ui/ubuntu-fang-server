@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI · 后端 API 文档（Swagger UI）</title>
+<link rel="icon" href="/assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+<style>
+  body{margin:0;background:#0b0e14}
+  .topbar{display:none}
+  #hq-head{padding:18px 28px;border-bottom:1px solid #1f2733;background:#0b0e14;color:#eaf1fa;font-family:system-ui,sans-serif}
+  #hq-head b{color:#e7b24c}
+  #hq-head small{color:#94a4bb}
+  #swagger-ui{background:#fff}
+</style>
+</head>
+<body>
+<div id="hq-head">
+  <div style="font-size:17px;font-weight:600">🐦 黄雀 AI · 后端 API <b>Swagger UI</b></div>
+  <small>登录拿 token → 右上 Authorize 填 token → 各接口点 “Try it out” 在线测。｜ 导出给 Apifox：<b>openapi.json</b></small>
+</div>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+  window.onload = function(){
+    window.ui = SwaggerUIBundle({
+      url: 'openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      persistAuthorization: true,
+      tryItOutEnabled: true,
+      docExpansion: 'list'
+    });
+  };
+</script>
+</body>
+</html>
