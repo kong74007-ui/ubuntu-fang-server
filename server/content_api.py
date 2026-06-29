@@ -27,6 +27,32 @@ JOB_DB     = str(BASE / "content_jobs.db")
 AUDIO_DB   = str(BASE / "audio_assets.db")
 OUT_DIR    = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_OUT_DIR = OUT_DIR / "audio"
+VIDEO_OUT_DIR = OUT_DIR / "video"
+AUDIO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _out_path(rel):
+    rel = str(rel or "").replace("\\", "/").lstrip("/")
+    parts = [p for p in rel.split("/") if p and p not in {".", ".."}]
+    if not parts:
+        raise ValueError("文件路径不能为空")
+    return OUT_DIR.joinpath(*parts)
+
+def _file_url(rel):
+    return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
+
+def _resolve_out_file(rel):
+    rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        return None
+    fp = OUT_DIR / rel
+    if fp.exists() and fp.is_file():
+        return fp
+    legacy = OUT_DIR / os.path.basename(rel)
+    if legacy.exists() and legacy.is_file():
+        return legacy
+    return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 COST = {"image": 12, "copy": 3, "audio": 4, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
@@ -358,9 +384,9 @@ def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=
             pass
     if not chunks:
         raise ValueError("\u8bd5\u542c\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a")
-    fn = "voice_preview_%d.mp3" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(b"".join(chunks))
-    return {"file": fn, "url": "/api/gen/file/" + fn, "text": text}
+    fn = "audio/voice_preview_%d.mp3" % int(time.time() * 1000)
+    _out_path(fn).write_bytes(b"".join(chunks))
+    return {"file": fn, "url": _file_url(fn), "text": text}
 
 def query_doubao_clone_status(slot_id):
     body = json.dumps({"appid": DOUBAO_APPID, "speaker_id": slot_id}).encode()
@@ -421,17 +447,18 @@ def clear_voice_preview(username, slot_id):
         rows = c.execute("""SELECT id, preview_file, preview_url FROM audio_voices
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchall()
         for r in rows:
-            names = []
+            refs = []
             if r["preview_file"]:
-                names.append(os.path.basename(str(r["preview_file"])))
+                refs.append(str(r["preview_file"]))
             url = r["preview_url"] or ""
             if url.startswith("/api/gen/file/"):
-                names.append(os.path.basename(url.rsplit("/", 1)[1]))
-            for name in names:
+                refs.append(url[len("/api/gen/file/"):])
+            for ref in refs:
+                name = os.path.basename(str(ref))
                 if name.startswith("voice_preview_") and name.endswith(".mp3"):
-                    fp = OUT_DIR / name
+                    fp = _resolve_out_file(ref)
                     try:
-                        if fp.exists():
+                        if fp and fp.exists():
                             fp.unlink()
                             removed += 1
                     except Exception as e:
@@ -581,8 +608,8 @@ def prepare_clone_audio(audio_b64, audio_format):
     raw = base64.b64decode(audio_b64)
     ts = int(time.time() * 1000)
     safe_format = re.sub(r"[^a-zA-Z0-9]", "", audio_format or "mp3")[:8] or "mp3"
-    src = OUT_DIR / ("clone_src_%d.%s" % (ts, safe_format))
-    dst = OUT_DIR / ("clone_60s_%d.mp3" % ts)
+    src = _out_path("audio/clone_src_%d.%s" % (ts, safe_format))
+    dst = _out_path("audio/clone_60s_%d.mp3" % ts)
     src.write_bytes(raw)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -1117,9 +1144,9 @@ def gen_audio(payload):
         "instructions": instructions, "response_format": "mp3", "speed": speed,
     }, ensure_ascii=False).encode()
     data = _post_bytes("/v1/audio/speech", body, "application/json")
-    fn = "aud_%d.mp3" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(data)
-    return {"type": "audio", "file": fn, "url": "/api/gen/file/" + fn, "voice": voice_key,
+    fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
+    _out_path(fn).write_bytes(data)
+    return {"type": "audio", "file": fn, "url": _file_url(fn), "voice": voice_key,
             "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
 def _save_data_file(data_url, prefix, allowed_ext):
@@ -1151,8 +1178,9 @@ def _save_data_file(data_url, prefix, allowed_ext):
     max_size = 35 * 1024 * 1024
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
-    fn = "%s_%d%s" % (prefix, int(time.time() * 1000), ext)
-    (OUT_DIR / fn).write_bytes(data)
+    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ""
+    fn = "%s%s_%d%s" % (folder, prefix, int(time.time() * 1000), ext)
+    _out_path(fn).write_bytes(data)
     return fn
 
 def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
@@ -1240,13 +1268,17 @@ def _download_video_file(url, prefix="vid"):
         data = r.read()
     if not data:
         raise RuntimeError("视频下载失败")
-    fn = "%s_%d.mp4" % (prefix, int(time.time() * 1000))
-    (OUT_DIR / fn).write_bytes(data)
+    fn = "video/%s_%d.mp4" % (prefix, int(time.time() * 1000))
+    _out_path(fn).write_bytes(data)
     return fn
 
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
-    image_asset_id = _heygen_upload_asset(OUT_DIR / image_file)
-    audio_asset_id = _heygen_upload_asset(OUT_DIR / audio_file)
+    image_fp = _resolve_out_file(image_file)
+    audio_fp = _resolve_out_file(audio_file)
+    if not image_fp or not audio_fp:
+        raise ValueError("视频素材文件不存在")
+    image_asset_id = _heygen_upload_asset(image_fp)
+    audio_asset_id = _heygen_upload_asset(audio_fp)
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
     info = _heygen_poll_video(video_id)
     video_file = _download_video_file(info["video_url"], "heygen")
@@ -1255,7 +1287,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "image_asset_id": image_asset_id,
         "audio_asset_id": audio_asset_id,
         "video_file": video_file,
-        "video_url": "/api/gen/file/" + video_file,
+        "video_url": _file_url(video_file),
         "source_video_url": info.get("video_url"),
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"),
@@ -1293,7 +1325,7 @@ def gen_video(payload):
         audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
         if not audio_file:
             raise ValueError("请先选择口播音频")
-        audio_url = "/api/gen/file/" + audio_file
+        audio_url = _file_url(audio_file)
     resolution = (payload.get("resolution") or "1080p").strip()
     ratio = (payload.get("ratio") or "9:16").strip()
     motion = (payload.get("motion") or "medium").strip()
@@ -1306,7 +1338,7 @@ def gen_video(payload):
     video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
         "type": "video", "status": "done", "mode": mode,
-        "image_file": image_file, "image_url": "/api/gen/file/" + image_file,
+        "image_file": image_file, "image_url": _file_url(image_file),
         "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "provider_video_id": video_result.get("video_id"),
@@ -1462,8 +1494,10 @@ class H(BaseHTTPRequestHandler):
                 up.close()
             return
         if p.startswith("/api/gen/file/"):
-            fn = os.path.basename(p.rsplit("/", 1)[1]); fp = OUT_DIR / fn
-            if not fp.exists(): return self._send(404, {"detail": "no file"})
+            rel = p[len("/api/gen/file/"):]
+            fp = _resolve_out_file(rel)
+            if not fp: return self._send(404, {"detail": "no file"})
+            fn = fp.name
             data = fp.read_bytes()
             ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
             self.send_response(200); self.send_header("Content-Type", ctype)
