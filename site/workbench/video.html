@@ -90,6 +90,9 @@
   .history-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
   .history-preview img,.history-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .history-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
+  .history-play{position:absolute;left:50%;top:50%;z-index:3;width:46px;height:46px;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.24);border-radius:50%;background:rgba(231,178,76,.92);color:#1b1205;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 12px 30px rgba(0,0,0,.35);transition:.16s}
+  .history-play:hover{background:#f4cd72;transform:translate(-50%,-50%) scale(1.04)}
+  .history-play svg{width:20px;height:20px;margin-left:2px}
   .history-created{font-size:12px;color:#5c6b82}
   .history-actions{display:grid;grid-template-columns:1fr;gap:8px;width:100%}
   .history-link{min-height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:800}
@@ -390,7 +393,7 @@
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>';
       var preview=x.video_url
-        ?'<video data-src="'+esc(fresh(x.video_url))+'" controls playsinline preload="none" poster="'+esc(image)+'"></video>'
+        ?'<video data-src="'+esc(fresh(x.video_url))+'" controls playsinline preload="none" poster="'+esc(image)+'"></video><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
       card.innerHTML=head
@@ -413,9 +416,18 @@
       }
       var videoEl=card.querySelector('.history-preview video');
       if(videoEl){
+        var playBtn=card.querySelector('.history-play');
         var hydrateVideo=function(){
           if(!videoEl.getAttribute('src')) videoEl.setAttribute('src',videoEl.getAttribute('data-src'));
+          if(playBtn) playBtn.style.display='none';
         };
+        if(playBtn){
+          playBtn.onclick=function(e){
+            e.stopPropagation();
+            hydrateVideo();
+            videoEl.play().catch(function(){});
+          };
+        }
         videoEl.addEventListener('pointerdown',hydrateVideo);
         videoEl.addEventListener('click',hydrateVideo);
         videoEl.addEventListener('play',hydrateVideo);
