@@ -546,16 +546,17 @@
         if(d.status==='done' && d.result){
           var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
           setBusy(false);
+          renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
           renderOutputVideo(result);
-          loadVideoHistory();
+          setTimeout(loadVideoHistory,800);
           $('statusText').textContent='任务已创建，已保存到视频资产';
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
           return;
         }
         if(d.status==='error') throw new Error(d.error||'生成失败');
-        if(tries<45){setTimeout(function(){pollJob(id,tries+1);},1500);}
-        else{setBusy(false);$('statusText').textContent='任务已提交，请稍后到视频资产查看';}
+        if(tries<600){setTimeout(function(){pollJob(id,tries+1);},3000);}
+        else{setBusy(false);loadVideoHistory();$('statusText').textContent='任务仍在后台生成，请稍后到视频资产查看';}
       })
       .catch(function(e){setBusy(false);$('statusText').textContent=e.message||'提交失败';toast($('statusText').textContent);});
   }
