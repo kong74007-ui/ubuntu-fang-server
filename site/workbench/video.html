@@ -65,9 +65,6 @@
   .seg{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
   .seg button{height:40px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.05);color:#94a4bb;font:700 13px inherit;cursor:pointer}
   .seg button.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
-  .check-list{display:flex;flex-direction:column;gap:9px;margin-top:16px}
-  .check-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid rgba(148,164,187,.11);border-radius:12px;background:rgba(148,164,187,.04)}
-  .check-item strong{font-size:12.5px;color:#eaf1fa}.check-item span{font-size:11px;color:#5c6b82}
   .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
   .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
   .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
@@ -214,12 +211,6 @@
             <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-motion="low">低</button><button class="on" data-motion="medium">中等</button><button data-motion="high">高</button></div>
           </div>
         </div>
-      </div>
-
-      <div class="check-list" id="mainChecklist">
-        <div class="check-item"><strong>人物形象</strong><span id="imageCheck">未上传</span></div>
-        <div class="check-item"><strong id="inputCheckTitle">口播文案</strong><span id="inputCheck">已填写</span></div>
-        <div class="check-item"><strong>生成结果</strong><span>完成后自动入库</span></div>
       </div>
 
       <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
@@ -445,15 +436,15 @@
     $('audioMode').classList.toggle('hidden',mode!=='audio');
     $('modeSummary').textContent=mode==='text'?'上传人物图，输入文案并选择音色生成口播视频':'上传人物图，选择本地或资产库音频生成口播视频';
     $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
-    $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
+    if($('inputCheckTitle')) $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
     updateChecklist();
   }
   function updateChecklist(){
     var hasImage=$('imageDrop').classList.contains('has-img');
     var textReady=$('scriptText').value.trim().length>0;
     var audioReady=($('audioFile').files&&$('audioFile').files[0]) || document.querySelector('.source-card[data-source="asset"].on');
-    $('imageCheck').textContent=hasImage?'已上传':'未上传';
-    $('inputCheck').textContent=mode==='text'?(textReady?'已填写':'未填写'):(audioReady?'已选择':'未选择');
+    if($('imageCheck')) $('imageCheck').textContent=hasImage?'已上传':'未上传';
+    if($('inputCheck')) $('inputCheck').textContent=mode==='text'?(textReady?'已填写':'未填写'):(audioReady?'已选择':'未选择');
     var items=[
       ['人物形象',hasImage?'已上传':'待上传'],
       [mode==='text'?'口播文案':'口播音频',mode==='text'?(textReady?'已准备':'待填写'):(audioReady?'已准备':'待选择')],
