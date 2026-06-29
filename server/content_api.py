@@ -851,6 +851,17 @@ def record_video_asset(job_id, username, result):
              result.get("error"), now, now))
         c.commit()
 
+def record_video_pending_asset(job_id, username, payload):
+    record_video_asset(job_id, username, {
+        "mode": payload.get("mode") or "text",
+        "text": payload.get("text") or "",
+        "voice": payload.get("voice") or "",
+        "resolution": payload.get("resolution") or "1080p",
+        "ratio": payload.get("ratio") or "9:16",
+        "motion": payload.get("motion") or "medium",
+        "status": "running",
+    })
+
 def list_video_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
@@ -1374,6 +1385,13 @@ def run_job(job_id):
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
     except Exception as e:
+        if kind == "video":
+            try:
+                failed = dict(payload)
+                failed.update({"status": "failed", "error": str(e)[:300]})
+                record_video_asset(job_id, r["username"], failed)
+            except Exception:
+                pass
         add_points(r["username"], r["cost"])  # 失败退点
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
@@ -1448,6 +1466,8 @@ class H(BaseHTTPRequestHandler):
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                                 (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
                 c.commit(); jid = cur.lastrowid
+            if kind == "video":
+                record_video_pending_asset(jid, user["username"], body)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
         self._send(404, {"detail": "not found"})
