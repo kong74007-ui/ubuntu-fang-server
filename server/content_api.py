@@ -29,7 +29,7 @@ OUT_DIR    = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "audio": 4, "video": 13}  # 定额能力；collect/leads 走 cost_of() 动态算
+COST = {"image": 12, "copy": 3, "audio": 4, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 COPY_MODEL  = os.environ.get("COPY_MODEL", "gpt-4o")
 TTS_MODEL   = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")  # 配音(同事的 audio 能力)
@@ -129,6 +129,25 @@ def init_audio_db():
             used_username TEXT,
             used_at INTEGER,
             created_at INTEGER NOT NULL
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS video_assets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER UNIQUE,
+            username TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            image_file TEXT,
+            audio_file TEXT,
+            video_file TEXT,
+            video_url TEXT,
+            text TEXT,
+            voice_key TEXT,
+            resolution TEXT,
+            ratio TEXT,
+            motion TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
@@ -783,6 +802,29 @@ def list_audio_assets(username, limit=120):
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 
+def record_video_asset(job_id, username, result):
+    now = int(time.time())
+    with closing(adb()) as c:
+        c.execute("""INSERT OR REPLACE INTO video_assets
+            (job_id, username, mode, image_file, audio_file, video_file, video_url, text, voice_key,
+             resolution, ratio, motion, status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
+             result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
+             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
+             result.get("error"), now, now))
+        c.commit()
+
+def list_video_assets(username, limit=120):
+    limit = max(1, min(120, int(limit or 120)))
+    with closing(adb()) as c:
+        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, video_file, video_url,
+                   text, voice_key, resolution, ratio, motion, status, error, created_at, updated_at
+            FROM video_assets
+            WHERE username=?
+            ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
+    return [dict(r) for r in rows]
+
 def get_points(username):
     try:
         with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
@@ -1076,7 +1118,76 @@ def gen_audio(payload):
     return {"type": "audio", "file": fn, "url": "/api/gen/file/" + fn, "voice": voice_key,
             "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
-HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio}
+def _save_data_file(data_url, prefix, allowed_ext):
+    raw = (data_url or "").strip()
+    if not raw:
+        return None
+    if "," in raw and raw.lower().startswith("data:"):
+        meta, raw = raw.split(",", 1)
+        mime = meta.split(";", 1)[0].replace("data:", "").lower()
+    else:
+        mime = ""
+    ext = ""
+    for k, v in {
+        "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+        "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
+        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a"
+    }.items():
+        if mime == k:
+            ext = v
+            break
+    if not ext:
+        ext = allowed_ext[0]
+    if ext not in allowed_ext:
+        raise ValueError("不支持的文件格式")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise ValueError("文件内容解析失败")
+    max_size = 35 * 1024 * 1024
+    if len(data) > max_size:
+        raise ValueError("文件过大，请压缩后再上传")
+    fn = "%s_%d%s" % (prefix, int(time.time() * 1000), ext)
+    (OUT_DIR / fn).write_bytes(data)
+    return fn
+
+def gen_video(payload):
+    mode = (payload.get("mode") or "text").strip()
+    if mode not in {"text", "audio"}:
+        raise ValueError("生成方式不正确")
+    image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
+    if not image_file:
+        raise ValueError("请先上传人物形象图片")
+    text = (payload.get("text") or "").strip()
+    voice = (payload.get("voice") or "").strip()
+    audio_file = None
+    if mode == "text":
+        if not text:
+            raise ValueError("请先输入口播文案")
+        if not voice:
+            raise ValueError("请先选择音色")
+    else:
+        audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
+        if not audio_file:
+            raise ValueError("请先选择口播音频")
+    resolution = (payload.get("resolution") or "1080p").strip()
+    ratio = (payload.get("ratio") or "9:16").strip()
+    motion = (payload.get("motion") or "medium").strip()
+    if resolution not in {"720p", "1080p", "4k"}:
+        resolution = "1080p"
+    if ratio not in {"9:16", "16:9", "1:1", "4:5", "5:4"}:
+        ratio = "9:16"
+    if motion not in {"low", "medium", "high"}:
+        motion = "medium"
+    return {
+        "type": "video", "status": "pending", "mode": mode,
+        "image_file": image_file, "image_url": "/api/gen/file/" + image_file,
+        "audio_file": audio_file, "text": text, "voice": voice,
+        "resolution": resolution, "ratio": ratio, "motion": motion,
+        "message": "视频任务已创建"
+    }
+
+HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio, "video": gen_video}
 
 # ============ 后台 worker（串行跑任务，失败退点） ============
 def run_job(job_id):
@@ -1092,6 +1203,8 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         if kind == "audio":
             record_audio_asset(job_id, r["username"], result)
+        if kind == "video":
+            record_video_asset(job_id, r["username"], result)
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
@@ -1243,6 +1356,13 @@ class H(BaseHTTPRequestHandler):
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
             return self._send(200, {"items": list_audio_assets(user["username"], lim)})
+        if p == "/api/gen/video/assets":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try: lim = int((q.get("limit") or ["120"])[0])
+            except Exception: lim = 120
+            return self._send(200, {"items": list_video_assets(user["username"], lim)})
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
