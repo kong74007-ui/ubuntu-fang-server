@@ -39,6 +39,9 @@
   .hidden{display:none!important}
   textarea,.text-input{box-sizing:border-box;width:100%;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;font-family:inherit;font-size:13.5px}
   textarea{resize:none;line-height:1.75;padding:13px 14px}
+  .textarea-wrap{position:relative}
+  .textarea-wrap textarea{padding-bottom:34px}
+  .textarea-count{position:absolute;right:12px;bottom:9px;font-size:11.5px;color:#5c6b82;pointer-events:none;background:linear-gradient(90deg,rgba(7,11,19,0),rgba(7,11,19,.72) 18%,rgba(7,11,19,.78));padding-left:18px}
   .text-input{height:40px;padding:0 12px}
   .voice-tabs{display:flex;gap:8px;padding:4px;border:1px solid rgba(148,164,187,.13);border-radius:12px;background:rgba(7,11,19,.36);margin:10px 0 12px}
   .voice-tab{flex:1;height:34px;border:0;border-radius:9px;background:transparent;color:#94a4bb;font:700 12.5px inherit;cursor:pointer}
@@ -154,8 +157,10 @@
               <span class="label">口播文案</span>
               <button id="clearScript" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">清空</button>
             </div>
-            <textarea id="scriptText" rows="6" maxlength="1200" placeholder="输入要生成口播视频的文案...">姐妹们好呀～仙颜美容本月科技焕肤体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁。</textarea>
-            <div class="row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1200</span></div>
+            <div class="textarea-wrap">
+              <textarea id="scriptText" rows="6" maxlength="1200" placeholder="输入要生成口播视频的文案...">姐妹们好呀～仙颜美容本月科技焕肤体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁。</textarea>
+              <span id="charCount" class="mono textarea-count">0 / 1200</span>
+            </div>
           </div>
 
           <div id="audioMode" class="hidden">
