@@ -1,0 +1,16 @@
+[Unit]
+Description=Douyin Leadgen API slot B (blue-green)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/leadgen-B
+Environment=LEADGEN_PASSWORD=DaPengAI@2026
+Environment=LEADGEN_WORKER_TOKEN=worker-secret-2026
+ExecStart=/home/ubuntu/MediaCrawler/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8092
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,6 @@
-# CLAUDE.md — 抖音评论区获客系统
+# CLAUDE.md — 这个是黄雀传媒的主站建设
+
+> 🧭 **开工先读方案卡**：动手改获客系统前，先读 `~/AI-Memory/systems/douyin-leadgen.md`（端到端拓扑/脚本路径/踩坑/验收基准）+ `~/AI-Memory/SYSTEM.md`。命中即复用、禁止重写；造完回写方案卡。详见 `~/AI-Memory/systems/operating-loop.md`。
 
 ## 这是什么
 关键词 → 抖音搜视频 → 扒评论区 → 意图过滤 → 精准客户名单。为大鹏老板公司 AI 板块获客场景而建。
@@ -21,3 +23,9 @@
 
 ## 相关记忆
 本机 AI-Memory：`reference-mediacrawler-keyword-leads`、`reference-douyin-tiktok-download-api`、`project-dapeng-ai-division`。
+
+## Design System
+Always read `DESIGN.md` before making any visual or UI decisions for the AI 内容工作台 / 网页化 bot product.
+All font choices, colors, spacing, layout density, and aesthetic direction are defined there.
+Do not deviate without explicit approval.
+When reviewing UI work, flag any code that does not match `DESIGN.md`.
