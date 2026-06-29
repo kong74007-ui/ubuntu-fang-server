@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI · API 管理台（内部）</title>
+<link rel="icon" href="/assets/cloud/logo-bird.png">
+<style>
+  :root{ --bg:#08080a; --card:#0e1016; --ink:#f4f5f7; --mut:#9a9ba2; --faint:#67686e; --gold:#e7b24c; --gold2:#f4cd72; --line:rgba(255,255,255,.08); }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:'Noto Sans SC',-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;padding:0 0 60px;}
+  .wrap{max-width:1100px;margin:0 auto;padding:0 24px;}
+  header{padding:30px 0 22px;border-bottom:1px solid var(--line);margin-bottom:28px;}
+  h1{font-size:24px;font-weight:700;margin:0;display:flex;align-items:center;gap:10px;}
+  h1 .lock{font-size:13px;font-weight:500;color:var(--gold);border:1px solid rgba(231,178,76,.3);background:rgba(231,178,76,.08);padding:3px 10px;border-radius:999px;}
+  .sub{color:var(--mut);font-size:13px;margin-top:10px;line-height:1.7;}
+  h2{font-size:16px;font-weight:600;margin:34px 0 14px;display:flex;align-items:center;gap:9px;}
+  h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 9px var(--gold);}
+  table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{color:var(--mut);font-weight:500;background:rgba(255,255,255,.02);font-size:12px;}
+  tr:last-child td{border-bottom:none;}
+  td b{color:var(--gold2);font-weight:600;}
+  code{font-family:'JetBrains Mono',monospace;font-size:12px;color:#c9d4e3;background:rgba(148,164,187,.08);padding:1px 6px;border-radius:5px;}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(45,212,191,.12);color:#2dd4bf;}
+  .tag.gold{background:rgba(231,178,76,.12);color:var(--gold);}
+  .cta{display:inline-flex;align-items:center;gap:8px;margin-top:6px;height:42px;padding:0 22px;border-radius:11px;font-weight:600;font-size:14px;color:#1c1402;text-decoration:none;background:linear-gradient(135deg,#f6d488,#e7b24c);box-shadow:0 12px 28px -12px rgba(231,178,76,.6);}
+  .note{margin-top:14px;font-size:12px;color:var(--faint);line-height:1.7;border-left:2px solid rgba(231,178,76,.4);padding-left:12px;}
+  .red{color:#f4a3b4;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🐦 黄雀 AI · API 管理台 <span class="lock">🔒 团队内部</span></h1>
+    <div class="sub">把散落在服务器上的接口 + 认证方式集中管理。<b style="color:#f4a3b4">密钥真实值不在本页</b>——只标"存在哪个 env / 什么认证方式"，真值留在服务器 env（600 权限）。本页 + Swagger 都由团队密码守护。</div>
+    <a class="cta" href="/api-docs/">🧪 打开 Swagger 在线测接口 →</a>
+  </header>
+
+  <h2><span class="dot"></span>一、自有后端（dapeng-server · 走 git 部署）</h2>
+  <table>
+    <tr><th>服务</th><th>端口</th><th>文件</th><th>能力 / 主要接口</th><th>认证</th><th>负责人</th></tr>
+    <tr><td><b>登录鉴权</b></td><td><code>8095</code></td><td><code>auth_server.py</code></td><td>登录 / 点数<br><code>POST /api/auth/login</code> · <code>GET /api/auth/me</code></td><td>颁发/校验 token</td><td>共用</td></tr>
+    <tr><td><b>采集获客</b></td><td><code>8100</code></td><td><code>leadgen_api.py</code></td><td>内容爬取 / 关键词搜 / 获客名单<br><code>/api/gen/collect</code> · <code>/collect/search</code> · <code>/leads</code></td><td class="tag gold">Bearer token</td><td>Tang</td></tr>
+    <tr><td><b>下载</b></td><td><code>8097</code></td><td><code>dl_service.py</code></td><td>无水印视频下载<br><code>GET /api/gen/dl</code></td><td class="tag gold">Bearer token</td><td>Tang</td></tr>
+    <tr><td><b>作图</b></td><td><code>8101</code></td><td><code>imggen_api.py</code></td><td>nano banana 出图<br><code>POST /api/gen/banana</code></td><td class="tag gold">Bearer token</td><td>Tang</td></tr>
+    <tr><td><b>内容生成+公共核心</b></td><td><code>8096</code></td><td><code>content_api.py</code></td><td>作图gpt-image / 文案 / 配音 / 任务轮询 / 历史 / 文件<br><code>/api/gen/image,copy,audio,job/{id},history,file</code></td><td class="tag gold">Bearer token</td><td>共用(同事音频)</td></tr>
+  </table>
+  <div class="note">鉴权统一：除登录外所有 <code>/api/gen/*</code> 都要 <code>Authorization: Bearer &lt;token&gt;</code>（登录拿）。异步任务：POST 拿 job_id → 轮询 <code>/api/gen/job/{id}</code> 取结果。</div>
+
+  <h2><span class="dot"></span>二、外部依赖 API（我们调它们，key 存服务器 env）</h2>
+  <table>
+    <tr><th>API</th><th>用途</th><th>Base URL</th><th>认证方式</th><th>key 存放（值打码，不在本页）</th></tr>
+    <tr><td><b>TikHub</b></td><td>抖音/小红书/视频号 搜索·详情·评论·解析（采集获客的数据源）</td><td><code>api.tikhub.io</code><br><span style="color:#67686e">大陆 api.tikhub.dev</span></td><td class="tag gold">Bearer key</td><td><code>content.env</code> → <code>TIKHUB_API_KEY</code><br>封装在 <code>server/tikhub.py</code>（自带限流+缓存）</td></tr>
+    <tr><td><b>Gemini（nano banana）</b></td><td>作图（NB2 / NB Pro / 原版）</td><td><code>generativelanguage.<br>googleapis.com</code></td><td class="tag">header <code>x-goog-api-key</code></td><td><code>content.env</code> → <code>GEMINI_API_KEY</code><br>大陆服务器走 mihomo 代理出墙</td></tr>
+    <tr><td><b>OpenAI</b></td><td>gpt-image-2 作图 / whisper 口播ASR</td><td><code>api.openai.com</code></td><td class="tag gold">Bearer key</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code><br>走 mihomo 代理</td></tr>
+  </table>
+  <div class="note red">🔴 红线：以上 key 的真实值<b>只在服务器 <code>content.env</code>（600 权限）</b>，绝不写进本页 / git / 任何外发渠道。需要轮换时在 env 改、重启对应服务即可。</div>
+
+  <h2><span class="dot"></span>三、部署 / 重启 / 查状态（速查）</h2>
+  <table>
+    <tr><th>操作</th><th>命令</th></tr>
+    <tr><td>部署某后端</td><td><code>rsync server/leadgen_api.py dapeng-server:/home/ubuntu/content-api/ &amp;&amp; ssh dapeng-server "sudo systemctl restart huangque-leadgen-api"</code></td></tr>
+    <tr><td>查服务状态</td><td><code>ssh dapeng-server "systemctl is-active huangque-leadgen-api"</code></td></tr>
+    <tr><td>看日志</td><td><code>ssh dapeng-server "sudo journalctl -u huangque-imggen-api -n 50"</code></td></tr>
+    <tr><td>健康自检</td><td><code>curl https://huangquechuanmei.com/api/gen/health</code></td></tr>
+  </table>
+  <div class="note">服务名：<code>huangque-auth/content/dl/leadgen-api/imggen-api</code>。详见仓库 <code>docs/后端架构与API.md</code> + <code>docs/团队Git协作规矩.md</code>。</div>
+</div>
+</body>
+</html>
