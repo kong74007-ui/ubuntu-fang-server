@@ -60,9 +60,9 @@
   .seg{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
   .seg button{height:40px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.05);color:#94a4bb;font:700 13px inherit;cursor:pointer}
   .seg button.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
-  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
-  .flow-step{padding:12px 10px;border:1px solid rgba(148,164,187,.11);border-radius:12px;background:rgba(148,164,187,.04);text-align:center}
-  .flow-step strong{display:block;font-size:12.5px;color:#eaf1fa}.flow-step span{display:block;margin-top:4px;font-size:10.8px;color:#5c6b82;line-height:1.45}
+  .check-list{display:flex;flex-direction:column;gap:9px;margin-top:16px}
+  .check-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid rgba(148,164,187,.11);border-radius:12px;background:rgba(148,164,187,.04)}
+  .check-item strong{font-size:12.5px;color:#eaf1fa}.check-item span{font-size:11px;color:#5c6b82}
   .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
   .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
   .action-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:16px}
@@ -71,7 +71,7 @@
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.flow,.audio-source{grid-template-columns:1fr}.vid-side{position:static}}
+  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.audio-source{grid-template-columns:1fr}.vid-side{position:static}}
 </style>
 </head>
 <body>
@@ -83,18 +83,18 @@
       <div class="row">
         <div>
           <h1 style="margin:0;font-size:21px;font-weight:800;">数字人口播</h1>
-          <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">人物图 + 文案音色生成音频，再用 HeyGem 生成口播视频</p>
+          <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">上传人物图，选择文案配音或现成音频，生成口播视频</p>
         </div>
       </div>
 
       <div class="mode-tabs">
         <button class="mode-tab on" data-mode="text">
-          <div class="mode-title">方式一：文案 + 音色生成视频</div>
-          <div class="mode-desc">上传人物形象图，输入口播文案，选择资产库音色。先用豆包 TTS 生成口播音频，再交给 HeyGem 生成口播视频。</div>
+          <div class="mode-title">文案配音生成</div>
+          <div class="mode-desc">上传人物形象图，输入口播文案，选择资产库音色，直接生成口播视频。</div>
         </button>
         <button class="mode-tab" data-mode="audio">
-          <div class="mode-title">方式二：图片 + 现成音频生成视频</div>
-          <div class="mode-desc">上传人物形象图，选择本地音频或资产库音频，直接用 HeyGem 做口型同步生成口播视频。</div>
+          <div class="mode-title">现成音频生成</div>
+          <div class="mode-desc">上传人物形象图，选择本地音频或资产库音频，直接生成口播视频。</div>
         </button>
       </div>
 
@@ -136,7 +136,7 @@
               <span style="display:flex;width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 21h16"/></svg></span>
               <span id="audioFileName" style="font-size:12.5px;font-weight:700;">选择本地口播音频</span>
             </label>
-            <div id="assetAudioBox" class="hidden" style="margin-top:12px;padding:16px;border:1px dashed rgba(148,164,187,.16);border-radius:13px;color:#94a4bb;font-size:12.5px;text-align:center;">资产库音频选择器待接入，后续读取配音资产和音频素材</div>
+            <div id="assetAudioBox" class="hidden" style="margin-top:12px;padding:16px;border:1px dashed rgba(148,164,187,.16);border-radius:13px;color:#94a4bb;font-size:12.5px;text-align:center;">从配音资产或音频素材中选择一条口播音频</div>
           </div>
         </div>
       </div>
@@ -156,7 +156,7 @@
       <div class="panel">
         <div class="row">
           <span class="label">视频参数</span>
-          <span class="faint" style="font-size:11.5px;">HeyGem 口型同步 · 生成失败自动退点</span>
+          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:13px;">
           <div>
@@ -170,17 +170,16 @@
         </div>
       </div>
 
-      <div class="flow" id="flowText">
-        <div class="flow-step"><strong>1. 豆包 TTS</strong><span>文案 + 音色 ID 生成口播音频</span></div>
-        <div class="flow-step"><strong>2. HeyGem</strong><span>人物图 + 口播音频生成视频</span></div>
-        <div class="flow-step"><strong>3. 自动入库</strong><span>保存到视频资产并支持下载</span></div>
+      <div class="check-list" id="mainChecklist">
+        <div class="check-item"><strong>人物形象</strong><span id="imageCheck">未上传</span></div>
+        <div class="check-item"><strong id="inputCheckTitle">口播文案</strong><span id="inputCheck">已填写</span></div>
+        <div class="check-item"><strong>生成结果</strong><span>完成后自动入库</span></div>
       </div>
 
       <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:24px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
         生成口播视频
-        <span class="mono" style="display:inline-flex;align-items:center;padding:3px 10px;font-size:13px;font-weight:700;background:rgba(26,18,6,.18);border-radius:8px;">待接入</span>
       </button>
-      <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">当前先完成显示和流程结构，真实生成接口后续接入</div>
+      <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
     </section>
 
     <aside class="vid-card vid-side">
@@ -202,10 +201,10 @@
       </div>
 
       <div class="row" style="margin:24px 0 12px;">
-        <span style="font-size:15px;font-weight:700;">任务流程</span>
-        <span id="flowName" class="mono" style="font-size:11.5px;color:#e7b24c;">文案音色模式</span>
+        <span style="font-size:15px;font-weight:700;">素材检查</span>
+        <span id="modeName" class="mono" style="font-size:11.5px;color:#e7b24c;">文案配音</span>
       </div>
-      <div id="sideFlow" style="display:flex;flex-direction:column;gap:9px;"></div>
+      <div id="sideChecklist" style="display:flex;flex-direction:column;gap:9px;"></div>
 
       <div class="row" style="margin:24px 0 12px;">
         <span style="font-size:15px;font-weight:700;">最近口播</span>
@@ -242,18 +241,23 @@
     $('textMode').classList.toggle('hidden',mode!=='text');
     $('voicePanel').classList.toggle('hidden',mode!=='text');
     $('audioMode').classList.toggle('hidden',mode!=='audio');
-    $('modeSummary').textContent=mode==='text'?'人物图 + 文案音色生成音频，再用 HeyGem 生成口播视频':'人物图 + 本地或资产库音频，直接用 HeyGem 生成口播视频';
-    $('flowName').textContent=mode==='text'?'文案音色模式':'音频驱动模式';
-    $('flowText').innerHTML=mode==='text'
-      ? '<div class="flow-step"><strong>1. 豆包 TTS</strong><span>文案 + 音色 ID 生成口播音频</span></div><div class="flow-step"><strong>2. HeyGem</strong><span>人物图 + 口播音频生成视频</span></div><div class="flow-step"><strong>3. 自动入库</strong><span>保存到视频资产并支持下载</span></div>'
-      : '<div class="flow-step"><strong>1. 音频准备</strong><span>上传本地音频或选择资产库音频</span></div><div class="flow-step"><strong>2. HeyGem</strong><span>人物图 + 音频生成口播视频</span></div><div class="flow-step"><strong>3. 自动入库</strong><span>保存到视频资产并支持下载</span></div>';
-    renderSideFlow();
+    $('modeSummary').textContent=mode==='text'?'上传人物图，输入文案并选择音色生成口播视频':'上传人物图，选择本地或资产库音频生成口播视频';
+    $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
+    $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
+    updateChecklist();
   }
-  function renderSideFlow(){
-    var items=mode==='text'
-      ? ['上传人物形象图片','输入口播文案','选择公共或个人音色','豆包生成口播音频','HeyGem 生成口播视频','视频资产入库']
-      : ['上传人物形象图片','上传本地音频或选择资产库音频','HeyGem 做口型同步','生成口播视频','视频资产入库'];
-    $('sideFlow').innerHTML=items.map(function(x,i){return '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span class="mono" style="color:#e7b24c;font-size:12px;">'+String(i+1).padStart(2,'0')+'</span><span style="font-size:12.5px;color:#cbd5e1;line-height:1.5;">'+esc(x)+'</span></div>';}).join('');
+  function updateChecklist(){
+    var hasImage=$('imageDrop').classList.contains('has-img');
+    var textReady=$('scriptText').value.trim().length>0;
+    var audioReady=($('audioFile').files&&$('audioFile').files[0]) || document.querySelector('.source-card[data-source="asset"].on');
+    $('imageCheck').textContent=hasImage?'已上传':'未上传';
+    $('inputCheck').textContent=mode==='text'?(textReady?'已填写':'未填写'):(audioReady?'已选择':'未选择');
+    var items=[
+      ['人物形象',hasImage?'已上传':'待上传'],
+      [mode==='text'?'口播文案':'口播音频',mode==='text'?(textReady?'已准备':'待填写'):(audioReady?'已准备':'待选择')],
+      [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择比例和清晰度']
+    ];
+    $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
   }
   function stopPreview(){
     if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
@@ -300,9 +304,9 @@
   }
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
-  document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);};});
+  document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);updateChecklist();};});
   document.querySelectorAll('.seg button').forEach(function(b){b.onclick=function(){b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});};});
-  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';});
+  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
   $('imageFile').onchange=function(){
     var f=this.files&&this.files[0]; if(!f)return;
@@ -311,10 +315,11 @@
     box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
     $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
     box.querySelector('input').onchange=arguments.callee;
+    updateChecklist();
   };
-  $('audioFile').onchange=function(){var f=this.files&&this.files[0];if(f)$('audioFileName').textContent=f.name;};
+  $('audioFile').onchange=function(){var f=this.files&&this.files[0];if(f)$('audioFileName').textContent=f.name;updateChecklist();};
   $('generateBtn').onclick=function(){
-    toast(mode==='text'?'后续接入：先豆包 TTS，再 HeyGem 生成视频':'后续接入：音频 + 人物图直接提交 HeyGem');
+    toast('视频生成功能即将接入');
   };
   $('scriptText').dispatchEvent(new Event('input'));
   updateMode('text');
