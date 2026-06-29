@@ -64,11 +64,14 @@
   .source-title{font-size:13px;font-weight:800;color:#eaf1fa}.source-card.on .source-title{color:#e7b24c}
   .source-desc{font-size:11px;color:#5c6b82;line-height:1.55;margin-top:5px}.source-card.on .source-desc{color:#c8902f}
   .asset-audio-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
-  .asset-audio-item{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid rgba(148,164,187,.13);border-radius:11px;background:rgba(148,164,187,.04);color:#94a4bb;text-align:left;cursor:pointer;font-family:inherit}
+  .asset-audio-item{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid rgba(148,164,187,.13);border-radius:11px;background:rgba(148,164,187,.04);color:#94a4bb;text-align:left;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:10px}
   .asset-audio-item:hover{border-color:rgba(231,178,76,.3);color:#e7b24c}
   .asset-audio-item.on{border-color:rgba(231,178,76,.38);background:rgba(231,178,76,.09);color:#e7b24c}
   .asset-audio-title{font-size:12.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .asset-audio-meta{font-size:11px;color:#5c6b82;margin-top:3px}
+  .asset-audio-main{min-width:0;flex:1}
+  .asset-audio-play{width:30px;height:30px;border:1px solid rgba(148,164,187,.18);border-radius:50%;background:rgba(7,11,19,.45);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none}
+  .asset-audio-play:hover{color:#e7b24c;border-color:rgba(231,178,76,.36)}
   .file-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px dashed rgba(148,164,187,.2);border-radius:12px;background:rgba(148,164,187,.03);color:#94a4bb;cursor:pointer}
   .file-row:hover{border-color:rgba(231,178,76,.36);color:#e7b24c}
   .seg{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
@@ -545,13 +548,15 @@
       var b=document.createElement('button');
       b.type='button';
       b.className='asset-audio-item'+(selectedAssetAudio&&selectedAssetAudio.url===a.url?' on':'');
-      b.innerHTML='<div class="asset-audio-title">'+esc((a.text||'配音资产').slice(0,42))+'</div><div class="asset-audio-meta">'+esc(a.voice_name||a.voice_key||'')+' · '+esc(a.speed||'1.0')+'</div>';
+      b.innerHTML='<div class="asset-audio-main"><div class="asset-audio-title">'+esc((a.text||'配音资产').slice(0,42))+'</div><div class="asset-audio-meta">'+esc(a.voice_name||a.voice_key||'')+' · '+esc(a.speed||'1.0')+'</div></div><button class="asset-audio-play" type="button" title="试听">▶</button>';
       b.onclick=function(){
         selectedAssetAudio=a;
         audioData='';
         renderAssetAudios(items);
         updateChecklist();
       };
+      var play=b.querySelector('.asset-audio-play');
+      if(play){play.onclick=function(e){e.stopPropagation();playPreview(a.url,play);};}
       list.appendChild(b);
     });
   }
