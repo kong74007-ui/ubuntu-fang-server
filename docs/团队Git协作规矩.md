@@ -109,9 +109,33 @@ git status                  # 必须确认没有未提交的本地脏改动
 
 ---
 
-## 升级路线（现在不用，等顺了再说）
+## 正式工作流：GitHub Flow（2026-06-29 起 · 三人都照这个）
 
-四步走利索后，再升级成"**各开自己的分支 → 提 PR → 合进 main**"，main 永远干净、改动可评审。现在先把上面四步走顺就够。
+**核心：`main` 永远保持"可部署"（拉下来就能跑）。没测好的东西留在自己分支，绝不直接进 main。**
+
+```
+main ── 永远可部署（只通过合并 PR 进东西，没人直接 push main）
+ ├─ feature-zelong   Tang 开发
+ └─ feature-qiang    强哥开发
+
+每次干活：
+git checkout main && git pull        # 1. 拉最新主线
+git checkout -b feature-xxx          # 2. 开/切到自己的分支
+…改代码…
+git commit && git push feature-xxx   # 3. 先 push 进 git（活保住、有备份）
+（部署到服务器测，从已 push 的分支）   # 4. 再上服务器（绝不先改服务器后 push）
+开 PR：feature-xxx → main             # 5. 对方瞄一眼(review) 再合
+合并后 → checkout main && pull        # 6. 主线更新
+rsync 改的文件上服务器 + 重启服务      # 7. 从 main 部署，生产 = main 状态
+```
+
+口诀：**改在分支 → 先 push 再部署 → 合回 main → 生产 = main。**
+
+要点：
+- **谁都不直接 push `main`**，只能通过合并自己的 feature 分支（GitHub 上把 main 设成"保护分支/只许 PR"最稳）。
+- **先 push 再部署**：git 是正本，服务器只跑正本。先改服务器后 push = 漂移（那 24 个 `.bak` 就是教训）。
+- 合并后**删掉 feature 分支**（或下次接着用），别让废分支堆着。
+- 分支命名：`feature-zelong` / `feature-qiang` / `feature-作图优化`，清楚就行。
 
 ---
 
