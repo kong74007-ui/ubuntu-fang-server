@@ -739,7 +739,8 @@ def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
         return
     now = int(time.time())
-    voice_key = (result.get("voice") or "dapeng").strip().lower()
+    raw_voice_key = (result.get("voice") or "dapeng").strip()
+    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in {"dapeng", "zelong", "paul"} else raw_voice_key
     voice_id = ensure_audio_voice(username, voice_key)
     with closing(adb()) as c:
         c.execute("""INSERT OR REPLACE INTO audio_assets

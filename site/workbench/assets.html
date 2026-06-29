@@ -422,9 +422,9 @@
         .then(function(r){ return r.json(); })
         .then(function(d){
           if(seq!==personalVoiceLoadSeq) return;
-          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal'; });
+          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal' && v.slot_id; });
           voices.forEach(function(voice){
-            if(voice.slot_id && slotIds[voice.slot_id]) return;
+            if(slotIds[voice.slot_id]) return;
             grid.appendChild(personalVoiceAssetCard(voice));
           });
         }).catch(function(){});
