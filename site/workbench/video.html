@@ -14,6 +14,7 @@
   .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:start}
   .vid-card{border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
   .vid-side{position:sticky;top:0;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
+  .vid-side > :not(.output-card){display:none!important}
   .muted{color:#94a4bb}.faint{color:#5c6b82}
   .label{font-size:13.5px;font-weight:700;color:#eaf1fa}
   .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -65,13 +66,27 @@
   .check-item strong{font-size:12.5px;color:#eaf1fa}.check-item span{font-size:11px;color:#5c6b82}
   .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
   .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
+  .output-card{display:flex;flex-direction:column;gap:16px;align-items:flex-start}
+  .output-head{display:flex;align-items:center;gap:9px}
+  .output-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
+  .output-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center}
+  .output-text{margin:0;max-width:620px;color:#eaf1fa;font-size:13.5px;font-weight:700;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .output-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .output-tag{height:32px;padding:0 13px;border-radius:8px;border:1px solid rgba(148,164,187,.1);background:rgba(148,164,187,.08);color:#f4f7fb;font-size:12px;font-weight:800;display:inline-flex;align-items:center;gap:6px}
+  .output-stage{width:202px;border:1px solid rgba(148,164,187,.13);border-radius:9px;background:#15181f;overflow:hidden}
+  .output-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
+  .output-preview img,.output-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .output-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
+  .output-overlay{position:relative;z-index:2;padding:18px;color:#f6d78a;font-size:13px;line-height:1.45;font-weight:700;text-shadow:0 1px 12px rgba(0,0,0,.52)}
+  .output-info{display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f6b729;color:#1b1205;font-weight:900;margin:0 auto 10px}
+  .output-created{font-size:12px;color:#5c6b82}
   .action-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:16px}
   .mini-action{display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 4px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;cursor:pointer;transition:.16s}
   .mini-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.audio-source{grid-template-columns:1fr}.vid-side{position:static}}
+  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.audio-source{grid-template-columns:1fr}.vid-side{position:static}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -187,6 +202,34 @@
     </section>
 
     <aside class="vid-card vid-side">
+      <div class="output-card">
+        <div class="output-head">
+          <img id="outputThumb" class="output-thumb" alt="人物形象" src="../assets/cloud/logo-bird.png">
+          <button id="outputAudioBtn" class="output-audio" type="button" title="播放口播音频">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>
+          </button>
+        </div>
+        <p id="outputText" class="output-text">上传人物图并输入文案后，这里会显示本次生成的视频内容</p>
+        <div class="output-tags">
+          <span id="outputMotion" class="output-tag">低</span>
+          <span id="outputRatio" class="output-tag">9:16</span>
+          <span id="outputDuration" class="output-tag">生成中</span>
+        </div>
+        <div class="output-stage">
+          <div id="outputPreview" class="output-preview">
+            <div id="outputPreviewBg" class="blur-bg"></div>
+            <div id="outputOverlay" class="output-overlay">
+              <div class="output-info">i</div>
+              <div id="outputPreviewText">视频生成完成后<br>会在这里预览</div>
+            </div>
+          </div>
+        </div>
+        <div id="outputCreated" class="output-created">创建于：--</div>
+        <div class="action-grid" style="width:100%;">
+          <a id="outputDownload" href="#" class="mini-action" style="pointer-events:none;opacity:.45;"><span>下载</span></a>
+          <a href="assets.html?cat=video" class="mini-action"><span>入库</span></a>
+        </div>
+      </div>
       <div style="font-size:16px;font-weight:700;margin-bottom:14px;">生成结果</div>
       <div style="display:flex;justify-content:center;">
         <div id="previewFrame" class="preview-frame">
@@ -240,6 +283,42 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
+  function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
+  function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+  function setOutputImage(src){
+    if(!src) return;
+    if($('outputThumb')) $('outputThumb').src=src;
+    if($('outputPreviewBg')) $('outputPreviewBg').style.background='url(\"'+src+'\") center/cover';
+  }
+  function updateOutputMeta(){
+    var text=$('scriptText')?$('scriptText').value.trim():'';
+    if($('outputText')) $('outputText').textContent=text||'上传人物图并输入文案后，这里会显示本次生成的视频内容';
+    if($('outputMotion')) $('outputMotion').textContent=motionLabel(selectedMotion);
+    if($('outputRatio')) $('outputRatio').textContent=selectedRatio;
+  }
+  function renderOutputVideo(result){
+    result=result||{};
+    updateOutputMeta();
+    if(result.image_url) setOutputImage(result.image_url);
+    if($('outputDuration')) $('outputDuration').textContent=result.duration?Math.round(Number(result.duration))+'秒':'已完成';
+    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
+    var box=$('outputPreview');
+    if(box && result.video_url){
+      box.innerHTML='<video src="'+esc(fresh(result.video_url))+'" controls playsinline></video>';
+    }else if($('outputPreviewText')){
+      $('outputPreviewText').innerHTML='视频任务已创建<br>完成后可在视频资产查看';
+    }
+    var dl=$('outputDownload');
+    if(dl && result.video_url){
+      dl.href=result.video_url;
+      dl.setAttribute('download','huangque-video.mp4');
+      dl.style.pointerEvents='auto';
+      dl.style.opacity='1';
+    }
+    if($('outputAudioBtn') && result.audio_url){
+      $('outputAudioBtn').onclick=function(){playPreview(result.audio_url,$('outputAudioBtn'));};
+    }
+  }
   function setBusy(on){
     $('generateBtn').disabled=on;
     $('generateBtn').style.opacity=on?'.72':'1';
@@ -276,6 +355,7 @@
       [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择比例和清晰度']
     ];
     $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
+    updateOutputMeta();
   }
   function stopPreview(){
     if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
@@ -340,6 +420,7 @@
     box.classList.add('has-img');
     box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
     $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
+    setOutputImage(url);
     bindImageInput(box.querySelector('input'));
     updateChecklist();
   };
@@ -358,7 +439,9 @@
       .then(function(r){return r.json();})
       .then(function(d){
         if(d.status==='done' && d.result){
+          var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
           setBusy(false);
+          renderOutputVideo(result);
           $('statusText').textContent='任务已创建，已保存到视频资产';
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
@@ -379,6 +462,11 @@
     if(mode==='audio' && assetSelected){ toast('请先选择一条音频素材'); return; }
     if(mode==='audio' && !audioData){ toast('请先上传口播音频'); return; }
     setBusy(true);
+    updateOutputMeta();
+    if($('outputDuration')) $('outputDuration').textContent='生成中';
+    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
+    if($('outputDownload')){$('outputDownload').href='#';$('outputDownload').style.pointerEvents='none';$('outputDownload').style.opacity='.45';}
     $('statusText').textContent='正在提交视频任务...';
     fetch('/api/gen/video',{
       method:'POST',
