@@ -1,31 +1,51 @@
-# AGENTS.md — 这个是黄雀传媒的主站建设
+# AI 协作规则
 
-> 🧭 **开工先读方案卡**：动手改获客系统前，先读 `~/AI-Memory/systems/douyin-leadgen.md`（端到端拓扑/脚本路径/踩坑/验收基准）+ `~/AI-Memory/SYSTEM.md`。命中即复用、禁止重写；造完回写方案卡。详见 `~/AI-Memory/systems/operating-loop.md`。
+这份文件给 Codex、Claude、Cursor 等 AI agent 读取。团队完整协作说明见 `docs/团队Git协作规矩.md`，生产环境说明见 `deploy/生产环境清单与还原手册.md`。
 
-## 这是什么
-关键词 → 抖音搜视频 → 扒评论区 → 意图过滤 → 精准客户名单。为大鹏老板公司 AI 板块获客场景而建。
+## 开工前
 
-## 架构（双层）
-- **发现层** MediaCrawler（关键词搜索+评论采集）— 本地 Mac `~/code/MediaCrawler`，服务器无头化进行中
-- **深采层** 小探/Douyin_TikTok_Download_API（账号深采+下载+口播ASR）— 服务器 `129.204.166.13:8501`（systemd `xiaotan`）
-- **过滤层** 本仓库 `scripts/leads_filter.py`
+每次改代码前先执行并向用户说明当前状态：
 
-## 红线（务必遵守）
-- `browser_data/`（抖音 cookie）、`data/`（真实名单含 PII）**永不进 git**，已 gitignore。
-- 仓库保持 **private**。
+```bash
+git fetch origin --prune
+git status --short --branch
+git branch --show-current
+git log --oneline -5
+```
 
-## 上游工具（不在本仓库分发）
-- MediaCrawler: https://github.com/NanmiCoder/MediaCrawler （标准模式 `ENABLE_CDP_MODE=False`）
-- 小探: https://github.com/Evil0ctal/Douyin_TikTok_Download_API
+- 不直接在 `main`、`design-sync` 上开发或 push。
+- 使用自己的分支：`codex/...`、`claude/...`、`cursor/...`、`feature/...`。
+- 如果发现本地有别人未提交的改动，不要覆盖、reset、checkout 或删除，先说明。
 
-## 下一步
-封装飞书 Bot：团队发关键词 → 服务器引擎跑 → 回传名单（团队内部用）。详见 README 路线图。
+## 修改范围
 
-## 相关记忆
-本机 AI-Memory：`reference-mediacrawler-keyword-leads`、`reference-douyin-tiktok-download-api`、`project-dapeng-ai-division`。
+- 只改本次任务需要的文件，不做无关重构。
+- 公共文件要特别谨慎：`server/content_api.py`、`site/workbench/assets.html`、`site/workbench/audio.html`、`site/workbench/cloud-shell.js`、`docs/api-admin/index.html`、`site/api-docs/openapi.json`、数据库 schema。
+- 前端工作台唯一正本目录是 `site/workbench/`。
+- 后端服务按文件和端口拆分，具体归属见 `docs/团队Git协作规矩.md`。
 
-## Design System
-Always read `DESIGN.md` before making any visual or UI decisions for the AI 内容工作台 / 网页化 bot product.
-All font choices, colors, spacing, layout density, and aesthetic direction are defined there.
-Do not deviate without explicit approval.
-When reviewing UI work, flag any code that does not match `DESIGN.md`.
+## 禁止事项
+
+- 禁止把服务器当正本直接改代码。
+- 禁止提交密钥、密码、cookie、数据库、用户数据和生成产物：`*.env`、`*.db`、`content_out/`、`browser_data/`、`data/`。
+- 禁止整站 rsync 旧目录覆盖线上页面。
+- 禁止在未确认的情况下改公共数据库表结构。
+
+## 提交与部署
+
+- 改完先 commit，再 push 到自己的分支。
+- 需要部署时，只部署本次改过的文件，并从已经 push 的 commit 部署。
+- 部署后说明是否重启服务、验证了什么。
+
+收工汇报必须包含：
+
+```text
+分支：
+提交：
+修改文件：
+是否部署：
+部署文件：
+是否重启服务：
+验证结果：
+风险/未完成：
+```

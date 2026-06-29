@@ -109,6 +109,44 @@ git status                  # 必须确认没有未提交的本地脏改动
 
 ---
 
+## AI Agent 协作硬规则（Codex / Claude / Cursor 都照这个）
+
+AI 不是"临时终端"，而是团队成员。每次让 AI 改代码前，先让它读根目录 `AGENTS.md` 和本文件；AI 开工必须先做启动检查：
+
+```bash
+git fetch origin --prune
+git status --short --branch
+git branch --show-current
+git log --oneline -5
+```
+
+AI 开发规则：
+
+- **每个 AI 用自己的分支**：`codex/xxx`、`claude/xxx`、`cursor/xxx` 或 `feature/xxx`。不要两个 AI 共用一个开发分支。
+- **不直接 push `main` / `design-sync`**：先推自己的分支，确认后再 PR / 合并。
+- **不改服务器当正本**：服务器只接受已经 push 到 GitHub 的文件。AI 需要部署时，只部署本次改过的文件。
+- **动公共文件前先报备**：`server/content_api.py`、`site/workbench/assets.html`、`site/workbench/audio.html`、`site/workbench/cloud-shell.js`、`docs/api-admin/index.html`、`site/api-docs/openapi.json`、数据库结构都算公共件。
+- **不要顺手重构无关模块**：AI 容易"顺便优化"，但多人协作时这会制造冲突。只改本次任务需要的文件和逻辑。
+- **密钥、数据库、用户数据不进 git**：`*.env`、`*.db`、`content_out/`、`browser_data/`、`data/` 一律不能提交。
+- **部署必须可追溯**：部署前说明分支和 commit，部署后记录改了哪些线上文件、是否重启服务、验证结果。
+
+AI 收工时必须给这 7 项：
+
+```text
+分支：
+提交：
+修改文件：
+是否部署：
+部署文件：
+是否重启服务：
+验证结果：
+风险/未完成：
+```
+
+如果 AI 发现本地有别人未提交的改动，先停下来说明，不要 stash / reset / checkout 覆盖别人代码。
+
+---
+
 ## 正式工作流：GitHub Flow（2026-06-29 起 · 三人都照这个）
 
 **核心：`main` 永远保持"可部署"（拉下来就能跑）。没测好的东西留在自己分支，绝不直接进 main。**
@@ -136,6 +174,7 @@ rsync 改的文件上服务器 + 重启服务      # 7. 从 main 部署，生产
 - **先 push 再部署**：git 是正本，服务器只跑正本。先改服务器后 push = 漂移（那 24 个 `.bak` 就是教训）。
 - 合并后**删掉 feature 分支**（或下次接着用），别让废分支堆着。
 - 分支命名：`feature-zelong` / `feature-qiang` / `feature-作图优化`，清楚就行。
+- AI 分支命名：`codex/音频资产修复` / `claude/后端拆分` / `cursor/页面样式优化`。分支名要能看出谁改、改什么。
 
 ---
 
