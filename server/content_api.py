@@ -52,6 +52,11 @@ def _resolve_out_file(rel):
     legacy = OUT_DIR / os.path.basename(rel)
     if legacy.exists() and legacy.is_file():
         return legacy
+    name = os.path.basename(rel)
+    for folder in (AUDIO_OUT_DIR, VIDEO_OUT_DIR):
+        fp = folder / name
+        if fp.exists() and fp.is_file():
+            return fp
     return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
