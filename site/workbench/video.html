@@ -13,7 +13,7 @@
   body{overflow:hidden}
   .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:start}
   .vid-card{border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
-  .vid-side{position:sticky;top:0;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
+  .vid-side{position:sticky;top:0;max-height:calc(100vh - 24px);overflow:hidden;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
   .vid-side > :not(.output-card){display:none!important}
   .muted{color:#94a4bb}.faint{color:#5c6b82}
   .label{font-size:13.5px;font-weight:700;color:#eaf1fa}
@@ -67,6 +67,21 @@
   .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
   .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
   .output-card{display:flex;flex-direction:column;gap:16px;align-items:flex-start}
+  .output-scroll{width:100%;max-height:calc(100vh - 58px);overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:14px}
+  .output-scroll::-webkit-scrollbar{width:7px}
+  .output-scroll::-webkit-scrollbar-thumb{background:rgba(148,164,187,.22);border-radius:99px}
+  .output-scroll::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
+  .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
+  .history-list{width:100%;display:flex;flex-direction:column;gap:12px}
+  .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:12px;background:rgba(7,11,19,.28);padding:10px;display:grid;grid-template-columns:66px 1fr;gap:10px;color:#94a4bb}
+  .history-media{position:relative;width:66px;aspect-ratio:9/16;border-radius:8px;overflow:hidden;background:#0b0f16}
+  .history-media img,.history-media video{width:100%;height:100%;object-fit:cover;display:block}
+  .history-body{min-width:0;display:flex;flex-direction:column;gap:7px}
+  .history-text{font-size:12.2px;color:#eaf1fa;font-weight:700;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .history-tags{display:flex;gap:6px;flex-wrap:wrap}
+  .history-tag{padding:3px 7px;border-radius:7px;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.08);font-size:10.5px;color:#cbd5e1;font-weight:800}
+  .history-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto}
+  .history-link{font-size:11.5px;color:#e7b24c;text-decoration:none;font-weight:800}
   .output-head{display:flex;align-items:center;gap:9px}
   .output-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
   .output-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center}
@@ -202,7 +217,7 @@
     </section>
 
     <aside class="vid-card vid-side">
-      <div class="output-card">
+      <div class="output-card"><div class="output-scroll">
         <div class="output-head">
           <img id="outputThumb" class="output-thumb" alt="人物形象" src="../assets/cloud/logo-bird.png">
           <button id="outputAudioBtn" class="output-audio" type="button" title="播放口播音频">
@@ -229,6 +244,11 @@
           <a id="outputDownload" href="#" class="mini-action" style="pointer-events:none;opacity:.45;"><span>下载</span></a>
           <a href="assets.html?cat=video" class="mini-action"><span>入库</span></a>
         </div>
+        <div class="history-title">历史生成记录</div>
+        <div id="outputHistory" class="history-list">
+          <div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>
+        </div>
+      </div>
       </div>
       <div style="font-size:16px;font-weight:700;margin-bottom:14px;">生成结果</div>
       <div style="display:flex;justify-content:center;">
@@ -300,7 +320,7 @@
     result=result||{};
     updateOutputMeta();
     if(result.image_url) setOutputImage(result.image_url);
-    if($('outputDuration')) $('outputDuration').textContent=result.duration?Math.round(Number(result.duration))+'秒':'已完成';
+    if($('outputDuration')) $('outputDuration').textContent=result.duration?Math.round(Number(result.duration))+'秒':statusLabel(result.status);
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     var box=$('outputPreview');
     if(box && result.video_url){
@@ -318,6 +338,59 @@
     if($('outputAudioBtn') && result.audio_url){
       $('outputAudioBtn').onclick=function(){playPreview(result.audio_url,$('outputAudioBtn'));};
     }
+  }
+  function normalizeVideoAsset(x){
+    x=x||{};
+    if(x.image_file && !x.image_url) x.image_url='/api/gen/file/'+x.image_file;
+    if(x.audio_file && !x.audio_url) x.audio_url='/api/gen/file/'+x.audio_file;
+    return x;
+  }
+  function statusLabel(s){
+    s=String(s||'').toLowerCase();
+    if(s==='done' || s==='ready' || s==='success') return '已完成';
+    if(s==='failed' || s==='error') return '失败';
+    if(s==='running' || s==='processing') return '生成中';
+    return '待生成';
+  }
+  function formatTime(sec){
+    if(!sec) return '';
+    var d=new Date(Number(sec)*1000);
+    if(isNaN(d.getTime())) return '';
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  function renderVideoHistory(items){
+    var box=$('outputHistory'); if(!box) return;
+    box.innerHTML='';
+    if(!items || !items.length){
+      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>';
+      return;
+    }
+    items.forEach(function(raw,idx){
+      var x=normalizeVideoAsset(raw);
+      var card=document.createElement('div');
+      card.className='history-item';
+      var img=x.image_url?'<img src="'+esc(x.image_url)+'" alt="">':'';
+      var media=x.video_url?'<video src="'+esc(x.video_url)+'" muted playsinline preload="metadata"></video>':img;
+      card.innerHTML='<div class="history-media">'+media+'</div><div class="history-body">'
+        +'<div class="history-text">'+esc(x.text||'视频生成记录')+'</div>'
+        +'<div class="history-tags"><span class="history-tag">'+esc(statusLabel(x.status))+'</span><span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(motionLabel(x.motion||'low'))+'</span></div>'
+        +'<div class="history-actions"><span style="font-size:10.5px;color:#5c6b82;">'+esc(formatTime(x.created_at)||'最近创建')+'</span>'
+        +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':'<span class="history-link" style="color:#5c6b82;">等待</span>')+'</div>'
+        +'</div>';
+      card.onclick=function(e){
+        if(e.target && e.target.tagName==='A') return;
+        renderOutputVideo(x);
+      };
+      box.appendChild(card);
+      if(idx===0) renderOutputVideo(x);
+    });
+  }
+  function loadVideoHistory(){
+    if(!token) return;
+    fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
+      .then(function(r){return r.ok?r.json():Promise.reject();})
+      .then(function(d){renderVideoHistory(d.items||[]);})
+      .catch(function(){});
   }
   function setBusy(on){
     $('generateBtn').disabled=on;
@@ -442,6 +515,7 @@
           var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
           setBusy(false);
           renderOutputVideo(result);
+          loadVideoHistory();
           $('statusText').textContent='任务已创建，已保存到视频资产';
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
@@ -486,6 +560,7 @@
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         $('statusText').textContent='视频任务已提交...';
+        setTimeout(loadVideoHistory,700);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){setBusy(false);$('statusText').textContent=e.message||'提交失败';toast($('statusText').textContent);});
@@ -494,6 +569,7 @@
   $('scriptText').dispatchEvent(new Event('input'));
   updateMode('text');
   loadVoices();
+  loadVideoHistory();
 })();
 </script>
 </body>
