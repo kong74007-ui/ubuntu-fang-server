@@ -182,7 +182,7 @@
     var play=document.createElement('button');
     play.type='button';
     play.style.cssText='width:42px;height:42px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;box-shadow:0 12px 26px rgba(231,178,76,.18);';
-    setPreviewButtonIdle(play);
+    resetPreviewButton(play);
     var textBox=document.createElement('div');
     textBox.style.cssText='min-width:0;flex:1;';
     var title=document.createElement('div');
@@ -224,7 +224,7 @@
       if(!audio || audio.src.indexOf(url)<0){
         audio=new Audio(freshUrl(url));
         audio.onended=stopActivePreviewAudio;
-        audio.onpause=function(){ if(activePreviewAudio===audio) setPreviewButtonIdle(play); };
+        audio.onpause=function(){ if(activePreviewAudio===audio) resetPreviewButton(play); };
       }
       activePreviewAudio=audio;
       activePreviewButton=play;
