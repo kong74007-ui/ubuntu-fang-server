@@ -166,3 +166,22 @@ docs/      部署记录(playbook) · 成果 ; keywords.md(关键词库说明)
 ## 八、安全与合规
 - cookie / 真实名单(PII) / jobs.db / xlsx：**永不进 git**（见 `.gitignore`），私有仓库
 - 仅用于正当商业触达，遵守平台规则；上游工具各遵其开源协议
+
+## 九、CI 自动检查
+
+GitHub Actions 会在提交到 `main`、发起 Pull Request 或手动触发时运行：
+
+- 拦截 `browser_data/`、`data/`、`.env`、数据库和密钥文件；
+- 检查 HTML 本地链接和静态资源是否丢失；
+- 检查 Python / JavaScript 语法；
+- 使用锁定依赖构建 React/Vite 设计系统。
+
+本地可在提交前运行同等检查：
+
+```bash
+python3 scripts/ci_validate.py
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q scripts server worker tests
+find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+cd design-system && npm ci && npm run build
+```

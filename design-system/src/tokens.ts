@@ -1,27 +1,27 @@
 /**
  * 黄雀 AI · 设计 token
- * 暗色"作战台" + 黄雀金。与站点 shell.css / DESIGN.md 同源。
+ * 暖白运营台 + 墨绿主色。与根目录 DESIGN.md 同源。
  * Claude Design /design-sync 读取这里的 token。
  */
 export const color = {
-  bg: '#070b13',
-  panel: '#0c1220',
-  panel2: '#111a2b',
-  surface: '#101827',
-  surface2: '#0d1422',
-  line: '#1d2a3e',
-  lineSoft: '#15202f',
-  lineStrong: '#27374e',
-  txt: '#eaf1fa',
-  txtDim: '#94a4bb',
-  txtFaint: '#586a82',
-  gold: '#e7b24c',
-  goldSoft: '#f2c869',
-  cyan: '#2dd4bf',
-  blue: '#46b4ff',
-  green: '#2bd576',
-  warn: '#e0a93c',
-  red: '#ff5566',
+  bg: '#F6F7F2',
+  panel: '#FFFFFF',
+  panel2: '#EEF2EC',
+  surface: '#FFFFFF',
+  surface2: '#EEF2EC',
+  line: '#D9DED6',
+  lineSoft: '#E8EBE5',
+  lineStrong: '#C8D0C8',
+  txt: '#191C1A',
+  txtDim: '#68736D',
+  txtFaint: '#96A099',
+  gold: '#B86B2B',
+  goldSoft: '#CF8342',
+  cyan: '#176B5B',
+  blue: '#2F6FED',
+  green: '#16803C',
+  warn: '#B7791F',
+  red: '#C2413A',
 } as const
 
 export const font = {
@@ -29,7 +29,7 @@ export const font = {
   mono: 'ui-monospace, "SF Mono", Menlo, "JetBrains Mono", Consolas, monospace',
 } as const
 
-export const radius = { sm: 8, md: 11, lg: 14, xl: 18, xxl: 22, pill: 999 } as const
+export const radius = { sm: 4, md: 6, lg: 8, xl: 10, xxl: 12, pill: 999 } as const
 
 export const space = { xs: 6, sm: 10, md: 14, lg: 18, xl: 24, xxl: 32 } as const
 

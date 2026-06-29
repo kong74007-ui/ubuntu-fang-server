@@ -57,3 +57,10 @@ site/assets/cloud/_ref3.png
 
 # 本地预览/原型页（不部署）
 site/_*.html
+
+# Tang 本地实验/散件(不进 git)
+git管理/
+/dashboard.html
+/dashboard_data.json
+/ai-engineering-concepts.md
+pinterest美女图片/

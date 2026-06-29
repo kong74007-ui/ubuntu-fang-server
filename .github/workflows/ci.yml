@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: 代码与安全门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: design-system/package-lock.json
+
+      - name: 检查敏感文件与静态资源
+        run: python scripts/ci_validate.py
+
+      - name: 测试 CI 检查器
+        run: python -m unittest discover -s tests -v
+
+      - name: 检查 Python 语法
+        run: python -m compileall -q scripts server worker tests
+
+      - name: 检查 JavaScript 语法
+        run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: 安装设计系统依赖
+        working-directory: design-system
+        run: npm ci
+
+      - name: 构建设计系统
+        working-directory: design-system
+        run: npm run build

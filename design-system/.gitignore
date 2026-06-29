@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 
 # design-sync (staged scripts, build output, machine state)
 .ds-sync/
