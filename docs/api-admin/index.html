@@ -53,8 +53,18 @@
     <tr><td><b>TikHub</b></td><td>抖音/小红书/视频号 搜索·详情·评论·解析（采集获客的数据源）</td><td><code>api.tikhub.io</code><br><span style="color:#67686e">大陆 api.tikhub.dev</span></td><td class="tag gold">Bearer key</td><td><code>content.env</code> → <code>TIKHUB_API_KEY</code><br>封装在 <code>server/tikhub.py</code>（自带限流+缓存）</td></tr>
     <tr><td><b>Gemini（nano banana）</b></td><td>作图（NB2 / NB Pro / 原版）</td><td><code>generativelanguage.<br>googleapis.com</code></td><td class="tag">header <code>x-goog-api-key</code></td><td><code>content.env</code> → <code>GEMINI_API_KEY</code><br>大陆服务器走 mihomo 代理出墙</td></tr>
     <tr><td><b>OpenAI</b></td><td>gpt-image-2 作图 / whisper 口播ASR</td><td><code>api.openai.com</code></td><td class="tag gold">Bearer key</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code><br>走 mihomo 代理</td></tr>
+    <tr><td><b>豆包 / 火山 Ark</b></td><td>配音 TTS + 个人音色克隆（音频模块 8096，同事维护）</td><td><code>火山引擎 Ark</code></td><td class="tag">APPID + Access Token</td><td><code>content.env</code> → <code>DOUBAO_APPID</code> / <code>DOUBAO_TOKEN</code> / <code>DOUBAO_TTS_RESOURCE</code> / <code>DOUBAO_CLONE_*</code></td></tr>
   </table>
   <div class="note red">🔴 红线：以上 key 的真实值<b>只在服务器 <code>content.env</code>（600 权限）</b>，绝不写进本页 / git / 任何外发渠道。需要轮换时在 env 改、重启对应服务即可。</div>
+
+  <h2><span class="dot"></span>三、数字人口播 pipeline（本地 Mac · <span class="red">尚未上黄雀服务器</span>）</h2>
+  <table>
+    <tr><th>API</th><th>用途</th><th>认证方式</th><th>key 存放（本地，<b>值不在这</b>）</th></tr>
+    <tr><td><b>HeyGen</b></td><td>数字人对口型（口播视频）</td><td class="tag">header <code>X-Api-Key</code> · 走代理 1082</td><td>本地 Seedance 项目 env → <code>HEYGEN_API_KEY</code></td></tr>
+    <tr><td><b>ElevenLabs</b></td><td>配音 / 声音克隆（IVC · PVC）</td><td class="tag">header <code>xi-api-key</code></td><td>本地 → <code>ELEVEN_KEY</code></td></tr>
+    <tr><td><b>火山声复刻</b></td><td>声音克隆</td><td class="tag">APPID + Token</td><td>本地 → <code>HS_*</code></td></tr>
+  </table>
+  <div class="note">这套在 Tang 本地 Mac 的数字人口播管线（Seedance 项目），<b>还没接到黄雀服务器</b>。等主页要放数字人时，再把需要的搬到服务器 env、注册成黄雀后端的一个能力。</div>
 
   <h2><span class="dot"></span>三、部署 / 重启 / 查状态（速查）</h2>
   <table>
