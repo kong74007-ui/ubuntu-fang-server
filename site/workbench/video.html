@@ -77,15 +77,22 @@
   .history-list::-webkit-scrollbar{width:7px}
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
   .history-list::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
-  .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:12px;background:rgba(7,11,19,.28);padding:10px;display:grid;grid-template-columns:66px 1fr;gap:10px;color:#94a4bb}
-  .history-media{position:relative;width:66px;aspect-ratio:9/16;border-radius:8px;overflow:hidden;background:#0b0f16}
-  .history-media img,.history-media video{width:100%;height:100%;object-fit:cover;display:block}
-  .history-body{min-width:0;display:flex;flex-direction:column;gap:7px}
-  .history-text{font-size:12.2px;color:#eaf1fa;font-weight:700;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-  .history-tags{display:flex;gap:6px;flex-wrap:wrap}
-  .history-tag{padding:3px 7px;border-radius:7px;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.08);font-size:10.5px;color:#cbd5e1;font-weight:800}
-  .history-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto}
-  .history-link{font-size:11.5px;color:#e7b24c;text-decoration:none;font-weight:800}
+  .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.3);padding:14px;display:flex;flex-direction:column;gap:13px;color:#94a4bb}
+  .history-head{display:flex;align-items:center;gap:9px}
+  .history-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
+  .history-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .history-audio:hover{color:#e7b24c;border-color:rgba(231,178,76,.26)}
+  .history-text{margin:0;color:#eaf1fa;font-size:13.2px;font-weight:800;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .history-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .history-tag{height:30px;padding:0 12px;border-radius:8px;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.1);font-size:11.5px;color:#f4f7fb;font-weight:800;display:inline-flex;align-items:center}
+  .history-stage{width:202px;border:1px solid rgba(148,164,187,.13);border-radius:9px;background:#15181f;overflow:hidden}
+  .history-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
+  .history-preview img,.history-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .history-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
+  .history-created{font-size:12px;color:#5c6b82}
+  .history-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%}
+  .history-link{min-height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:800}
+  .history-link:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
   .output-head{display:flex;align-items:center;gap:9px}
   .output-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
   .output-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center}
@@ -373,16 +380,36 @@
       var x=normalizeVideoAsset(raw);
       var card=document.createElement('div');
       card.className='history-item';
-      var img=x.image_url?'<img src="'+esc(x.image_url)+'" alt="">':'';
-      var media=x.video_url?'<video src="'+esc(x.video_url)+'" muted playsinline preload="metadata"></video>':img;
-      card.innerHTML='<div class="history-media">'+media+'</div><div class="history-body">'
-        +'<div class="history-text">'+esc(x.text||'视频生成记录')+'</div>'
-        +'<div class="history-tags"><span class="history-tag">'+esc(statusLabel(x.status))+'</span><span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(motionLabel(x.motion||'low'))+'</span></div>'
-        +'<div class="history-actions"><span style="font-size:10.5px;color:#5c6b82;">'+esc(formatTime(x.created_at)||'最近创建')+'</span>'
-        +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':'<span class="history-link" style="color:#5c6b82;">等待</span>')+'</div>'
+      var image=x.image_url||'../assets/cloud/logo-bird.png';
+      var head='<div class="history-head"><img class="history-thumb" src="'+esc(image)+'" alt="">'
+        +'<button class="history-audio" type="button" title="播放口播音频">'
+        +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
+        +'</button></div>';
+      var preview=x.video_url
+        ?'<video src="'+esc(fresh(x.video_url))+'" controls playsinline preload="metadata"></video>'
+        :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
+      var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
+      card.innerHTML=head
+        +'<p class="history-text">'+esc(x.text||'视频生成记录')+'</p>'
+        +'<div class="history-tags"><span class="history-tag">'+esc(motionLabel(x.motion||'low'))+'</span><span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
+        +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
+        +'<div class="history-created">创建于：'+esc(formatTime(x.created_at)||'最近创建')+'</div>'
+        +'<div class="history-actions">'
+        +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':'<span class="history-link" style="color:#5c6b82;">等待</span>')
+        +'<a class="history-link" href="assets.html?cat=video">入库</a>'
         +'</div>';
+      var audioBtn=card.querySelector('.history-audio');
+      if(audioBtn){
+        if(x.audio_url){
+          audioBtn.onclick=function(e){e.stopPropagation();playPreview(x.audio_url,audioBtn);};
+        }else{
+          audioBtn.disabled=true;
+          audioBtn.style.opacity='.45';
+          audioBtn.style.cursor='default';
+        }
+      }
       card.onclick=function(e){
-        if(e.target && e.target.tagName==='A') return;
+        if(e.target && (e.target.tagName==='A' || e.target.tagName==='BUTTON' || e.target.tagName==='VIDEO')) return;
         renderOutputVideo(x);
       };
       box.appendChild(card);
