@@ -330,7 +330,16 @@
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     var box=$('outputPreview');
     if(box && result.video_url){
-      box.innerHTML='<video src="'+esc(fresh(result.video_url))+'" controls playsinline></video>';
+      box.innerHTML='<video data-src="'+esc(fresh(result.video_url))+'" controls playsinline preload="none"></video>';
+      var outputVideo=box.querySelector('video');
+      if(outputVideo){
+        var hydrateOutputVideo=function(){
+          if(!outputVideo.getAttribute('src')) outputVideo.setAttribute('src',outputVideo.getAttribute('data-src'));
+        };
+        outputVideo.addEventListener('pointerdown',hydrateOutputVideo);
+        outputVideo.addEventListener('click',hydrateOutputVideo);
+        outputVideo.addEventListener('play',hydrateOutputVideo);
+      }
     }else if($('outputPreviewText')){
       $('outputPreviewText').innerHTML='视频任务已创建<br>完成后可在视频资产查看';
     }
@@ -413,10 +422,8 @@
       }
       card.onclick=function(e){
         if(e.target && (e.target.tagName==='A' || e.target.tagName==='BUTTON' || e.target.tagName==='VIDEO')) return;
-        renderOutputVideo(x);
       };
       box.appendChild(card);
-      if(idx===0) renderOutputVideo(x);
     });
   }
   function loadVideoHistory(){
@@ -549,7 +556,6 @@
           var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
           setBusy(false);
           renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
-          renderOutputVideo(result);
           setTimeout(loadVideoHistory,800);
           $('statusText').textContent='任务已创建，已保存到视频资产';
           $('previewTitle').textContent='任务已创建';
