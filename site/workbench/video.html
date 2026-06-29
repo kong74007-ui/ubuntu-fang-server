@@ -11,9 +11,13 @@
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <style>
   body{overflow:hidden}
-  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:start}
-  .vid-card{border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
-  .vid-side{position:sticky;top:0;max-height:calc(100vh - 24px);overflow:hidden;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
+  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:calc(100vh - 150px);min-height:0;overflow:hidden}
+  .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
+  .vid-main{height:100%;overflow-y:auto;overflow-x:hidden;padding-right:4px}
+  .vid-main::-webkit-scrollbar{width:7px}
+  .vid-main::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
+  .vid-main::-webkit-scrollbar-track{background:rgba(7,11,19,.18);border-radius:99px}
+  .vid-side{position:relative;top:auto;height:100%;overflow:hidden;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
   .vid-side > :not(.output-card){display:none!important}
   .muted{color:#94a4bb}.faint{color:#5c6b82}
   .label{font-size:13.5px;font-weight:700;color:#eaf1fa}
@@ -66,13 +70,13 @@
   .check-item strong{font-size:12.5px;color:#eaf1fa}.check-item span{font-size:11px;color:#5c6b82}
   .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
   .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
-  .output-card{display:flex;flex-direction:column;gap:16px;align-items:flex-start}
-  .output-scroll{width:100%;max-height:calc(100vh - 58px);overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:14px}
-  .output-scroll::-webkit-scrollbar{width:7px}
-  .output-scroll::-webkit-scrollbar-thumb{background:rgba(148,164,187,.22);border-radius:99px}
-  .output-scroll::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
+  .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
+  .output-scroll{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
   .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
-  .history-list{width:100%;display:flex;flex-direction:column;gap:12px}
+  .history-list{width:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:12px;flex:1}
+  .history-list::-webkit-scrollbar{width:7px}
+  .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
+  .history-list::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
   .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:12px;background:rgba(7,11,19,.28);padding:10px;display:grid;grid-template-columns:66px 1fr;gap:10px;color:#94a4bb}
   .history-media{position:relative;width:66px;aspect-ratio:9/16;border-radius:8px;overflow:hidden;background:#0b0f16}
   .history-media img,.history-media video{width:100%;height:100%;object-fit:cover;display:block}
@@ -101,7 +105,7 @@
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid,.form-grid{grid-template-columns:1fr}.voice-grid,.audio-source{grid-template-columns:1fr}.vid-side{position:static}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -109,7 +113,7 @@
 
 <div class="hq-app"><div class="hq-content" data-active="video">
   <div class="gVid">
-    <section class="vid-card">
+    <section class="vid-card vid-main">
       <div class="row">
         <div>
           <h1 style="margin:0;font-size:21px;font-weight:800;">数字人口播</h1>
