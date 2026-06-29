@@ -84,6 +84,61 @@
     <tr><td><b>IndexTTS2</b></td><td>情绪声克隆（自托管，跑云 GPU）</td><td>云 GPU（见第七节）</td><td class="tag gray">SSH 到 GPU 跑</td><td>AutoDL RTX5090</td><td class="st-todo">●</td></tr>
   </table>
 
+  <h2><span class="dot"></span>五 A、站内音频模块接口（content_api.py · 8096）</h2>
+  <table>
+    <tr><th>接口</th><th>方法</th><th>用途</th><th>关键参数</th><th>返回 / 后续动作</th></tr>
+    <tr>
+      <td><b>生成配音</b><br><code>/api/gen/audio</code></td>
+      <td><span class="tag gold">POST</span></td>
+      <td>提交 TTS 异步任务。公共音色走 OpenAI TTS；个人复刻音色 <code>S_*</code> 走豆包 TTS。</td>
+      <td><code>text</code> 最多 1200 字<br><code>voice</code>：<code>dapeng</code>/<code>zelong</code>/<code>paul</code> 或 <code>vip_S_xxx</code><br><code>speed</code> 0.5-2.0，<code>pitch</code> -12-12，<code>volume</code> -50-100</td>
+      <td>返回 <code>job_id</code>，轮询 <code>GET /api/gen/job/{id}</code>。完成后 result 内有 <code>url</code>，并写入配音资产。</td>
+    </tr>
+    <tr>
+      <td><b>查询音色</b><br><code>/api/gen/audio/voices</code></td>
+      <td><span class="tag">GET</span></td>
+      <td>读取当前用户可用音色。公共音色所有用户可用，个人音色只返回本人。</td>
+      <td>无</td>
+      <td>返回 <code>audio_voices</code>：<code>scope</code>、<code>voice_key</code>、<code>provider_voice</code>、<code>preview_url</code>。</td>
+    </tr>
+    <tr>
+      <td><b>配音资产</b><br><code>/api/gen/audio/assets</code></td>
+      <td><span class="tag">GET</span></td>
+      <td>读取音频模块生成的配音资产。</td>
+      <td><code>limit</code>，默认 120，最大 120</td>
+      <td>返回本人 <code>audio_assets</code>：音频 url、文案、音色、语速、音调、音量。</td>
+    </tr>
+    <tr>
+      <td><b>我的音色槽位</b><br><code>/api/gen/audio/slots</code></td>
+      <td><span class="tag">GET</span></td>
+      <td>读取当前用户购买/兑换到的个人音色槽位和复刻状态。</td>
+      <td>无</td>
+      <td>返回 <code>audio_voice_slots</code>，包含 <code>status</code>、<code>reclone_count</code>、<code>preview_url</code>、错误信息等。</td>
+    </tr>
+    <tr>
+      <td><b>兑换槽位</b><br><code>/api/gen/audio/redeem-slot</code></td>
+      <td><span class="tag gold">POST</span></td>
+      <td>输入兑换码，从槽位池分配一个未使用的豆包复刻槽位。</td>
+      <td><code>code</code> 兑换码</td>
+      <td>返回分配后的槽位记录。槽位 id 只用于后端流程，前端不直接展示给用户。</td>
+    </tr>
+    <tr>
+      <td><b>VIP 复刻上传</b><br><code>/api/gen/audio/clone-vip</code></td>
+      <td><span class="tag gold">POST</span></td>
+      <td>用槽位 id + 用户上传样音发起豆包声音复刻。后端立即标记 training，并在后台上传豆包。</td>
+      <td><code>slot_id</code>，<code>name</code>，<code>audio</code> base64，<code>audio_format</code> 如 wav/mp3</td>
+      <td>返回 training。前端继续轮询 <code>/api/gen/audio/clone-status</code>，等待复刻完成并生成试听音频。</td>
+    </tr>
+    <tr>
+      <td><b>查询复刻状态</b><br><code>/api/gen/audio/clone-status</code></td>
+      <td><span class="tag">GET</span></td>
+      <td>查询豆包复刻状态。豆包返回本次新结果后，后端再用测试文案生成试听音频，并更新卡片状态。</td>
+      <td><code>slot_id</code></td>
+      <td><code>status=ready</code> 且有 <code>preview_url</code> 才代表完整流程结束；<code>failed</code> 时看 <code>clone_error</code>。</td>
+    </tr>
+  </table>
+  <div class="note">完整流程：前端拿音色/槽位 → 生成配音时提交 <code>/api/gen/audio</code> → 轮询任务 → 文件进 <code>content_out</code>，资产进 <code>audio_assets.db</code>。复刻流程：兑换槽位 → 上传样音 → 等豆包训练成功 → 生成测试音频 → 更新 <code>audio_voices.preview_url</code> 和槽位状态。</div>
+
   <h2><span class="dot"></span>六、数字人</h2>
   <table>
     <tr><th>渠道</th><th>用途</th><th>认证/连接</th><th>key/连接 存放（打码）</th><th>状态</th></tr>
