@@ -145,7 +145,7 @@
     note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+COSTS[engine]+'</span> 点 · 失败自动退点';
     note.style.color='#5c6b82';
     var rs=document.getElementById('refSection');
-    if(rs) rs.style.display=(engine==='gpt')?'':'none';
+    if(rs) rs.style.display='';  // 图生图三引擎都支持，参考图上传区常显
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
   function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none'; }
@@ -159,9 +159,10 @@
     var c=document.querySelector('#engineRow [data-engine="'+e+'"]');
     if(c){ c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)'; var sub=c.querySelector('div:last-child'); if(sub) sub.style.color='#e7b24c'; }
     engine=e; updateCost();
+    if(refImg) showInp(engine==='gpt');  // 切引擎时同步：局部修改(像素蒙版)按钮仅 gpt
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
-  updateCost(); // init: apply nb2 defaults + hide refSection
+  updateCost(); // init: apply nb2 defaults + show refSection(图生图三引擎通用)
 
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
@@ -191,13 +192,20 @@
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
   var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';
+  // gpt-image 内容审核拒绝会返回 HTTP 400，原文对用户无意义 → 给可操作提示
+  function errMsg(e){
+    var s=String(e||'');
+    if(lastEndpoint==='/api/gen/image' && /400|bad request/i.test(s))
+      return '该提示词可能被 OpenAI 内容审核拒绝，换个说法，或改用 Nano Banana 引擎（对人物/中文更宽松）· 已退点';
+    return '失败：'+s+' · 已退点';
+  }
   function poll(id, t0, label){
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); localStorage.setItem('hq_last_result', d.result.url); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
-        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
         else if(sec>400){ clearInterval(iv); busy(false); setNote('生成超时（'+sec+'s）· 已自动退点，请重试','#f4708a'); localStorage.removeItem('hq_active_job'); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
       }).catch(function(){});
@@ -228,8 +236,9 @@
       submit(refImg?{prompt:(pr.value||'').trim(),ratio:ratio,image:refImg}:{prompt:(pr.value||'').trim(),ratio:ratio},
              refImg?'图生图中（在参考图上改）':'文生图中', '/api/gen/image');
     } else {
-      submit({prompt:(pr.value||'').trim(),ratio:ratio,model:engine},
-             engine==='pro'?'Nano Banana Pro 生成中':'Nano Banana 2 生成中', '/api/gen/banana');
+      var bp={prompt:(pr.value||'').trim(),ratio:ratio,model:engine};
+      if(refImg) bp.image=refImg;  // 有参考图 → nano banana 图生图(整图编辑)
+      submit(bp, (engine==='pro'?'Nano Banana Pro ':'Nano Banana 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
     }
   };
 
@@ -293,8 +302,8 @@
     upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
     if(upIcon) upIcon.style.display='none';
     if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图，或「局部修改」只改涂抹处)';
-    showInp(true);
+    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
+    showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
   }
   // 最近作品：读真实历史（生成即自动入库）
   function loadHistory(){
