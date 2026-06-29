@@ -686,7 +686,13 @@
     currentLoadKind=kind;
     var url=kind==='audio'?'/api/gen/audio/assets?limit=120':'/api/gen/history?limit=120';
     fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
-      ALL=d.items||[]; if(cnt) cnt.textContent=ALL.length; render();
+      ALL=d.items||[];
+      if(kind==='audio' && !ALL.length){
+        return fetch('/api/gen/history?limit=120&kind=audio',{headers:{'Authorization':'Bearer '+tok}})
+          .then(function(r){return r.json();})
+          .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; render(); });
+      }
+      if(cnt) cnt.textContent=ALL.length; render();
     }).catch(function(){});
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
