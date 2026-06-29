@@ -123,8 +123,9 @@
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
   var params=new URLSearchParams(location.search);
-  var AUDIO_TAB=params.get('audioTab')||'public';
   var ALL=[], cat=params.get('cat')||'all';
+  var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
+  var currentLoadKind='';
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
@@ -160,13 +161,77 @@
     foot.appendChild(pt); foot.appendChild(dl); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return w;
   }
   function audioCard(x){
-    var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden; padding:16px; display:flex; flex-direction:column; gap:13px;';
-    var tag=document.createElement('span'); tag.textContent='配音'; tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#2dd4bf;';
-    var title=document.createElement('div'); title.textContent=(x.text||x.prompt||'配音资产').slice(0,34)||'配音资产'; title.style.cssText='font-size:13px; color:#eaf1fa; font-weight:600; line-height:1.5; min-height:38px; overflow:hidden;';
-    var meta=document.createElement('div'); meta.textContent='语速 '+(x.speed||'1.0')+' · 音调 '+(x.pitch||'0')+' · 音量 '+(x.volume||'0'); meta.style.cssText='font-size:11.5px; color:#94a4bb;';
-    var player=document.createElement('audio'); player.controls=true; player.src=x.url; player.style.cssText='width:100%; height:34px;';
-    var dl=document.createElement('a'); dl.textContent='下载 MP3'; dl.href=x.url; dl.setAttribute('download','huangque-audio.mp3'); dl.style.cssText='font-size:11.5px; color:#e7b24c; text-decoration:none;';
-    w.appendChild(tag); w.appendChild(title); w.appendChild(meta); w.appendChild(player); w.appendChild(dl); return w;
+    var text=x.text||x.prompt||'配音资产';
+    var url=x.url||'';
+    var voice=x.voice_name||x.voice_key||x.voice||'未命名音色';
+    var created=x.created_at?new Date(Number(x.created_at)*1000):null;
+    var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近生成';
+    var w=document.createElement('div');
+    w.style.cssText='position:relative; min-height:188px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; padding:16px; display:flex; flex-direction:column; gap:12px; box-shadow:0 16px 42px rgba(0,0,0,.12);';
+    var top=document.createElement('div');
+    top.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;';
+    var tag=document.createElement('span');
+    tag.textContent='配音资产';
+    tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;';
+    var time=document.createElement('span');
+    time.textContent=dateText;
+    time.style.cssText='font-size:11px;color:#5c6b82;white-space:nowrap;';
+    top.appendChild(tag); top.appendChild(time);
+    var body=document.createElement('div');
+    body.style.cssText='display:flex;align-items:flex-start;gap:12px;min-width:0;';
+    var play=document.createElement('button');
+    play.type='button';
+    play.style.cssText='width:42px;height:42px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;box-shadow:0 12px 26px rgba(231,178,76,.18);';
+    resetPreviewButton(play);
+    var textBox=document.createElement('div');
+    textBox.style.cssText='min-width:0;flex:1;';
+    var title=document.createElement('div');
+    title.textContent=text;
+    title.title=text;
+    title.style.cssText='font-size:13.5px;color:#eaf1fa;font-weight:700;line-height:1.5;height:42px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;';
+    var voiceLine=document.createElement('div');
+    voiceLine.textContent=voice;
+    voiceLine.style.cssText='margin-top:5px;font-size:11.5px;color:#94a4bb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    textBox.appendChild(title); textBox.appendChild(voiceLine);
+    body.appendChild(play); body.appendChild(textBox);
+    var params=document.createElement('div');
+    params.style.cssText='display:grid;grid-template-columns:repeat(3,1fr);gap:7px;';
+    [['语速',x.speed||'1.0'],['音调',x.pitch||'0'],['音量',x.volume||'0']].forEach(function(p){
+      var pill=document.createElement('div');
+      pill.innerHTML='<div style="font-size:10.5px;color:#5c6b82;line-height:1.2;">'+p[0]+'</div><div class="mono" style="font-size:12.5px;color:#eaf1fa;font-weight:700;margin-top:3px;">'+p[1]+'</div>';
+      pill.style.cssText='padding:8px 9px;border:1px solid rgba(148,164,187,.1);border-radius:10px;background:rgba(7,11,19,.28);min-width:0;';
+      params.appendChild(pill);
+    });
+    var actions=document.createElement('div');
+    actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var hint=document.createElement('div');
+    hint.textContent=url?'可试听 / 下载 MP3':'音频文件缺失';
+    hint.style.cssText='font-size:11.5px;color:'+(url?'#5c6b82':'#f4708a')+';';
+    var dl=document.createElement('a');
+    dl.href=url||'#';
+    dl.setAttribute('download','huangque-audio.mp3');
+    dl.textContent='下载';
+    dl.style.cssText='height:30px;padding:0 12px;border-radius:9px;border:1px solid rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;';
+    actions.appendChild(hint); actions.appendChild(dl);
+    var audio=null;
+    play.onclick=function(e){
+      e.preventDefault(); e.stopPropagation();
+      if(!url) return;
+      if(activePreviewButton===play && activePreviewAudio && !activePreviewAudio.paused){
+        stopActivePreviewAudio(); return;
+      }
+      stopActivePreviewAudio();
+      if(!audio || audio.src.indexOf(url)<0){
+        audio=new Audio(freshUrl(url));
+        audio.onended=stopActivePreviewAudio;
+        audio.onpause=function(){ if(activePreviewAudio===audio) resetPreviewButton(play); };
+      }
+      activePreviewAudio=audio;
+      activePreviewButton=play;
+      setPreviewButtonPlaying(play);
+      audio.play().catch(function(){ stopActivePreviewAudio(); });
+    };
+    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); return w;
   }
   function sectionTitle(t){
     var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
@@ -358,9 +423,9 @@
         .then(function(r){ return r.json(); })
         .then(function(d){
           if(seq!==personalVoiceLoadSeq) return;
-          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal'; });
+          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal' && v.slot_id; });
           voices.forEach(function(voice){
-            if(voice.slot_id && slotIds[voice.slot_id]) return;
+            if(slotIds[voice.slot_id]) return;
             grid.appendChild(personalVoiceAssetCard(voice));
           });
         }).catch(function(){});
@@ -565,7 +630,13 @@
       var b=document.createElement('button');
       b.type='button'; b.textContent=t[1]; b.setAttribute('data-audio-tab',t[0]);
       b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
-      b.onclick=function(){ renderAudioTab(t[0]); };
+      b.onclick=function(){
+        var u=new URL(location.href);
+        u.searchParams.set('cat','audio');
+        u.searchParams.set('audioTab',t[0]);
+        history.replaceState(null,'',u.toString());
+        renderAudioTab(t[0]);
+      };
       tabs.appendChild(b);
     });
     grid.appendChild(tabs);
@@ -592,6 +663,10 @@
       loadPersonalVoiceSlots();
       return;
     }
+    if(currentLoadKind!=='audio'){
+      load('audio');
+      return;
+    }
     if(!ALL.length){
       var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; e.textContent='暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(e); return;
     }
@@ -608,9 +683,16 @@
     list.forEach(function(x){ grid.appendChild(cat==='audio' ? audioCard(x) : card(x)); });
   }
   function load(kind){
-    var url='/api/gen/history?limit=120'+(kind==='audio'?'&kind=audio':'');
+    currentLoadKind=kind;
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':'/api/gen/history?limit=120';
     fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
-      ALL=d.items||[]; if(cnt) cnt.textContent=ALL.length; render();
+      ALL=d.items||[];
+      if(kind==='audio' && !ALL.length){
+        return fetch('/api/gen/history?limit=120&kind=audio',{headers:{'Authorization':'Bearer '+tok}})
+          .then(function(r){return r.json();})
+          .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; render(); });
+      }
+      if(cnt) cnt.textContent=ALL.length; render();
     }).catch(function(){});
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
