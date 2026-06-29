@@ -73,6 +73,7 @@
   .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
   .output-scroll{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
   .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
+  .output-scroll > .output-head,.output-scroll > .output-text,.output-scroll > .output-tags,.output-scroll > .output-stage,.output-scroll > .output-created,.output-scroll > .action-grid,.output-scroll > .history-title{display:none}
   .history-list{width:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:12px;flex:1}
   .history-list::-webkit-scrollbar{width:7px}
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
@@ -572,6 +573,7 @@
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
     if($('outputDownload')){$('outputDownload').href='#';$('outputDownload').style.pointerEvents='none';$('outputDownload').style.opacity='.45';}
+    renderVideoHistory([{image_url:imageData,text:text||'视频生成记录',ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)}]);
     $('statusText').textContent='正在提交视频任务...';
     fetch('/api/gen/video',{
       method:'POST',
