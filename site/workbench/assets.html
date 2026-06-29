@@ -123,8 +123,9 @@
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
   var params=new URLSearchParams(location.search);
-  var AUDIO_TAB=params.get('audioTab')||'public';
   var ALL=[], cat=params.get('cat')||'all';
+  var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
+  var currentLoadKind='';
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
@@ -629,7 +630,13 @@
       var b=document.createElement('button');
       b.type='button'; b.textContent=t[1]; b.setAttribute('data-audio-tab',t[0]);
       b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
-      b.onclick=function(){ renderAudioTab(t[0]); };
+      b.onclick=function(){
+        var u=new URL(location.href);
+        u.searchParams.set('cat','audio');
+        u.searchParams.set('audioTab',t[0]);
+        history.replaceState(null,'',u.toString());
+        renderAudioTab(t[0]);
+      };
       tabs.appendChild(b);
     });
     grid.appendChild(tabs);
@@ -656,6 +663,10 @@
       loadPersonalVoiceSlots();
       return;
     }
+    if(currentLoadKind!=='audio'){
+      load('audio');
+      return;
+    }
     if(!ALL.length){
       var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; e.textContent='暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(e); return;
     }
@@ -672,6 +683,7 @@
     list.forEach(function(x){ grid.appendChild(cat==='audio' ? audioCard(x) : card(x)); });
   }
   function load(kind){
+    currentLoadKind=kind;
     var url=kind==='audio'?'/api/gen/audio/assets?limit=120':'/api/gen/history?limit=120';
     fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
       ALL=d.items||[]; if(cnt) cnt.textContent=ALL.length; render();
