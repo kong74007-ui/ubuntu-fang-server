@@ -1350,6 +1350,8 @@ def reaper():
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
                 for r in stuck:
+                    if r["kind"] == "video" and r["updated_at"] >= int(time.time()) - 1800:
+                        continue
                     add_points(r["username"], r["cost"])  # 退点
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
                               (int(time.time()), r["id"]))
