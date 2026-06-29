@@ -376,7 +376,7 @@
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>';
       var preview=x.video_url
-        ?'<video src="'+esc(fresh(x.video_url))+'" controls playsinline preload="metadata"></video>'
+        ?'<video data-src="'+esc(fresh(x.video_url))+'" controls playsinline preload="none" poster="'+esc(image)+'"></video>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
       card.innerHTML=head
@@ -396,6 +396,15 @@
           audioBtn.style.opacity='.45';
           audioBtn.style.cursor='default';
         }
+      }
+      var videoEl=card.querySelector('.history-preview video');
+      if(videoEl){
+        var hydrateVideo=function(){
+          if(!videoEl.getAttribute('src')) videoEl.setAttribute('src',videoEl.getAttribute('data-src'));
+        };
+        videoEl.addEventListener('pointerdown',hydrateVideo);
+        videoEl.addEventListener('click',hydrateVideo);
+        videoEl.addEventListener('play',hydrateVideo);
       }
       card.onclick=function(e){
         if(e.target && (e.target.tagName==='A' || e.target.tagName==='BUTTON' || e.target.tagName==='VIDEO')) return;
