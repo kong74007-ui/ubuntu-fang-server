@@ -1161,15 +1161,29 @@ def gen_video(payload):
     text = (payload.get("text") or "").strip()
     voice = (payload.get("voice") or "").strip()
     audio_file = None
+    audio_url = None
     if mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
         if not voice:
             raise ValueError("请先选择音色")
+        audio_result = gen_audio({
+            "_username": (payload.get("_username") or "").strip(),
+            "text": text,
+            "voice": voice,
+            "speed": payload.get("speed", 1.0),
+            "pitch": payload.get("pitch", 0),
+            "volume": payload.get("volume", 0),
+        })
+        audio_file = audio_result.get("file")
+        audio_url = audio_result.get("url")
+        if not audio_file:
+            raise ValueError("口播音频生成失败")
     else:
         audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
         if not audio_file:
             raise ValueError("请先选择口播音频")
+        audio_url = "/api/gen/file/" + audio_file
     resolution = (payload.get("resolution") or "1080p").strip()
     ratio = (payload.get("ratio") or "9:16").strip()
     motion = (payload.get("motion") or "medium").strip()
@@ -1182,7 +1196,7 @@ def gen_video(payload):
     return {
         "type": "video", "status": "pending", "mode": mode,
         "image_file": image_file, "image_url": "/api/gen/file/" + image_file,
-        "audio_file": audio_file, "text": text, "voice": voice,
+        "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
         "resolution": resolution, "ratio": ratio, "motion": motion,
         "message": "视频任务已创建"
     }
@@ -1195,7 +1209,7 @@ def run_job(job_id):
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
-    if kind == "audio":
+    if kind in {"audio", "video"}:
         payload["_username"] = r["username"]
     try:
         with closing(jdb()) as c:
