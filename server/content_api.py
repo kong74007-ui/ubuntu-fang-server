@@ -827,6 +827,31 @@ def list_audio_voices(username):
             ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
     return [dict(r) for r in rows]
 
+def rename_audio_voice(username, slot_id, display_name):
+    slot_id = (slot_id or "").strip()
+    name = (display_name or "").strip()
+    if not slot_id:
+        raise Exception("缺少音色槽位")
+    if not name:
+        raise Exception("请输入音色名称")
+    name = name[:40]
+    now = int(time.time())
+    with closing(adb()) as c:
+        slot = c.execute("""SELECT voice_id FROM audio_voice_slots
+            WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
+        if not slot or not slot["voice_id"]:
+            raise Exception("音色不存在")
+        cur = c.execute("""UPDATE audio_voices
+            SET display_name=?, updated_at=?
+            WHERE id=? AND username=? AND scope='personal'""",
+            (name, now, slot["voice_id"], username))
+        if cur.rowcount < 1:
+            raise Exception("音色不存在")
+        c.execute("UPDATE audio_voice_slots SET updated_at=? WHERE username=? AND slot_id=?",
+                  (now, username, slot_id))
+        c.commit()
+    return {"slot_id": slot_id, "display_name": name, "updated_at": now}
+
 def list_audio_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
@@ -1440,6 +1465,15 @@ class H(BaseHTTPRequestHandler):
             try:
                 slot = redeem_audio_voice_slot(user["username"], body.get("code"))
                 return self._send(200, {"ok": True, "slot": slot})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/audio/voice-name":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            body = self._json_body()
+            try:
+                voice = rename_audio_voice(user["username"], body.get("slot_id"), body.get("name"))
+                return self._send(200, {"ok": True, "voice": voice})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
