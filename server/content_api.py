@@ -199,6 +199,9 @@ def init_audio_db():
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
             ("public", "", "paul", "Paul \u7537\u58f0", VOICE_MAP.get("paul", "echo")),
+            ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
+            ("public", "", "S_l8wE8OR62", "\u516c\u5171\u97f3\u8272 2", "S_l8wE8OR62"),
+            ("public", "", "S_pa0E8OR62", "\u516c\u5171\u97f3\u8272 3", "S_pa0E8OR62"),
         ]
         for scope, username, voice_key, display_name, provider_voice in public:
             c.execute("""INSERT OR IGNORE INTO audio_voices
@@ -746,6 +749,10 @@ def ensure_audio_voice(username, voice_key):
     public_keys = {"dapeng", "zelong", "paul"}
     public_key = voice_key.lower()
     now = int(time.time())
+    with closing(adb()) as c:
+        r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
+                      (voice_key,)).fetchone()
+        if r: return r["id"]
     if public_key in public_keys:
         voice_key = public_key
         with closing(adb()) as c:
@@ -776,6 +783,12 @@ def resolve_audio_provider_voice(username, voice_key):
     voice_key = (voice_key or "dapeng").strip()
     public_keys = {"dapeng", "zelong", "paul"}
     public_key = voice_key.lower()
+    with closing(adb()) as c:
+        r = c.execute("""SELECT provider_voice FROM audio_voices
+            WHERE scope='public' AND username='' AND voice_key=?""",
+            (voice_key,)).fetchone()
+    if r:
+        return r["provider_voice"]
     if public_key in public_keys:
         ensure_audio_voice(username, public_key)
         return VOICE_MAP.get(public_key, VOICE_MAP["dapeng"])
