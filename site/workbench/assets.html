@@ -314,11 +314,11 @@
     var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
     return h;
   }
-  function voiceAssetCard(name, sub, tagText, accent, href, onClick){
+  function voiceAssetCard(name, sub, tagText, accent, href, onClick, previewUrl){
     var w=document.createElement(href?'a':'div');
     if(href) w.href=href;
     if(onClick){ w.tabIndex=0; w.setAttribute('role','button'); }
-    w.style.cssText='min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
+    w.style.cssText='position:relative; min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
     if(onClick){
       w.onclick=onClick;
       w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); onClick(e); } };
@@ -327,7 +327,27 @@
     var title=document.createElement('div'); title.innerHTML='<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">'+name+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">'+sub+'</div>';
     var bars=document.createElement('div'); bars.style.cssText='display:flex; align-items:center; gap:3px; height:20px;';
     [6,13,9,17,11,7,15,10,18,6].forEach(function(n){ var b=document.createElement('span'); b.style.cssText='width:3px; height:'+n+'px; border-radius:2px; background:'+(accent?'rgba(231,178,76,.45)':'rgba(148,164,187,.3)')+';'; bars.appendChild(b); });
-    w.appendChild(tag); w.appendChild(title); w.appendChild(bars); return w;
+    w.appendChild(tag); w.appendChild(title); w.appendChild(bars);
+    if(previewUrl){
+      var playBtn=document.createElement('button');
+      playBtn.type='button';
+      resetPreviewButton(playBtn);
+      playBtn.style.cssText='position:absolute;right:14px;top:14px;width:34px;height:34px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 10px 24px rgba(231,178,76,.18);';
+      playBtn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        if(activePreviewButton===playBtn && activePreviewAudio && !activePreviewAudio.paused){
+          stopActivePreviewAudio();
+          return;
+        }
+        stopActivePreviewAudio();
+        activePreviewAudio=new Audio(freshUrl(previewUrl));
+        activePreviewButton=playBtn;
+        activePreviewAudio.onended=stopActivePreviewAudio;
+        activePreviewAudio.play().then(function(){ setPreviewButtonPlaying(playBtn); }).catch(function(){ stopActivePreviewAudio(); });
+      };
+      w.appendChild(playBtn);
+    }
+    return w;
   }
   function openRenameVoiceModal(slot){
     var old=document.getElementById('renameVoiceModal'); if(old) old.remove();
@@ -792,7 +812,7 @@
             ];
           }
           items.forEach(function(v){
-            grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false));
+            grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false, null, null, v.preview_url));
           });
         })
         .catch(function(){
