@@ -774,6 +774,39 @@
       b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent';
     });
     if(tab==='public'){
+      var loading=document.createElement('div');
+      loading.style.cssText='grid-column:1/-1; padding:18px; border:1px dashed rgba(148,164,187,.14); border-radius:14px; color:#94a4bb; font-size:12.5px; text-align:center;';
+      loading.textContent='正在加载公共音色...';
+      grid.appendChild(loading);
+      fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+        .then(function(r){ if(r.status===401){ HQ.login(); return Promise.reject(); } return r.json(); })
+        .then(function(d){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          var items=(d.items||[]).filter(function(v){ return v.scope==='public'; });
+          if(!items.length){
+            items=[
+              {display_name:'大鹏 IVC',sub:'克隆 · 亲切'},
+              {display_name:'泽龙 IVC',sub:'克隆 · 磁性'},
+              {display_name:'Paul 男声',sub:'官方 · 沉稳'}
+            ];
+          }
+          items.forEach(function(v){
+            grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false));
+          });
+        })
+        .catch(function(){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          [
+            ['大鹏 IVC','克隆 · 亲切','公共音色'],
+            ['泽龙 IVC','克隆 · 磁性','公共音色'],
+            ['Paul 男声','官方 · 沉稳','公共音色']
+          ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+        });
+      return;
+    }
+    if(false && tab==='public'){
       [
         ['大鹏 IVC','克隆 · 亲切','公共音色'],
         ['泽龙 IVC','克隆 · 磁性','公共音色'],
