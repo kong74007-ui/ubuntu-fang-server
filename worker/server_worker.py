@@ -29,7 +29,7 @@ NUMBER_POOL = "/home/ubuntu/number_pool"
 COOKIES_JSON = f"{NUMBER_POOL}/cookie_{WORKER_ID}.json"  # 号池：本 worker 绑定的号
 QG_KEY = os.environ.get("QG_KEY", "55DC9F7E")
 SERVER = os.environ.get("LEADGEN_SERVER", "http://127.0.0.1:8090")
-TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "")
+TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
 STATIC_PROXY = os.environ.get("STATIC_PROXY", "")   # 长效静态代理 user:pass@host:port；设了则搜索优先用(长命→爬得深)
 CMT_LIMIT = os.environ.get("CMT_LIMIT", "100")       # 每视频评论上限
 POLL = 8
@@ -168,10 +168,10 @@ def run_crawl(keyword, count, proxy_server):
     return JSONL_DIR
 
 
-def build_result(jdir):
-    comments = load_jsonl(os.path.join(jdir, "search_comments_*.jsonl"))
+def build_result(jdir, content_prefix="search", comment_prefix="search"):
+    comments = load_jsonl(os.path.join(jdir, f"{comment_prefix}_comments_*.jsonl"))
     titles, hashtags, videos, vid_seen = {}, {}, [], set()
-    for d in load_jsonl(os.path.join(jdir, "search_contents_*.jsonl")):
+    for d in load_jsonl(os.path.join(jdir, f"{content_prefix}_contents_*.jsonl")):
         aid = d.get("aweme_id")
         title = d.get("title") or ""
         if aid:
@@ -224,6 +224,142 @@ def build_result(jdir):
     videos.sort(key=lambda v: v["leads_count"], reverse=True)
     return {"total": len(comments), "leads_count": len(leads), "spam": spam, "chat": chat,
             "leads": leads, "videos": videos, "related_keywords": related}
+
+
+def fetch_xiaotan_video_meta(aweme_id):
+    try:
+        api = "http://127.0.0.1:8501/api/douyin/web/fetch_one_video?aweme_id=" + urllib.parse.quote(str(aweme_id))
+        d = json.loads(urllib.request.urlopen(api, timeout=15).read().decode("utf-8"))
+        detail = ((d.get("data") or {}).get("aweme_detail") or {})
+        if not detail:
+            return None
+        author = detail.get("author") or {}
+        stats = detail.get("statistics") or {}
+        video = detail.get("video") or {}
+        cover = ""
+        for key in ("cover", "origin_cover", "dynamic_cover"):
+            obj = video.get(key) or {}
+            urls = obj.get("url_list") or []
+            if urls:
+                cover = urls[-1]
+                break
+        play_url = ""
+        play = video.get("play_addr") or {}
+        urls = play.get("url_list") or []
+        if urls:
+            play_url = urls[-1]
+        return {
+            "aweme_id": str(detail.get("aweme_id") or aweme_id),
+            "title": detail.get("desc") or "",
+            "nickname": author.get("nickname") or "",
+            "likes": stats.get("digg_count") or detail.get("digg_count") or 0,
+            "comment_count": stats.get("comment_count") or detail.get("comment_count") or 0,
+            "url": "https://www.douyin.com/video/%s" % (detail.get("aweme_id") or aweme_id),
+            "cover": cover,
+            "ip": "",
+            "download_url": play_url,
+            "leads_count": 0,
+        }
+    except Exception as e:
+        log(f"xiaotan video meta fallback failed: {str(e)[:80]}")
+        return None
+
+
+def infer_aweme_id_from_result(res, link):
+    text = str(link or "")
+    if text.isdigit():
+        return text
+    m = re.search(r"(?:modal_id=|/video/)(\d{8,})", text)
+    if m:
+        return m.group(1)
+    for lead in res.get("leads") or []:
+        if lead.get("aweme_id"):
+            return str(lead.get("aweme_id"))
+    for video in res.get("videos") or []:
+        if video.get("aweme_id"):
+            return str(video.get("aweme_id"))
+    return ""
+
+
+def run_video_crawl(link, comment_limit, proxy_server=None):
+    clear_jsonl()
+    cmd = [VENV, MAIN_PY, "--platform", "dy", "--lt", "qrcode", "--type", "detail",
+           "--specified_id", str(link),
+           "--get_comment", "yes", "--get_sub_comment", "no",
+           "--max_comments_count_singlenotes", str(comment_limit),
+           "--save_data_option", "jsonl", "--save_data_path", DATA_DIR,
+           "--headless", "yes"]
+    if proxy_server:
+        cmd += ["--enable_ip_proxy", "yes", "--ip_proxy_provider_name", "static",
+                "--static_proxy_url", f"http://{proxy_server}"]
+    else:
+        cmd += ["--enable_ip_proxy", "no"]
+    subprocess.run(cmd, cwd=WORK_DIR, timeout=420, check=True,
+                   env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return JSONL_DIR
+
+
+def build_video_result(jdir, link):
+    res = build_result(jdir, content_prefix="detail", comment_prefix="detail")
+    if not res.get("videos") and not res.get("total"):
+        alt = build_result(jdir, content_prefix="search", comment_prefix="search")
+        if alt.get("videos") or alt.get("total"):
+            res = alt
+    if not res.get("videos"):
+        aid = infer_aweme_id_from_result(res, link)
+        meta = fetch_xiaotan_video_meta(aid) if aid else None
+        if meta:
+            lc = {}
+            for lead in res.get("leads") or []:
+                if lead.get("aweme_id"):
+                    lc[lead["aweme_id"]] = lc.get(lead["aweme_id"], 0) + 1
+            meta["leads_count"] = lc.get(meta.get("aweme_id"), 0)
+            res["videos"] = [meta]
+    res["type"] = "video"
+    res["input"] = link
+    return res
+
+
+def handle_video(job):
+    jid = job["id"]
+    pl = json.loads(job.get("payload") or "{}")
+    link = pl.get("link") or job.get("keyword")
+    limit = int(pl.get("comment_limit") or job.get("count") or CMT_LIMIT or 100)
+    limit = max(20, min(limit, 500))
+    for attempt in range(1, 3):
+        try:
+            if STATIC_PROXY and attempt == 1:
+                server = STATIC_PROXY
+                log(f"[job {jid}] video mode attempt {attempt} static proxy {STATIC_PROXY.rsplit('@', 1)[-1]}")
+            else:
+                server, pxip, area, isp = extract_qg()
+                log(f"[job {jid}] video mode attempt {attempt} short proxy {pxip} {area}{isp}")
+            if not prep_login(server):
+                log(f"[job {jid}] login prep failed, retry")
+                continue
+            log(f"[job {jid}] crawl specified video {str(link)[:80]} comment_limit={limit}")
+            crawl_ok = True
+            try:
+                run_video_crawl(link, limit, server)
+            except subprocess.CalledProcessError:
+                crawl_ok = False
+            res = build_video_result(JSONL_DIR, link)
+            got = res.get("total", 0) > 0 or len(res.get("videos") or []) > 0
+            if not got and attempt < 2:
+                log(f"[job {jid}] video mode got no data, retry")
+                continue
+            if not crawl_ok and got:
+                log(f"[job {jid}] video crawler exited nonzero but partial data is usable")
+            log(f"[job {jid}] video done leads={res.get('leads_count', 0)} comments={res.get('total', 0)} videos={len(res.get('videos') or [])}")
+            http_post("/api/complete", {"token": TOKEN, "job_id": jid,
+                                        "result": json.dumps(res, ensure_ascii=False)})
+            return
+        except Exception as e:
+            log(f"[job {jid}] video attempt {attempt} error {str(e)[:90]}")
+            if attempt >= 2:
+                raise
+    raise RuntimeError("specified video crawl failed")
 
 
 def handle_search(job):
@@ -468,6 +604,8 @@ def main():
                     handle_download(job)
                 elif mode == "account":
                     handle_account(job)
+                elif mode == "video":
+                    handle_video(job)
                 else:
                     handle_search(job)
             except subprocess.TimeoutExpired:
