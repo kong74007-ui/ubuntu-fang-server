@@ -37,8 +37,12 @@
   .motion-panel{margin-top:22px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:18px}
   .motion-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
   .motion-drop{height:188px;border:1px dashed rgba(148,164,187,.24);border-radius:14px;background:rgba(148,164,187,.04);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:#94a4bb}
+  .motion-drop{position:relative;cursor:pointer;overflow:hidden;transition:.16s}
+  .motion-drop:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
   .motion-drop strong{color:#eaf1fa;font-size:13.5px}
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
+  .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
   .form-grid{--video-input-height:168px;display:grid;grid-template-columns:calc(var(--video-input-height) * .75) 1fr;gap:16px;margin-top:22px;align-items:start}
   .upload-box{position:relative;height:var(--video-input-height);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:16px;border:1px dashed rgba(148,164,187,.26);background:rgba(148,164,187,.04);border-radius:14px;color:#94a4bb;cursor:pointer;overflow:hidden;transition:.16s}
   .upload-box:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
@@ -257,18 +261,24 @@
             <div class="label">动作模仿</div>
             <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考动作视频，生成同款动作视频</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">待接入</span>
+          <span class="faint" style="font-size:11.5px;">参考动作，不是逐帧复制</span>
         </div>
         <div class="motion-grid">
-          <div class="motion-drop">
+          <label id="motionImageDrop" class="motion-drop">
+            <input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
             <strong>人物形象图片</strong>
             <span>上传需要生成动作视频的人物形象</span>
-          </div>
-          <div class="motion-drop">
+          </label>
+          <label id="motionVideoDrop" class="motion-drop">
+            <input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
             <strong>参考动作视频</strong>
             <span>上传要模仿的动作、节奏和画面参考</span>
-          </div>
+          </label>
         </div>
+        <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成动作模仿视频
+        </button>
+        <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
       </div>
     </section>
 
@@ -347,6 +357,7 @@
   var token=localStorage.getItem('hq_token')||'';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
+  var motionImageData='', motionReferenceVideoData='';
   var publicFallback=[
     {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
     {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
@@ -357,6 +368,10 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
+  function setVideoStatus(msg){
+    if($('statusText')) $('statusText').textContent=msg;
+    if($('motionStatus')) $('motionStatus').textContent=msg;
+  }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
   function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
   function setOutputImage(src){
@@ -491,9 +506,12 @@
       .catch(function(){});
   }
   function setBusy(on){
-    $('generateBtn').disabled=on;
-    $('generateBtn').style.opacity=on?'.72':'1';
-    $('generateBtn').style.cursor=on?'wait':'pointer';
+    ['generateBtn','motionGenerateBtn'].forEach(function(id){
+      var btn=$(id); if(!btn) return;
+      btn.disabled=on;
+      btn.style.opacity=on?'.72':'1';
+      btn.style.cursor=on?'wait':'pointer';
+    });
   }
   function readFileData(file){
     return new Promise(function(resolve,reject){
@@ -657,6 +675,31 @@
   };
   }
   bindImageInput($('imageFile'));
+  function bindMotionFile(input, type){
+    input.onchange=function(){
+      var f=this.files&&this.files[0]; if(!f) return;
+      var url=URL.createObjectURL(f);
+      var box=type==='image' ? $('motionImageDrop') : $('motionVideoDrop');
+      readFileData(f).then(function(data){
+        if(type==='image'){
+          motionImageData=data;
+          setOutputImage(url);
+        }else{
+          motionReferenceVideoData=data;
+        }
+      }).catch(function(e){toast(e.message||'文件读取失败');});
+      box.classList.add('has-media');
+      if(type==='image'){
+        box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
+        bindMotionFile(box.querySelector('input'),'image');
+      }else{
+        box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+url+'" muted playsinline></video>';
+        bindMotionFile(box.querySelector('input'),'video');
+      }
+    };
+  }
+  bindMotionFile($('motionImageFile'),'image');
+  bindMotionFile($('motionVideoFile'),'video');
   $('audioFile').onchange=function(){
     var f=this.files&&this.files[0];
     if(f){
@@ -674,16 +717,53 @@
           setBusy(false);
           renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
           setTimeout(loadVideoHistory,800);
-          $('statusText').textContent='任务已创建，已保存到视频资产';
+          setVideoStatus('任务已创建，已保存到视频资产');
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
           return;
         }
         if(d.status==='error') throw new Error(d.error||'生成失败');
         if(tries<600){setTimeout(function(){pollJob(id,tries+1);},3000);}
-        else{setBusy(false);loadVideoHistory();$('statusText').textContent='任务仍在后台生成，请稍后到视频资产查看';}
+        else{setBusy(false);loadVideoHistory();setVideoStatus('任务仍在后台生成，请稍后到视频资产查看');}
       })
-      .catch(function(e){setBusy(false);$('statusText').textContent=e.message||'提交失败';toast($('statusText').textContent);});
+      .catch(function(e){setBusy(false);setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');});
+  }
+  function submitMotionVideo(){
+    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
+    if(!motionImageData){ toast('请先上传人物形象图片'); return; }
+    if(!motionReferenceVideoData){ toast('请先上传参考动作视频'); return; }
+    setBusy(true);
+    setOutputImage(motionImageData);
+    if($('outputText')) $('outputText').textContent='动作模仿视频生成记录';
+    if($('outputMotion')) $('outputMotion').textContent='动作模仿';
+    if($('outputRatio')) $('outputRatio').textContent='9:16';
+    if($('outputDuration')) $('outputDuration').textContent='生成中';
+    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='动作模仿视频正在生成中<br>完成后会自动预览';
+    renderVideoHistory([{image_url:motionImageData,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',created_at:Math.floor(Date.now()/1000)}]);
+    setVideoStatus('正在提交动作模仿任务...');
+    fetch('/api/gen/video',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        mode:'motion',
+        image_data:motionImageData,
+        reference_video_data:motionReferenceVideoData,
+        text:'动作模仿视频',
+        resolution:'720p',
+        ratio:'9:16',
+        duration:10,
+        motion:'medium'
+      })
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        setVideoStatus('动作模仿任务已提交...');
+        setTimeout(loadVideoHistory,700);
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){setBusy(false);setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');});
   }
   function submitVideo(){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
@@ -702,7 +782,7 @@
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
     if($('outputDownload')){$('outputDownload').href='#';$('outputDownload').style.pointerEvents='none';$('outputDownload').style.opacity='.45';}
     renderVideoHistory([{image_url:imageData,text:text||'视频生成记录',ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)}]);
-    $('statusText').textContent='正在提交视频任务...';
+    setVideoStatus('正在提交视频任务...');
     fetch('/api/gen/video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -720,14 +800,15 @@
       .then(function(res){
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        $('statusText').textContent='视频任务已提交...';
+        setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
         pollJob(res.data.job_id,0);
       })
-      .catch(function(e){setBusy(false);$('statusText').textContent=e.message||'提交失败';toast($('statusText').textContent);});
+      .catch(function(e){setBusy(false);setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');});
     }).catch(function(e){setBusy(false);toast(e.message||'配音资产读取失败');});
   };
   $('generateBtn').onclick=submitVideo;
+  $('motionGenerateBtn').onclick=submitMotionVideo;
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
   loadVoices();
