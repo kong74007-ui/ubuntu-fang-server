@@ -861,8 +861,8 @@
         "tags": [
           "视频"
         ],
-        "summary": "HeyGen 数字人视频(图+音→视频)",
-        "description": "异步。mode=text:文案+音色生配音;mode=audio:直接导入音频。image_data 必填(data URL)。",
+        "summary": "HeyGen 数字人视频(图+音→视频) · 默认20点",
+        "description": "异步。提交前校验参数,校验失败直接 400,不创建任务。mode=text: image_data + text + voice 必填; mode=audio: image_data + audio_data 必填。image_data/audio_data 必须是合法 data URL。",
         "requestBody": {
           "required": true,
           "content": {
@@ -950,6 +950,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JobAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误：非法 JSON、缺少 image_data、mode 不支持、mode=text 缺 text/voice、mode=audio 缺 audio_data、素材不是合法图片/音频、resolution/ratio/motion 不支持",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或 token 无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "点数不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "HeyGen / TTS 等上游视频服务失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
