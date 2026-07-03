@@ -344,38 +344,54 @@ def ch_id_to_username(channel_id):
     return {"username": d.get("username"), "nickname": d.get("nickname"), "desc": d.get("desc")}
 
 def ch_user_videos(username, last_buffer=""):
-    d = _p(CH + "/fetch_user_videos", username=username, raw=False, last_buffer=last_buffer)
+    d = _p(CH + "/fetch_user_videos", username=username, raw=True, last_buffer=last_buffer)  # raw=False 裁掉 objectDesc.media(无播放地址/decodeKey)，视频号下载必须 raw=True
     items = []
     for v in (d.get("videos") or []):
-        media = v.get("media") or {}
+        # 视频号列表项的视频信息藏在 objectDesc.media[0]（与 detail 同构）；个别字段在顶层。
+        od = v.get("objectDesc") or {}
+        m = (od.get("media") or [{}])[0] if od.get("media") else (v.get("media") or {})
+        title = od.get("description") or v.get("title") or ""
         items.append({
-            "platform": "channels", "id": v.get("id"),
-            "url": None, "title": v.get("title"),
-            "cover": media.get("cover_url"),
+            "platform": "channels", "id": v.get("id") or od.get("id"),
+            "url": None, "title": title,
+            "cover": m.get("coverUrl") or m.get("cover_url") or m.get("thumbUrl"),
             "author": d.get("nickname"), "author_id": d.get("username"),
-            "like": v.get("like_count"), "comment": v.get("comment_count"),
-            "duration": media.get("duration"), "note_type": "video",
+            "like": v.get("like_count") or od.get("likeCount"),
+            "comment": v.get("comment_count") or od.get("commentCount"),
+            # 视频号下载：url + urlToken 拼接才是带签名 token 的可下载直链(单 url 缺 token 会 400)。
+            "play_url": _ch_play_url(m),
+            "decode_key": str(m.get("decodeKey") or ""),  # 视频号流加密的 Isaac64 解密密钥，下载代理需用它解密才能播放
+            "duration": m.get("videoPlayLen") or m.get("duration"), "note_type": "video",
         })
     return {"items": items, "nickname": d.get("nickname"), "username": d.get("username"),
             "last_buffer": d.get("last_buffer"), "has_more": d.get("up_continue")}
 
+def _ch_play_url(media):
+    """视频号可下载直链 = url + urlToken 拼接。TikHub 把直链拆两段：url(缺 token，单用 400) + urlToken('&token=...&sign=...')。
+    优先 nonWatermarkUrl(无水印)，其次 url。地址带 encfilekey+token 时效，详情 1h 内安全。"""
+    base = media.get("nonWatermarkUrl") or media.get("url") or media.get("fullUrl") or ""
+    return (base + (media.get("urlToken") or "")) if base else None
+
 def ch_detail(object_id):
     s = str(object_id)
     loc = {"share_url": s} if ("://" in s or "weixin" in s) else {"object_id": s}
-    d = _p(CH + "/fetch_video_detail", raw=False, **loc)
-    media = d.get("media") or {}
-    title = d.get("title") or ""
+    d = _p(CH + "/fetch_video_detail", raw=True, **loc)  # raw=False 会裁掉 objectDesc.media(无播放地址)，视频号下载必须 raw=True
+    obj = d.get("objectDesc") or {}
+    media = (obj.get("media") or [{}])[0] or {}  # 视频号真实字段都在 objectDesc.media[0]
+    title = obj.get("description") or obj.get("shortTitle") or ""
+    play = _ch_play_url(media)
     return {
         "platform": "channels", "id": d.get("id") or object_id, "url": None,
         "title": title, "desc": title, "tags": _tags_from_text(title),
         "author": {"name": d.get("nickname"), "id": d.get("username"),
                    "fans": None, "ip": None, "signature": None},
-        "stats": {"like": d.get("like_count"), "comment": d.get("comment_count"),
-                  "share": d.get("forward_count"), "collect": d.get("fav_count")},
-        "cover": media.get("cover_url"),
-        # ponytail: 视频号下载地址加密(decode_key)+时效，v1 不接口播 ASR；评论/文案已够获客用。
-        "play_url": None, "subtitle_url": None, "decode_key": media.get("decode_key"),
-        "duration": media.get("duration"), "publish_time": d.get("create_time"),
+        "stats": {"like": d.get("likeCount"), "comment": d.get("commentCount"),
+                  "share": d.get("forwardCount"), "collect": d.get("favCount")},
+        "cover": _url0(media.get("coverUrl") or media.get("fullCoverUrl")),
+        "play_url": play,  # 视频号下载直链(有时效，详情 1h 内安全)；None 时前端不显示下载按钮
+        "subtitle_url": None, "decode_key": media.get("decodeKey"),
+        "duration": media.get("videoPlayLen") or media.get("duration"),
+        "publish_time": d.get("createtime"),
         "note_type": "video",
     }
 
@@ -449,11 +465,14 @@ def search(platform, keyword, page=1, video_only=True, fresh=False):
 
 def detail(platform, id_or_url, note_type="video", fresh=False):
     key = "det:%s:%s" % (platform, id_or_url)
-    if not fresh:
+    # ponytail: 视频号不缓存 detail(读/写都不)——play_url(url+urlToken) 带时效且需新鲜直链解密，
+    # 旧缓存(play_url=None)会让下载按钮永远不显示；抖音/小红书 detail 固定，照常缓存 1h。
+    if not fresh and platform != "channels":
         hit = _cache_get(key)
         if hit is not None: return hit
     r = _detail(platform, id_or_url, note_type=note_type)
-    _cache_set(key, r, 3600)
+    if platform != "channels":
+        _cache_set(key, r, 3600)
     return r
 
 def comments(platform, id_or_url, cursor=None, count=20, fresh=False):
@@ -499,6 +518,8 @@ def _whisper(mp4_bytes, filename="v.mp4"):
 
 def transcript(det):
     """det = detail() 的返回。返回 {text, source} 或 None。"""
+    if det.get("platform") == "channels":
+        return None  # 视频号流加密(Isaac64)，whisper 解不了；play_url 有值也别走 ASR，否则下载加密流必报 expected string
     if det.get("subtitle_url"):  # 小红书视频笔记白送逐字稿
         try:
             return {"text": _srt_to_text(_http_get(det["subtitle_url"]).decode("u8", "ignore")), "source": "subtitle"}
@@ -509,7 +530,7 @@ def transcript(det):
             return {"text": _whisper(_http_get(det["play_url"])), "source": "asr"}
         except Exception as e:
             raise TikHubError("ASR 失败：" + str(e)[:120])
-    return None  # 视频号加密，v1 无口播
+    return None
 
 
 # ====================================================================

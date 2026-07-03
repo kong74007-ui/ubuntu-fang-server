@@ -37,6 +37,7 @@ MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
 BASE_COST   = {"nb2": {"std": 10, "hd": 14}, "pro": {"std": 18, "hd": 26}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 def _clean_b64(value):
     raw = (value or "").strip()
@@ -49,9 +50,11 @@ def _validate_b64_image(body, field):
     if not raw:
         return
     try:
-        base64.b64decode(raw, validate=True)
+        decoded = base64.b64decode(raw, validate=True)
     except Exception:
         raise ValueError("%s 必须是合法 base64" % field)
+    if len(decoded) > MAX_IMAGE_BYTES:
+        raise ValueError("图片太大，请压缩到 10MB 以内后重试")
     body[field] = raw
 
 def validate_banana_payload(body):
