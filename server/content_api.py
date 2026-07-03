@@ -1311,6 +1311,30 @@ def _heygen_upload_asset(file_path):
         raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return asset_id
 
+def _ensure_heygen_audio_mp3(audio_path):
+    path = pathlib.Path(audio_path)
+    if path.suffix.lower() == ".mp3":
+        return path
+    out = AUDIO_OUT_DIR / ("heygen_audio_%d.mp3" % int(time.time() * 1000))
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-vn", "-acodec", "libmp3lame", "-ar", "24000", "-ac", "1", "-b:a", "128k",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise ValueError("服务器未安装 ffmpeg，无法转换上传音频格式")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[:220]
+        raise ValueError("音频格式转换失败，请重新上传 mp3 音频" + (": " + detail if detail else ""))
+    except subprocess.TimeoutExpired:
+        raise ValueError("音频格式转换超时，请重新上传更短的 mp3 音频")
+    if not out.exists() or out.stat().st_size <= 0:
+        raise ValueError("音频格式转换失败，请重新上传 mp3 音频")
+    return out
+
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
     title = "huangque video %d" % int(time.time())
     body = json.dumps({
@@ -1366,6 +1390,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
+    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     image_asset_id = _heygen_upload_asset(image_fp)
     audio_asset_id = _heygen_upload_asset(audio_fp)
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
