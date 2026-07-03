@@ -448,7 +448,8 @@
       var card=document.createElement('div');
       card.className='history-item';
       var image=x.image_url||'../assets/cloud/logo-bird.png';
-      var head='<div class="history-head"><img class="history-thumb" src="'+esc(image)+'" alt="">'
+      var isMotion=x.mode==='motion';
+      var head=isMotion?'':'<div class="history-head"><img class="history-thumb" src="'+esc(image)+'" alt="">'
         +'<button class="history-audio" type="button" title="播放口播音频">'
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>';
@@ -740,7 +741,7 @@
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='动作模仿视频正在生成中<br>完成后会自动预览';
-    renderVideoHistory([{image_url:motionImageData,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',created_at:Math.floor(Date.now()/1000)}]);
+    renderVideoHistory([{mode:'motion',image_url:motionImageData,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',created_at:Math.floor(Date.now()/1000)}]);
     setVideoStatus('正在提交动作模仿任务...');
     fetch('/api/gen/video',{
       method:'POST',
