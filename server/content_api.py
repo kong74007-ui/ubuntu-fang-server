@@ -12,16 +12,11 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, hashlib, io
+import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
-
-try:
-    from PIL import Image
-except Exception:
-    Image = None
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -185,6 +180,7 @@ def init_audio_db():
             mode TEXT NOT NULL,
             image_file TEXT,
             audio_file TEXT,
+            reference_video_file TEXT,
             video_file TEXT,
             video_url TEXT,
             text TEXT,
@@ -192,6 +188,14 @@ def init_audio_db():
             resolution TEXT,
             ratio TEXT,
             motion TEXT,
+            phase TEXT,
+            image_asset_id TEXT,
+            audio_asset_id TEXT,
+            reference_asset_id TEXT,
+            provider_video_id TEXT,
+            provider_avatar_id TEXT,
+            provider_avatar_group_id TEXT,
+            source_video_url TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             error TEXT,
             created_at INTEGER NOT NULL,
@@ -208,18 +212,26 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
-        public = public_audio_voice_defs()
-        for scope, username, voice_key, display_name, provider_voice, preview_file, preview_url in public:
+        _ensure_column(c, "video_assets", "reference_video_file", "TEXT")
+        _ensure_column(c, "video_assets", "phase", "TEXT")
+        _ensure_column(c, "video_assets", "image_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "audio_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "reference_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_video_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
+        _ensure_column(c, "video_assets", "source_video_url", "TEXT")
+        public = [
+            ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
+            ("public", "", "S_l8wE8OR62", "\u516c\u5171\u97f3\u8272 2", "S_l8wE8OR62"),
+            ("public", "", "S_pa0E8OR62", "\u516c\u5171\u97f3\u8272 3", "S_pa0E8OR62"),
+            ("public", "", "S_xaUB8OR62", "\u516c\u5171\u97f3\u8272 4", "S_xaUB8OR62"),
+        ]
+        for scope, username, voice_key, display_name, provider_voice in public:
             c.execute("""INSERT OR IGNORE INTO audio_voices
-                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, now, now))
-            c.execute("""UPDATE audio_voices
-                SET display_name=?, provider_voice=?, preview_file=?, preview_url=?, updated_at=?
-                WHERE scope=? AND username=? AND voice_key=?""",
-                (display_name, provider_voice, preview_file, preview_url, now, scope, username, voice_key))
-        c.execute("""DELETE FROM audio_voices
-            WHERE scope='public' AND username='' AND voice_key IN ('dapeng','zelong','paul')""")
+                (scope, username, voice_key, display_name, provider_voice, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?)""",
+                (scope, username, voice_key, display_name, provider_voice, now, now))
         c.commit()
     backfill_audio_assets()
 
@@ -337,16 +349,7 @@ def list_user_audio_voice_slots(username):
         items.append(d)
     return items
 
-def audio_slots_response(username):
-    items = list_user_audio_voice_slots(username)
-    return {
-        "items": items,
-        "total": len(items),
-        "can_redeem": True,
-        "message": "" if items else "暂无音色克隆槽位",
-    }
-
-def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=0, pitch_rate=0, purpose="preview"):
+def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=0, pitch_rate=0):
     text = (text or "\u4f60\u597d\uff0c\u8fd9\u662f\u6211\u7684\u4e13\u5c5e\u590d\u523b\u97f3\u8272\u8bd5\u542c\u3002\u58f0\u97f3\u6e05\u6670\u81ea\u7136\uff0c\u9002\u5408\u7528\u4e8e\u77ed\u89c6\u9891\u53e3\u64ad\u548c\u6587\u6848\u914d\u97f3\u3002").strip()
     reqid = "hq_preview_%d" % int(time.time() * 1000)
     body = json.dumps({
@@ -413,8 +416,7 @@ def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=
             pass
     if not chunks:
         raise ValueError("\u8bd5\u542c\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a")
-    prefix = "aud" if purpose == "asset" else "voice_preview"
-    fn = "audio/%s_%d.mp3" % (prefix, int(time.time() * 1000))
+    fn = "audio/voice_preview_%d.mp3" % int(time.time() * 1000)
     _out_path(fn).write_bytes(b"".join(chunks))
     return {"file": fn, "url": _file_url(fn), "text": text}
 
@@ -767,30 +769,25 @@ def clone_vip_voice(username, payload):
 
 def ensure_audio_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or DEFAULT_PUBLIC_VOICE).strip()
-    if voice_key.lower() in OBSOLETE_PUBLIC_VOICE_KEYS:
-        raise ValueError("该预设音色已下架，请重新选择音色")
-    public_keys = set(PUBLIC_VOICE_KEYS)
+    voice_key = (voice_key or "S_d21F8OR62").strip()
+    public_keys = set()  # dapeng/zelong/paul removed
     public_key = voice_key.lower()
-    if voice_key in public_keys:
-        public_key = voice_key
     now = int(time.time())
     with closing(adb()) as c:
         r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
                       (voice_key,)).fetchone()
-        if r and voice_key in public_keys: return r["id"]
+        if r: return r["id"]
     if public_key in public_keys:
         voice_key = public_key
         with closing(adb()) as c:
             r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
                           (voice_key,)).fetchone()
             if r: return r["id"]
-            display = PUBLIC_VOICE_LABELS.get(voice_key, voice_key)
+            display = voice_key
             cur = c.execute("""INSERT INTO audio_voices
-                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, created_at, updated_at)
-                VALUES('public','',?,?,?,?,?,?,?)""",
-                (voice_key, display, VOICE_MAP.get(voice_key, "alloy"),
-                 _public_preview_file(voice_key), _public_preview_url(voice_key), now, now))
+                (scope, username, voice_key, display_name, provider_voice, created_at, updated_at)
+                VALUES('public','',?,?,?,?,?)""",
+                (voice_key, display, VOICE_MAP.get(voice_key, "alloy"), now, now))
             c.commit()
             return cur.lastrowid
     with closing(adb()) as c:
@@ -807,22 +804,18 @@ def ensure_audio_voice(username, voice_key):
 
 def resolve_audio_provider_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or DEFAULT_PUBLIC_VOICE).strip()
-    if voice_key.lower() in OBSOLETE_PUBLIC_VOICE_KEYS:
-        raise ValueError("该预设音色已下架，请重新选择音色")
-    public_keys = set(PUBLIC_VOICE_KEYS)
+    voice_key = (voice_key or "S_d21F8OR62").strip()
+    public_keys = set()  # dapeng/zelong/paul removed
     public_key = voice_key.lower()
-    if voice_key in public_keys:
-        public_key = voice_key
     with closing(adb()) as c:
         r = c.execute("""SELECT provider_voice FROM audio_voices
             WHERE scope='public' AND username='' AND voice_key=?""",
             (voice_key,)).fetchone()
-    if r and voice_key in public_keys:
+    if r:
         return r["provider_voice"]
     if public_key in public_keys:
         ensure_audio_voice(username, public_key)
-        return public_key
+        return VOICE_MAP.get(public_key, "alloy")
     if voice_key == "personal":
         ensure_audio_voice(username, voice_key)
         return VOICE_MAP.get("personal", "alloy")
@@ -838,8 +831,8 @@ def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
         return
     now = int(time.time())
-    raw_voice_key = (result.get("voice") or DEFAULT_PUBLIC_VOICE).strip()
-    voice_key = raw_voice_key
+    raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
+    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
     voice_id = ensure_audio_voice(username, voice_key)
     with closing(adb()) as c:
         c.execute("""INSERT OR REPLACE INTO audio_assets
@@ -864,14 +857,11 @@ def backfill_audio_assets():
         pass
 
 def list_audio_voices(username):
-    public_keys = list(PUBLIC_VOICE_KEYS)
-    placeholders = ",".join("?" for _ in public_keys)
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, slot_id, created_at, updated_at
             FROM audio_voices
-            WHERE (scope='public' AND username='' AND voice_key IN (%s)) OR (scope='personal' AND username=?)
-            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""" % placeholders,
-            tuple(public_keys) + (username,)).fetchall()
+            WHERE scope='public' OR (scope='personal' AND username=?)
+            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
     return [dict(r) for r in rows]
 
 def rename_audio_voice(username, slot_id, display_name):
@@ -899,18 +889,8 @@ def rename_audio_voice(username, slot_id, display_name):
         c.commit()
     return {"slot_id": slot_id, "display_name": name, "updated_at": now}
 
-def parse_limit(value, default=120, minv=1, maxv=120):
-    raw = str(value if value is not None else default).strip()
-    try:
-        limit = int(raw)
-    except Exception:
-        raise ValueError("limit 必须是 1-120 的整数")
-    if limit < minv or limit > maxv:
-        raise ValueError("limit 必须是 1-120 的整数")
-    return limit
-
 def list_audio_assets(username, limit=120):
-    limit = parse_limit(limit)
+    limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
                    a.speed, a.pitch, a.volume, a.created_at, v.display_name AS voice_name, v.preview_url
@@ -918,30 +898,80 @@ def list_audio_assets(username, limit=120):
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=?
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
-    items = []
-    for r in rows:
-        d = dict(r)
-        if d.get("voice_key") in OBSOLETE_PUBLIC_VOICE_KEYS and not d.get("voice_name"):
-            d["voice_name"] = "%s（已下架）" % {
-                "dapeng": "大鹏 IVC",
-                "zelong": "泽龙 IVC",
-                "paul": "Paul 男声",
-            }.get(d.get("voice_key"), "已下架音色")
-        items.append(d)
-    return items
+    return [dict(r) for r in rows]
 
 def record_video_asset(job_id, username, result):
     now = int(time.time())
     with closing(adb()) as c:
-        c.execute("""INSERT OR REPLACE INTO video_assets
-            (job_id, username, mode, image_file, audio_file, video_file, video_url, text, voice_key,
-             resolution, ratio, motion, status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO video_assets
+            (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
+             resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id, provider_video_id,
+             provider_avatar_id, provider_avatar_group_id, source_video_url, status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                mode=COALESCE(excluded.mode, video_assets.mode),
+                image_file=COALESCE(excluded.image_file, video_assets.image_file),
+                audio_file=COALESCE(excluded.audio_file, video_assets.audio_file),
+                reference_video_file=COALESCE(excluded.reference_video_file, video_assets.reference_video_file),
+                video_file=COALESCE(excluded.video_file, video_assets.video_file),
+                video_url=COALESCE(excluded.video_url, video_assets.video_url),
+                text=COALESCE(excluded.text, video_assets.text),
+                voice_key=COALESCE(excluded.voice_key, video_assets.voice_key),
+                resolution=COALESCE(excluded.resolution, video_assets.resolution),
+                ratio=COALESCE(excluded.ratio, video_assets.ratio),
+                motion=COALESCE(excluded.motion, video_assets.motion),
+                phase=COALESCE(excluded.phase, video_assets.phase),
+                image_asset_id=COALESCE(excluded.image_asset_id, video_assets.image_asset_id),
+                audio_asset_id=COALESCE(excluded.audio_asset_id, video_assets.audio_asset_id),
+                reference_asset_id=COALESCE(excluded.reference_asset_id, video_assets.reference_asset_id),
+                provider_video_id=COALESCE(excluded.provider_video_id, video_assets.provider_video_id),
+                provider_avatar_id=COALESCE(excluded.provider_avatar_id, video_assets.provider_avatar_id),
+                provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, video_assets.provider_avatar_group_id),
+                source_video_url=COALESCE(excluded.source_video_url, video_assets.source_video_url),
+                status=COALESCE(excluded.status, video_assets.status),
+                error=excluded.error,
+                updated_at=excluded.updated_at""",
             (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
-             result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
-             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
-             result.get("error"), now, now))
+             result.get("reference_video_file"), result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
+             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("phase"),
+             result.get("image_asset_id"), result.get("audio_asset_id"), result.get("reference_asset_id"),
+             result.get("provider_video_id") or result.get("video_id"), result.get("provider_avatar_id") or result.get("avatar_item_id"),
+             result.get("provider_avatar_group_id") or result.get("avatar_group_id"), result.get("source_video_url"),
+             result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
+
+def update_video_asset_phase(job_id, phase, **fields):
+    if not job_id:
+        return
+    now = int(time.time())
+    allowed = {
+        "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
+        "text", "voice_key", "resolution", "ratio", "motion", "image_asset_id",
+        "audio_asset_id", "reference_asset_id", "provider_video_id", "provider_avatar_id",
+        "provider_avatar_group_id", "source_video_url", "status", "error"
+    }
+    if "voice" in fields and "voice_key" not in fields:
+        fields["voice_key"] = fields.pop("voice")
+    updates = {"phase": phase, "status": fields.pop("status", "running")}
+    if "error" in fields:
+        updates["error"] = fields.pop("error")
+    for k, v in fields.items():
+        if k in allowed and v is not None:
+            updates[k] = v
+    sets = ", ".join("%s=?" % k for k in updates)
+    vals = list(updates.values()) + [now, job_id]
+    try:
+        with closing(adb()) as c:
+            c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
+            c.commit()
+    except Exception:
+        pass
+    try:
+        with closing(jdb()) as c:
+            c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'", (now, job_id))
+            c.commit()
+    except Exception:
+        pass
 
 def record_video_pending_asset(job_id, username, payload):
     record_video_asset(job_id, username, {
@@ -951,14 +981,17 @@ def record_video_pending_asset(job_id, username, payload):
         "resolution": payload.get("resolution") or "1080p",
         "ratio": payload.get("ratio") or "9:16",
         "motion": payload.get("motion") or "medium",
+        "phase": "queued",
         "status": "running",
     })
 
 def list_video_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
-        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, video_file, video_url,
-                   text, voice_key, resolution, ratio, motion, status, error, created_at, updated_at
+        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
+                   text, voice_key, resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id,
+                   provider_video_id, provider_avatar_id, provider_avatar_group_id, source_video_url,
+                   status, error, created_at, updated_at
             FROM video_assets
             WHERE username=?
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
@@ -993,99 +1026,7 @@ def verify(token):
 
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
-def _clean_b64(value):
-    raw = (value or "").strip()
-    if raw.startswith("data:") and "," in raw:
-        raw = raw.split(",", 1)[1]
-    return "".join(raw.split())
-
-def _require_b64_image(body, field):
-    raw = _clean_b64(body.get(field))
-    if not raw:
-        return
-    try:
-        base64.b64decode(raw, validate=True)
-    except Exception:
-        raise ValueError("%s 必须是合法 base64；文生图请不要传 image/mask" % field)
-    body[field] = raw
-
-def validate_submit_payload(kind, body):
-    if not isinstance(body, dict):
-        raise ValueError("请求体必须是 JSON 对象")
-    if kind != "image":
-        return body
-    prompt = (body.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("提示词不能为空")
-    if len(prompt) > 2000:
-        raise ValueError("提示词不能超过 2000 字")
-    ratio = (body.get("ratio") or "1:1").strip()
-    if ratio not in SIZES:
-        raise ValueError("ratio 仅支持: " + ", ".join(SIZES))
-    provider = (body.get("provider") or "openai").strip().lower()
-    if provider not in {"openai", "zelong"}:
-        raise ValueError("provider 仅支持 openai/zelong")
-    if body.get("mask") and not body.get("image"):
-        raise ValueError("使用 mask 局部修改时必须同时传 image")
-    body["prompt"] = prompt
-    body["ratio"] = ratio
-    body["provider"] = provider
-    _require_b64_image(body, "image")
-    _require_b64_image(body, "mask")
-    try:
-        if "count" in body:
-            body["count"] = max(1, min(4, int(body.get("count") or 1)))
-    except Exception:
-        raise ValueError("count 必须是数字")
-    return body
-
-def redact_payload_for_response(payload_text):
-    try:
-        payload = json.loads(payload_text or "{}")
-    except Exception:
-        return payload_text
-    for field in ("image", "mask", "audio", "audio_data", "image_data"):
-        if field in payload and payload[field]:
-            payload[field] = "[hidden]"
-    return json.dumps(payload, ensure_ascii=False)
-
-SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "900x1200"}
-
-def _parse_image_size(size):
-    try:
-        w, h = (int(x) for x in str(size).lower().split("x", 1))
-        if w > 0 and h > 0:
-            return w, h
-    except Exception:
-        pass
-    return None
-
-def _normalize_image_bytes(raw, size):
-    target = _parse_image_size(size)
-    if not target or Image is None:
-        return raw, None
-    tw, th = target
-    with Image.open(io.BytesIO(raw)) as im:
-        im.load()
-        mode = "RGBA" if im.mode in ("RGBA", "LA") else "RGB"
-        im = im.convert(mode)
-        sw, sh = im.size
-        src_ratio = sw / sh
-        dst_ratio = tw / th
-        if abs(src_ratio - dst_ratio) > 0.001:
-            if src_ratio > dst_ratio:
-                nw = int(sh * dst_ratio)
-                left = max(0, (sw - nw) // 2)
-                im = im.crop((left, 0, left + nw, sh))
-            else:
-                nh = int(sw / dst_ratio)
-                top = max(0, (sh - nh) // 2)
-                im = im.crop((0, top, sw, top + nh))
-        resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
-        im = im.resize((tw, th), resample)
-        out = io.BytesIO()
-        im.save(out, format="PNG")
-        return out.getvalue(), {"width": tw, "height": th}
+SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
 
 def _multipart(fields, files):
     """手搓 multipart/form-data；files=[(name, filename, bytes)]"""
@@ -1103,21 +1044,8 @@ def _post(path, data, ctype, base=None, key=None, proxy=True):
     req = urllib.request.Request((base or OPENAI_BASE) + path, data=data,
                                  headers={"Authorization": "Bearer " + (key or OPENAI_KEY), "Content-Type": ctype}, method="POST")
     if proxy:
-        last = None
-        for attempt in range(2):
-            try:
-                with urllib.request.urlopen(req, timeout=300) as r:
-                    return json.loads(r.read())
-            except Exception as e:
-                last = e
-                msg = str(e)
-                transient = ("Remote end closed connection" in msg or
-                             "Connection reset" in msg or
-                             "timed out" in msg)
-                if not transient or attempt:
-                    break
-                time.sleep(1.5)
-        raise RuntimeError("上游生成服务连接中断，请稍后重试") from last
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read())
     with _NOPROXY.open(req, timeout=300) as r:  # 国内中转直连，不走 mihomo
         return json.loads(r.read())
 
@@ -1127,94 +1055,53 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
 
-# ============ 文案能力：LLM（chat completions，走同一代理） ============
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
-    if len(prompt) > 2000:
-        raise ValueError("提示词不能超过 2000 字")
     ratio = payload.get("ratio") or "1:1"
-    size = SIZES.get(ratio, "1024x1024")
-    img = payload.get("image")
-    mask = payload.get("mask")
-    quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"
-    requested_provider = (payload.get("provider") or "openai").strip().lower()
-
-    def provider_config(provider):
-        if provider == "zelong":
-            if not ZELONG_KEY:
-                raise ValueError("泽龙Ai(中转站)未配置 key")
-            return ZELONG_BASE, ZELONG_KEY, False, 2
-        if provider == "openai":
-            return OPENAI_BASE, OPENAI_KEY, True, 4
-        raise ValueError("provider 仅支持 openai/zelong")
-
-    def call_provider(provider):
-        base, key, proxy, cap = provider_config(provider)
-        count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))
-        if img:
-            upload_files = [("image", "in.png", base64.b64decode(img))]
-            if mask:
-                upload_files.append(("mask", "mask.png", base64.b64decode(mask)))
-            body, ct = _multipart(
-                {"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)},
-                upload_files,
-            )
-            data = _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
-            mode = "inpaint" if mask else "img2img"
-        else:
-            body = json.dumps(
-                {"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}
-            ).encode()
-            data = _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
-            mode = "text2img"
-        return data, mode, proxy
-
-    provider = requested_provider
-    fallback_from = None
-    try:
-        d, mode, proxy = call_provider(provider)
-    except Exception as e:
-        if provider != "openai":
-            raise
-        fallback_from = "openai"
-        provider = "zelong"
-        try:
-            d, mode, proxy = call_provider(provider)
-        except Exception:
-            raise RuntimeError("上游生成服务连接中断，请稍后重试") from e
-
-    files_out, urls, dimensions = [], [], []
+    size  = SIZES.get(ratio, "1024x1024")
+    img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
+    mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
+    quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
+    provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "zelong":
+        base, key, proxy = ZELONG_BASE, ZELONG_KEY, False   # 泽龙Ai：国内中转，直连不走代理
+        if not key:
+            raise ValueError("泽龙Ai(中转站)未配置 key")
+    else:
+        base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
+    cap = 2 if provider == "zelong" else 4                   # 中转出图慢，数量上限低
+    count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))  # 局部修改只出 1 张
+    if img:
+        files = [("image", "in.png", base64.b64decode(img))]
+        if mask:
+            files.append(("mask", "mask.png", base64.b64decode(mask)))
+        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
+        d = _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
+        mode = "inpaint" if mask else "img2img"
+    else:
+        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
+        d = _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
+        mode = "text2img"
+    files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):
         fn = "img_%d_%d.png" % (int(time.time() * 1000), i)
         if item.get("b64_json"):
-            raw = base64.b64decode(item["b64_json"])
-        elif item.get("url"):
+            (OUT_DIR / fn).write_bytes(base64.b64decode(item["b64_json"]))
+        elif item.get("url"):                                # 部分中转返回 url 而非 b64
             opener = urllib.request.urlopen if proxy else _NOPROXY.open
             with opener(item["url"], timeout=120) as rr:
-                raw = rr.read()
+                (OUT_DIR / fn).write_bytes(rr.read())
         else:
             continue
-        raw, dim = _normalize_image_bytes(raw, size)
-        (OUT_DIR / fn).write_bytes(raw)
-        files_out.append(fn)
-        urls.append("/api/gen/file/" + fn)
-        if dim:
-            dimensions.append(dim)
+        files_out.append(fn); urls.append("/api/gen/file/" + fn)
     if not files_out:
         raise ValueError("出图返回为空")
-    result = {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),
-              "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls,
-              "ratio": ratio, "size": size, "prompt": prompt}
-    if dimensions:
-        result["width"] = dimensions[0]["width"]
-        result["height"] = dimensions[0]["height"]
-        result["dimensions"] = dimensions
-    if fallback_from:
-        result["fallback_from"] = fallback_from
-    return result
+    return {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),
+            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
+# ============ 文案能力：LLM（chat completions，走同一代理） ============
 def _chat(sysmsg, usermsg, temp):
     body = json.dumps({"model": COPY_MODEL,
                        "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
@@ -1381,43 +1268,11 @@ def gen_leads(payload):
 
 # ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
 VOICE_MAP = {
-    "dapeng": os.environ.get("VOICE_DAPENG", "alloy"),
-    "zelong": os.environ.get("VOICE_ZELONG", "onyx"),
-    "paul": os.environ.get("VOICE_PAUL", "echo"),
     "personal": os.environ.get("VOICE_PERSONAL", "alloy"),
     "alloy": "alloy", "ash": "ash", "ballad": "ballad", "coral": "coral", "echo": "echo",
     "fable": "fable", "nova": "nova", "onyx": "onyx", "sage": "sage", "shimmer": "shimmer",
 }
 SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
-
-PUBLIC_VOICE_KEYS = ("S_d21F8OR62", "S_l8wE8OR62", "S_pa0E8OR62", "S_xaUB8OR62")
-DEFAULT_PUBLIC_VOICE = PUBLIC_VOICE_KEYS[0]
-OBSOLETE_PUBLIC_VOICE_KEYS = {"dapeng", "zelong", "paul"}
-
-PUBLIC_VOICE_LABELS = {
-    "S_d21F8OR62": "温柔女声（情感种草）",
-    "S_l8wE8OR62": "活力女声（广告推荐）",
-    "S_pa0E8OR62": "沉稳男声（知识口播）",
-    "S_xaUB8OR62": "亲和女声（本地生活）",
-}
-
-def _public_preview_file(voice_key):
-    rel = os.environ.get("VOICE_%s_PREVIEW_FILE" % voice_key.upper())
-    return rel.strip() if rel else None
-
-def _public_preview_url(voice_key):
-    url = os.environ.get("VOICE_%s_PREVIEW_URL" % voice_key.upper())
-    if url:
-        return url.strip()
-    rel = _public_preview_file(voice_key)
-    return _file_url(rel) if rel else None
-
-def public_audio_voice_defs():
-    items = [(key, key) for key in PUBLIC_VOICE_KEYS]
-    return [
-        ("public", "", key, PUBLIC_VOICE_LABELS.get(key, key), provider, _public_preview_file(key), _public_preview_url(key))
-        for key, provider in items
-    ]
 
 def gen_audio(payload):
     text = (payload.get("text") or payload.get("prompt") or "").strip()
@@ -1426,8 +1281,8 @@ def gen_audio(payload):
     if len(text) > 1200:
         raise ValueError("配音文案过长，请控制在 1200 字以内")
     username = (payload.get("_username") or "").strip()
-    raw_voice_key = (payload.get("voice") or DEFAULT_PUBLIC_VOICE).strip()
-    voice_key = raw_voice_key
+    raw_voice_key = (payload.get("voice") or "S_d21F8OR62").strip()
+    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
     voice = resolve_audio_provider_voice(username, voice_key)
     raw_speed = payload.get("speed")
     if isinstance(raw_speed, (int, float)):
@@ -1443,7 +1298,7 @@ def gen_audio(payload):
     volume = knob("volume", -50, 100, 0)
     if str(voice).startswith("S_"):
         speech_rate = int(round((speed - 1.0) * 100))
-        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch, purpose="asset")
+        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
         fn = preview.get("file")
         return {"type": "audio", "file": fn, "url": preview.get("url"), "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
@@ -1471,7 +1326,8 @@ def _save_data_file(data_url, prefix, allowed_ext):
     for k, v in {
         "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
         "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
-        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a"
+        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
+        "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"
     }.items():
         if mime == k:
             ext = v
@@ -1484,10 +1340,10 @@ def _save_data_file(data_url, prefix, allowed_ext):
         data = base64.b64decode(raw, validate=True)
     except Exception:
         raise ValueError("文件内容解析失败")
-    max_size = 35 * 1024 * 1024
+    max_size = (250 if ext in {".mp4", ".mov", ".webm"} else 35) * 1024 * 1024
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
-    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ""
+    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
     fn = "%s%s_%d%s" % (folder, prefix, int(time.time() * 1000), ext)
     _out_path(fn).write_bytes(data)
     return fn
@@ -1531,6 +1387,30 @@ def _heygen_upload_asset(file_path):
         raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return asset_id
 
+def _ensure_heygen_audio_mp3(audio_path):
+    path = pathlib.Path(audio_path)
+    if path.suffix.lower() == ".mp3":
+        return path
+    out = AUDIO_OUT_DIR / ("heygen_audio_%d.mp3" % int(time.time() * 1000))
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-vn", "-acodec", "libmp3lame", "-ar", "24000", "-ac", "1", "-b:a", "128k",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise ValueError("服务器未安装 ffmpeg，无法转换上传音频格式")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[:220]
+        raise ValueError("音频格式转换失败，请重新上传 mp3 音频" + (": " + detail if detail else ""))
+    except subprocess.TimeoutExpired:
+        raise ValueError("音频格式转换超时，请重新上传更短的 mp3 音频")
+    if not out.exists() or out.stat().st_size <= 0:
+        raise ValueError("音频格式转换失败，请重新上传 mp3 音频")
+    return out
+
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
     title = "huangque video %d" % int(time.time())
     body = json.dumps({
@@ -1543,6 +1423,104 @@ def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, moti
         "fit": "cover",
         "expressiveness": motion,
         "output_format": "mp4",
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/videos", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return video_id
+
+def _find_nested_dict(obj, pred):
+    if isinstance(obj, dict):
+        if pred(obj):
+            return obj
+        for v in obj.values():
+            got = _find_nested_dict(v, pred)
+            if got:
+                return got
+    elif isinstance(obj, list):
+        for v in obj:
+            got = _find_nested_dict(v, pred)
+            if got:
+                return got
+    return None
+
+def _heygen_create_photo_avatar(image_asset_id):
+    body = json.dumps({
+        "type": "photo",
+        "name": "huangque_photo_avatar_%d" % int(time.time()),
+        "file": {"type": "asset_id", "asset_id": image_asset_id},
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/avatars", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    root = data.get("data") or {}
+    avatar_item_id = (((root.get("avatar_item") or {}).get("id")) or "").strip()
+    avatar_group_id = (((root.get("avatar_group") or {}).get("id")) or "").strip()
+    if not avatar_item_id:
+        raise RuntimeError("HeyGen未返回avatar_item_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return avatar_item_id, avatar_group_id
+
+def _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id=""):
+    def is_avatar(d):
+        current_id = str(d.get("id") or "")
+        preview_url = str(d.get("preview_image_url") or "")
+        return (
+            current_id == avatar_item_id
+            or bool(avatar_group_id and current_id == avatar_group_id)
+            or bool(avatar_item_id and avatar_item_id in preview_url)
+        )
+    item = _find_nested_dict(data, is_avatar)
+    if not item:
+        return False
+    status = str(item.get("status") or item.get("state") or "").lower()
+    return bool(item.get("preview_image_url") or status in {"completed", "ready", "success"})
+
+def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
+    deadline = time.time() + min(HEYGEN_TIMEOUT, 900)
+    last_status = ""
+    while time.time() < deadline:
+        payloads = []
+        if avatar_group_id:
+            try:
+                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20))
+            except Exception as e:
+                last_status = str(e)[:120]
+        try:
+            payloads.append(_heygen_request_json("GET", "/avatars", timeout=20))
+        except Exception as e:
+            last_status = str(e)[:120]
+        for data in payloads:
+            if _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id):
+                return True
+            item = _find_nested_dict(data, lambda d: str(d.get("id") or "") in {avatar_item_id, avatar_group_id})
+            if item:
+                status = str(item.get("status") or item.get("state") or "processing")
+                if status != last_status:
+                    print("[heygen] avatar_id=%s status=%s" % (avatar_item_id, status), flush=True)
+                    last_status = status
+        time.sleep(HEYGEN_POLL_INTERVAL)
+    raise TimeoutError("HeyGen Photo Avatar处理超时")
+
+def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration):
+    prompt = (
+        "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+        "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
+        "facial expression, framing and camera motion. Keep the person's identity, face, hairstyle, "
+        "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, no extra people."
+    )
+    body = json.dumps({
+        "type": "cinematic_avatar",
+        "title": "follow_reference_motion",
+        "prompt": prompt,
+        "avatar_id": [avatar_item_id],
+        "references": [{"type": "asset_id", "asset_id": reference_asset_id}],
+        "aspect_ratio": ratio,
+        "resolution": resolution,
+        "duration": duration,
+        "enhance_prompt": False,
     }, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/videos", body, {
         "Content-Type": "application/json",
@@ -1586,6 +1564,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
+    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     image_asset_id = _heygen_upload_asset(image_fp)
     audio_asset_id = _heygen_upload_asset(audio_fp)
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
@@ -1602,9 +1581,67 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "duration": info.get("duration"),
     }
 
+def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None):
+    image_fp = _resolve_out_file(image_file)
+    reference_fp = _resolve_out_file(reference_video_file)
+    if not image_fp or not reference_fp:
+        raise ValueError("动作模仿素材文件不存在")
+    update_video_asset_phase(job_id, "uploading_image_asset")
+    image_asset_id = _heygen_upload_asset(image_fp)
+    update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id)
+    reference_asset_id = _heygen_upload_asset(reference_fp)
+    update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id)
+    avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+    update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id)
+    _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+    update_video_asset_phase(job_id, "creating_cinematic_video", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id)
+    video_id = None
+    last_create_error = None
+    for attempt in range(1, 7):
+        try:
+            video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration)
+            break
+        except RuntimeError as e:
+            last_create_error = str(e)
+            retryable = "not ready" in last_create_error.lower() or "status: pending" in last_create_error.lower()
+            if not retryable or attempt >= 6:
+                raise
+            update_video_asset_phase(job_id, "waiting_avatar_look", image_asset_id=image_asset_id,
+                                     reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                                     provider_avatar_group_id=avatar_group_id,
+                                     error=("avatar look pending, retry %d/6" % attempt))
+            time.sleep(20)
+    if not video_id:
+        raise RuntimeError(last_create_error or "HeyGen未返回video_id")
+    update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
+    info = _heygen_poll_video(video_id)
+    update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                             source_video_url=info.get("video_url"))
+    video_file = _download_video_file(info["video_url"], "cinematic")
+    return {
+        "video_id": video_id,
+        "image_asset_id": image_asset_id,
+        "reference_asset_id": reference_asset_id,
+        "avatar_item_id": avatar_item_id,
+        "avatar_group_id": avatar_group_id,
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration") or duration,
+    }
+
 def gen_video(payload):
+    job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
-    if mode not in {"text", "audio"}:
+    if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
     image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
     if not image_file:
@@ -1613,7 +1650,16 @@ def gen_video(payload):
     voice = (payload.get("voice") or "").strip()
     audio_file = None
     audio_url = None
-    if mode == "text":
+    reference_video_file = None
+    if mode == "motion":
+        reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
+        if not reference_video_file:
+            raise ValueError("请先上传参考动作视频")
+        text = text or "动作模仿"
+        update_video_asset_phase(job_id, "files_saved", mode=mode, image_file=image_file,
+                                 reference_video_file=reference_video_file, text=text,
+                                 voice=voice)
+    elif mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
         if not voice:
@@ -1644,15 +1690,37 @@ def gen_video(payload):
         ratio = "9:16"
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
-    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    try:
+        duration = int(payload.get("duration") or 10)
+    except Exception:
+        duration = 10
+    duration = max(5, min(30, duration))
+    if mode == "motion":
+        if resolution not in {"720p", "1080p"}:
+            resolution = "720p"
+        update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
+                                 ratio=ratio, motion=motion)
+        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id)
+    else:
+        video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
         "type": "video", "status": "done", "mode": mode,
         "image_file": image_file, "image_url": _file_url(image_file),
-        "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
+        "audio_file": audio_file, "audio_url": audio_url,
+        "reference_video_file": reference_video_file,
+        "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
+        "text": text, "voice": voice,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "provider_video_id": video_result.get("video_id"),
+        "provider_avatar_id": video_result.get("avatar_item_id"),
+        "provider_avatar_group_id": video_result.get("avatar_group_id"),
+        "image_asset_id": video_result.get("image_asset_id"),
+        "audio_asset_id": video_result.get("audio_asset_id"),
+        "reference_asset_id": video_result.get("reference_asset_id"),
+        "source_video_url": video_result.get("source_video_url"),
         "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
+        "phase": "done",
         "message": "视频生成完成"
     }
 
@@ -1666,6 +1734,7 @@ def run_job(job_id):
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     if kind in {"audio", "video"}:
         payload["_username"] = r["username"]
+        payload["_job_id"] = job_id
     try:
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
@@ -1713,12 +1782,9 @@ def reaper():
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def _send(self, code, obj, headers=None):
+    def _send(self, code, obj):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
-        if headers:
-            for k, v in headers.items():
-                self.send_header(k, v)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         a = self.headers.get("Authorization") or ""
@@ -1731,14 +1797,6 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
-        if p == "/api/gen/audio/voices":
-            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
-        if p == "/api/gen/audio/assets":
-            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
-        if p == "/api/gen/audio/slots":
-            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
-        if p == "/api/gen/audio/clone-status":
-            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -1772,10 +1830,6 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
-            try:
-                body = validate_submit_payload(kind, body)
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)})
             cost = cost_of(kind, body)
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
@@ -1794,17 +1848,12 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         if p.startswith("/api/gen/job/"):
-            user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录"})
             try: jid = int(p.rsplit("/", 1)[1])
             except Exception: return self._send(400, {"detail": "bad id"})
             with closing(jdb()) as c:
                 r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not r: return self._send(404, {"detail": "任务不存在"})
-            if r["username"] != user.get("username") and user.get("role") != "admin":
-                return self._send(404, {"detail": "任务不存在"})
             d = dict(r)
-            d["payload"] = redact_payload_for_response(d.get("payload"))
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])
                 except Exception: pass
@@ -1860,35 +1909,15 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(data); return
         if p == "/api/gen/audio/voices":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
-            body = {"items": list_audio_voices(user["username"])}
-            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
-            if self.headers.get("If-None-Match") == etag:
-                self.send_response(304)
-                self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "private, max-age=60")
-                self.end_headers()
-                return
-            return self._send(200, body, {"Cache-Control": "private, max-age=60", "ETag": etag})
+            if not user: return self._send(401, {"detail": "???"})
+            return self._send(200, {"items": list_audio_voices(user["username"])})
         if p == "/api/gen/audio/assets":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
+            if not user: return self._send(401, {"detail": "???"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            raw_limit = (q.get("limit") or ["120"])[0]
-            try:
-                body = {"items": list_audio_assets(user["username"], raw_limit)}
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)})
-            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
-            if self.headers.get("If-None-Match") == etag:
-                self.send_response(304)
-                self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "private, max-age=30")
-                self.end_headers()
-                return
-            return self._send(200, body, {"Cache-Control": "private, max-age=30", "ETag": etag})
+            try: lim = int((q.get("limit") or ["120"])[0])
+            except Exception: lim = 120
+            return self._send(200, {"items": list_audio_assets(user["username"], lim)})
         if p == "/api/gen/video/assets":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1898,32 +1927,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": list_video_assets(user["username"], lim)})
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
-            body = audio_slots_response(user["username"])
-            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
-            if self.headers.get("If-None-Match") == etag:
-                self.send_response(304)
-                self.send_header("ETag", etag)
-                self.send_header("Cache-Control", "private, max-age=30")
-                self.end_headers()
-                return
-            return self._send(200, body, {"Cache-Control": "private, max-age=30", "ETag": etag})
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            return self._send(200, {"items": list_user_audio_voice_slots(user["username"])})
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55\u6216 token \u65e0\u6548"})
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            slot_id = (q.get("slot_id") or [""])[0].strip()
-            if not slot_id:
-                return self._send(400, {"detail": "\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d ID"}, {"Cache-Control": "no-store"})
             try:
-                return self._send(200, {"ok": True, "result": check_clone_status(user["username"], slot_id)}, {"Cache-Control": "no-store"})
-            except ValueError as e:
-                detail = str(e)[:220]
-                code = 404 if "\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728" in detail else 400
-                return self._send(code, {"detail": detail}, {"Cache-Control": "no-store"})
+                return self._send(200, {"ok": True, "result": check_clone_status(user["username"], (q.get("slot_id") or [""])[0])})
             except Exception as e:
-                return self._send(500, {"detail": str(e)[:220]}, {"Cache-Control": "no-store"})
+                return self._send(400, {"detail": str(e)[:220]})
         if p == "/api/gen/history":   # 本人生成历史（资产/最近作品都读这）
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
