@@ -180,6 +180,7 @@ def init_audio_db():
             mode TEXT NOT NULL,
             image_file TEXT,
             audio_file TEXT,
+            reference_video_file TEXT,
             video_file TEXT,
             video_url TEXT,
             text TEXT,
@@ -203,6 +204,7 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
+        _ensure_column(c, "video_assets", "reference_video_file", "TEXT")
         public = [
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
@@ -889,11 +891,11 @@ def record_video_asset(job_id, username, result):
     now = int(time.time())
     with closing(adb()) as c:
         c.execute("""INSERT OR REPLACE INTO video_assets
-            (job_id, username, mode, image_file, audio_file, video_file, video_url, text, voice_key,
+            (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
              resolution, ratio, motion, status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
-             result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
+             result.get("reference_video_file"), result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
              result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
              result.get("error"), now, now))
         c.commit()
@@ -912,7 +914,7 @@ def record_video_pending_asset(job_id, username, payload):
 def list_video_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
-        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, video_file, video_url,
+        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
                    text, voice_key, resolution, ratio, motion, status, error, created_at, updated_at
             FROM video_assets
             WHERE username=?
@@ -1251,7 +1253,8 @@ def _save_data_file(data_url, prefix, allowed_ext):
     for k, v in {
         "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
         "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
-        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a"
+        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
+        "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"
     }.items():
         if mime == k:
             ext = v
@@ -1264,10 +1267,10 @@ def _save_data_file(data_url, prefix, allowed_ext):
         data = base64.b64decode(raw, validate=True)
     except Exception:
         raise ValueError("文件内容解析失败")
-    max_size = 35 * 1024 * 1024
+    max_size = (250 if ext in {".mp4", ".mov", ".webm"} else 35) * 1024 * 1024
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
-    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ""
+    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
     fn = "%s%s_%d%s" % (folder, prefix, int(time.time() * 1000), ext)
     _out_path(fn).write_bytes(data)
     return fn
@@ -1356,6 +1359,98 @@ def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, moti
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
 
+def _find_nested_dict(obj, pred):
+    if isinstance(obj, dict):
+        if pred(obj):
+            return obj
+        for v in obj.values():
+            got = _find_nested_dict(v, pred)
+            if got:
+                return got
+    elif isinstance(obj, list):
+        for v in obj:
+            got = _find_nested_dict(v, pred)
+            if got:
+                return got
+    return None
+
+def _heygen_create_photo_avatar(image_asset_id):
+    body = json.dumps({
+        "type": "photo",
+        "name": "huangque_photo_avatar_%d" % int(time.time()),
+        "file": {"type": "asset_id", "asset_id": image_asset_id},
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/avatars", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    root = data.get("data") or {}
+    avatar_item_id = (((root.get("avatar_item") or {}).get("id")) or "").strip()
+    avatar_group_id = (((root.get("avatar_group") or {}).get("id")) or "").strip()
+    if not avatar_item_id:
+        raise RuntimeError("HeyGen未返回avatar_item_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return avatar_item_id, avatar_group_id
+
+def _avatar_ready_from_payload(data, avatar_item_id):
+    def is_item(d):
+        return str(d.get("id") or "") == avatar_item_id
+    item = _find_nested_dict(data, is_item)
+    if not item:
+        return False
+    status = str(item.get("status") or item.get("state") or "").lower()
+    return bool(item.get("preview_image_url") or status in {"completed", "ready", "success"})
+
+def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
+    deadline = time.time() + min(HEYGEN_TIMEOUT, 900)
+    last_status = ""
+    while time.time() < deadline:
+        payloads = []
+        if avatar_group_id:
+            try:
+                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=90))
+            except Exception as e:
+                last_status = str(e)[:120]
+        try:
+            payloads.append(_heygen_request_json("GET", "/avatars", timeout=90))
+        except Exception as e:
+            last_status = str(e)[:120]
+        for data in payloads:
+            if _avatar_ready_from_payload(data, avatar_item_id):
+                return True
+            item = _find_nested_dict(data, lambda d: str(d.get("id") or "") == avatar_item_id)
+            if item:
+                status = str(item.get("status") or item.get("state") or "processing")
+                if status != last_status:
+                    print("[heygen] avatar_id=%s status=%s" % (avatar_item_id, status), flush=True)
+                    last_status = status
+        time.sleep(HEYGEN_POLL_INTERVAL)
+    raise TimeoutError("HeyGen Photo Avatar处理超时")
+
+def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration):
+    prompt = (
+        "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+        "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
+        "facial expression, framing and camera motion. Keep the person's identity, face, hairstyle, "
+        "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, no extra people."
+    )
+    body = json.dumps({
+        "type": "cinematic_avatar",
+        "title": "follow_reference_motion",
+        "prompt": prompt,
+        "avatar_id": [avatar_item_id],
+        "references": [{"type": "asset_id", "asset_id": reference_asset_id}],
+        "aspect_ratio": ratio,
+        "resolution": resolution,
+        "duration": duration,
+        "enhance_prompt": False,
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/videos", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return video_id
+
 def _heygen_poll_video(video_id):
     deadline = time.time() + HEYGEN_TIMEOUT
     last_status = ""
@@ -1407,9 +1502,34 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "duration": info.get("duration"),
     }
 
+def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration):
+    image_fp = _resolve_out_file(image_file)
+    reference_fp = _resolve_out_file(reference_video_file)
+    if not image_fp or not reference_fp:
+        raise ValueError("动作模仿素材文件不存在")
+    image_asset_id = _heygen_upload_asset(image_fp)
+    reference_asset_id = _heygen_upload_asset(reference_fp)
+    avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+    _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+    video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration)
+    info = _heygen_poll_video(video_id)
+    video_file = _download_video_file(info["video_url"], "cinematic")
+    return {
+        "video_id": video_id,
+        "image_asset_id": image_asset_id,
+        "reference_asset_id": reference_asset_id,
+        "avatar_item_id": avatar_item_id,
+        "avatar_group_id": avatar_group_id,
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration") or duration,
+    }
+
 def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
-    if mode not in {"text", "audio"}:
+    if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
     image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
     if not image_file:
@@ -1418,7 +1538,13 @@ def gen_video(payload):
     voice = (payload.get("voice") or "").strip()
     audio_file = None
     audio_url = None
-    if mode == "text":
+    reference_video_file = None
+    if mode == "motion":
+        reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
+        if not reference_video_file:
+            raise ValueError("请先上传参考动作视频")
+        text = text or "动作模仿"
+    elif mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
         if not voice:
@@ -1449,13 +1575,27 @@ def gen_video(payload):
         ratio = "9:16"
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
-    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    try:
+        duration = int(payload.get("duration") or 10)
+    except Exception:
+        duration = 10
+    duration = max(5, min(30, duration))
+    if mode == "motion":
+        if resolution not in {"720p", "1080p"}:
+            resolution = "720p"
+        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration)
+    else:
+        video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
         "type": "video", "status": "done", "mode": mode,
         "image_file": image_file, "image_url": _file_url(image_file),
-        "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
+        "audio_file": audio_file, "audio_url": audio_url,
+        "reference_video_file": reference_video_file,
+        "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
+        "text": text, "voice": voice,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "provider_video_id": video_result.get("video_id"),
+        "provider_avatar_id": video_result.get("avatar_item_id"),
         "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
         "message": "视频生成完成"
