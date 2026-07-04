@@ -197,6 +197,16 @@ def init_audio_db():
             updated_at INTEGER,
             UNIQUE(username, provider_avatar_id)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS asset_marks(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            asset_kind TEXT NOT NULL,
+            asset_key TEXT NOT NULL,
+            favorite INTEGER NOT NULL DEFAULT 0,
+            tags TEXT,
+            updated_at INTEGER,
+            UNIQUE(username, asset_kind, asset_key)
+        )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
@@ -237,6 +247,85 @@ def _ensure_column(c, table, column, spec):
     cols = [r["name"] for r in c.execute("PRAGMA table_info(%s)" % table).fetchall()]
     if column not in cols:
         c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, spec))
+
+ASSET_MARK_KINDS = {"image", "audio", "video", "avatar"}
+
+def _clean_asset_kind(kind):
+    kind = str(kind or "").strip().lower()
+    if kind not in ASSET_MARK_KINDS:
+        raise ValueError("不支持的资产类型")
+    return kind
+
+def _clean_asset_key(key):
+    key = str(key or "").strip()
+    if not key:
+        raise ValueError("缺少资产标识")
+    return key[:500]
+
+def _clean_asset_tags(tags):
+    if tags is None:
+        return []
+    if not isinstance(tags, list):
+        raise ValueError("标签格式应为数组")
+    out = []
+    seen = set()
+    for tag in tags:
+        tag = re.sub(r"\s+", " ", str(tag or "").strip())[:24]
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+        if len(out) >= 8:
+            break
+    return out
+
+def _upsert_asset_mark(username, kind, key, favorite=None, tags=None):
+    kind = _clean_asset_kind(kind)
+    key = _clean_asset_key(key)
+    now = int(time.time())
+    with closing(adb()) as c:
+        row = c.execute("""SELECT favorite,tags FROM asset_marks
+                           WHERE username=? AND asset_kind=? AND asset_key=?""",
+                        (username, kind, key)).fetchone()
+        fav = int(row["favorite"]) if row else 0
+        tag_list = []
+        if row and row["tags"]:
+            try:
+                tag_list = json.loads(row["tags"])
+            except Exception:
+                tag_list = [t.strip() for t in str(row["tags"]).split(",") if t.strip()]
+        if favorite is not None:
+            fav = 1 if favorite else 0
+        if tags is not None:
+            tag_list = _clean_asset_tags(tags)
+        c.execute("""INSERT INTO asset_marks(username,asset_kind,asset_key,favorite,tags,updated_at)
+                     VALUES(?,?,?,?,?,?)
+                     ON CONFLICT(username,asset_kind,asset_key) DO UPDATE SET
+                       favorite=excluded.favorite,
+                       tags=excluded.tags,
+                       updated_at=excluded.updated_at""",
+                  (username, kind, key, fav, json.dumps(tag_list, ensure_ascii=False), now))
+        c.commit()
+    return {"kind": kind, "key": key, "favorite": bool(fav), "tags": tag_list, "updated_at": now}
+
+def _list_asset_marks(username, kind):
+    kind = _clean_asset_kind(kind)
+    with closing(adb()) as c:
+        rows = c.execute("""SELECT asset_key,favorite,tags,updated_at FROM asset_marks
+                            WHERE username=? AND asset_kind=? ORDER BY updated_at DESC""",
+                         (username, kind)).fetchall()
+    marks = {}
+    for row in rows:
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except Exception:
+            tags = [t.strip() for t in str(row["tags"] or "").split(",") if t.strip()]
+        marks[row["asset_key"]] = {
+            "favorite": bool(row["favorite"]),
+            "tags": tags,
+            "updated_at": row["updated_at"],
+        }
+    return marks
 
 
 
@@ -366,6 +455,24 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/asset/favorite":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            body = self._json_body()
+            try:
+                mark = _upsert_asset_mark(user["username"], body.get("kind"), body.get("key"), favorite=bool(body.get("favorite")))
+                return self._send(200, {"ok": True, "mark": mark})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/asset/tags":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            body = self._json_body()
+            try:
+                mark = _upsert_asset_mark(user["username"], body.get("kind"), body.get("key"), tags=body.get("tags"))
+                return self._send(200, {"ok": True, "mark": mark})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -436,6 +543,15 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/asset/marks":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                marks = _list_asset_marks(user["username"], (q.get("kind") or ["image"])[0])
+                return self._send(200, {"items": marks})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/job/"):
             try: jid = int(p.rsplit("/", 1)[1])
             except Exception: return self._send(400, {"detail": "bad id"})
