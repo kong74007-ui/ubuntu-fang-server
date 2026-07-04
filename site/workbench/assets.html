@@ -19,6 +19,10 @@
   .asset-select{position:absolute;top:10px;right:10px;z-index:4;width:30px;height:30px;display:none;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(7,11,19,.72);backdrop-filter:blur(8px)}
   .asset-select input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
   .multi-on .asset-select{display:flex}
+  .mark-tool{height:28px;padding:0 9px;border-radius:8px;border:1px solid rgba(148,164,187,.13);background:rgba(148,164,187,.04);color:#94a4bb;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .mark-tool.on{border-color:rgba(231,178,76,.34);background:rgba(231,178,76,.1);color:#e7b24c}
+  .mark-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .mark-tag{max-width:108px;padding:3px 7px;border-radius:999px;background:rgba(45,212,191,.1);border:1px solid rgba(45,212,191,.18);color:#2dd4bf;font-size:10.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   @media (max-width:1100px){ .gAsset{ grid-template-columns:repeat(3,1fr);} }
   @media (max-width:760px){ .gAsset{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:480px){ .gAsset{ grid-template-columns:1fr;} }
@@ -51,6 +55,10 @@
     </div>
     <button id="bulkToggle" class="hv-gold" type="button" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>多选</button>
     <button id="bulkAll" class="hv-gold" type="button" style="display:none; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;">全选</button>
+    <button id="favOnly" class="hv-gold" type="button" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;">★ 只看收藏</button>
+    <select id="tagFilter" aria-label="按标签筛选" style="height:38px; min-width:132px; padding:0 11px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.05); color:#94a4bb; outline:none; font-size:12.5px; font-family:inherit;">
+      <option value="">全部标签</option>
+    </select>
   </div>
   <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
     <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
@@ -144,22 +152,30 @@
   var searchInput=document.querySelector('input[name="hq_asset_search"]');
   var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
       bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkCancel=document.getElementById('bulkCancel');
-  var searchTerm='', multi=false, selected={}, visibleItems=[];
+  var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
+  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
   }
   function assetUrl(x){ return x.url||x.video_url||x.audio_url||x.image_url||x.preview_url||''; }
   function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
+  function markKey(x,kind){ return String(x.job_id||x.id||x.asset_id||assetUrl(x)||x.voice_key||x.provider_avatar_id||''); }
+  function markOf(x,kind){ return MARKS[markKey(x,kind)]||{favorite:false,tags:[]}; }
   function searchableText(x,kind){
+    var m=markOf(x,kind);
     return [
       kind||cat, x.prompt, x.text, x.mode, x.ratio, x.quality, x.model, x.voice, x.voice_key,
-      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at
+      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at, (m.tags||[]).join(' ')
     ].filter(Boolean).join(' ').toLowerCase();
   }
   function filterAssets(list,kind){
     var q=(searchTerm||'').trim().toLowerCase();
-    if(!q) return list;
-    return list.filter(function(x){ return searchableText(x,kind).indexOf(q)>=0; });
+    return list.filter(function(x){
+      var m=markOf(x,kind);
+      if(onlyFav && !m.favorite) return false;
+      if(activeTag && (m.tags||[]).indexOf(activeTag)<0) return false;
+      return !q || searchableText(x,kind).indexOf(q)>=0;
+    });
   }
   function setVisible(list,kind){
     visibleItems=list.map(function(x){ return {key:assetKey(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.url; });
@@ -178,6 +194,66 @@
     if(bulkBar) bulkBar.style.display=(multi&&n)?'flex':'none';
     if(bulkCount) bulkCount.textContent='已选 '+n+' 个';
     if(bulkDownload) bulkDownload.disabled=!n;
+  }
+  function refreshMarkFilters(){
+    if(favOnly){
+      favOnly.style.color=onlyFav?'#e7b24c':'#94a4bb';
+      favOnly.style.borderColor=onlyFav?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)';
+      favOnly.style.background=onlyFav?'rgba(231,178,76,.08)':'rgba(148,164,187,.05)';
+    }
+    if(tagFilter){
+      var tags=[], seen={};
+      Object.keys(MARKS||{}).forEach(function(k){
+        (MARKS[k].tags||[]).forEach(function(t){ if(t&&!seen[t]){ seen[t]=1; tags.push(t); } });
+      });
+      tags.sort();
+      var prev=activeTag;
+      tagFilter.innerHTML='<option value="">全部标签</option>'+tags.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(t)+'</option>'; }).join('');
+      if(prev && tags.indexOf(prev)>=0){ tagFilter.value=prev; } else { activeTag=''; }
+    }
+  }
+  function saveFavorite(x,kind,next,btn){
+    var key=markKey(x,kind); if(!key) return;
+    btn.disabled=true;
+    fetch('/api/gen/asset/favorite',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,key:key,favorite:next})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'收藏保存失败');
+        MARKS[key]=res.data.mark||{favorite:next,tags:(MARKS[key]&&MARKS[key].tags)||[]};
+        toast(next?'已收藏':'已取消收藏',true); refreshMarkFilters(); render();
+      })
+      .catch(function(e){ toast(e.message||'收藏保存失败',false); })
+      .finally(function(){ btn.disabled=false; });
+  }
+  function editTags(x,kind){
+    var key=markKey(x,kind); if(!key) return;
+    var old=(markOf(x,kind).tags||[]).join('，');
+    var input=prompt('输入标签，用逗号分隔', old);
+    if(input===null) return;
+    var tags=input.split(/[,，]/).map(function(t){ return t.trim(); }).filter(Boolean);
+    fetch('/api/gen/asset/tags',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,key:key,tags:tags})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'标签保存失败');
+        MARKS[key]=res.data.mark||{favorite:(MARKS[key]&&MARKS[key].favorite)||false,tags:tags};
+        toast('标签已保存',true); refreshMarkFilters(); render();
+      })
+      .catch(function(e){ toast(e.message||'标签保存失败',false); });
+  }
+  function addMarkTools(cardEl,x,kind){
+    var m=markOf(x,kind), row=document.createElement('div'), fav=document.createElement('button'), tagBtn=document.createElement('button');
+    row.className='mark-row';
+    fav.type='button'; fav.className='mark-tool'+(m.favorite?' on':''); fav.textContent=m.favorite?'★ 已收藏':'☆ 收藏';
+    fav.onclick=function(e){ e.preventDefault(); e.stopPropagation(); saveFavorite(x,kind,!markOf(x,kind).favorite,fav); };
+    tagBtn.type='button'; tagBtn.className='mark-tool'; tagBtn.textContent='标签';
+    tagBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); editTags(x,kind); };
+    row.appendChild(fav); row.appendChild(tagBtn);
+    (m.tags||[]).slice(0,3).forEach(function(t){ var chip=document.createElement('span'); chip.className='mark-tag'; chip.textContent=t; chip.title=t; row.appendChild(chip); });
+    if(kind!=='audio') row.style.padding='0 13px 12px';
+    cardEl.appendChild(row);
+    return cardEl;
   }
   function addSelectBox(cardEl,x,kind){
     var key=assetKey(x,kind), box=document.createElement('label'), ck=document.createElement('input');
@@ -261,7 +337,7 @@
     var regen=actionBtn('重生成',function(){ regenerate(x,'image',regen); });
     var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.className='asset-action gold';
     actions.appendChild(regen); actions.appendChild(dl);
-    foot.appendChild(pt); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return addSelectBox(w,x,'image');
+    foot.appendChild(pt); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); addMarkTools(w,x,'image'); return addSelectBox(w,x,'image');
   }
   function audioCard(x){
     var text=x.text||x.prompt||'配音资产';
@@ -339,7 +415,7 @@
       setPreviewButtonPlaying(play);
       audio.play().catch(function(){ stopActivePreviewAudio(); });
     };
-    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); return addSelectBox(w,x,'audio');
+    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); addMarkTools(w,x,'audio'); return addSelectBox(w,x,'audio');
   }
   function videoStatusLabel(status){
     var s=String(status||'pending').toLowerCase();
@@ -419,7 +495,7 @@
     buttons.appendChild(regen); buttons.appendChild(dl);
     foot.appendChild(hint); foot.appendChild(buttons);
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
-    w.appendChild(media); w.appendChild(body);
+    w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'video');
     return addSelectBox(w,x,'video');
   }
   function escapeHtml(s){
@@ -456,7 +532,7 @@
     del.onclick=function(e){ e.preventDefault(); e.stopPropagation(); deleteAvatar(x); };
     actions.appendChild(rename); actions.appendChild(del);
     body.appendChild(actions);
-    w.appendChild(media); w.appendChild(body);
+    w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'avatar');
     return addSelectBox(w,x,'avatar');
   }
   function openRenameAvatarModal(avatar){
@@ -1120,6 +1196,13 @@
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent=searchTerm?'没有匹配的图片资产':'该分类下暂无作品'; grid.appendChild(e); return; }
     list.forEach(function(x){ grid.appendChild(card(x)); });
   }
+  function loadMarks(kind){
+    if(['image','audio','video','avatar'].indexOf(kind)<0){ MARKS={}; refreshMarkFilters(); return Promise.resolve(); }
+    return fetch(freshUrl('/api/gen/asset/marks?kind='+encodeURIComponent(kind)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json(); })
+      .then(function(d){ MARKS=(d&&d.items)||{}; refreshMarkFilters(); })
+      .catch(function(){ MARKS={}; refreshMarkFilters(); });
+  }
   function load(kind){
     currentLoadKind=kind;
     var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':'/api/gen/history?limit=120'));
@@ -1132,9 +1215,9 @@
       if(kind==='audio' && !ALL.length){
         return fetch('/api/gen/history?limit=120&kind=audio',{headers:{'Authorization':'Bearer '+tok}})
           .then(function(r){return r.json();})
-          .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; render(); });
+          .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render); });
       }
-      if(cnt) cnt.textContent=ALL.length; render();
+      if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render);
     }).catch(function(){});
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
@@ -1164,6 +1247,8 @@
   if(bulkAll){ bulkAll.onclick=function(){ selectVisible(visibleItems.some(function(v){return !selected[v.key];})); }; }
   if(bulkCancel){ bulkCancel.onclick=function(){ multi=false; selected={}; render(); }; }
   if(bulkDownload){ bulkDownload.onclick=downloadSelected; }
+  if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
+  if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
   load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
 })();
 </script>
