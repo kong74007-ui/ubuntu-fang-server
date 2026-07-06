@@ -24,7 +24,7 @@ XIAOLE_POLL_INTERVAL = int(os.environ.get("XIAOLEVIDEO_POLL_INTERVAL", "5"))
 # 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
 XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
-    "micro": "seedance-2.0",      # 微衣视频（Seedance 2.0：文生视频）
+    "micro": "seedance-2.0-fast", # 微衣视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
 
