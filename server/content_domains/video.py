@@ -29,6 +29,24 @@ XIAOLE_CHANNEL_MODELS = {
     "micro": "seedance-2.0-fast", # 微衣视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
+XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生视频最多参考图数
+
+def _xiaole_build_refs(reference_images):
+    # 前端传 dataURL/URL → API 要的 [{type:base64|url, value:...}]，最多 XIAOLE_MAX_REF 张
+    out = []
+    for item in (reference_images or [])[:XIAOLE_MAX_REF]:
+        s = str(item or "").strip()
+        if not s:
+            continue
+        if s.startswith("data:"):
+            b64 = s.split(",", 1)[1] if "," in s else ""
+            if b64:
+                out.append({"type": "base64", "value": b64})
+        elif s.startswith("http"):
+            out.append({"type": "url", "value": s})
+        else:
+            out.append({"type": "base64", "value": s})
+    return out
 
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
@@ -1335,8 +1353,10 @@ def _download_xiaole_video(url, prefix="xiaole"):
 def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, prefix="xiaole"):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(微衣) 共用。"""
     input_d = {"prompt": (prompt or "").strip()}
-    if reference_images:
-        input_d["reference_images"] = reference_images
+    refs = _xiaole_build_refs(reference_images)
+    if refs:
+        input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频
+        input_d["reference_images"] = refs
     try:
         create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
     except RuntimeError as e:
