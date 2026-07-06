@@ -64,3 +64,8 @@ git管理/
 /dashboard_data.json
 /ai-engineering-concepts.md
 pinterest美女图片/
+
+# 本地开发密钥（勿提交）
+secret.local.env
+*.local.env
+server/content.env
