@@ -21,6 +21,8 @@ XIAOLEVIDEO_API_KEY = os.environ.get("XIAOLEVIDEO_API_KEY", "")
 XIAOLEVIDEO_API_BASE = os.environ.get("XIAOLEVIDEO_API_BASE", "https://api.xiaolevideo.cn").rstrip("/")
 XIAOLE_MAX_WAIT = int(os.environ.get("XIAOLEVIDEO_TIMEOUT", "600"))
 XIAOLE_POLL_INTERVAL = int(os.environ.get("XIAOLEVIDEO_POLL_INTERVAL", "5"))
+_xiaole_429_retries = int(os.environ.get("XIAOLEVIDEO_429_RETRIES", "5"))   # 并发限流(429)退避重试次数
+_xiaole_dl_retries = int(os.environ.get("XIAOLEVIDEO_DL_RETRIES", "3"))     # 下载中断重试次数
 # 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
 XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
@@ -1259,13 +1261,20 @@ def _xiaole_request(method, path, body=None, timeout=90):
     if body is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:400]
-        raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
+    for attempt in range(_xiaole_429_retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:400]
+            if e.code == 429 and attempt < _xiaole_429_retries:
+                wait = min(45, 8 * (attempt + 1))
+                print("[xiaolevideo] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
 
 def _xiaole_pick_video_url(output):
     for v in ((output or {}).get("videos") or []):
@@ -1291,9 +1300,24 @@ def _download_xiaole_video(url, prefix="xiaole"):
         if token:
             headers["X-Relay-Token"] = token
         url = fetch
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=300) as r:
-        data = r.read()
+    # 下载中断(IncompleteRead/网络抖动)自动重试
+    data = None
+    last_err = None
+    for attempt in range(_xiaole_dl_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                buf = r.read()
+            if buf:
+                data = buf
+                break
+            last_err = RuntimeError("下载为空")
+        except Exception as e:
+            last_err = e
+            print("[xiaolevideo] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
+            time.sleep(3 * (attempt + 1))
+    if data is None:
+        raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
     if not data:
         raise RuntimeError("视频下载失败")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键：防枚举
