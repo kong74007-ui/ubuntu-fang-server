@@ -1275,6 +1275,14 @@ def _xiaole_request(method, path, body=None, timeout=90):
                 time.sleep(wait)
                 continue
             raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # 瞬时网络抖动(SSL握手超时等)自动重试
+            if attempt < _xiaole_429_retries:
+                wait = min(30, 5 * (attempt + 1))
+                print("[xiaolevideo] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
 
 def _xiaole_pick_video_url(output):
     for v in ((output or {}).get("videos") or []):
@@ -1329,9 +1337,18 @@ def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, pre
     input_d = {"prompt": (prompt or "").strip()}
     if reference_images:
         input_d["reference_images"] = reference_images
-    create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
+    try:
+        create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
+    except RuntimeError as e:
+        m = str(e)
+        if ("无可用渠道" in m) or ("insufficient_user_quota" in m) or ("额度" in m) or ("媒体任务过多" in m):
+            raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
+        raise
     if create.get("code") not in (200, 0, None):
-        raise RuntimeError("视频创建失败: %s" % str(create.get("message") or create)[:200])
+        msg = str(create.get("message") or create)[:200]
+        if ("无可用渠道" in msg) or ("额度" in msg) or ("任务过多" in msg):
+            raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
+        raise RuntimeError("视频创建失败: %s" % msg)
     data = create.get("data") or {}
     rid = data.get("request_id") or data.get("task_id")
     status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
