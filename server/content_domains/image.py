@@ -44,7 +44,7 @@ def _post_zelong2(path, data, ctype):
     raise ValueError("泽龙2号池全部失败: " + " | ".join(errors))
 
 def _gen_image_xiaole(prompt, ratio, quality, count, img):
-    """果肉生图渠道(xiaolevideo.cn，与果肉/微衣视频同账号)：gpt-image-2 文生图/图生图。
+    """果肉生图渠道(xiaolevideo.cn，与果肉/豆姐视频同账号)：gpt-image-2 文生图/图生图。
     统一 generations API：创建 → 轮询 → 落盘，与 video.py 的 generate_xiaole_video 同一套模式。"""
     if not XIAOLEVIDEO_API_KEY:
         raise ValueError("果肉生图未配置（XIAOLEVIDEO_API_KEY）")

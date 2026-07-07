@@ -22,7 +22,7 @@ def cost_of(kind, body):
         return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
-        # 果肉(Grok)/微衣(Seedance) 视频。Grok 上游约 15 积分/条，含毛利暂定 30 点。
+        # 果肉(Grok)/豆姐(Seedance) 视频。Grok 上游约 15 积分/条，含毛利暂定 30 点。
         # TODO: 上线前与业务确认点数
         return 30
     return COST.get(kind, 0)
