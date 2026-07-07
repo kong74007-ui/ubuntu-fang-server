@@ -73,8 +73,6 @@ def _warn_cos_disabled_once():
     if not _cos_disabled_warned:
         _cos_disabled_warned = True
         print("[cos] 未启用：COS_SECRET_ID/KEY/REGION/BUCKET 有缺失，本进程所有产出回退本地 /api/gen/file（音频/图片/视频不会走 COS）。检查 content.env 并重启 content。", flush=True)
-
-
 def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
@@ -98,9 +96,7 @@ def public_url(rel, content_type=None, private=False):
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
-
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")
-
 def public_url_from_remote(remote_url, rel_key, content_type=None):
     """把一个远程 URL(如抖音 CDN 直链)的字节转存到 COS，返回 COS 永久直链。
     COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
@@ -119,7 +115,6 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
     except Exception as e:
         print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
         return remote_url
-
 def _collect_cos_play_url(platform, vid_id, play_url):
     """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
     视频号(channels)加密流也跳过 COS 转存——它是 encfilekey 加密流(需 decode_key 解密)，
@@ -130,7 +125,6 @@ def _collect_cos_play_url(platform, vid_id, play_url):
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return public_url_from_remote(play_url, key, "video/mp4")
-
 def _resolve_out_file(rel):
     rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
     if not rel or ".." in rel.split("/"):
@@ -147,7 +141,6 @@ def _resolve_out_file(rel):
         if fp.exists() and fp.is_file():
             return fp
     return None
-
 def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
@@ -532,10 +525,6 @@ def delete_user_asset(username, kind, asset_id):
         raise LookupError("资产不存在或不属于当前账号")
     _delete_asset_mark(username, "video", str(asset_id))
     return {"kind": kind, "id": asset_id, "deleted": True}
-
-
-
-
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -642,10 +631,6 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
-
-
-
-
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点） ============
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)
 _queued_job_ids = set()
@@ -1007,6 +992,22 @@ class H(BaseHTTPRequestHandler):
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
             d = _job_public_dict(r, phase)
             return self._send(200, d)
+        if p == "/api/gen/points/history":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = points_domain.history(
+                    user["username"],
+                    (q.get("days") or ["30"])[0],
+                    (q.get("kind") or [""])[0],
+                    (q.get("page") or ["1"])[0],
+                    (q.get("page_size") or ["20"])[0],
+                )
+                data["points"] = points_domain.get_points(user["username"])
+                return self._send(200, data)
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
