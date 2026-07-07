@@ -16,7 +16,7 @@ VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
 
-# 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、微衣=Seedance 2.0
+# 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、豆姐=Seedance 2.0
 XIAOLEVIDEO_API_KEY = os.environ.get("XIAOLEVIDEO_API_KEY", "")
 XIAOLEVIDEO_API_BASE = os.environ.get("XIAOLEVIDEO_API_BASE", "https://api.xiaolevideo.cn").rstrip("/")
 XIAOLE_MAX_WAIT = int(os.environ.get("XIAOLEVIDEO_TIMEOUT", "600"))
@@ -26,7 +26,7 @@ _xiaole_dl_retries = int(os.environ.get("XIAOLEVIDEO_DL_RETRIES", "3"))     # �
 # 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
 XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
-    "micro": "seedance-2.0-fast", # 微衣视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
+    "micro": "seedance-2.0-fast", # 豆姐视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生视频最多参考图数
@@ -1393,7 +1393,7 @@ def _download_xiaole_video(url, prefix="xiaole"):
     return fn
 
 def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, prefix="xiaole"):
-    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(微衣) 共用。"""
+    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
     input_d = {"prompt": (prompt or "").strip()}
     refs = _xiaole_build_refs(reference_images)
     if refs:
@@ -1458,7 +1458,7 @@ def gen_xiaole_video(payload):
         raw_refs = payload.get("reference_images") or None
         if raw_refs:
             ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
-    label = {"grok": "果肉视频", "micro": "微衣视频"}.get(channel, model)
+    label = {"grok": "果肉视频", "micro": "豆姐视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
     result = generate_xiaole_video(model, prompt, reference_images=ref_images, job_id=job_id, prefix=channel)

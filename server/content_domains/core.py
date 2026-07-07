@@ -800,7 +800,7 @@ def reaper():
                 if r["kind"] == "video" and r["updated_at"] >= now - 1800:
                     continue
                 if r["kind"] == "xiaole_video" and r["updated_at"] >= now - 1200:
-                    continue  # 果肉/微衣内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
+                    continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
                 if r["kind"] == "image" and r["updated_at"] >= now - 900:
                     continue  # 多图/中转出图慢，给 image 15 分钟余量
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
