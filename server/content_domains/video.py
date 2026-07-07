@@ -1359,6 +1359,9 @@ def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, pre
     if refs:
         input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频
         input_d["reference_images"] = refs
+        # 官方文档：图生视频建议 duration_seconds ≤10，否则超部分上游上限(疑之前 502 主因)。
+        # 不传时 API 默认 15s（探针实测），Grok 图生示例即用 10s。
+        input_d["duration_seconds"] = 10
     try:
         create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
     except RuntimeError as e:
