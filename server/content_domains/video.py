@@ -32,16 +32,18 @@ XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生视频最多参考图数
 
 def _xiaole_build_refs(reference_images):
-    # 前端传 dataURL/URL → API 要的 [{type:base64|url, value:...}]，最多 XIAOLE_MAX_REF 张
+    # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
+    # type 合法枚举(实测 422 暴露)：'url' | 'base64' | 'data_url'。
+    #  - dataURL 上传图 → 用 data_url 原样传(带 mime 头，最稳，对应用户"传base64")
+    #  - https 链接    → url（http 不可达，Grok 拉不到）
+    #  - 裸 base64      → base64
     out = []
     for item in (reference_images or [])[:XIAOLE_MAX_REF]:
         s = str(item or "").strip()
         if not s:
             continue
         if s.startswith("data:"):
-            b64 = s.split(",", 1)[1] if "," in s else ""
-            if b64:
-                out.append({"type": "base64", "value": b64})
+            out.append({"type": "data_url", "value": s})
         elif s.startswith("http"):
             out.append({"type": "url", "value": s})
         else:
