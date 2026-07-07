@@ -392,7 +392,7 @@
           <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，图生视频，最多 1 张</span></div>
           <label id="grokRefDrop" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;overflow:hidden;">
             <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <span id="grokRefText" style="font-size:12.5px;color:#94a4bb;">点击上传参考图，让 Grok 基于它生成视频（png/jpg/webp）</span>
+            <span id="grokRefText" style="font-size:12.5px;color:#94a4bb;">点击上传参考图，或在提示词框粘贴图片，让 Grok 基于它生成视频（png/jpg/webp）</span>
           </label>
         </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
@@ -1440,9 +1440,9 @@
     function resetGrokRef(){ grokRefData=''; if(txt){txt.style.display='';}
       var pv=drop&&drop.querySelector('.grok-ref-pv'); if(pv) pv.remove();
       var x=drop&&drop.querySelector('.grok-ref-x'); if(x) x.remove(); }
-    if(inp){ inp.onchange=function(){
-      var f=inp.files&&inp.files[0]; if(!f) return;
-      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); inp.value=''; return; }
+    function setGrokRefFile(f){
+      if(!f) return;
+      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
       var rd=new FileReader();
       rd.onload=function(){ grokRefData=rd.result; if(txt) txt.style.display='none';
         var old=drop.querySelector('.grok-ref-pv'); if(old) old.remove();
@@ -1453,9 +1453,24 @@
           x.style.cssText='position:absolute;right:7px;top:7px;z-index:3;width:24px;height:24px;border-radius:50%;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.35);color:#eaf1fa;font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
           x.onclick=function(e){ e.preventDefault(); e.stopPropagation(); inp.value=''; resetGrokRef(); };
           drop.appendChild(x); }
+        toast('参考图已就绪');
       };
       rd.readAsDataURL(f);
-    }; }
+    }
+    if(inp){ inp.onchange=function(){ setGrokRefFile(inp.files&&inp.files[0]); }; }
+    // 提示词框里直接粘贴图片(截图/复制的图)当参考图，不用非得点击选文件
+    function grokPasteHandler(e){
+      var items=(e.clipboardData&&e.clipboardData.items)||[];
+      for(var i=0;i<items.length;i++){
+        if(items[i].type&&items[i].type.indexOf('image/')===0){
+          var f=items[i].getAsFile();
+          if(f){ e.preventDefault(); setGrokRefFile(f); }
+          return;
+        }
+      }
+    }
+    if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
+    if(drop){ drop.addEventListener('paste', grokPasteHandler); }
   })();
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));

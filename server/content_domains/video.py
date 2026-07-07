@@ -34,21 +34,36 @@ XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生�
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
     # type 合法枚举(实测 422 暴露)：'url' | 'base64' | 'data_url'。
-    #  - dataURL 上传图 → 用 data_url 原样传(带 mime 头，最稳，对应用户"传base64")
-    #  - https 链接    → url（http 不可达，Grok 拉不到）
-    #  - 裸 base64      → base64
+    #  - https 链接    → url（实测：上游 Grok 渠道只有这种稳定出片，data_url/base64 会超时丢弃）
+    #  - dataURL/裸base64 → 理论上也合法，但已知会超时；正常流程会先转存 COS 换成 url，这两支只是兜底
     out = []
     for item in (reference_images or [])[:XIAOLE_MAX_REF]:
         s = str(item or "").strip()
         if not s:
             continue
-        if s.startswith("data:"):
-            out.append({"type": "data_url", "value": s})
-        elif s.startswith("http"):
+        if s.startswith("http"):
             out.append({"type": "url", "value": s})
+        elif s.startswith("data:"):
+            out.append({"type": "data_url", "value": s})
         else:
             out.append({"type": "base64", "value": s})
     return out
+
+def _xiaole_ref_to_url(data_url):
+    """Grok 参考图实测只有公网 HTTPS URL 能稳定出片(data_url/base64 会超时)。
+    本地上传的图先落盘转存 COS 换直链；已经是 http(s) 的直接透传；转存失败就回退原始数据。"""
+    s = str(data_url or "").strip()
+    if not s or s.startswith("http"):
+        return s
+    try:
+        fn = _save_data_file(s, "grok_ref", [".jpg", ".png", ".webp"])
+        if not fn:
+            return s
+        url = public_url(fn, mimetypes.guess_type(fn)[0])
+        return url if url.startswith("http") else s
+    except Exception as e:
+        print("[xiaolevideo] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
+        return s
 
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
@@ -1415,7 +1430,9 @@ def gen_xiaole_video(payload):
         raise ValueError("请输入视频提示词")
     ref_images = None
     if channel in XIAOLE_IMAGE_CHANNELS:
-        ref_images = payload.get("reference_images") or None
+        raw_refs = payload.get("reference_images") or None
+        if raw_refs:
+            ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
     label = {"grok": "果肉视频", "micro": "微衣视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
