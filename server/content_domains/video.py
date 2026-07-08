@@ -36,7 +36,7 @@ XIAOLE_CHANNEL_MODELS = {
     "micro": "seedance-2.0-fast", # 豆姐视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
-XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生视频最多参考图数
+XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "2"))  # Grok 图生视频最多参考图数(实测2张API接受)
 
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
