@@ -12,16 +12,16 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
-
 try:
-    from . import feature_flags
+    from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
+    import asset_batch
     import feature_flags
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
@@ -473,7 +473,6 @@ def _list_asset_marks(username, kind):
             "updated_at": row["updated_at"],
         }
     return marks
-
 def _delete_asset_mark(username, kind, key):
     try:
         key = _clean_asset_key(key)
@@ -484,7 +483,6 @@ def _delete_asset_mark(username, kind, key):
         c.execute("DELETE FROM asset_marks WHERE username=? AND asset_kind=? AND asset_key=?",
                   (username, kind, key))
         c.commit()
-
 def delete_user_asset(username, kind, asset_id):
     kind = str(kind or "").strip().lower()
     if kind not in {"image", "audio", "video"}:
@@ -576,11 +574,9 @@ def verify(token):
 def _domains():
     from . import audio, points, video
     return audio, points, video
-
 def _leads_domain():
     from . import leads
     return leads
-
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
@@ -876,6 +872,34 @@ class H(BaseHTTPRequestHandler):
                 return self._send(404, {"detail": str(e)[:160]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/asset/batch-delete":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                result = asset_batch.batch_delete_user_assets(sys.modules[__name__], user["username"], self._json_body())
+                return self._send(200, {"ok": True, **result})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/asset/batch-download":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                data, meta = asset_batch.build_asset_zip(sys.modules[__name__], user["username"], self._json_body())
+            except LookupError as e:
+                return self._send(404, {"detail": str(e)[:160]})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+            name = "huangque-assets-%s.zip" % time.strftime("%Y%m%d-%H%M%S")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition",
+                             "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (name, urllib.parse.quote(name)))
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Asset-Count", str(meta.get("count", 0)))
+            self.send_header("X-Asset-Skipped", str(meta.get("skipped", 0)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
