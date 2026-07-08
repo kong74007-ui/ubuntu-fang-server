@@ -669,6 +669,62 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
                 "role": row["role"], "must_change": bool(row["must_change"])}}, {"Set-Cookie": auth_cookie_header(tok)})
+        if p == "/api/auth/miniprogram-login":
+            # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
+            # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            u = (d.get("username") or "").strip()
+            pw = d.get("password") or ""
+            if self._login_limited(u):
+                return self._send(429, {"detail": "登录失败次数过多，请稍后再试"})
+            c = db(); row = c.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone(); c.close()
+            if not row or hash_pw(pw, row["pw_salt"]) != row["pw_hash"]:
+                self._record_login_failure(u)
+                return self._send(401, {"detail": "账号或密码错误"})
+            self._clear_login_failures(u)
+            tok = issue_token(u)
+            return self._send(200, {"token": tok, "user": {
+                "username": u, "name": row["display_name"], "points": row["points"],
+                "role": row["role"], "must_change": bool(row["must_change"])}})
+        if p == "/api/auth/miniprogram-register":
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            u = (d.get("username") or "").strip()
+            pw = d.get("password") or ""
+            name = (d.get("display_name") or u).strip() or u
+            if self._register_limited():
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
+            if not u or not pw:
+                return self._send(400, {"detail": "请填写账号和密码"})
+            if len(u) > 64:
+                return self._send(400, {"detail": "账号最多 64 位"})
+            if len(name) > 32:
+                return self._send(400, {"detail": "昵称最多 32 个字符"})
+            if any(ch.isspace() for ch in u):
+                return self._send(400, {"detail": "账号不能包含空白字符"})
+            if len(pw) < 6:
+                return self._send(400, {"detail": "密码至少 6 位"})
+            salt = secrets.token_hex(16)
+            c = db()
+            try:
+                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
+                             VALUES(?,?,?,?,?,?,0)""",
+                          (u, hash_pw(pw, salt), salt, name, 0, "member"))
+                tok = issue_token(u, c)
+                c.commit()
+                self._record_register_hit()
+            except sqlite3.IntegrityError:
+                c.rollback()
+                return self._send(409, {"detail": "账号已存在"})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "注册失败"})
+            finally:
+                c.close()
+            return self._send(200, {"token": tok, "user": public_user(u, name)})
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
