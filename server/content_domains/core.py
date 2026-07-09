@@ -198,6 +198,9 @@ MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # �
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
+# reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
+# image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
+KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
@@ -839,20 +842,11 @@ def reaper():
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
             for r in stuck:
-                if r["kind"] == "tryon" and r["updated_at"] >= now - 2400:
-                    continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
-                if r["kind"] == "video":
-                    # 口播9分钟(直连挤兑达5min+留余量);motion直连被限流几乎必回退泽龙,泽龙正常完成实测20-37分钟,给40分钟(#410原10分钟误杀)
-                    is_motion = '"mode":"motion"' in (r["payload"] or "").replace(" ", "")
-                    if r["updated_at"] >= now - (2400 if is_motion else 540):
-                        continue
-                if r["kind"] == "xiaole_video" and r["updated_at"] >= now - 1200:
-                    continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
-                if r["kind"] == "image" and r["updated_at"] >= now - 900:
-                    continue  # 多图/中转出图慢，给 image 15 分钟余量
-                if r["kind"] == "collect" and r["updated_at"] >= now - 1200:
-                    continue  # 采集含下载+ffmpeg抽音轨+ASR转写，且 TRANSCRIBE_MAX_CONCURRENCY=1 全站串行排队；
-                              # 线上实测成功任务平均 88s、长视频到数分钟，6 分钟会误杀成功任务并错误退点，给 20 分钟
+                grace = KIND_GRACE.get(r["kind"], 0)
+                if r["kind"] == "video":  # 口播9分钟(直连挤兑达5min);motion几乎必回退泽龙,实测20-37分钟,给40分钟(#410原10分钟误杀)
+                    grace = 2400 if '"mode":"motion"' in (r["payload"] or "").replace(" ", "") else 540
+                if grace and r["updated_at"] >= now - grace:
+                    continue
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
