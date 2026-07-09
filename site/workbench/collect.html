@@ -246,6 +246,10 @@
   var selectedUrl = '';    // set when user picks from search grid
   var currentUrl  = '';    // ponytail: saved at submit time, reused for transcript extraction
   var currentResult = null;
+  // 前端停止等待的秒数。必须 < core.py::reaper 给 collect 的 1200s 窗口：
+  // 前端放弃时任务仍在后台跑，不能声称"已退点"（真超时退点由 reaper 负责）。
+  // 原来爬取 400s / 提取文案 120s 两个死线不一致，而线上转写成功平均就要 88s，稍慢即误报超时。
+  var POLL_GIVEUP_SEC = 600;
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
   var transcriptBusy = false;
@@ -448,10 +452,10 @@
             busy(false); showState('emptyState');
             setNote('爬取失败：' + escHtml(d.error || '') + ' · 已退点', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
-          } else if (sec > 400) {
+          } else if (sec > POLL_GIVEUP_SEC) {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
-            setNote('爬取超时（' + sec + 's）· 已自动退点，请重试', '#f4708a');
+            setNote('等待超过 ' + sec + 's，任务仍在后台执行 · 完成后刷新页面可在历史记录查看', '#f4b740');
             localStorage.removeItem('hq_active_collect_job');
           } else {
             var stage = sec < 6 ? '解析链接' : (sec < 18 ? '拉取详情' : '提取评论/文案');
@@ -784,9 +788,9 @@
             } else if (d.status === 'error') {
               clearInterval(iv);
               reject(new Error('提取失败：' + (d.error || '')));
-            } else if (sec > 120) {
+            } else if (sec > POLL_GIVEUP_SEC) {
               clearInterval(iv);
-              reject(new Error('提取超时，请重试'));
+              reject(new Error('等待超过 ' + sec + 's，转写仍在后台执行，完成后可在历史记录查看'));
             }
             // else: pending, keep polling
           }).catch(function () {

@@ -849,6 +849,9 @@ def reaper():
                     continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
                 if r["kind"] == "image" and r["updated_at"] >= now - 900:
                     continue  # 多图/中转出图慢，给 image 15 分钟余量
+                if r["kind"] == "collect" and r["updated_at"] >= now - 1200:
+                    continue  # 采集含下载+ffmpeg抽音轨+ASR转写，且 TRANSCRIBE_MAX_CONCURRENCY=1 全站串行排队；
+                              # 线上实测成功任务平均 88s、长视频到数分钟，6 分钟会误杀成功任务并错误退点，给 20 分钟
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
