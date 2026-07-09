@@ -22,6 +22,7 @@ import os
 import pathlib
 import sqlite3
 import time
+import urllib.parse
 from contextlib import closing
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
@@ -80,16 +81,30 @@ def _clip(text, n=120):
     return s[:n] if s else None
 
 
-# 自有存储的域名前缀：COS 直链或自定义 CDN 域名。其余(抖音 zjcdn / 小红书 rednotecdn / 视频号 tc.qq.com)
-# 都是带时效的第三方直链，会过期。COS_DOMAIN 可由 env 覆盖，默认认 myqcloud。
-_PERMANENT_HOST_HINTS = tuple(
-    h for h in (os.environ.get("COS_DOMAIN", "").strip().rstrip("/").split("//")[-1], "myqcloud.com") if h
-)
+def _permanent_hosts():
+    """自有存储域名。每次读 env，不做模块级快照——COS_DOMAIN 可能在进程起来后才注入。"""
+    custom = urllib.parse.urlparse(os.environ.get("COS_DOMAIN", "").strip().rstrip("/")).hostname \
+        or os.environ.get("COS_DOMAIN", "").strip().rstrip("/").split("//")[-1].split("/")[0]
+    return tuple(h.lower() for h in (custom, "myqcloud.com") if h)
 
 
 def _is_permanent_url(url):
-    host = str(url or "").split("//")[-1].split("/")[0].lower()
-    return bool(host) and any(hint.lower() in host for hint in _PERMANENT_HOST_HINTS)
+    """链接是否长期有效。
+
+    两个坑：
+    1. 私有桶(COS_PUBLIC=0)时 cos.py 返回的是 get_presigned_url(...) 签名链接，默认 7 天到期，
+       但 host 同样是 *.myqcloud.com —— 只看域名会把它误判成永久。签名链接必带 query
+       (q-sign-algorithm / Signature / Expires)，据此排除。
+    2. 域名必须做后缀匹配。原来用子串包含，notmyqcloud.com.evil.net 会被判成永久。
+    """
+    parsed = urllib.parse.urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if not any(host == h or host.endswith("." + h) for h in _permanent_hosts()):
+        return False
+    q = parsed.query.lower()
+    return not any(k in q for k in ("q-sign-algorithm", "signature", "expires", "sign="))
 
 
 def _project(kind, result):

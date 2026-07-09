@@ -66,7 +66,7 @@ class CosBudgetTests(unittest.TestCase):
         self._stub_opener(_FakeResponse(b"", {"Content-Length": big}))
         with self.assertRaises(ValueError) as ctx:
             self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() + 30)
-        self.assertIn("超过转存上限", str(ctx.exception))
+        self.assertIn("超过上限", str(ctx.exception))
 
     def test_rejects_oversize_while_streaming(self):
         """CDN 不给 Content-Length 时，边下边数，超限即停。"""
@@ -111,6 +111,14 @@ class CosBudgetTests(unittest.TestCase):
 
 
 class RefundAuditTests(unittest.TestCase):
+    """add_points 同时被扣点(负 delta)和退点(正 delta)调用。
+
+    auth 的 /deduct 与 /refund 都校验 `amount >= 0`（auth_server.py），所以必须按符号
+    分流到不同端点并传绝对值。第一版把两者都路由到 /refund，导致每次扣点都拿到 400
+    然后回退直写 —— 扣点依然绕过 points_audit，且热路径上多一次注定失败的 HTTP 往返。
+    最初的测试只覆盖了正数 delta，所以没抓到。
+    """
+
     def setUp(self):
         server_dir = str(Path(__file__).resolve().parents[1] / "server")
         if server_dir not in sys.path:
@@ -120,26 +128,56 @@ class RefundAuditTests(unittest.TestCase):
         self._orig_direct = self.lg._add_points_direct
         self.direct_calls = []
         self.lg._add_points_direct = lambda u, d: (self.direct_calls.append((u, d)), True)[1]
+        self.auth_calls = []
 
     def tearDown(self):
         self.lg._auth_points = self._orig_auth
         self.lg._add_points_direct = self._orig_direct
 
-    def test_uses_auth_service_when_available(self):
-        calls = []
-        self.lg._auth_points = lambda path, u, a: (calls.append((path, u, a)), (200, {"points": 9}))[1]
+    def _auth(self, status, data=None):
+        def _f(path, u, a):
+            self.auth_calls.append((path, u, a))
+            return status, (data or {})
+        self.lg._auth_points = _f
+
+    # --- 核心回归：扣点走 /deduct，退点走 /refund，且金额一律非负 ---
+    def test_refund_uses_refund_endpoint(self):
+        self._auth(200, {"points": 9})
         self.assertTrue(self.lg.add_points("u", 6))
-        self.assertEqual(calls, [("/api/auth/points/refund", "u", 6)])
+        self.assertEqual(self.auth_calls, [("/api/auth/points/refund", "u", 6)])
         self.assertEqual(self.direct_calls, [], "auth 成功时不该直写 users.db")
 
+    def test_deduct_uses_deduct_endpoint_with_positive_amount(self):
+        self._auth(200, {"points": 3})
+        self.assertTrue(self.lg.add_points("u", -6))
+        self.assertEqual(self.auth_calls, [("/api/auth/points/deduct", "u", 6)],
+                         "扣点必须走 /deduct 且传绝对值；传负数会被 auth 以 400 拒绝")
+        self.assertEqual(self.direct_calls, [])
+
+    def test_insufficient_points_does_not_fall_back(self):
+        """402 是业务结论不是故障：回退直写等于绕过 auth 的余额校验硬扣。"""
+        self._auth(402, {"detail": "点数不足"})
+        self.assertFalse(self.lg.add_points("u", -6))
+        self.assertEqual(self.direct_calls, [], "余额不足时绝不能直写扣点")
+
+    def test_zero_delta_is_noop(self):
+        self._auth(500)
+        self.assertTrue(self.lg.add_points("u", 0))
+        self.assertEqual(self.auth_calls, [])
+
+    # --- auth 故障时的兜底：宁可审计缺一条，也不能吞用户的点 ---
     def test_falls_back_to_direct_write_when_auth_fails(self):
-        """auth 挂了/令牌漏配时必须仍把点退回去 —— 宁可审计缺一条，也不能吞用户的点。"""
-        self.lg._auth_points = lambda path, u, a: (500, {"detail": "HQ_INTERNAL_TOKEN 未配置"})
+        self._auth(500, {"detail": "HQ_INTERNAL_TOKEN 未配置"})
         self.assertTrue(self.lg.add_points("u", 6))
         self.assertEqual(self.direct_calls, [("u", 6)])
 
+    def test_deduct_falls_back_on_auth_outage(self):
+        self._auth(500, {"detail": "points update failed"})
+        self.assertTrue(self.lg.add_points("u", -6))
+        self.assertEqual(self.direct_calls, [("u", -6)])
+
     def test_falls_back_on_http_error(self):
-        self.lg._auth_points = lambda path, u, a: (403, {"detail": "forbidden"})
+        self._auth(403, {"detail": "forbidden"})
         self.assertTrue(self.lg.add_points("u", 6))
         self.assertEqual(self.direct_calls, [("u", 6)])
 
@@ -151,6 +189,49 @@ class RefundAuditTests(unittest.TestCase):
             self.assertIn("HQ_INTERNAL_TOKEN", data["detail"])
         finally:
             self.lg.INTERNAL_TOKEN = token
+
+
+class DirectWriteFallbackTests(unittest.TestCase):
+    """兜底直写必须保留余额校验：MAX(0, points+delta) 会把余额不足的用户硬扣到 0。"""
+
+    def setUp(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        self.lg = importlib.import_module("leadgen_api")
+        import sqlite3, tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_db = self.lg.AUTH_DB
+        self.lg.AUTH_DB = str(Path(self.tmp.name) / "users.db")
+        c = sqlite3.connect(self.lg.AUTH_DB)
+        c.execute("CREATE TABLE users(username TEXT PRIMARY KEY, points INTEGER)")
+        c.execute("INSERT INTO users VALUES('u', 5)")
+        c.commit(); c.close()
+
+    def tearDown(self):
+        self.lg.AUTH_DB = self._orig_db
+        self.tmp.cleanup()
+
+    def _points(self):
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.lg.AUTH_DB)) as c:   # `with sqlite3.connect(...)` 只提交不关闭
+            return c.execute("SELECT points FROM users WHERE username='u'").fetchone()[0]
+
+    def test_direct_deduct_respects_balance(self):
+        self.assertFalse(self.lg._add_points_direct("u", -9), "余额 5 扣 9 必须失败")
+        self.assertEqual(self._points(), 5, "余额不足却被扣了")
+
+    def test_direct_deduct_succeeds_within_balance(self):
+        self.assertTrue(self.lg._add_points_direct("u", -5))
+        self.assertEqual(self._points(), 0)
+
+    def test_direct_refund_adds(self):
+        self.assertTrue(self.lg._add_points_direct("u", 3))
+        self.assertEqual(self._points(), 8)
+
+    def test_unknown_user_reports_failure(self):
+        self.assertFalse(self.lg._add_points_direct("nobody", 3))
 
 
 class PermanentUrlTests(unittest.TestCase):
@@ -175,6 +256,35 @@ class PermanentUrlTests(unittest.TestCase):
     def test_empty_url_is_not_permanent(self):
         self.assertFalse(self.store._is_permanent_url(""))
         self.assertFalse(self.store._is_permanent_url(None))
+
+    def test_presigned_private_bucket_url_is_not_permanent(self):
+        """COS_PUBLIC=0 时 cos.py 返回带签名的临时链接(默认 7 天)，host 同样是 myqcloud.com。
+        只看域名会把它误判成永久，用户 7 天后点开是死链且全程无提示。"""
+        signed = ("https://hq-1435693839.cos.ap-guangzhou.myqcloud.com/collect/douyin/1.mp4"
+                  "?q-sign-algorithm=sha1&q-ak=AKID&q-sign-time=1&q-signature=abc")
+        self.assertFalse(self.store._is_permanent_url(signed))
+
+    def test_expires_style_signature_is_not_permanent(self):
+        self.assertFalse(self.store._is_permanent_url(
+            "https://hq.cos.ap-guangzhou.myqcloud.com/a.mp4?Expires=1783500000&Signature=xyz"))
+
+    def test_host_match_is_suffix_not_substring(self):
+        """原实现用子串包含，notmyqcloud.com.evil.net 会被判成永久。"""
+        self.assertFalse(self.store._is_permanent_url("https://notmyqcloud.com.evil.net/a.mp4"))
+        self.assertFalse(self.store._is_permanent_url("https://myqcloud.com.evil.net/a.mp4"))
+        self.assertTrue(self.store._is_permanent_url("https://x.cos.ap-guangzhou.myqcloud.com/a.mp4"))
+
+    def test_custom_cos_domain_from_env(self):
+        import os, importlib
+        old = os.environ.get("COS_DOMAIN")
+        os.environ["COS_DOMAIN"] = "https://video.huangquechuanmei.com"
+        try:
+            self.assertTrue(self.store._is_permanent_url("https://video.huangquechuanmei.com/a.mp4"))
+        finally:
+            if old is None:
+                os.environ.pop("COS_DOMAIN", None)
+            else:
+                os.environ["COS_DOMAIN"] = old
 
     def test_collect_meta_carries_permanent_flag(self):
         _, _, url, meta = self.store._project("collect", {

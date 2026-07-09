@@ -31,6 +31,8 @@ COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "f
 COS_FETCH_DEADLINE   = int(os.environ.get("COS_COLLECT_DEADLINE", "180"))            # 单次采集用于转存的总秒数
 COS_FETCH_READ_TIMEO = int(os.environ.get("COS_COLLECT_READ_TIMEOUT", "30"))         # 单次 socket 读超时
 COS_FETCH_MAX_BYTES  = int(os.environ.get("COS_COLLECT_MAX_BYTES", str(100 * 1024 * 1024)))
+# 同时最多几个采集在下视频。每个最坏占 2×MAX_BYTES 内存(chunks + join)，默认 2 → 峰值约 400MB
+_COS_FETCH_GATE = threading.BoundedSemaphore(int(os.environ.get("COS_COLLECT_MAX_CONCURRENCY", "2")))
 
 
 # ============ 采集视频转存 COS（永久直链；未配置/失败/关闭时回退原 CDN 链接） ============
@@ -49,33 +51,16 @@ def _request_token(headers):
         return ""
 
 def _fetch_within_budget(url, deadline_ts):
-    """流式拉取远程视频，受总预算 deadline_ts 约束。
+    """流式拉取远程视频，受总预算约束。实现在 tikhub.http_get_budgeted（同一份，别再复制）。
 
-    原来用 tikhub._http_get(timeout=120) 一次性 read(100MB)：timeout 只管单次 socket 读，
-    慢 CDN 上 read 会反复续命，实际远超 120s。这里改为分块读 + 每块检查预算，把总耗时钉死。
-    Content-Length 预检可在下载前就否掉超大文件，省掉整段无用等待。
+    并发闸：do_POST 每个请求直接起一个不受限的线程（本文件 :threading.Thread(target=run_job)），
+    而整段视频要缓存在内存里再上传 COS，b"".join 时刻还翻倍。不限并发的话
+    10 个并发采集就能把这个小进程推到 1GB+ RSS 直接 OOM。
     """
-    remain = deadline_ts - time.time()
-    if remain <= 0:
-        raise TimeoutError("转存预算已耗尽")
-    req = urllib.request.Request(url, headers={"User-Agent": tikhub.UA})
-    with tikhub._OPENER.open(req, timeout=min(COS_FETCH_READ_TIMEO, remain)) as r:  # 直连，绕过环境代理
-        declared = r.headers.get("Content-Length")
-        if declared and int(declared) > COS_FETCH_MAX_BYTES:
-            raise ValueError("视频 %.1fMB 超过转存上限 %.0fMB" % (
-                int(declared) / 1048576.0, COS_FETCH_MAX_BYTES / 1048576.0))
-        chunks, got = [], 0
-        while True:
-            if time.time() >= deadline_ts:
-                raise TimeoutError("转存超过 %ds 预算（已下载 %.1fMB）" % (COS_FETCH_DEADLINE, got / 1048576.0))
-            block = r.read(262144)
-            if not block:
-                break
-            got += len(block)
-            if got > COS_FETCH_MAX_BYTES:
-                raise ValueError("视频超过转存上限 %.0fMB" % (COS_FETCH_MAX_BYTES / 1048576.0))
-            chunks.append(block)
-    return b"".join(chunks)
+    with _COS_FETCH_GATE:
+        return tikhub.http_get_budgeted(url, deadline_ts,
+                                        max_bytes=COS_FETCH_MAX_BYTES,
+                                        read_timeout=COS_FETCH_READ_TIMEO)
 
 
 def public_url_from_remote(remote_url, rel_key, content_type=None):
@@ -208,28 +193,55 @@ def _auth_points(path, username, amount):
     except Exception:
         return 500, {"detail": "points update failed"}
 
+def deduct_points(username, amount):
+    return _auth_points("/api/auth/points/deduct", username, amount)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
+
+def refund_points(username, amount):
+    return _auth_points("/api/auth/points/refund", username, amount)
+
 def _add_points_direct(username, delta):
-    """兜底：直接写 users.db。没有事务保护、不进 points_audit —— 只在 auth 不可用时用。"""
+    """兜底：直接写 users.db。无事务保护、不进 points_audit —— 只在 auth 不可用时用。
+
+    扣点(delta<0)必须带 points >= 需扣数 的条件，否则 MAX(0, ...) 会把余额不足的用户
+    硬扣到 0 且静默成功。返回是否真正生效。
+    """
     try:
         with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            c.execute("UPDATE users SET points = MAX(0, points + ?) WHERE username=?", (delta, username)); c.commit()
-        return True
+            if delta < 0:
+                cur = c.execute("UPDATE users SET points = points + ? WHERE username=? AND points >= ?",
+                                (delta, username, -delta))
+            else:
+                cur = c.execute("UPDATE users SET points = points + ? WHERE username=?", (delta, username))
+            c.commit()
+            return cur.rowcount == 1
     except Exception as e:
-        print("[leadgen] 直写 users.db 退点也失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
+        print("[leadgen] 直写 users.db 失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
         return False
 
 def add_points(username, delta):
-    """退点。优先走 auth 服务，让流水进 points_audit（原实现直接 UPDATE users.db，
-    绕过事务与审计，collect/leads 的退点在审计里完全隐形）。
+    """加/减点数。delta>0 退点走 auth 的 /refund，delta<0 扣点走 /deduct。
 
-    auth 不可用时回退直写：宁可审计缺一条，也不能把用户的点吞了。
-    注意 huangque-leadgen-api.service 原本不加载 auth.env，拿不到 HQ_INTERNAL_TOKEN，
-    本次一并补上；即便漏配，也会走下面的兜底而不是丢点。"""
-    status, data = _auth_points("/api/auth/points/refund", username, delta)
+    ⚠ 这个函数同时被扣点(do_POST 里 -cost / -1)和退点(_refund_once 里 +cost)调用。
+    auth 的两个端点都校验 `amount >= 0`，所以必须按符号分流到不同端点、并传绝对值，
+    否则扣点会拿到 400 而被误当成「auth 故障」。
+
+    auth 不可用时回退直写 users.db：宁可审计缺一条，也不能把用户的点吞了。
+    但「点数不足」(402) 是业务结论而非故障，绝不回退——回退等于绕过余额校验硬扣。
+    返回是否真正生效（扣点余额不足时为 False）。
+    """
+    delta = int(delta or 0)
+    if delta == 0:
+        return True
+    if delta > 0:
+        status, data = refund_points(username, delta)
+    else:
+        status, data = deduct_points(username, -delta)
+        if status == 402:
+            return False   # 点数不足：auth 的原子校验已经拒绝，不要再直写
     if status == 200:
         return True
-    print("[leadgen] auth 退点失败(status=%s detail=%s)，回退直写 users.db；本次退点不会进 points_audit"
-          % (status, (data or {}).get("detail")), flush=True)
+    print("[leadgen] auth 点数接口失败(delta=%s status=%s detail=%s)，回退直写 users.db；本次不进 points_audit"
+          % (delta, status, (data or {}).get("detail")), flush=True)
     return _add_points_direct(username, delta)
 
 def verify(token):
@@ -417,21 +429,32 @@ HANDLERS = {"collect": gen_collect, "leads": gen_leads}
 # 与 content_domains/core.py 的 _set_terminal/_refund_once 同语义：本服务与 content_api 共写
 # 同一张 jobs 表，reaper 只在 content_api 里跑。不做 CAS 就会出现「reaper 判超时退了点，
 # worker 随后把 error 覆写回 done」——用户既拿到结果又拿回点数(线上 id=1170 实例)。
-def _set_terminal(job_id, status, result=None, error=None):
-    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到(rowcount>=1)。败者不写状态、不做副作用。"""
+def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
+    """CAS 抢终态：仅当当前状态在 from_states 内才迁移，返回是否抢到(rowcount>=1)。
+
+    from_states 默认只认 running（与 reaper 竞争的正常路径）。但 run_job 的 except 分支要传
+    ("pending","running")：若异常发生在把任务改成 running 之前(如 SQLite 锁冲突)，任务还停在
+    pending，只认 running 会让 CAS 失败 → 不退点 → 预扣的点永久丢失，而 reaper 只扫 running
+    从不回收 pending，没人能救它。
+    """
     now = int(time.time())
+    holes = ",".join("?" * len(from_states))
     with closing(jdb()) as c:
         if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
-                            (json.dumps(result, ensure_ascii=False), now, job_id))
+            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+                            (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states))
         else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
-                            (str(error or "")[:300], now, job_id))
+            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+                            (str(error or "")[:300], now, job_id) + tuple(from_states))
         c.commit()
         return cur.rowcount >= 1
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数。防与 reaper 双重退点。"""
+    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数。防与 reaper 双重退点。
+
+    先置位再退点，保证「最多退一次」；但退点若真的失败(auth 挂 + 直写也失败)，必须把
+    refunded 放回 0，否则这条 job 被永久标记「已退过」，用户的点再也拿不回来。
+    """
     try:
         cost = int(cost or 0)
     except Exception:
@@ -443,7 +466,10 @@ def _refund_once(job_id, username, cost):
         c.commit()
         if cur.rowcount < 1:
             return  # 已退过 / 非 error 终态，跳过
-    add_points(username, cost)
+    if not add_points(username, cost):
+        with closing(jdb()) as c:   # 退点没成功，把幂等锁放回去，留给下次重试
+            c.execute("UPDATE jobs SET refunded=0 WHERE id=? AND refunded=1", (job_id,)); c.commit()
+        print("[leadgen] 退点失败已回滚 refunded 标记 job=%s user=%s cost=%s" % (job_id, username, cost), flush=True)
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -451,8 +477,11 @@ def run_job(job_id):
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     try:
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
+        with closing(jdb()) as c:   # CAS 认领：只有 pending 才能被本次执行接管，防同一 job 被跑两遍
+            claimed = c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'",
+                                (int(time.time()), job_id)); c.commit()
+        if claimed.rowcount < 1:
+            return  # 已被别的线程接管或已是终态
         result = HANDLERS[kind](payload)
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出结果。
@@ -465,7 +494,9 @@ def run_job(job_id):
         except Exception as e:
             print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
     except Exception as e:
-        if _set_terminal(job_id, "error", error=str(e)):
+        # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
+        # 只认 running 会导致不退点且 reaper 永远扫不到它（预扣的点永久丢失）
+        if _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running")):
             _refund_once(job_id, r["username"], r["cost"])
 
 
@@ -493,9 +524,11 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
             cost = cost_of(kind, body)
-            if get_points(user["username"]) < cost:
+            # 原来是「先 get_points 查余额，再 add_points 扣」——两步之间有并发超扣窗口。
+            # 现在扣点直接走 auth 的 /deduct（BEGIN IMMEDIATE + points>=amount 原子校验），
+            # 扣不动就说明余额不足，不建任务。
+            if not add_points(user["username"], -cost):
                 return self._send(402, {"detail": "点数不足", "need": cost})
-            add_points(user["username"], -cost)
             now = int(time.time())
             with closing(jdb()) as c:
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
@@ -521,7 +554,8 @@ class H(BaseHTTPRequestHandler):
                 r = tikhub.search(platform, keyword, page=page, video_only=False)
             except tikhub.TikHubError as e:
                 return self._send(502, {"detail": str(e)[:160]})
-            add_points(user["username"], -1)
+            if not add_points(user["username"], -1):   # 并发下余额可能已被别的请求扣光
+                return self._send(402, {"detail": "点数不足", "need": 1})
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
                       "note_type": it.get("note_type"),
