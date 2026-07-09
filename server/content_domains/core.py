@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store  # mime 识别；统一 assets 表(image/copy/collect/leads)，无反向依赖
+import mimetypes; from . import assets_store, jobs_store  # mime 识别；assets 表(copy/collect/leads)；jobs 状态机 CAS。均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -651,35 +651,14 @@ _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
 _workers_started = False
 
-def _set_terminal(job_id, status, result=None, error=None):
-    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到迁移权(rowcount>=1)。
-    防 reaper 与 worker 竞态——谁先抢到 running→done/error 谁定终态，败者放弃写状态与副作用(#187)。"""
-    now = int(time.time())
-    with closing(jdb()) as c:
-        if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
-                            (json.dumps(result, ensure_ascii=False), now, job_id))
-        else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
-                            (str(error or "")[:300], now, job_id))
-        c.commit()
-        return cur.rowcount >= 1
+# CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
+def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
+    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数，之后跳过(#187)。"""
-    try:
-        cost = int(cost or 0)
-    except Exception:
-        cost = 0
-    if cost <= 0:
-        return
-    with closing(jdb()) as c:
-        # 双重保险：仅当终态确为 error 且尚未退过，才置位并退点
-        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
-        c.commit()
-        if cur.rowcount < 1:
-            return  # 已退过 / 非 error 终态，跳过
-    _domains()[1].safe_refund_points(username, cost)
+    # safe_refund_points 吞掉异常并返回当前点数，不让退点接口故障影响主流程 → 视为永远成功。
+    return jobs_store.refund_once(jdb, job_id, username, cost,
+                                  lambda u, c: (_domains()[1].safe_refund_points(u, c), True)[1])
 
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
@@ -808,18 +787,21 @@ def run_job(job_id):
     mode = str(payload.get("mode") or "").lower()
     is_talking = (kind == "video" and mode != "motion")   # 口播=video 且非 motion(text/audio)
     is_image = (kind == "image")
-    # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
-    with _run_gate_lock:
-        if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
-            return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
-        if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
-            return  # 单用户生图运行闸：多的留 pending 排队
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
-    if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
-        payload["_username"] = username
-        payload["_job_id"] = job_id
     try:
+        # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
+        # 整段放进 try：抢 running 那句 UPDATE 自己抛异常(SQLite 锁冲突/磁盘满)时，任务还停在 pending，
+        # 下面的 except 用 from_states 含 pending 把它判死退点 —— 否则预扣的点永久丢失，
+        # 因为 reaper 只扫 running、从不回收 pending。
+        with _run_gate_lock:
+            if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
+                return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
+            if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
+                return  # 单用户生图运行闸：多的留 pending 排队
+            if not jobs_store.claim_running(jdb, job_id):
+                return  # CAS 认领失败：已被别的 worker 接管或已是终态
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
+            payload["_username"] = username
+            payload["_job_id"] = job_id
         result = HANDLERS[kind](payload)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
@@ -836,7 +818,8 @@ def run_job(job_id):
             pass
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
-        claimed = _set_terminal(job_id, "error", error=str(e))
+        # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
+        claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
         if claimed and kind in {"video", "tryon", "xiaole_video"}:
             try:
                 failed = dict(payload)

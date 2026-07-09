@@ -301,48 +301,23 @@ def gen_banana(payload):
 # 与 content_domains/core.py 的 _set_terminal/_refund_once 同语义：本服务与 content_api 共写
 # 同一张 jobs 表，reaper 只在 content_api 里跑。不做 CAS 就会「reaper 判超时退了点，
 # worker 随后把 error 覆写回 done」——用户既拿到图又拿回点数(线上 image 有 10 条这种记录)。
+# CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
-    """CAS 抢终态：仅当当前状态在 from_states 内才迁移，返回是否抢到(rowcount>=1)。
+    from content_domains import jobs_store
+    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
-    run_job 的 except 分支要传 ("pending","running")：若异常发生在把任务改成 running 之前，
-    任务还停在 pending，只认 running 会让 CAS 失败 → 不退点 → 预扣的点永久丢失，
-    而 reaper 只扫 running、从不回收 pending。
-    """
-    now = int(time.time())
-    holes = ",".join("?" * len(from_states))
-    with closing(jdb()) as c:
-        if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
-                            (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states))
-        else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
-                            (str(error or "")[:300], now, job_id) + tuple(from_states))
-        c.commit()
-        return cur.rowcount >= 1
+def _refund_via_auth(username, cost):
+    """本服务没有直写 users.db 的兜底：auth 不可用就退不了点，返回 False 让 jobs_store 回滚 refunded。"""
+    status, data = refund_points(username, cost)
+    if status == 200:
+        return True
+    print("imggen refund failed user=%s status=%s detail=%s（refunded 标记将回滚，留待重试）" % (
+        username, status, (data or {}).get("detail")), flush=True)
+    return False
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正退。防与 reaper 双重退点。
-
-    先置位再退点，保证「最多退一次」；退点若失败（auth 挂掉/超时，本服务没有直写兜底），
-    必须把 refunded 放回 0，否则这条 job 被永久标记「已退过」，用户的点再也拿不回来。
-    """
-    try:
-        cost = int(cost or 0)
-    except Exception:
-        cost = 0
-    if cost <= 0:
-        return
-    with closing(jdb()) as c:
-        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
-        c.commit()
-        if cur.rowcount < 1:
-            return  # 已退过 / 非 error 终态，跳过
-    refund_status, refund_data = refund_points(username, cost)
-    if refund_status != 200:
-        with closing(jdb()) as c:   # 退点没成功，把幂等锁放回去，留给下次重试
-            c.execute("UPDATE jobs SET refunded=0 WHERE id=? AND refunded=1", (job_id,)); c.commit()
-        print("imggen refund failed job=%s user=%s status=%s detail=%s（已回滚 refunded 标记）" % (
-            job_id, username, refund_status, (refund_data or {}).get("detail")), flush=True)
+    from content_domains import jobs_store
+    return jobs_store.refund_once(jdb, job_id, username, cost, _refund_via_auth)
 
 def run_job(job_id):
     with closing(jdb()) as c:

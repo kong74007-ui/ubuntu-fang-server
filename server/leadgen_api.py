@@ -477,47 +477,15 @@ HANDLERS = {"collect": gen_collect, "leads": gen_leads}
 # 与 content_domains/core.py 的 _set_terminal/_refund_once 同语义：本服务与 content_api 共写
 # 同一张 jobs 表，reaper 只在 content_api 里跑。不做 CAS 就会出现「reaper 判超时退了点，
 # worker 随后把 error 覆写回 done」——用户既拿到结果又拿回点数(线上 id=1170 实例)。
+# CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
-    """CAS 抢终态：仅当当前状态在 from_states 内才迁移，返回是否抢到(rowcount>=1)。
-
-    from_states 默认只认 running（与 reaper 竞争的正常路径）。但 run_job 的 except 分支要传
-    ("pending","running")：若异常发生在把任务改成 running 之前(如 SQLite 锁冲突)，任务还停在
-    pending，只认 running 会让 CAS 失败 → 不退点 → 预扣的点永久丢失，而 reaper 只扫 running
-    从不回收 pending，没人能救它。
-    """
-    now = int(time.time())
-    holes = ",".join("?" * len(from_states))
-    with closing(jdb()) as c:
-        if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
-                            (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states))
-        else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
-                            (str(error or "")[:300], now, job_id) + tuple(from_states))
-        c.commit()
-        return cur.rowcount >= 1
+    from content_domains import jobs_store
+    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数。防与 reaper 双重退点。
-
-    先置位再退点，保证「最多退一次」；但退点若真的失败(auth 挂 + 直写也失败)，必须把
-    refunded 放回 0，否则这条 job 被永久标记「已退过」，用户的点再也拿不回来。
-    """
-    try:
-        cost = int(cost or 0)
-    except Exception:
-        cost = 0
-    if cost <= 0:
-        return
-    with closing(jdb()) as c:
-        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
-        c.commit()
-        if cur.rowcount < 1:
-            return  # 已退过 / 非 error 终态，跳过
-    if not add_points(username, cost):
-        with closing(jdb()) as c:   # 退点没成功，把幂等锁放回去，留给下次重试
-            c.execute("UPDATE jobs SET refunded=0 WHERE id=? AND refunded=1", (job_id,)); c.commit()
-        print("[leadgen] 退点失败已回滚 refunded 标记 job=%s user=%s cost=%s" % (job_id, username, cost), flush=True)
+    from content_domains import jobs_store
+    # add_points：auth 的 /refund 优先，失败回退直写 users.db；返回 False 时 jobs_store 会回滚 refunded 标记
+    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: add_points(u, c))
 
 def run_job(job_id):
     with closing(jdb()) as c:
