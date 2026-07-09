@@ -80,6 +80,18 @@ def _clip(text, n=120):
     return s[:n] if s else None
 
 
+# 自有存储的域名前缀：COS 直链或自定义 CDN 域名。其余(抖音 zjcdn / 小红书 rednotecdn / 视频号 tc.qq.com)
+# 都是带时效的第三方直链，会过期。COS_DOMAIN 可由 env 覆盖，默认认 myqcloud。
+_PERMANENT_HOST_HINTS = tuple(
+    h for h in (os.environ.get("COS_DOMAIN", "").strip().rstrip("/").split("//")[-1], "myqcloud.com") if h
+)
+
+
+def _is_permanent_url(url):
+    host = str(url or "").split("//")[-1].split("/")[0].lower()
+    return bool(host) and any(hint.lower() in host for hint in _PERMANENT_HOST_HINTS)
+
+
 def _project(kind, result):
     """把各 kind 形状各异的 result 投影成 (title, file, url, meta)。
 
@@ -104,10 +116,14 @@ def _project(kind, result):
         video = r.get("video") or {}
         copy = r.get("copy") or {}
         transcript = r.get("transcript") or {}
+        play = video.get("play_url") or r.get("url")
         return (_clip(video.get("title") or copy.get("title")),
                 None,
-                video.get("play_url") or r.get("url"),   # 优先可播放直链，回退封面
+                play,   # 优先可播放直链，回退封面
                 {
+                    # COS 转存失败时 leadgen 会静默回退第三方 CDN 直链，那种链接会过期。
+                    # 标出来，前端才能提示用户「趁早下载」，而不是几天后点开发现是死链。
+                    "permanent": _is_permanent_url(play),
                     "platform": r.get("platform"), "source": r.get("source"),
                     "author": video.get("author"), "profile_url": video.get("profile_url"),
                     "cover": video.get("cover"), "duration": video.get("duration"),

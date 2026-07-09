@@ -22,8 +22,15 @@ PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
+INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")   # 调 auth 内部点数接口用；来自 auth.env
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")  # 采集视频转存 COS 开关
+# 转存预算：线上 23 次转存失败全部是 "The read operation timed out"。原实现 timeout=120 且盲目重试 2 次，
+# 最坏在转存上耗 240s+，把整个 collect 任务顶过 reaper 判死线(当时 360s)→ 判死退点、worker 又写回 done
+# (jobs 1118/1161/1164/1170/1182 就是这么来的)。改为总预算 + 流式读，超预算立即放弃、不再盲目重试。
+COS_FETCH_DEADLINE   = int(os.environ.get("COS_COLLECT_DEADLINE", "180"))            # 单次采集用于转存的总秒数
+COS_FETCH_READ_TIMEO = int(os.environ.get("COS_COLLECT_READ_TIMEOUT", "30"))         # 单次 socket 读超时
+COS_FETCH_MAX_BYTES  = int(os.environ.get("COS_COLLECT_MAX_BYTES", str(100 * 1024 * 1024)))
 
 
 # ============ 采集视频转存 COS（永久直链；未配置/失败/关闭时回退原 CDN 链接） ============
@@ -41,10 +48,43 @@ def _request_token(headers):
     except Exception:
         return ""
 
+def _fetch_within_budget(url, deadline_ts):
+    """流式拉取远程视频，受总预算 deadline_ts 约束。
+
+    原来用 tikhub._http_get(timeout=120) 一次性 read(100MB)：timeout 只管单次 socket 读，
+    慢 CDN 上 read 会反复续命，实际远超 120s。这里改为分块读 + 每块检查预算，把总耗时钉死。
+    Content-Length 预检可在下载前就否掉超大文件，省掉整段无用等待。
+    """
+    remain = deadline_ts - time.time()
+    if remain <= 0:
+        raise TimeoutError("转存预算已耗尽")
+    req = urllib.request.Request(url, headers={"User-Agent": tikhub.UA})
+    with tikhub._OPENER.open(req, timeout=min(COS_FETCH_READ_TIMEO, remain)) as r:  # 直连，绕过环境代理
+        declared = r.headers.get("Content-Length")
+        if declared and int(declared) > COS_FETCH_MAX_BYTES:
+            raise ValueError("视频 %.1fMB 超过转存上限 %.0fMB" % (
+                int(declared) / 1048576.0, COS_FETCH_MAX_BYTES / 1048576.0))
+        chunks, got = [], 0
+        while True:
+            if time.time() >= deadline_ts:
+                raise TimeoutError("转存超过 %ds 预算（已下载 %.1fMB）" % (COS_FETCH_DEADLINE, got / 1048576.0))
+            block = r.read(262144)
+            if not block:
+                break
+            got += len(block)
+            if got > COS_FETCH_MAX_BYTES:
+                raise ValueError("视频超过转存上限 %.0fMB" % (COS_FETCH_MAX_BYTES / 1048576.0))
+            chunks.append(block)
+    return b"".join(chunks)
+
+
 def public_url_from_remote(remote_url, rel_key, content_type=None):
     """远程 URL(如抖音 CDN 直链)字节 → COS 永久直链。
-    COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
-    未配置 / COS_COLLECT=0 / 拉取失败 / 上传失败 → 返回原 remote_url（回退，绝不因转存失败中断采集）。"""
+    COS 已启用且 remote_url 非空 → 流式拉字节(受总预算约束) → cos put → 返回直链；
+    未配置 / COS_COLLECT=0 / 拉取失败 / 上传失败 → 返回原 remote_url（回退，绝不因转存失败中断采集）。
+
+    回退是静默降级：调用方拿到的是会过期的第三方 CDN 链接。资产库据此把链接标为「非永久」。
+    """
     remote_url = (remote_url or "").strip()
     if not remote_url or not COS_COLLECT:
         return remote_url
@@ -52,18 +92,21 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
         from content_domains import cos
         if not cos.enabled():
             return remote_url
-        # 采集视频可能较大，增加超时和大小限制；加简单重试避免偶发网络抖动导致回退过期链接
-        # 注意：总时长需 < reaper 给 collect 的 1200s 窗口（core.py::reaper），留足余量
-        for attempt in range(2):
+        deadline = time.time() + COS_FETCH_DEADLINE
+        for attempt in (1, 2):
             try:
-                data = tikhub._http_get(remote_url, timeout=120, max_bytes=100 * 1024 * 1024)
+                data = _fetch_within_budget(remote_url, deadline)
                 if data:
                     return cos.put_bytes(data, str(rel_key), content_type)
+                raise ValueError("拉取到 0 字节")
             except Exception as e:
-                if attempt == 1:
-                    print("[cos] 采集转存失败(重试后), 回退原链接: %s -> %s" % (rel_key, e), flush=True)
-                else:
-                    print("[cos] 采集转存第1次失败，重试: %s" % e, flush=True)
+                # 预算耗尽就别再重试了——多等一轮只会把整个 collect 任务顶过 reaper 判死线
+                if attempt == 2 or time.time() >= deadline:
+                    print("[cos] 采集转存失败(%d次尝试)，回退会过期的原链接: %s -> %s: %s"
+                          % (attempt, rel_key, type(e).__name__, e), flush=True)
+                    break
+                print("[cos] 采集转存第%d次失败，剩余预算 %.0fs，重试: %s"
+                      % (attempt, deadline - time.time(), e), flush=True)
         return remote_url
     except Exception as e:
         print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
@@ -146,12 +189,48 @@ def get_points(username):
     except Exception:
         return 0
 
-def add_points(username, delta):
+def _auth_points(path, username, amount):
+    """调 auth 服务的点数接口（BEGIN IMMEDIATE 事务 + points_audit 流水），与 imggen_api 同一范式。"""
+    if not INTERNAL_TOKEN:
+        return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
+    body = json.dumps({"username": username, "amount": int(amount)}, ensure_ascii=False).encode()
+    req = urllib.request.Request(AUTH_BASE + path, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "X-HQ-Internal-Token": INTERNAL_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except Exception:
+            return e.code, {"detail": "points update failed"}
+    except Exception:
+        return 500, {"detail": "points update failed"}
+
+def _add_points_direct(username, delta):
+    """兜底：直接写 users.db。没有事务保护、不进 points_audit —— 只在 auth 不可用时用。"""
     try:
         with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
             c.execute("UPDATE users SET points = MAX(0, points + ?) WHERE username=?", (delta, username)); c.commit()
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        print("[leadgen] 直写 users.db 退点也失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
+        return False
+
+def add_points(username, delta):
+    """退点。优先走 auth 服务，让流水进 points_audit（原实现直接 UPDATE users.db，
+    绕过事务与审计，collect/leads 的退点在审计里完全隐形）。
+
+    auth 不可用时回退直写：宁可审计缺一条，也不能把用户的点吞了。
+    注意 huangque-leadgen-api.service 原本不加载 auth.env，拿不到 HQ_INTERNAL_TOKEN，
+    本次一并补上；即便漏配，也会走下面的兜底而不是丢点。"""
+    status, data = _auth_points("/api/auth/points/refund", username, delta)
+    if status == 200:
+        return True
+    print("[leadgen] auth 退点失败(status=%s detail=%s)，回退直写 users.db；本次退点不会进 points_audit"
+          % (status, (data or {}).get("detail")), flush=True)
+    return _add_points_direct(username, delta)
 
 def verify(token):
     if not token: return None

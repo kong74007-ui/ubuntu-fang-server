@@ -1513,10 +1513,16 @@
     when.textContent=x.created_at?new Date(Number(x.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
     foot.appendChild(when);
     if(x.url){
+      var right=document.createElement('span'); right.style.cssText='display:flex; align-items:center; gap:8px;';
+      // COS 转存失败时后端回退了第三方 CDN 直链，那种链接带时效、几天后就是死链
+      if(kind==='collect' && (x.meta||{}).permanent===false){
+        var warn=document.createElement('span'); warn.textContent='链接会过期'; warn.title='未能转存到永久存储，建议尽快下载';
+        warn.style.cssText='color:#f4b740;'; right.appendChild(warn);
+      }
       var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener';
       a.textContent=kind==='collect'?'打开视频':'打开';
       a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
-      foot.appendChild(a);
+      right.appendChild(a); foot.appendChild(right);
     }
     w.appendChild(foot);
     return w;
