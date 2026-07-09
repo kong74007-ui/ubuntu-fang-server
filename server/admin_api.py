@@ -51,6 +51,7 @@ ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")
 ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/content.env"),
     pathlib.Path("/home/ubuntu/content-api/runninghub.env"),
+    pathlib.Path("/etc/huangque/runninghub.env"),
     pathlib.Path("/home/ubuntu/content-api/whisper.env"),
     pathlib.Path("/home/ubuntu/auth-service/auth.env"),
     pathlib.Path("/etc/leadgen-secrets.env"),
@@ -114,6 +115,42 @@ CHANNELS = {
 }
 
 SECRET_RE = re.compile(r"(key|token|secret|password|passwd|pwd|credential)", re.I)
+
+# 主站 vhost 单独写 huangquechuanmei.access.log；默认 access.log 只有 leadgen 等其他站
+NGINX_ACCESS_LOGS = [
+    pathlib.Path(p.strip())
+    for p in os.environ.get(
+        "NGINX_ACCESS_LOGS",
+        "/var/log/nginx/huangquechuanmei.access.log,/var/log/nginx/access.log",
+    ).split(",")
+    if p.strip()
+]
+# nginx combined 格式：ip - user [time] "METHOD path HTTP/x" status size "referer" "ua"
+# remote_user 可能带空格（basic auth），所以 ip 之后宽松匹配到第一个 [
+LOG_LINE_RE = re.compile(
+    r'^(?P<ip>\S+) [^\[]*\[(?P<time>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" '
+    r'(?P<status>\d{3}) (?P<size>\d+|-) "[^"]*" "(?P<ua>[^"]*)"'
+)
+_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+# 按参数名打码：token=xxx、api_key=xxx，兼容 & ; 分隔；dk=视频号解密密钥(dl_service)
+QUERY_SECRET_RE = re.compile(
+    r"((?:^|[?&;])(?:[^&;=]*(?:key|token|secret|password|passwd|pwd|credential|sign)[^&;=]*|dk)=)[^&;]*",
+    re.I,
+)
+# 噪音 = 采集 worker 每秒轮询 /api/claim + 本后台自己的请求
+NOISE_PATH_RE = re.compile(r"^/api/(claim\b|admin/)")
+
+# 出墙代理（mihomo）：OpenAI/HeyGen 要走，TikHub/RunningHub 必须直连（代理转 Cloudflare 会挂）
+PROXY_URL = (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+PROXY_OPENER = (
+    urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL}))
+    if PROXY_URL
+    else DIRECT_OPENER
+)
 
 
 def db():
@@ -243,9 +280,193 @@ def key_status():
                 "configured": configured,
                 "required_env": item["env"],
                 "sources": found,
+                "pingable": item["key"] in KEY_PINGS,
             }
         )
     return items
+
+
+def _env_value(names):
+    """按 env 名顺序找第一个非空值。只用于内部拨测，绝不外传。"""
+    sources = env_sources()
+    for env_name in names:
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12):
+    """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
+    opener = PROXY_OPENER if proxied else DIRECT_OPENER
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    headers = dict(headers or {})
+    # Python-urllib 默认 UA 会被 TikHub 等家的 Cloudflare 拦成 403
+    headers.setdefault("User-Agent", "Mozilla/5.0 (huangque-admin healthcheck)")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    start = time.time()
+    out = {"ok": False, "http_status": None, "latency_ms": None}
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            raw = r.read(4096)
+            out["http_status"] = r.status
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["ok"] = True
+        # RunningHub/TikHub 这类 HTTP 永远 200、业务错误放 body.code 的，跟进一层
+        try:
+            detail = json.loads(raw.decode("utf-8"))
+            code = detail.get("code") if isinstance(detail, dict) else None
+            if code is not None and str(code) not in ("0", "200"):
+                out["ok"] = False
+                out["error"] = "业务码 %s: %s" % (code, str(detail.get("msg") or detail.get("message") or "")[:120])
+        except Exception:
+            pass
+    except urllib.error.HTTPError as e:
+        out.update({"http_status": e.code, "latency_ms": int((time.time() - start) * 1000), "error": "HTTP %s" % e.code})
+    except Exception as e:
+        out.update({"latency_ms": int((time.time() - start) * 1000), "error": str(e)[:180]})
+    return out
+
+
+def _key_ping_openai():
+    key = _env_value(["OPENAI_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
+    # 官方域名被墙走 mihomo；泽龙等国内中转必须直连
+    return _ping_upstream(
+        "GET",
+        base + "/v1/models",
+        headers={"Authorization": "Bearer " + key},
+        proxied="api.openai.com" in base,
+    )
+
+
+def _key_ping_heygen():
+    key = _env_value(["HEYGEN_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    return _ping_upstream(
+        "GET", "https://api.heygen.com/v2/user/remaining_quota", headers={"X-Api-Key": key}, proxied=True
+    )
+
+
+def _key_ping_tikhub():
+    key = _env_value(["TIKHUB_KEY", "TIKHUB_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    base = (_env_value(["TIKHUB_BASE"]) or "https://api.tikhub.io").rstrip("/")
+    return _ping_upstream(
+        "GET", base + "/api/v1/tikhub/user/get_user_info", headers={"Authorization": "Bearer " + key}, proxied=False
+    )
+
+
+def _key_ping_runninghub():
+    key = _env_value(["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    return _ping_upstream(
+        "POST",
+        "https://www.runninghub.cn/uc/openapi/accountStatus",
+        headers={"Content-Type": "application/json", "Host": "www.runninghub.cn"},
+        body={"apikey": key},
+        proxied=False,
+    )
+
+
+# cos/doubao 请求要签名，没有廉价拨测端点，只做配置检查
+KEY_PINGS = {
+    "openai": _key_ping_openai,
+    "heygen": _key_ping_heygen,
+    "tikhub": _key_ping_tikhub,
+    "runninghub": _key_ping_runninghub,
+}
+
+
+def _sanitize_path(raw):
+    """请求路径里 token/key 类查询参数打码，不让密钥出现在后台页面。
+
+    直接对原始串做正则替换（兼容 & 和 ; 分隔）；值里嵌套了带密钥的
+    URL 编码串（如 url=https%3A%2F%2Fx%3Ftoken%3Dabc）时整值打码。
+    """
+    masked = QUERY_SECRET_RE.sub(r"\1***", raw)
+    if "%" in masked and "?" in masked:
+        for m in re.finditer(r"([?&;][^&;=]+=)([^&;]+)", masked):
+            if QUERY_SECRET_RE.search("?" + urllib.parse.unquote(m.group(2))):
+                masked = masked.replace(m.group(0), m.group(1) + "***")
+    return masked
+
+
+def _parse_log_time(raw):
+    """'09/Jul/2026:08:41:19 +0800' → (排序元组, '07-09 08:41:19')。不依赖 locale。"""
+    try:
+        day = int(raw[0:2])
+        mon = _MONTHS[raw[3:6]]
+        year = int(raw[7:11])
+        hh, mm, ss = int(raw[12:14]), int(raw[15:17]), int(raw[18:20])
+        return (year, mon, day, hh, mm, ss), "%02d-%02d %02d:%02d:%02d" % (mon, day, hh, mm, ss)
+    except Exception:
+        return (0, 0, 0, 0, 0, 0), raw
+
+
+def _tail_lines(path, max_bytes=2 * 1024 * 1024):
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        chunk = f.read().decode("utf-8", "ignore")
+    lines = chunk.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # 掐掉可能被截断的首行
+    return lines
+
+
+def request_logs(limit=200, status="", q="", include_noise=False):
+    """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
+    limit = max(1, min(int(limit or 200), 500))
+    status = str(status or "").strip()
+    q = str(q or "").strip()
+    existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
+    if not existing:
+        return {"items": [], "message": "找不到 %s（服务器上才有）" % ", ".join(str(p) for p in NGINX_ACCESS_LOGS)}
+    entries = []
+    for log_path in existing:
+        try:
+            lines = _tail_lines(log_path)
+        except Exception as e:
+            return {"items": [], "message": "读取 %s 失败: %s" % (log_path, str(e)[:120])}
+        for line in lines:
+            m = LOG_LINE_RE.match(line)
+            if not m:
+                continue
+            path = m.group("path")
+            if not path.startswith("/api/"):
+                continue
+            if not include_noise and NOISE_PATH_RE.match(path):
+                continue
+            code = m.group("status")
+            if status and (code[:1] != status if len(status) == 1 else code != status):
+                continue
+            if q and q not in path:
+                continue
+            sort_key, disp = _parse_log_time(m.group("time"))
+            entries.append(
+                (
+                    sort_key,
+                    {
+                        "time": disp,
+                        "ip": m.group("ip"),
+                        "method": m.group("method"),
+                        "path": _sanitize_path(path),
+                        "status": int(code),
+                        "size": 0 if m.group("size") == "-" else int(m.group("size")),
+                        "ua": m.group("ua")[:120],
+                    },
+                )
+            )
+    entries.sort(key=lambda x: x[0], reverse=True)
+    return {"items": [item for _, item in entries[:limit]], "limit": limit}
 
 
 def probe_service(svc):
@@ -254,7 +475,7 @@ def probe_service(svc):
     out.pop("health_url", None)
     try:
         req = urllib.request.Request(svc["health_url"])
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with DIRECT_OPENER.open(req, timeout=3) as r:
             raw = r.read(4096)
         latency = int((time.time() - start) * 1000)
         detail = {}
@@ -623,6 +844,35 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, auth_admin_request(suffix, self._token()))
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/ping":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            svc_key = (q.get("service") or [""])[0].strip()
+            key_name = (q.get("key") or [""])[0].strip()
+            if svc_key:
+                svc = next((s for s in SERVICES if s["key"] == svc_key), None)
+                if not svc:
+                    return self._send(404, {"detail": "unknown service"})
+                return self._send(200, probe_service(svc))
+            if key_name:
+                fn = KEY_PINGS.get(key_name)
+                if not fn:
+                    return self._send(400, {"detail": "该密钥不支持在线测试"})
+                return self._send(200, fn())
+            return self._send(400, {"detail": "需要 service 或 key 参数"})
+        if path == "/api/admin/request-logs":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(
+                    200,
+                    request_logs(
+                        (q.get("limit") or ["200"])[0],
+                        (q.get("status") or [""])[0],
+                        (q.get("q") or [""])[0],
+                        (q.get("noise") or ["0"])[0] in ("1", "true"),
+                    ),
+                )
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:160]})
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
