@@ -210,8 +210,19 @@ MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)         
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
+# 【生成死线】从 worker 真正开始干活算起(不含排队)：口播/动作模仿/电影化身统一 15 分钟。
+# 各引擎轮询死线都用它，到点抛明确的「生成超时」并退点。cinematic 若要单独加裕量，改
+# HEYGEN_MOTION_DEADLINE env 即可(它只作用于 cinematic，但别超过下面 reaper 宽限)。
+VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
+# reaper 宽限必须【大于】引擎死线：引擎到点抛明确的「生成超时」并退点，reaper 只兜底(worker 整个
+# 卡死、连 updated_at 都不刷时才轮到它)。反过来 reaper 先杀 = 用户拿到没头没脑的超时、而 worker
+# 还在跑上游照样收钱(口播原来就这样：中转死线 1200s、reaper 宽限却 540s)。多的 300s 给轮询之外的
+# 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
+VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
-              "cinematic": 2400, "avatar": 300}   # cinematic 实测生成 339~511s+上传下载；avatar 实测 25s，给 300s 富余
+              "cinematic": VIDEO_REAPER_GRACE, "avatar": 300}
+# ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
+#    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
@@ -924,8 +935,11 @@ def reaper():
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
             for r in stuck:
                 grace = KIND_GRACE.get(r["kind"], 0)
-                if r["kind"] == "video":  # 口播9分钟(直连挤兑达5min);motion几乎必回退泽龙,实测20-37分钟,给40分钟(#410原10分钟误杀)
-                    grace = 2400 if '"mode":"motion"' in (r["payload"] or "").replace(" ", "") else 540
+                if r["kind"] == "video":
+                    # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
+                    # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
+                    # 口播 9 分钟又比中转轮询死线(1200s)还短、会先杀。
+                    grace = VIDEO_REAPER_GRACE
                 if grace and r["updated_at"] >= now - grace:
                     continue
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
