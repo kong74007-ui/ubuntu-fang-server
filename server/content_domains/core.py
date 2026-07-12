@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store  # mime 识别；assets 表(copy/collect/leads)；jobs 状态机 CAS。均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -259,6 +259,7 @@ def init_db():
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
+        submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
     init_audio_db()
@@ -605,27 +606,10 @@ def _leads_domain():
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
-def _job_public_dict(row, phase=None):
-    d = {
-        "id": row["id"],
-        "kind": row["kind"],
-        "username": row["username"],
-        "cost": row["cost"],
-        "status": row["status"],
-        "result": row["result"],
-        "error": row["error"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-    if d.get("result"):
-        try:
-            d["result"] = json.loads(d["result"])
-        except Exception:
-            pass
-    if phase is not None:
-        d["phase"] = phase
-    return d
-
+_job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
+def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
+def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
+def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 # 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
@@ -1140,8 +1124,10 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try:
                 feature_flags.require_enabled("video")
+                request_body = self._json_body_strict()
                 payloads = video_domain.validate_video_batch_payload(
-                    self._json_body_strict(), user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+                    request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             except ValueError as e:
@@ -1149,14 +1135,23 @@ class H(BaseHTTPRequestHandler):
             costs = [points_domain.cost_of("video", body) for body in payloads]
             total = sum(costs)
             with _submission_lock:
+                idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
+                if idem_state == "replay":
+                    return self._send(200, idem_response)
+                if idem_state == "conflict":
+                    return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
+                if idem_state == "processing":
+                    return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
                         (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
                         "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
                 try:
                     points_left = points_domain.deduct_points(user["username"], total, "job:video_batch")
                 except points_domain.AuthPointsError as e:
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": total})
                 now, batch_id, job_ids, committed = int(time.time()), uuid.uuid4().hex, [], False
                 try:
@@ -1177,16 +1172,20 @@ class H(BaseHTTPRequestHandler):
                             video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
                     else:
                         points_domain.safe_refund_points(user["username"], total, "job:video_batch_insert_failed")
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": "批量任务创建失败，点数已退回"})
                 if not enqueue_jobs(job_ids, "video", "text"):
                     for jid, cost in zip(job_ids, costs):
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "任务队列已满，批量任务未受理，点数已退回", "need": total})
             jobs = [{"job_id": jid, "label": body.get("batch_label"), "index": body.get("batch_index")}
                     for jid, body in zip(job_ids, payloads)]
-            return self._send(200, {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
-                                    "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left})
+            response = {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
+                        "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left}
+            _idempotency_complete(user["username"], p, idem_key, response)
+            return self._send(200, response)
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1198,6 +1197,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(e)})
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon", "cinematic", "avatar"} else self._json_body()
+                request_body = dict(body) if isinstance(body, dict) else body
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1211,21 +1211,33 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
+                # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
+                idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
+                if idem_state == "replay":
+                    return self._send(200, idem_response)
+                if idem_state == "conflict":
+                    return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
+                if idem_state == "processing":
+                    return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
                 limit_hit = _user_video_submit_limit(kind, body, user["username"], cost)
                 if limit_hit:
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, limit_hit)
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost})
                 try:
                     points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
                 except points_domain.AuthPointsError as e:
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
                 now = int(time.time())
                 with closing(jdb()) as c:
@@ -1238,8 +1250,11 @@ class H(BaseHTTPRequestHandler):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
+            response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            _idempotency_complete(user["username"], p, idem_key, response)
+            return self._send(200, response)
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -1464,36 +1479,21 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
-            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
-                                    "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
-                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO,
-                                    "max_user_active_motion": MAX_USER_ACTIVE_MOTION, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON,
-                                    "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
-                                    "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
-                                    "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS),
-                                    "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
+            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_motion": MAX_USER_ACTIVE_MOTION, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
+                                    "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
     def do_PATCH(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
 if __name__ == "__main__":
-    init_db()
-    reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点，不让用户干等 reaper
-    start_job_workers()
-    threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
-    print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点
+    start_job_workers(); threading.Thread(target=reaper, daemon=True).start()
+    print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS))); ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
