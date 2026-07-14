@@ -21,19 +21,19 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video"):
+        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
-        for name in ("gen_image", "gen_copy", "gen_collect", "gen_leads", "gen_audio", "gen_video"):
+        for name in ("gen_image", "gen_copy", "gen_collect", "gen_leads", "gen_audio", "gen_video", "gen_breakdown"):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
@@ -48,7 +48,9 @@ class ContentDomainTests(unittest.TestCase):
         # 任务心跳(_start_job_heartbeat)：跑着的时候每 30s 刷 jobs.updated_at，让 reaper 的
         #   「没心跳」真的等于「worker 死了」。同属任务生命周期，紧挨 reaper —— 它俩是一对。
         #   （线上 110 条任务被 reaper 误判「生成超时」，用户白等 2655 分钟。）
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1650)
+        # 爆款拆解(#635)：core 只加薄接线（慢池路由/KIND_GRACE/COST/全局并发闸），
+        #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1665)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
