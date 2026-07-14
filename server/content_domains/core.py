@@ -217,6 +217,8 @@ VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # 还在跑上游照样收钱(口播原来就这样：中转死线 1200s、reaper 宽限却 540s)。多的 300s 给轮询之外的
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
+# 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
+KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
               "cinematic": VIDEO_REAPER_GRACE, "avatar": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
@@ -668,6 +670,31 @@ _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running
 _submission_lock = threading.Lock()  # 活跃数检查+扣点+入队串行，批量与单条不能一起冲破单用户上限
 _workers_started = False
 
+# ============ 优雅停机（graceful drain）============
+#
+# 线上：近 14 天 53 条任务死于「服务重启中断，已退点，请重新提交」—— 涉及 8 个功能。
+# 每次上线，正在生成的任务全部被判失败。用户等了几分钟，什么都没拿到。
+#
+# 根因：hardening.conf 的注释写着「优雅停机」，实际配的是 TimeoutStopSec=15 ——
+# 而视频任务要跑 5~15 分钟。systemd 发 SIGTERM，进程【根本不理】（代码里一个 signal
+# handler 都没有），15 秒后 SIGKILL，在飞任务全部猝死。
+#
+# 真正的优雅停机是两件事：
+#   1. 收到 SIGTERM → 立刻【停止收新任务】（提交返回 503，不扣点）
+#   2. 等在飞的任务【跑完】再退出（systemd 的 TimeoutStopSec 要给够）
+#
+# 代价：部署变慢（最坏要等最后一条视频跑完）。这是对的取舍 —— 一次部署慢几分钟，
+# 换的是用户的任务不被杀。急着退出的话，Ctrl-C 两次 / systemctl kill 仍然能强杀。
+_shutting_down = threading.Event()
+_inflight = 0                      # 正在 run_job 里跑着的任务数
+_inflight_lock = threading.Lock()
+# 排空最长等多久。视频最长 15 分钟（VIDEO_GEN_DEADLINE=900s）+ 上传下载余量。
+DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1200)
+
+
+def is_shutting_down():
+    return _shutting_down.is_set()
+
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
@@ -790,13 +817,24 @@ def _reject_pending_job(job_id, username, cost, reason):
     return claimed
 
 def _job_worker_loop(q):
+    global _inflight
     while True:
-        job_id = q.get()
+        try:
+            # 带超时地取 —— 否则停机时 worker 会永远阻塞在 q.get() 上，排空检测不到它已经空了
+            job_id = q.get(timeout=1.0)
+        except queue.Empty:
+            if _shutting_down.is_set():
+                return          # 停机中且队列已空 → 这个 worker 可以退了
+            continue
+        with _inflight_lock:
+            _inflight += 1
         try:
             run_job(job_id)
         finally:
             with _job_queue_lock:
                 _queued_job_ids.discard(job_id)
+            with _inflight_lock:
+                _inflight -= 1
             q.task_done()
 
 def _recover_pending_jobs(limit=None):
@@ -823,6 +861,10 @@ def _pending_job_scanner():
             pass
         time.sleep(30)
 
+_ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
+                   _image_job_queue, _cinematic_job_queue, _avatar_job_queue)
+
+
 def start_job_workers():
     global _workers_started
     with _job_queue_lock:
@@ -839,6 +881,47 @@ def start_job_workers():
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(JOB_QUEUE_MAX)
 
+def drain_and_exit(signum=None, frame=None):
+    """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
+
+    ⚠️ 这个函数跑在【信号处理器】里（主线程）。它必须尽快让 HTTP 停止收活，
+    然后就只是等 —— 真正干活的是 worker 线程，它们看到 _shutting_down 且队列空了会自己退。
+
+    第二次收到 SIGTERM/SIGINT → 立刻退出（不等了）。急着回滚时用得上。
+    """
+    if _shutting_down.is_set():
+        print("[drain] 再次收到停机信号，立刻退出（在飞任务会被判失败退点）", flush=True)
+        os._exit(1)
+    _shutting_down.set()
+
+    t0 = time.time()
+    # HTTP 服务停掉：不再受理新提交。已经在队列里的、正在跑的，继续。
+    srv = globals().get("_http_server")
+    if srv is not None:
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+
+    while time.time() - t0 < DRAIN_TIMEOUT:
+        queued = sum(q.qsize() for q in _ALL_JOB_QUEUES)
+        with _inflight_lock:
+            running = _inflight
+        if queued == 0 and running == 0:
+            print("[drain] 排空完成，用时 %.0fs" % (time.time() - t0), flush=True)
+            os._exit(0)
+        print("[drain] 等在飞任务：排队 %d、执行中 %d（已等 %.0fs / 上限 %ds）"
+              % (queued, running, time.time() - t0, DRAIN_TIMEOUT), flush=True)
+        time.sleep(3)
+
+    print("[drain] 超过 %ds 仍未排空，强制退出 —— 剩下的由 reclaim_orphaned_running 判失败退点"
+          % DRAIN_TIMEOUT, flush=True)
+    os._exit(0)
+
+
+def install_signal_handlers():
+    import signal
+    signal.signal(signal.SIGTERM, drain_and_exit)
+    signal.signal(signal.SIGINT, drain_and_exit)
+
+
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
     if kind not in {"video", "tryon", "xiaole_video", "cinematic"}:
@@ -849,6 +932,43 @@ def _mark_video_asset_failed(job_id, kind, error):
     except Exception:
         pass
 
+# ============ 任务心跳：让 reaper 的信号是真的 ============
+#
+# reaper 判的是「多久没心跳」（jobs.updated_at）。但我们的代码在长操作期间【根本不发心跳】：
+#   * HeyGen 轮询（最长 900s，循环里一次 UPDATE 都没有）
+#   * 烧字幕（whisper 跑 CPU，几分钟）
+#   * 生图的 HTTP 调用、成片下载
+# 于是 reaper 看到「这么久没动静」，就当 worker 死了，把【还在正常干活】的任务杀掉。
+#
+# 线上近 30 天被 reaper 误判「生成超时」的：video 45、xiaole_video 25、image 17、
+# collect 7、tryon 3 —— 用户为此白等了 2655 分钟（44 小时），然后看到「生成超时，已退点」。
+#
+# 修法【不是】把 grace 调宽（那只是让误杀晚一点发生），而是让 worker 真的发心跳 ——
+# 这样「没心跳」才真的等于「worker 死了」。
+#
+# ⚠️ 心跳只证明【worker 还活着】，不证明【任务会成功】。任务的时间上限仍然由各引擎自己的
+# 死线兜住（VIDEO_GEN_DEADLINE / WS_DEADLINE / 各种 IMG_DEADLINE）—— 那些到点会抛一个
+# 说得清的错。别因为有了心跳就把死线删了，否则一个真的卡死的上游会让任务永远挂着。
+JOB_HEARTBEAT_INTERVAL = _env_positive_int("CONTENT_JOB_HEARTBEAT", 30)
+
+
+def _start_job_heartbeat(job_id):
+    """开一个后台线程，任务跑着的时候每 30 秒刷一次 jobs.updated_at。返回 stop()。"""
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(JOB_HEARTBEAT_INTERVAL):
+            try:
+                with closing(jdb()) as c:
+                    c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'",
+                              (int(time.time()), job_id))
+                    c.commit()
+            except Exception:
+                pass   # 心跳失败不该影响任务本身 —— 最坏是 reaper 把它当成死了
+    threading.Thread(target=beat, name="job-heartbeat-%s" % job_id, daemon=True).start()
+    return stop.set
+
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -858,6 +978,7 @@ def run_job(job_id):
     mode = str(payload.get("mode") or "").lower()
     is_talking = (kind == "video")   # 口播=video(text/audio)
     is_image = (kind == "image")
+    stop_heartbeat = None
     try:
         # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
         # 整段放进 try：抢 running 那句 UPDATE 自己抛异常(SQLite 锁冲突/磁盘满)时，任务还停在 pending，
@@ -870,6 +991,9 @@ def run_job(job_id):
                 return  # 单用户生图运行闸：多的留 pending 排队
             if not jobs_store.claim_running(jdb, job_id):
                 return  # CAS 认领失败：已被别的 worker 接管或已是终态
+        # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
+        # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
+        stop_heartbeat = _start_job_heartbeat(job_id)
         if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
@@ -895,6 +1019,8 @@ def run_job(job_id):
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
+        if stop_heartbeat:
+            stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
         if is_talking or is_image:
             try:
                 _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
@@ -909,7 +1035,11 @@ def reaper():
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
             for r in stuck:
-                grace = KIND_GRACE.get(r["kind"], 0)
+                # ⚠️ 默认值【不能是 0】—— grace=0 会走到下面的 `if grace and ...` 判假，
+                # 直接按 360s 的 cutoff 把任务杀掉。也就是说：一个新 kind 忘了在 KIND_GRACE 里
+                # 登记，它就只有 6 分钟寿命。（audio/copy/leads/dl 至今都不在表里，只是它们跑得快，
+                # 够不着 6 分钟才没出事 —— 这是个潜伏雷。）
+                grace = KIND_GRACE.get(r["kind"], KIND_GRACE_DEFAULT)
                 if r["kind"] == "video":
                     # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
                     # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
@@ -1206,6 +1336,23 @@ class H(BaseHTTPRequestHandler):
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
+            # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
+            # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
+            if is_shutting_down():
+                return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）",
+                                        "code": "shutting_down", "retry_after_ms": 5000})
+
+            # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
+            # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
+            # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
+            # 一句天书（"积分余额不足，请先充值" / "Insufficient credits"）。近 14 天 48 条
+            # 任务是这么死的。这里把它们挡在门外：不扣点、不排队、不让用户等。
+            # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
+            from . import upstream_guard
+            blocked = upstream_guard.exhausted_reason(kind, body)
+            if blocked:
+                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
+                                        "retry_after_ms": 60000})
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
