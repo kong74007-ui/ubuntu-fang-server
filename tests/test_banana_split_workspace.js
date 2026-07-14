@@ -40,12 +40,37 @@ test('workspace is one frame with semantic left and right panes', () => {
   assert.match(html, /--left-pane:50%/);
 });
 
+test('workspace header aligns its divider and result tabs with both panes', () => {
+  const headerStart = html.indexOf('<header class="banana-workspace-head">');
+  const headerEnd = html.indexOf('</header>', headerStart);
+  const tabsStart = html.indexOf('<div class="result-tabs"', headerStart);
+  assert.ok(headerStart >= 0 && headerEnd > headerStart, 'workspace header must exist');
+  assert.ok(tabsStart > headerStart && tabsStart < headerEnd, 'result tabs must live in the workspace header');
+  assert.match(html, /class="workspace-head-divider"/);
+  assert.match(html, /\.banana-workspace-head\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 1px minmax\(0,1fr\)/);
+  assert.match(html, /\.workspace-head-divider\{width:1px;background:var\(--hq-border\)\}/);
+  assert.match(html, /document\.querySelector\('\.banana-workspace'\)/);
+});
+
+test('workspace header has no horizontal frame lines', () => {
+  assert.match(html, /\.banana-workspace-head\{[^}]*border-bottom:0/);
+  assert.match(html, /\.result-tabs\{[^}]*border-bottom:0/);
+  assert.match(html, /\.result-tab\.on\{[^}]*border-bottom-color:#e7b24c/);
+});
+
 test('desktop divider is an accessible separator', () => {
   assert.match(html, /id="workspaceDivider"/);
   assert.match(html, /role="separator"/);
   assert.match(html, /aria-orientation="vertical"/);
   assert.match(html, /aria-valuemin="35"/);
   assert.match(html, /aria-valuemax="65"/);
+  assert.match(html, /\.banana-workspace-body\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 1px minmax\(0,1fr\)/);
+  assert.match(html, /\.workspace-divider\{[^}]*width:9px[^}]*margin-left:-4px[^}]*margin-right:-4px[^}]*background:transparent[^}]*border:0/);
+  assert.match(html, /\.workspace-divider:before\{[^}]*left:4px[^}]*top:0[^}]*width:1px[^}]*height:100%/);
+});
+
+test('workspace header omits the split instruction copy', () => {
+  assert.doesNotMatch(html, /默认 50 \/ 50 · 可拖动调整/);
 });
 
 test('results pane offers accessible recent generated and recent works tabs', () => {
@@ -76,8 +101,8 @@ test('narrow layouts stack panes and hide the divider', () => {
   assert.match(html, /\.workspace-divider\{display:none\}/);
 });
 
-test('workspace and preview surfaces use shared theme tokens', () => {
-  assert.match(html, /\.banana-workspace\{[^}]*border:1px solid var\(--hq-border\)[^}]*background:var\(--hq-surface\)/);
+test('flush workspace keeps shared theme surfaces without an outer card border', () => {
+  assert.match(html, /\.banana-workspace\{[^}]*border:0[^}]*border-radius:0[^}]*background:var\(--hq-surface\)[^}]*box-shadow:none/);
   assert.match(html, /\.result-preview\{[^}]*background:var\(--hq-surface-soft\)/);
 });
 
