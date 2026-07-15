@@ -124,6 +124,7 @@
   .voice-card.on .voice-sub{color:#c8902f}
   .voice-play{position:absolute;right:10px;top:10px;width:26px;height:26px;border:1px solid rgba(148,164,187,.18);border-radius:50%;background:rgba(7,11,19,.45);color:#94a4bb;display:flex;align-items:center;justify-content:center;cursor:pointer}
   .voice-play:hover{color:#e7b24c;border-color:rgba(231,178,76,.36)}
+  .voice-preview-audio{display:block;width:100%;height:30px;margin-top:12px;accent-color:#e7b24c}
   .audio-source{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .source-card{border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.05);padding:13px;cursor:pointer;color:#94a4bb;transition:.16s}
   .source-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
@@ -1887,12 +1888,22 @@
     }
     list.forEach(function(v){
       var key=v.voice_key, card=document.createElement('div'), on=key===selectedVoice;
+      var protectedPreview=v.preview_url&&isProtectedLocal(v.preview_url);
       card.className='voice-card'+(on?' on':'');
       card.innerHTML='<div class="voice-top"><div class="voice-avatar">'+esc((v.display_name||key).charAt(0).toUpperCase())+'</div><div style="min-width:0"><div class="voice-name">'+esc(v.display_name||key)+'</div><div class="voice-sub">'+esc(v.sub||(v.scope==='personal'?'个人音色':'公共音色'))+'</div></div></div>'
-        +(v.preview_url?'<button class="voice-play" type="button">▶</button>':'');
+        +(protectedPreview?'<button class="voice-play" type="button">▶</button>':'')
+        +(v.preview_url&&!protectedPreview?'<audio class="voice-preview-audio" controls preload="none" controlslist="nodownload noplaybackrate" src="'+esc(fresh(v.preview_url))+'"></audio>':'');
       card.onclick=function(){selectedVoice=key;renderVoices();};
       var btn=card.querySelector('.voice-play');
       if(btn){btn.onclick=function(e){e.stopPropagation();playPreview(v.preview_url,btn);};}
+      var nativeAudio=card.querySelector('.voice-preview-audio');
+      if(nativeAudio){
+        nativeAudio.onclick=function(e){e.stopPropagation();};
+        nativeAudio.onplay=function(){
+          document.querySelectorAll('#voiceGrid .voice-preview-audio').forEach(function(a){if(a!==nativeAudio)a.pause();});
+          selectedVoice=key;document.querySelectorAll('#voiceGrid .voice-card').forEach(function(x){x.classList.toggle('on',x===card);});
+        };
+      }
       grid.appendChild(card);
     });
   }
