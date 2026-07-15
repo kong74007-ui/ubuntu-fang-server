@@ -198,8 +198,15 @@
     if(activePreviewBtn===btn && activePreview && !activePreview.paused){stopPreview();return;}
     stopPreview();
     activePreviewBtn=btn; btn.textContent='Ⅱ';
-    playableUrl(url).then(function(src){activePreview=new Audio(src);activePreview.onended=stopPreview;return activePreview.play();})
-      .catch(function(){stopPreview();toast('试听失败');});
+    var failed=false;
+    function fail(){if(failed)return;failed=true;stopPreview();toast('试听失败');}
+    function start(src){
+      activePreview=new Audio(src);activePreview.onended=stopPreview;activePreview.onerror=fail;
+      var started=activePreview.play();if(started&&started.catch)started.catch(fail);
+    }
+    // 公开试听地址必须在点击事件内同步 play；先包一层 Promise 会丢失浏览器的用户手势授权。
+    if(String(url||'').indexOf('/api/gen/file/')!==0){try{start(fresh(url));}catch(e){fail();}return;}
+    playableUrl(url).then(start).catch(fail);
   }
   function loadVoices(){
     fetch(fresh('/api/gen/audio/voices'),{cache:'no-store',headers:{Authorization:'Bearer '+tok,'Cache-Control':'no-cache'}})
