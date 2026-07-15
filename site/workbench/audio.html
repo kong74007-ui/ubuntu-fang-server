@@ -199,7 +199,11 @@
     stopPreview();
     activePreviewBtn=btn; btn.textContent='Ⅱ';
     var failed=false;
-    function fail(){if(failed)return;failed=true;stopPreview();toast('试听失败');}
+    function fail(error){
+      if(failed)return;failed=true;
+      if(window.console&&console.warn)console.warn('[voice-preview]',error&&error.name,error&&error.message);
+      stopPreview();toast('试听失败'+(error&&error.name?'：'+error.name:''));
+    }
     function start(src){
       activePreview=new Audio(src);activePreview.onended=stopPreview;activePreview.onerror=fail;
       var started=activePreview.play();if(started&&started.catch)started.catch(fail);
