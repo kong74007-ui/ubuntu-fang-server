@@ -22,12 +22,15 @@ class VoicePreviewClickTests(unittest.TestCase):
                 self.assertIn("activePreview.onerror=fail", block)
                 self.assertLess(block.index("start(fresh(url))"), block.index(".then(start)"))
 
-    def test_public_voice_preview_uses_native_audio_controls(self):
+    def test_public_voice_preview_uses_compact_native_audio_controls(self):
         for page in ("video", "audio"):
             with self.subTest(page=page):
                 html = (ROOT / f"site/workbench/{page}.html").read_text(encoding="utf-8")
                 self.assertIn('class="voice-preview-audio" controls', html)
+                self.assertIn('class="voice-play voice-native-preview"', html)
+                self.assertIn('.voice-preview-audio{position:absolute;inset:0;width:100%;height:100%;opacity:.001', html)
                 self.assertIn("nativeAudio.onplay=function()", html)
+                self.assertIn("nativeAudio.onpause=nativeAudio.onended", html)
                 self.assertIn("if(a!==nativeAudio)a.pause()", html)
 
     def test_inline_scripts_still_parse(self):
