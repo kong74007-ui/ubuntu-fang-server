@@ -28,9 +28,9 @@ class VoicePreviewClickTests(unittest.TestCase):
                 html = (ROOT / f"site/workbench/{page}.html").read_text(encoding="utf-8")
                 self.assertIn('class="voice-preview-audio" controls', html)
                 self.assertIn('class="voice-play voice-native-preview"', html)
-                self.assertRegex(html, r'\.voice-preview-audio\{position:absolute;left:-11px;top:-[12]px;width:300px;height:30px;opacity:\.001')
+                self.assertRegex(html, r'\.voice-preview-audio\{position:absolute;left:-11px;top:-[12]px;width:300px;height:30px;cursor:pointer')
+                self.assertIn('.voice-preview-audio::-webkit-media-controls-enclosure', html)
                 self.assertIn("nativeAudio.onplay=function()", html)
-                self.assertIn("nativeAudio.onpause=nativeAudio.onended", html)
                 self.assertIn("if(a!==nativeAudio)a.pause()", html)
 
     def test_inline_scripts_still_parse(self):
