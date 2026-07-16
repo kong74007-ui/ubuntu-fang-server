@@ -2191,6 +2191,9 @@
       withHQTasks(function(tasks){var next=tasks.latestActive('video');if(next) resumeTrackedVideoTask(next.id);});
     },80);
   }
+  function refreshVideoPoints(){
+    if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+  }
   function pollJob(id, tries){
     if(tries===0) resumedVideoTaskId=String(id);
     if(tries===0){
@@ -2220,6 +2223,7 @@
             {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
           renderVideoDrafts([]);
           setTimeout(loadVideoHistory,800);
+          refreshVideoPoints();
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
@@ -2252,7 +2256,7 @@
         }
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
-        if(e&&e.jobTerminal) resumeNextTrackedVideoTask();
+        if(e&&e.jobTerminal){refreshVideoPoints();resumeNextTrackedVideoTask();}
       });
   }
   function submitTryon(){
@@ -2289,6 +2293,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('tryon',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         setVideoStatus('换装换背景任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'换装换背景视频',mode:'tryon',modeLabel:'换装换背景',ratio:'9:16'});
@@ -2334,6 +2339,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
@@ -2387,6 +2393,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
