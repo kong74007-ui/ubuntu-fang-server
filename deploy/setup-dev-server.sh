@@ -15,7 +15,11 @@ DEV_PASSWORD="${DEV_TEST_PASSWORD:-$(openssl rand -base64 18 | tr -d '/+=')}"
 echo "== [1/8] 基础软件 =="
 sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  nginx git sqlite3 certbot python3-certbot-nginx rsync psmisc >/dev/null
+  nginx git sqlite3 certbot python3-certbot-nginx rsync psmisc python3-pip ffmpeg >/dev/null
+# COS 存储 SDK：缺它则音色试听/作图/视频成片存不进腾讯云 COS、回退本地私有地址而无法访问。
+# 必须装到服务实际用的解释器 /usr/bin/python3（服务以 ubuntu 用户跑该 python）。
+sudo /usr/bin/python3 -m pip install -q cos-python-sdk-v5 2>/dev/null \
+  || sudo /usr/bin/python3 -m pip install -q cos-python-sdk-v5 --break-system-packages 2>/dev/null || true
 
 echo "== [2/8] 仓库访问（只读 Deploy Key）=="
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "deploy-$NAME-dev" -q
@@ -41,7 +45,7 @@ echo "== [4/8] 环境文件（全新随机 token；API Key 留空待各自独立
 if ! sudo test -f /home/ubuntu/auth-service/auth.env; then
   TOKEN=$(openssl rand -hex 24)
   printf "HQ_INTERNAL_TOKEN=%s\nHQ_AUTH_TOKEN_TTL=2592000\n" "$TOKEN" | sudo tee /home/ubuntu/auth-service/auth.env >/dev/null
-  printf "HQ_INTERNAL_TOKEN=%s\n# 独立 API Key 发下来后填在这里\nOPENAI_API_KEY=\nGEMINI_API_KEY=\nTIKHUB_KEY=\n" "$TOKEN" | sudo tee /home/ubuntu/content-api/content.env >/dev/null
+  printf "HQ_INTERNAL_TOKEN=%s\n# 国外 API 走新加坡出境中转 sg.huangquechuanmei.com（本机公网 IP 需在其 nginx 白名单内）\nGEMINI_BASE=https://sg.huangquechuanmei.com/gemini\nOPENAI_BASE=https://sg.huangquechuanmei.com/openai\nHEYGEN_API_BASE=https://sg.huangquechuanmei.com/v3\nHEYGEN_RELAY_BASE=https://sg.huangquechuanmei.com\nXAI_API_BASE=https://sg.huangquechuanmei.com/xai/v1\nNO_PROXY=127.0.0.1,localhost,::1\n# 独立 API Key 发下来后填在这里\nOPENAI_API_KEY=\nGEMINI_API_KEY=\nTIKHUB_KEY=\n" "$TOKEN" | sudo tee /home/ubuntu/content-api/content.env >/dev/null
 fi
 if sudo grep -qE '^(WX_PAY_|WX_MP_)' /home/ubuntu/auth-service/auth.env /home/ubuntu/content-api/content.env; then
   echo "❌ dev 环境禁止配置 WX_PAY_/WX_MP_，请移除支付变量后重跑"
