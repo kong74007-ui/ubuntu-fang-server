@@ -12,8 +12,10 @@ class DigitalIpUiTests(unittest.TestCase):
 
     def test_three_step_workflow_is_visible(self):
         self.assertIn('aria-label="数字化 IP 生成流程"', self.panel)
-        for number, label in (("01", "形象与内容"), ("02", "选择音色"), ("03", "画面与字幕")):
+        for number, label in (("01", "形象与内容"), ("03", "画面与字幕")):
             self.assertIn("<span>{}</span><b>{}</b>".format(number, label), self.panel)
+        self.assertIn('<span>02</span><b id="talkingFlowSound">选择音色</b>', self.panel)
+        self.assertIn("准备口播音频", self.panel)
 
     def test_primary_sections_keep_existing_controls(self):
         for control_id in ("imageDrop", "scriptText", "voicePanel", "talkingParameterPanel", "bgmPanel"):

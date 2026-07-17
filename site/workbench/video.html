@@ -314,7 +314,7 @@
 
       <div class="talking-flow" aria-label="数字化 IP 生成流程">
         <div class="talking-flow-item on"><span>01</span><b>形象与内容</b></div>
-        <div class="talking-flow-item"><span>02</span><b>选择音色</b></div>
+        <div class="talking-flow-item"><span>02</span><b id="talkingFlowSound">选择音色</b></div>
         <div class="talking-flow-item"><span>03</span><b>画面与字幕</b></div>
       </div>
 
@@ -347,6 +347,10 @@
           </div>
 
           <div id="audioMode" class="hidden">
+            <div class="talking-section-title" style="margin:0 0 12px;">
+              <span class="step-no">02</span>
+              <div class="talking-section-copy"><b>准备口播音频</b><span>上传本地音频，或从资产库选择已有素材</span></div>
+            </div>
             <div class="label" style="margin-bottom:10px;">音频来源</div>
             <div class="audio-source">
               <div class="source-card on" data-source="local">
@@ -2099,6 +2103,7 @@
     $('textMode').classList.toggle('hidden',mode!=='text');
     $('voicePanel').classList.toggle('hidden',mode!=='text');
     $('audioMode').classList.toggle('hidden',mode!=='audio');
+    if($('talkingFlowSound')) $('talkingFlowSound').textContent=mode==='text'?'选择音色':'选择音频';
     $('modeSummary').textContent=mode==='text'?'上传形象、准备文案、选择音色，三步生成口播视频':'上传形象并选择本地或资产库音频，快速生成口播视频';
     if($('modeName')) $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
     if($('inputCheckTitle')) $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
