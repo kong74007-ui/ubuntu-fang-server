@@ -553,6 +553,49 @@ def _generate_fallback_material(transcript, product_facts, visual_need="", ordin
     return None
 
 
+def _retry_timeline(retry_from_job_id, username):
+    try:
+        retry_from_job_id = int(retry_from_job_id or 0)
+        if retry_from_job_id <= 0:
+            return {}
+        previous = store.public_job(retry_from_job_id, username, include_timeline=True)
+        timeline = previous.get("timeline") or {}
+        return timeline if isinstance(timeline, dict) else {}
+    except Exception:
+        return {}
+
+
+def _reusable_generated_materials(timeline, limit):
+    reusable = []
+    for item in (timeline.get("materials") or []):
+        if len(reusable) >= max(0, int(limit or 0)):
+            break
+        if item.get("source") not in {"ai_generated", "reused"}:
+            continue
+        generated_file = item.get("generated_file")
+        path = _resolve_out_file(generated_file)
+        if not path:
+            continue
+        try:
+            width, height, _duration = store._probe(path, "image")
+        except Exception:
+            continue
+        ordinal = len(reusable) + 1
+        reusable.append({
+            "id": -3000 - ordinal, "kind": "image", "usage": "auto",
+            "filename": "复用 AI 视觉 %02d.png" % ordinal, "source": "reused",
+            "source_path": path, "generated_file": generated_file,
+            "generation_model": item.get("generation_model") or "seedream",
+            "generation_prompt": item.get("generation_prompt") or "",
+            "width": width, "height": height, "duration": 0,
+            "analysis": item.get("analysis") or {
+                "summary": "失败任务中已生成并通过校验的辅助视觉", "objects": [], "ocr": [],
+                "keywords": [], "product_evidence": [], "quality": 70, "safe": True,
+                "analysis_source": "retry_cache"},
+        })
+    return reusable
+
+
 def _resolve_style(style_id, text):
     if style_id != "auto":
         return style_id
@@ -1257,6 +1300,7 @@ def gen_ai_edit(payload):
     requested_style = str(payload.get("style_id") or "auto")
     resolved_style = _resolve_style(requested_style, source_text)
     product_facts = store.normalize_product_facts(payload.get("product_facts"))
+    previous_timeline = _retry_timeline(payload.get("_retry_from_job_id"), username)
     title = (source_text[:36] or "数字化 IP 口播") + " · 一键剪辑"
     materials = store.job_materials(job_id, username)
     for material in materials:
@@ -1274,8 +1318,19 @@ def gen_ai_edit(payload):
         _ensure_not_cancelled(job_id)
 
         _phase(job_id, "transcribing", 27, "按真实语音生成逐词时间轴", "composing")
-        transcript = _transcribe_source(
-            normalized, source_text, normalized_duration, work, job_id)
+        cached_transcript = previous_timeline.get("transcript") or {}
+        cached_duration = float(previous_timeline.get("duration") or 0)
+        if (cached_transcript.get("words") and cached_duration > 0
+                and abs(cached_duration - normalized_duration) <= 0.05):
+            transcript = cached_transcript
+            _phase(job_id, "transcribing", 31, "已复用失败任务的真实语音时间轴", "composing")
+        else:
+            transcript = _transcribe_source(
+                normalized, source_text, normalized_duration, work, job_id)
+        store.set_timeline(job_id, {
+            "version": "2.0", "duration": round(normalized_duration, 3),
+            "checkpoint_stage": "transcribed", "transcript": transcript,
+        })
 
         _phase(job_id, "analyzing_assets", 42, "识别辅助素材内容、文字和产品证据", "composing")
         analyzed_materials = _rank_materials(
@@ -1288,23 +1343,42 @@ def gen_ai_edit(payload):
         relevant_uploads = sum(1 for material in analyzed_materials
                                if material.get("source") == "uploaded" and material.get("match_score", 0) >= 0.45)
         missing = max(0, target_materials - relevant_uploads)
+        source_frames = []
         if missing:
             source_frame_limit = min(missing, max(1, min(4, int(math.ceil(normalized_duration / 30.0)))))
             source_frames = _extract_source_frames(normalized, windows, work, source_frame_limit)
             analyzed_materials.extend(source_frames)
             missing = max(0, target_materials - relevant_uploads - len(source_frames))
+        reused_materials = _reusable_generated_materials(previous_timeline, missing)
+        if reused_materials:
+            analyzed_materials.extend(reused_materials)
+            missing = max(0, missing - len(reused_materials))
         generated_limit = 6 if normalized_duration <= 20.0 else 10
         if missing and AI_EDIT_GENERATE_FALLBACK:
             generate_count = min(missing, generated_limit)
-            for ordinal in range(1, generate_count + 1):
+            generated_offset = len(reused_materials)
+            for ordinal in range(generated_offset + 1, generated_offset + generate_count + 1):
                 _ensure_not_cancelled(job_id)
-                _phase(job_id, "generating_visual", 44 + int(8 * ordinal / max(1, generate_count)),
-                       "生成缺失的概念视觉 %d / %d" % (ordinal, generate_count), "composing")
-                window = windows[min(len(windows) - 1, relevant_uploads + ordinal - 1)]
+                current = ordinal - generated_offset
+                _phase(job_id, "generating_visual", 44 + int(8 * current / max(1, generate_count)),
+                       "生成缺失的概念视觉 %d / %d" % (current, generate_count), "composing")
+                assigned_before = relevant_uploads + len(source_frames) + len(reused_materials)
+                window = windows[min(len(windows) - 1, assigned_before + current - 1)]
                 generated = _generate_fallback_material(
                     transcript, product_facts, window.get("text") or "主题过渡", ordinal)
                 if generated:
                     analyzed_materials.append(generated)
+                    store.set_timeline(job_id, {
+                        "version": "2.0", "duration": round(normalized_duration, 3),
+                        "checkpoint_stage": "generating_assets", "transcript": transcript,
+                        "materials": [
+                            {"source": item.get("source"), "generated_file": item.get("generated_file"),
+                             "generation_model": item.get("generation_model"),
+                             "generation_prompt": item.get("generation_prompt"),
+                             "analysis": item.get("analysis") or {}}
+                            for item in analyzed_materials if item.get("generated_file")
+                        ],
+                    })
         analyzed_materials = _rank_materials(analyzed_materials, transcript, product_facts)
         _ensure_not_cancelled(job_id)
         _phase(job_id, "directing", 58, "AI 编导正在规划每个画面", "composing")
@@ -1324,6 +1398,7 @@ def gen_ai_edit(payload):
                   "source": material.get("source") or "uploaded",
                   "source_time": material.get("source_time"),
                   "match_score": material.get("match_score"),
+                  "generated_file": material.get("generated_file"),
                   "generation_model": material.get("generation_model"),
                   "generation_prompt": material.get("generation_prompt"),
                   "analysis": material.get("analysis") or {}}

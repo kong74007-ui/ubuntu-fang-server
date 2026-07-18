@@ -227,6 +227,7 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
     debited, new_id, cost = False, 0, 30
     try:
         payload = ai_edit.validate_ai_edit_payload(json.loads(row["payload"] or "{}"), user["username"])
+        payload["_retry_from_job_id"] = int(job_id)
         cost = points_domain.cost_of("ai_edit", payload)
         with core._submission_lock:
             limit_hit = core._user_video_submit_limit("ai_edit", payload, user["username"], cost)
@@ -257,7 +258,7 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
                 ai_edit_store.release_hold(new_id)
                 ai_edit_store.mark_failed(new_id, "任务队列已满")
                 return handler._send(429, {"detail": "任务队列已满，点数已释放"})
-        return handler._send(200, {"job_id": new_id, "cost": cost, "points_left": points_left,
+        return handler._send(202, {"job_id": new_id, "cost": cost, "points_left": points_left,
                                    "billing_state": "HELD", "retried_from": job_id})
     except points_domain.AuthPointsError as exc:
         return handler._send(402 if exc.status == 402 else 502, {"detail": exc.detail, "need": 30})

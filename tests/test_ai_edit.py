@@ -51,6 +51,8 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('/api/v1/edit-assets', API)
         self.assertIn('/api/v1/edit-jobs', API)
         self.assertIn('billing_state', API)
+        self.assertIn('payload["_retry_from_job_id"]', API)
+        self.assertIn('return handler._send(202, {"job_id": new_id', API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
 
 
@@ -223,6 +225,22 @@ class HyperframesProjectTests(unittest.TestCase):
             result = ai_edit._analyze_materials(materials, Path(temp), 9)
         self.assertEqual(result[0]["analysis"]["summary"], "缓存分析")
         qwen.assert_not_called()
+
+    def test_retry_reuses_generated_assets_that_still_exist(self):
+        timeline = {"materials": [{
+            "source": "ai_generated", "generated_file": "image/generated.png",
+            "generation_model": "seedream", "generation_prompt": "生活场景",
+            "analysis": {"summary": "已生成场景", "safe": True, "quality": 80},
+        }]}
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "generated.png"
+            image.write_bytes(b"png")
+            with patch.object(ai_edit, "_resolve_out_file", return_value=image), \
+                 patch.object(ai_edit.store, "_probe", return_value=(1080, 1920, 0)):
+                result = ai_edit._reusable_generated_materials(timeline, 1)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["source"], "reused")
+        self.assertEqual(result[0]["generation_prompt"], "生活场景")
 
     def test_technical_qc_enforces_delivery_contract(self):
         valid = {"width": 1080, "height": 1920, "video_codec": "h264", "pix_fmt": "yuv420p",
