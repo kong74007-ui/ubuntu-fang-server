@@ -21,7 +21,7 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["ai_edit", "audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
@@ -52,7 +52,8 @@ class ContentDomainTests(unittest.TestCase):
         #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
         # 口播按秒结算：run_job 抢到 done 后按成片真实时长结算多退（thin 计费生命周期胶水，
         #   真实点数计算 talking_actual_cost 在 video.py），门禁上调到 1675。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1675)
+        # 一键剪辑只在 core 增加队列/幂等/资产状态薄接线，真正实现位于 ai_edit.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1710)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
