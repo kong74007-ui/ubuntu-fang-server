@@ -24,7 +24,7 @@
   .asset-card:hover{transform:translateY(-2px);border-color:rgba(231,178,76,.34);background:rgba(231,178,76,.05)}
   .asset-card.on{border-color:rgba(231,178,76,.72);box-shadow:0 0 0 2px rgba(231,178,76,.1);background:rgba(231,178,76,.08)}
   .asset-cover{position:relative;aspect-ratio:16/10;display:grid;place-items:center;background:radial-gradient(circle at 30% 25%,rgba(231,178,76,.2),transparent 42%),linear-gradient(145deg,#111a2a,#080c14);overflow:hidden}
-  .asset-cover svg{width:38px;height:38px;color:#e7b24c;opacity:.9}.asset-duration{position:absolute;right:9px;bottom:8px;padding:3px 7px;border-radius:6px;background:rgba(0,0,0,.7);font:600 11px 'JetBrains Mono',monospace}
+  .asset-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .2s}.asset-cover img.ready{opacity:1}.asset-cover svg{width:38px;height:38px;color:#e7b24c;opacity:.9}.asset-duration{position:absolute;right:9px;bottom:8px;padding:3px 7px;border-radius:6px;background:rgba(0,0,0,.7);font:600 11px 'JetBrains Mono',monospace}
   .asset-check{position:absolute;left:9px;top:8px;width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:#e7b24c;color:#1a1206;font-size:13px;font-weight:900;opacity:0;transform:scale(.75);transition:.16s}.asset-card.on .asset-check{opacity:1;transform:scale(1)}
   .asset-copy{padding:12px}.asset-name{font-size:13px;font-weight:650;line-height:1.5;height:39px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.asset-meta{margin-top:8px;display:flex;gap:7px;align-items:center;color:#5c6b82;font-size:11px}.asset-meta b{font-weight:500;color:#94a4bb}
   .state{padding:54px 20px;text-align:center;border:1px dashed rgba(148,164,187,.15);border-radius:14px;color:#5c6b82;font-size:13px}.state strong{display:block;color:#94a4bb;font-size:14px;margin-bottom:7px}
@@ -96,7 +96,7 @@
 (function(){
   'use strict';
   var token='__cookie__';
-  var assets=[], selected=null, currentJob=0, resumeAssetId='', styleId='auto', resultUrl='', previewObjectUrl='', resultObjectUrl='';
+  var assets=[], selected=null, currentJob=0, resumeAssetId='', styleId='auto', resultUrl='', previewObjectUrl='', resultObjectUrl='', coverCache={};
   var $=function(id){return document.getElementById(id);};
   var STYLE_LABELS={auto:'AI 自动推荐',content_first:'信息科普',product_seeding:'产品种草',promo_fast:'快节奏促销',brand_premium:'高级品牌',review_compare:'测评对比',lifestyle:'生活方式'};
   var PHASES={queued:['排队中',8],validating:['正在校验口播视频',16],composing:['正在分析文案并制作包装',32],uploading:['正在上传剪辑工程',48],rendering:['正在云端渲染成片',72],downloading:['正在保存成片',90],qc:['正在检查画面和时长',96],done:['一键剪辑完成',100],failed:['剪辑失败',100]};
@@ -122,14 +122,25 @@
     var mode=document.querySelector('#previewBrand span:last-child');if(mode)mode.textContent=STYLE_LABELS[styleId];
   }
   function lockStyles(locked){document.querySelectorAll('[data-style]').forEach(function(button){button.disabled=!!locked;});}
+  function coverSource(item){return item.image_url||(item.image_file?'/api/gen/file/'+item.image_file:'');}
+  function loadAssetCovers(){
+    document.querySelectorAll('[data-cover-id]').forEach(function(image){
+      var id=image.getAttribute('data-cover-id'),src=image.getAttribute('data-cover-src');
+      if(!src)return;
+      if(coverCache[id]){image.src=coverCache[id];image.classList.add('ready');return;}
+      mediaUrl(src).then(function(url){coverCache[id]=url;if(image.isConnected){image.src=url;image.classList.add('ready');}}).catch(function(){});
+    });
+  }
   function renderAssets(){
     var grid=$('assetGrid');$('assetCount').textContent=assets.length+' 条可用';
     if(!assets.length){grid.innerHTML='<div class="state" style="grid-column:1/-1"><strong>还没有可剪辑的口播视频</strong>请先到「视频生成」完成一条数字化 IP 口播</div>';return;}
     grid.innerHTML=assets.map(function(item){
       var on=selected&&String(selected.id)===String(item.id);
-      return '<button type="button" class="asset-card'+(on?' on':'')+'" data-id="'+item.id+'"><div class="asset-cover"><span class="asset-check">✓</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="14" height="14" rx="3"/><path d="M17 10l4-2v8l-4-2zM8 9l5 3-5 3z"/></svg><span class="asset-duration">'+duration(item.duration)+'</span></div><div class="asset-copy"><div class="asset-name">'+esc(item.text||'数字化 IP 口播视频')+'</div><div class="asset-meta"><b>'+esc(item.ratio||'9:16')+'</b><span>·</span><span>'+dateTime(item.created_at)+'</span></div></div></button>';
+      var cover=coverSource(item);
+      return '<button type="button" class="asset-card'+(on?' on':'')+'" data-id="'+item.id+'"><div class="asset-cover"><span class="asset-check">✓</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="14" height="14" rx="3"/><path d="M17 10l4-2v8l-4-2zM8 9l5 3-5 3z"/></svg>'+(cover?'<img data-cover-id="'+item.id+'" data-cover-src="'+esc(cover)+'" alt="口播视频封面">':'')+'<span class="asset-duration">'+duration(item.duration)+'</span></div><div class="asset-copy"><div class="asset-name">'+esc(item.text||'数字化 IP 口播视频')+'</div><div class="asset-meta"><b>'+esc(item.ratio||'9:16')+'</b><span>·</span><span>'+dateTime(item.created_at)+'</span></div></div></button>';
     }).join('');
     grid.querySelectorAll('[data-id]').forEach(function(card){card.onclick=function(){selectAsset(card.getAttribute('data-id'));};});
+    loadAssetCovers();
   }
   function selectAsset(id){
     selected=assets.find(function(item){return String(item.id)===String(id);})||null;
@@ -194,7 +205,7 @@
   $('generateBtn').onclick=submit;
   $('playResult').onclick=function(){if(resultUrl)showResult(resultUrl,true);};
   $('downloadResult').onclick=function(e){e.preventDefault();if(!resultUrl)return;mediaUrl(resultUrl).then(function(src){var a=document.createElement('a');a.href=src;a.download='huangque-ai-edit.mp4';document.body.appendChild(a);a.click();a.remove();});};
-  window.addEventListener('beforeunload',function(){if(previewObjectUrl&&previewObjectUrl.indexOf('blob:')===0)URL.revokeObjectURL(previewObjectUrl);if(resultObjectUrl&&resultObjectUrl.indexOf('blob:')===0)URL.revokeObjectURL(resultObjectUrl);});
+  window.addEventListener('beforeunload',function(){if(previewObjectUrl&&previewObjectUrl.indexOf('blob:')===0)URL.revokeObjectURL(previewObjectUrl);if(resultObjectUrl&&resultObjectUrl.indexOf('blob:')===0)URL.revokeObjectURL(resultObjectUrl);Object.keys(coverCache).forEach(function(id){if(String(coverCache[id]).indexOf('blob:')===0)URL.revokeObjectURL(coverCache[id]);});});
   loadAssets();resume();
 })();
 </script>

@@ -183,6 +183,12 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("source_video_asset_id:selected.id", PAGE)
         self.assertIn("'Idempotency-Key':key", PAGE)
 
+    def test_asset_cards_load_the_protected_source_image_as_cover(self):
+        self.assertIn("item.image_file?'/api/gen/file/'+item.image_file", PAGE)
+        self.assertIn('data-cover-id="', PAGE)
+        self.assertIn("loadAssetCovers();", PAGE)
+        self.assertIn("coverCache[id]", PAGE)
+
     def test_price_and_fixed_output_are_visible(self):
         self.assertIn("一键剪辑 · 30 点", PAGE)
         self.assertIn("单条固定 <b>30</b> 点", PAGE)
