@@ -17,6 +17,7 @@ if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
 
 ai_edit = importlib.import_module("content_domains.ai_edit")
+ai_edit_store = importlib.import_module("content_domains.ai_edit_store")
 core = importlib.import_module("content_domains.core")
 feature_flags = importlib.import_module("content_domains.feature_flags")
 points = importlib.import_module("content_domains.points")
@@ -25,6 +26,7 @@ registry = importlib.import_module("content_domains.registry")
 PAGE = (ROOT / "site/workbench/ai-edit.html").read_text(encoding="utf-8")
 SHELL = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
+API = (ROOT / "server/content_domains/ai_edit_api.py").read_text(encoding="utf-8")
 
 
 class AiEditWiringTests(unittest.TestCase):
@@ -42,6 +44,14 @@ class AiEditWiringTests(unittest.TestCase):
     def test_video_asset_lifecycle_includes_ai_edit(self):
         self.assertIn('{"video", "tryon", "xiaole_video", "cinematic", "ai_edit"}', CORE)
         self.assertIn('body = ai_edit_domain.validate_ai_edit_payload(body, user["username"])', CORE)
+
+    def test_versioned_routes_are_delegated_out_of_core(self):
+        self.assertIn("ai_edit_api.handle_post", CORE)
+        self.assertIn("ai_edit_api.handle_get", CORE)
+        self.assertIn('/api/v1/edit-assets', API)
+        self.assertIn('/api/v1/edit-jobs', API)
+        self.assertIn('billing_state', API)
+        self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
 
 
 class AiEditValidationTests(unittest.TestCase):
@@ -106,16 +116,17 @@ class HyperframesProjectTests(unittest.TestCase):
     def test_composition_contract_keeps_media_at_root(self):
         page = ai_edit.build_hyperframes_html("第一句。第二句。第三句。", 12, 1080, 1920)
         self.assertIn('data-composition-id="ai-edit-main"', page)
-        self.assertIn("data-no-timeline", page)
+        self.assertIn('window.__timelines["ai-edit-main"]=tl', page)
+        self.assertIn('gsap.timeline({paused:true})', page)
         self.assertIn('data-width="1080"', page)
         self.assertIn('data-height="1920"', page)
         self.assertIn('data-duration="12.000"', page)
-        self.assertIn('<video id="source-video" src="input-video.mp4"', page)
+        self.assertIn('<video id="source-scene-1" class="clip source source-full" src="input-video.mp4"', page)
         self.assertIn('<audio id="source-audio" src="input-video.mp4"', page)
         self.assertIn("muted playsinline", page)
         self.assertNotIn("http://", page)
         self.assertNotIn("https://", page)
-        self.assertIn('class="clip topic', page)
+        self.assertIn('class="clip scene-shell', page)
 
     def test_user_text_is_escaped(self):
         page = ai_edit.build_hyperframes_html('<script>alert("x")</script>。', 8, 1080, 1920)
@@ -131,6 +142,16 @@ class HyperframesProjectTests(unittest.TestCase):
         self.assertIn("信息科普 · 竖屏原片", science)
         self.assertNotEqual(science, premium)
 
+    def test_styles_change_scene_pacing_and_motion_profile(self):
+        transcript = {"words": [{"start": 0, "end": 30, "text": "口播"}]}
+        fast = ai_edit._beat_windows(transcript, 30, style_id="promo_fast")
+        premium = ai_edit._beat_windows(transcript, 30, style_id="brand_premium")
+        self.assertGreater(len(fast), len(premium))
+        fast_page = ai_edit.build_hyperframes_html("限时优惠", 6, 1080, 1920, "promo_fast")
+        premium_page = ai_edit.build_hyperframes_html("品牌故事", 6, 1080, 1920, "brand_premium")
+        self.assertIn("duration:0.18", fast_page)
+        self.assertIn("duration:0.52", premium_page)
+
     def test_project_zip_contains_entry_media_and_frozen_font(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
@@ -139,8 +160,84 @@ class HyperframesProjectTests(unittest.TestCase):
             font.write_bytes(b"font-bytes")
             ai_edit._write_project_zip(target, "<html></html>", source, font)
             with zipfile.ZipFile(str(target)) as archive:
-                self.assertEqual(set(archive.namelist()), {"index.html", "input-video.mp4", "assets/noto-sans-sc-700.woff2"})
+                self.assertEqual(set(archive.namelist()), {
+                    "index.html", "input-video.mp4", "assets/noto-sans-sc-700.woff2",
+                    "assets/gsap.min.js",
+                })
                 self.assertEqual(archive.read("input-video.mp4"), b"mp4-bytes")
+
+    def test_timeline_requires_full_non_overlapping_coverage(self):
+        valid = {"duration": 4, "scenes": [
+            {"start": 0, "end": 2, "layout": "talking_full"},
+            {"start": 2, "end": 4, "layout": "split_product"},
+        ]}
+        self.assertEqual(ai_edit._validate_timeline(valid)["scenes"][1]["duration"], 2)
+        invalid = {"duration": 4, "scenes": [
+            {"start": 0, "end": 1.8, "layout": "talking_full"},
+            {"start": 2, "end": 4, "layout": "talking_full"},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "空隙或重叠"):
+            ai_edit._validate_timeline(invalid)
+
+    def test_must_use_material_is_forced_into_director_timeline(self):
+        windows = [{"id": "scene-01", "start": 0, "end": 4, "text": "开场"}]
+        materials = [{"id": 7, "usage": "must_use", "kind": "image",
+                      "analysis": {"safe": True, "ocr": ["产品实拍"]}}]
+        with patch.object(ai_edit, "_qwen_json", return_value={"assignments": [
+            {"id": "scene-01", "layout": "talking_full", "material_id": None,
+             "headline": "开场"}
+        ]}), patch.object(ai_edit, "_ensure_not_cancelled"):
+            scenes = ai_edit._direct_timeline(windows, materials, {}, "auto", 1)
+        self.assertEqual(scenes[0]["material_id"], 7)
+        self.assertEqual(scenes[0]["layout"], "split_product")
+
+    def test_director_never_silently_drops_excess_must_use_materials(self):
+        windows = [{"id": "scene-01", "start": 0, "end": 4, "text": "开场"}]
+        materials = [
+            {"id": 7, "usage": "must_use", "kind": "image", "analysis": {"safe": True}},
+            {"id": 8, "usage": "must_use", "kind": "image", "analysis": {"safe": True}},
+        ]
+        with patch.object(ai_edit, "_qwen_json", return_value={"assignments": []}), \
+             patch.object(ai_edit, "_ensure_not_cancelled"):
+            with self.assertRaisesRegex(RuntimeError, "必用素材数量"):
+                ai_edit._direct_timeline(windows, materials, {}, "auto", 1)
+
+    def test_material_priority_is_uploaded_then_source_frame_then_reused_then_generated(self):
+        transcript = {"segments": [{"text": "产品介绍"}]}
+        materials = [
+            {"id": 4, "source": "ai_generated", "analysis": {"summary": "产品", "quality": 90}},
+            {"id": 3, "source": "reused", "analysis": {"summary": "产品", "quality": 90}},
+            {"id": 2, "source": "source_frame", "analysis": {"summary": "产品", "quality": 90}},
+            {"id": 1, "source": "uploaded", "analysis": {"summary": "产品", "quality": 90}},
+        ]
+        ranked = ai_edit._rank_materials(materials, transcript, {})
+        self.assertEqual([item["id"] for item in ranked], [1, 2, 3, 4])
+
+    def test_cached_material_analysis_is_reused(self):
+        materials = [{"id": 7, "usage": "auto", "kind": "image", "filename": "a.jpg",
+                      "analysis_json": {"summary": "缓存分析", "safe": True, "quality": 80}}]
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(ai_edit, "_preview_image", return_value=Path(temp) / "preview.jpg"), \
+             patch.object(ai_edit, "_qwen_json") as qwen, \
+             patch.object(ai_edit.store, "set_material_analysis"):
+            result = ai_edit._analyze_materials(materials, Path(temp), 9)
+        self.assertEqual(result[0]["analysis"]["summary"], "缓存分析")
+        qwen.assert_not_called()
+
+    def test_technical_qc_enforces_delivery_contract(self):
+        valid = {"width": 1080, "height": 1920, "video_codec": "h264", "pix_fmt": "yuv420p",
+                 "audio_codec": "aac", "sample_rate": 48000, "fps": 30.0, "r_fps": 30.0,
+                 "duration": 6.0, "video_duration": 6.0, "audio_duration": 6.0,
+                 "video_start": 0.0, "audio_start": 0.0, "format_start": 0.0}
+        with tempfile.TemporaryDirectory() as temp:
+            media = Path(temp) / "output.mp4"
+            media.write_bytes(b"ftyp....moov....mdat")
+            with patch.object(ai_edit, "_stream_info", return_value=valid):
+                self.assertTrue(ai_edit._technical_qc(media, 6.0)["passed"])
+            invalid = dict(valid, duration=6.2)
+            with patch.object(ai_edit, "_stream_info", return_value=invalid):
+                with self.assertRaisesRegex(RuntimeError, "技术质检"):
+                    ai_edit._technical_qc(media, 6.0)
 
 
 class HyperframesApiTests(unittest.TestCase):
@@ -179,24 +276,89 @@ class AiEditUiTests(unittest.TestCase):
     def test_page_filters_owned_digital_ip_assets_and_submits_once(self):
         self.assertIn("/api/gen/video/assets?limit=120", PAGE)
         self.assertIn("item.mode==='text'||item.mode==='audio'", PAGE)
-        self.assertIn("/api/gen/ai_edit", PAGE)
-        self.assertIn("source_video_asset_id:selected.id", PAGE)
+        self.assertIn("/api/v1/edit-jobs", PAGE)
+        self.assertIn("source_video_asset_id:selectedSource.id", PAGE)
         self.assertIn("'Idempotency-Key':key", PAGE)
 
     def test_asset_cards_load_the_protected_source_image_as_cover(self):
         self.assertIn("item.image_file?'/api/gen/file/'+item.image_file", PAGE)
-        self.assertIn('data-cover-id="', PAGE)
-        self.assertIn("loadAssetCovers();", PAGE)
-        self.assertIn("coverCache[id]", PAGE)
+        self.assertIn('data-cover="', PAGE)
+        self.assertIn("blobUrl(cover)", PAGE)
+        self.assertIn("Authorization:'Bearer '+token", PAGE)
 
     def test_price_and_fixed_output_are_visible(self):
-        self.assertIn("一键剪辑 · 30 点", PAGE)
-        self.assertIn("单条固定 <b>30</b> 点", PAGE)
+        self.assertIn("生成一键剪辑 · 30 点", PAGE)
+        self.assertIn("功能单价：<b>30 点 / 条</b>", PAGE)
         self.assertIn("1080 × 1920", PAGE)
         self.assertIn("原声保留", PAGE)
         self.assertIn("AI 自动推荐", PAGE)
         self.assertIn("产品种草", PAGE)
         self.assertIn("style_id:styleId", PAGE)
+
+    def test_material_library_and_versioned_job_controls_are_visible(self):
+        self.assertIn('id="materialInput"', PAGE)
+        self.assertIn("/api/v1/edit-assets", PAGE)
+        self.assertIn("data-usage=", PAGE)
+        self.assertIn("product_facts:productFacts()", PAGE)
+        self.assertIn("/cancel", PAGE)
+        self.assertIn("/retry", PAGE)
+        self.assertIn("HELD", PAGE)
+        self.assertIn("CAPTURED", PAGE)
+        self.assertIn("RELEASED", PAGE)
+        self.assertIn('id="resultMeta"', PAGE)
+        self.assertIn("loadResultDetails(finishedJob)", PAGE)
+        self.assertIn("material_breakdown", PAGE)
+
+
+class AiEditStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.old_db = ai_edit_store.EDIT_DB
+        self.old_material_dir = ai_edit_store.MATERIAL_DIR
+        ai_edit_store.EDIT_DB = Path(self.temp.name) / "ai-edit.db"
+        ai_edit_store.MATERIAL_DIR = Path(self.temp.name) / "materials"
+        ai_edit_store.init_db()
+
+    def tearDown(self):
+        ai_edit_store.EDIT_DB = self.old_db
+        ai_edit_store.MATERIAL_DIR = self.old_material_dir
+        self.temp.cleanup()
+
+    def test_billing_hold_capture_and_release_are_idempotent(self):
+        payload = {"source_video_asset_id": 4, "style_id": "auto",
+                   "materials": [], "product_facts": {"name": "测试产品"}}
+        created = ai_edit_store.create_job(101, "fang", payload, 30)
+        self.assertEqual(created["billing"]["state"], "HELD")
+        self.assertTrue(ai_edit_store.capture_hold(101))
+        self.assertFalse(ai_edit_store.capture_hold(101))
+        self.assertFalse(ai_edit_store.release_hold(101))
+        self.assertEqual(ai_edit_store.public_job(101, "fang")["billing"]["state"], "CAPTURED")
+
+        ai_edit_store.create_job(102, "fang", payload, 30)
+        self.assertTrue(ai_edit_store.release_hold(102))
+        self.assertFalse(ai_edit_store.release_hold(102))
+        self.assertEqual(ai_edit_store.public_job(102, "fang")["billing"]["state"], "RELEASED")
+
+    def test_job_status_exposes_timeline_only_when_requested(self):
+        payload = {"source_video_asset_id": 5, "style_id": "auto", "materials": []}
+        ai_edit_store.create_job(103, "fang", payload, 30)
+        ai_edit_store.set_timeline(103, {"version": "2.0", "scenes": [{"id": "scene-01"}]})
+        self.assertNotIn("timeline", ai_edit_store.public_job(103, "fang"))
+        self.assertEqual(ai_edit_store.public_job(103, "fang", include_timeline=True)["timeline"]["version"], "2.0")
+
+    def test_stage_progress_exposes_eta_and_stage_timings(self):
+        payload = {"source_video_asset_id": 6, "style_id": "auto", "materials": []}
+        ai_edit_store.create_job(104, "fang", payload, 30)
+        ai_edit_store.update_stage(104, "transcribing", 30, "识别语音")
+        job = ai_edit_store.public_job(104, "fang")
+        self.assertEqual(job["stage"], "transcribing")
+        self.assertGreaterEqual(job["eta_seconds"], 0)
+        self.assertIn("queued", job["stage_timings"])
+        self.assertIn("transcribing", job["stage_timings"])
+        ai_edit_store.set_usage(104, {"asr": {"audio_seconds": 12}}, {"billable_points": 30})
+        job = ai_edit_store.public_job(104, "fang")
+        self.assertEqual(job["provider_usage"]["asr"]["audio_seconds"], 12)
+        self.assertEqual(job["cost_breakdown"]["billable_points"], 30)
 
 
 if __name__ == "__main__":

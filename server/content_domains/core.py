@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, submission_idempotency, ai_edit_api  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -284,6 +284,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
+    ai_edit_api.init_db()
     init_audio_db()
 
 def init_audio_db():
@@ -1053,6 +1054,7 @@ def run_job(job_id):
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
+        ai_edit_api.job_completed(kind, job_id, result)
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
@@ -1060,6 +1062,7 @@ def run_job(job_id):
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
+        ai_edit_api.job_failed(kind, job_id, e)
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1152,6 +1155,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        handled, p = ai_edit_api.handle_post(self, p, points_domain, video_domain)
+        if handled: return
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1300,7 +1305,7 @@ class H(BaseHTTPRequestHandler):
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay":
-                    return self._send(200, idem_response)
+                    return self._send(ai_edit_api.submission_status(self, kind), idem_response)
                 if idem_state == "conflict":
                     return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing":
@@ -1348,7 +1353,7 @@ class H(BaseHTTPRequestHandler):
             response = {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
                         "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left}
             _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+            return self._send(ai_edit_api.submission_status(self, kind), response)
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1427,22 +1432,24 @@ class H(BaseHTTPRequestHandler):
                     cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
                                     (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
                     c.commit(); jid = cur.lastrowid
-                if kind in {"video", "tryon", "xiaole_video", "cinematic", "ai_edit"}:
-                    video_domain.record_video_pending_asset(jid, user["username"], body)
+                if ai_edit_api.prepare_submission(self, kind, jid, user["username"], body, cost, video_domain, p, idem_key): return
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "cinematic", "ai_edit"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    ai_edit_api.queue_rejected(kind, jid, "任务队列已满，请稍后再试")
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            ai_edit_api.decorate_submission(kind, response)
             _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+            return self._send(ai_edit_api.submission_status(self, kind), response)
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if ai_edit_api.handle_get(self, p): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/asset/marks":
@@ -1681,8 +1688,11 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
-        self._send(404, {"detail": "not found"})
+        p = self.path.split("?")[0]
+        if p == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
+        if ai_edit_api.handle_delete(self, p): return
+        return self._send(404, {"detail": "not found"})
 if __name__ == "__main__":
     init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点
     start_job_workers(); threading.Thread(target=reaper, daemon=True).start()
