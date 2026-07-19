@@ -115,7 +115,7 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
 'use strict';
 var token='__cookie__';
 var sources=[],selectedSource=null,materials=[],selectedMaterialIds={},styles=[],styleId='auto';
-var currentJob=0,lastFailedJob=0,resultUrl='',previewUrl='',objectUrls=[];
+var currentJob=0,lastFailedJob=0,resultUrl='',resultCoverUrl='',previewUrl='',objectUrls=[];
 var $=function(id){return document.getElementById(id);};
 var fallbackStyles=[
   {id:'auto',label:'AI 自动推荐',description:'根据内容和素材自动选择节奏'},
@@ -143,6 +143,11 @@ function blobUrl(url){
     if(!r.ok)throw new Error('素材读取失败');return r.blob();
   }).then(function(blob){var value=URL.createObjectURL(blob);objectUrls.push(value);return value;});
 }
+function setVideoPoster(video,url){
+  var request=String(Date.now())+'-'+Math.random();video.dataset.posterRequest=request;video.removeAttribute('poster');
+  if(!url)return Promise.resolve();
+  return blobUrl(url).then(function(src){if(video.dataset.posterRequest===request)video.poster=src;});
+}
 function duration(sec){sec=Math.max(0,Math.round(Number(sec)||0));return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0');}
 function fileSize(bytes){bytes=Number(bytes)||0;return bytes>=1048576?(bytes/1048576).toFixed(1)+' MB':Math.max(1,Math.round(bytes/1024))+' KB';}
 function revokeAll(){objectUrls.forEach(function(url){try{URL.revokeObjectURL(url);}catch(e){}});objectUrls=[];}
@@ -169,7 +174,7 @@ function selectSource(id){
   $('generateBtn').disabled=false;$('generateBtn').textContent='生成一键剪辑 · 30 点';
   $('previewEmpty').style.display='none';$('previewVideo').style.display='block';$('previewLabel').style.display='flex';$('previewTitle').style.display='block';
   $('previewTitle').textContent=String(selectedSource.text||'数字化 IP 口播').slice(0,58);
-  var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();
+  var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();setVideoPoster(video,sourceCover(selectedSource)).catch(function(){});
   blobUrl(selectedSource.video_url).then(function(url){previewUrl=url;video.src=url;video.load();}).catch(function(e){toast(e.message);});
 }
 function loadSources(){
@@ -238,8 +243,8 @@ function poll(){
     setProgress(job);
     if(job.status==='done'){
       var finishedJob=currentJob;
-      resultUrl=job.result&&job.result.video_url||'';
-      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false);loadResultDetails(finishedJob);toast('一键剪辑完成，成片和封面已保存');return;
+      resultUrl=job.result&&job.result.video_url||'';resultCoverUrl=job.result&&(job.result.image_url||(job.result.image_file?'/api/gen/file/'+job.result.image_file:''))||'';
+      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false,resultCoverUrl);loadResultDetails(finishedJob);toast('一键剪辑完成，成片和封面已保存');return;
     }
     if(['error','failed','canceled'].indexOf(job.status)>=0){
       lastFailedJob=currentJob;currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='重新创建 · 30 点';$('retryBtn').style.display='block';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();toast(job.error||'任务未完成，点数已释放');return;
@@ -248,7 +253,7 @@ function poll(){
   }).catch(function(){setTimeout(poll,3000);});
 }
 function retryJob(){if(!lastFailedJob)return;api('/api/v1/edit-jobs/'+lastFailedJob+'/retry',{method:'POST',json:{}}).then(function(d){currentJob=Number(d.job_id);lastFailedJob=0;saveActive();$('retryBtn').style.display='none';setBilling('HELD');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();}).catch(function(e){toast(e.message);});}
-function showResult(url,autoplay){var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();blobUrl(url).then(function(src){video.src=src;video.style.display='block';video.load();if(autoplay)video.play().catch(function(){});});}
+function showResult(url,autoplay,posterUrl){var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();setVideoPoster(video,posterUrl).catch(function(){});blobUrl(url).then(function(src){video.src=src;video.style.display='block';video.load();if(autoplay)video.play().catch(function(){});});}
 function loadResultDetails(jobId){
   api('/api/v1/edit-jobs/'+jobId+'/result',{cache:'no-store'}).then(function(data){
     var result=data.result||{},timeline=data.timeline||{},breakdown=result.material_breakdown||{};
@@ -266,7 +271,7 @@ function resume(){
 }
 $('materialInput').onchange=function(){uploadFiles(this.files);this.value='';};
 $('generateBtn').onclick=submit;$('retryBtn').onclick=retryJob;
-$('playResult').onclick=function(){if(resultUrl)showResult(resultUrl,true);};
+$('playResult').onclick=function(){if(resultUrl)showResult(resultUrl,true,resultCoverUrl);};
 $('downloadResult').onclick=function(e){e.preventDefault();download(resultUrl,'huangque-ai-edit.mp4');};
 window.addEventListener('beforeunload',revokeAll);
 resume();loadStyles();loadSources();loadMaterials();renderStyles();

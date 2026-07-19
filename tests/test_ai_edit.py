@@ -311,6 +311,12 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("blobUrl(cover)", PAGE)
         self.assertIn("Authorization:'Bearer '+token", PAGE)
 
+    def test_completed_result_binds_generated_cover_as_video_poster(self):
+        self.assertIn("job.result.image_url", PAGE)
+        self.assertIn("showResult(resultUrl,false,resultCoverUrl)", PAGE)
+        self.assertIn("video.poster=src", PAGE)
+        self.assertIn("showResult(resultUrl,true,resultCoverUrl)", PAGE)
+
     def test_price_and_fixed_output_are_visible(self):
         self.assertIn("生成一键剪辑 · 30 点", PAGE)
         self.assertIn("功能单价：<b>30 点 / 条</b>", PAGE)
