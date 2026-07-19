@@ -200,6 +200,33 @@ class HyperframesProjectTests(unittest.TestCase):
         self.assertEqual(scenes[0]["material_id"], 7)
         self.assertEqual(scenes[0]["layout"], "split_product")
 
+    def test_talking_full_keeps_moving_source_instead_of_still_material(self):
+        windows = [{"id": "scene-01", "start": 0, "end": 4, "text": "开场"}]
+        materials = [{"id": -1, "usage": "auto", "kind": "image", "source": "source_frame"}]
+        with patch.object(ai_edit, "_qwen_json", return_value={"assignments": [
+            {"id": "scene-01", "layout": "talking_full", "material_id": -1,
+             "motion": "none", "transition": "cut", "headline": "开场"}
+        ]}), patch.object(ai_edit, "_ensure_not_cancelled"):
+            scenes = ai_edit._direct_timeline(windows, materials, {}, "auto", 1)
+        self.assertIsNone(scenes[0]["material_id"])
+        self.assertEqual(scenes[0]["asset_source"], "source_video")
+        self.assertEqual(scenes[0]["motion"], "none")
+
+    def test_legacy_talking_full_timeline_does_not_overlay_static_material(self):
+        timeline = {
+            "duration": 4,
+            "transcript": {"words": []},
+            "scenes": [{"id": "scene-01", "start": 0, "end": 4,
+                        "layout": "talking_full", "material_id": -1,
+                        "motion": "none", "transition": "cut"}],
+        }
+        page = ai_edit.build_hyperframes_html(
+            "开场", 4, 1080, 1920, timeline=timeline,
+            material_files={-1: {"name": "assets/source-frame.jpg", "kind": "image"}},
+        )
+        self.assertIn('id="source-scene-1"', page)
+        self.assertNotIn('id="material-1"', page)
+
     def test_director_never_silently_drops_excess_must_use_materials(self):
         windows = [{"id": "scene-01", "start": 0, "end": 4, "text": "开场"}]
         materials = [

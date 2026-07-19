@@ -726,6 +726,11 @@ def _direct_timeline(windows, materials, product_facts, style_id, job_id):
             material_id = None
         if material_id not in valid_ids:
             material_id = None
+        # talking_full means the moving source video is the picture.  Treat a
+        # referenced material as director evidence only; rendering an image
+        # above the source turns the presenter into a frozen still.
+        if layout == "talking_full":
+            material_id = None
         if material_id is None and layout in {"split_product", "product_full", "picture_in_picture"}:
             layout = "title_focus" if raw.get("headline") else "talking_full"
         selected = material_by_id.get(material_id) or {}
@@ -870,6 +875,10 @@ def build_hyperframes_html(
         scene_duration = end - start
         layout = scene["layout"]
         material = materials.get(scene.get("material_id"))
+        # Also protect legacy/retried timelines created before the director
+        # normalization above was introduced.
+        if layout == "talking_full":
+            material = None
         source_class = {
             "split_product": "source split-source",
             "product_full": "source source-pip",
