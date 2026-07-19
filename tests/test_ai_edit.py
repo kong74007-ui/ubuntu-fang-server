@@ -27,6 +27,7 @@ PAGE = (ROOT / "site/workbench/ai-edit.html").read_text(encoding="utf-8")
 SHELL = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 API = (ROOT / "server/content_domains/ai_edit_api.py").read_text(encoding="utf-8")
+FANG_NGINX = (ROOT / "deploy/nginx-fang-locations.conf").read_text(encoding="utf-8")
 
 
 class AiEditWiringTests(unittest.TestCase):
@@ -54,6 +55,12 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('payload["_retry_from_job_id"]', API)
         self.assertIn('return handler._send(202, {"job_id": new_id', API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
+
+    def test_test_domain_proxies_versioned_routes_to_content_api(self):
+        block = FANG_NGINX.split("location ^~ /api/v1/", 1)[1].split("}", 1)[0]
+        self.assertIn("proxy_pass http://127.0.0.1:8096", block)
+        self.assertIn("proxy_buffering off", block)
+        self.assertIn("proxy_request_buffering off", block)
 
 
 class AiEditValidationTests(unittest.TestCase):
