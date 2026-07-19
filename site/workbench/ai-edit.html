@@ -170,6 +170,7 @@ function renderSources(){
 function selectSource(id){
   if(currentJob)return;selectedSource=sources.find(function(v){return String(v.id)===String(id);})||null;renderSources();
   if(!selectedSource)return;
+  $('resultActions').classList.remove('show');$('resultMeta').classList.remove('show');
   $('summarySource').textContent=duration(selectedSource.duration);
   $('generateBtn').disabled=false;$('generateBtn').textContent='生成一键剪辑 · 30 点';
   $('previewEmpty').style.display='none';$('previewVideo').style.display='block';$('previewLabel').style.display='flex';$('previewTitle').style.display='block';
@@ -177,10 +178,17 @@ function selectSource(id){
   var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();setVideoPoster(video,sourceCover(selectedSource)).catch(function(){});
   blobUrl(selectedSource.video_url).then(function(url){previewUrl=url;video.src=url;video.load();}).catch(function(e){toast(e.message);});
 }
+function restoreLatestResult(items){
+  if(currentJob)return;
+  var latest=(items||[]).find(function(item){return item.mode==='ai_edit'&&['done','completed','ready'].indexOf(item.status)>=0&&item.video_url;});
+  if(!latest)return;
+  resultUrl=latest.video_url;resultCoverUrl=sourceCover(latest);$('resultActions').classList.add('show');showResult(resultUrl,false,resultCoverUrl);
+  if(latest.job_id)loadResultDetails(latest.job_id);
+}
 function loadSources(){
   api(fresh('/api/gen/video/assets?limit=120'),{cache:'no-store'}).then(function(d){
-    sources=(d.items||[]).filter(function(item){return (item.mode==='text'||item.mode==='audio')&&['done','completed','ready'].indexOf(item.status)>=0&&item.video_url;});
-    renderSources();resumeSavedSource();
+    var items=d.items||[];sources=items.filter(function(item){return (item.mode==='text'||item.mode==='audio')&&['done','completed','ready'].indexOf(item.status)>=0&&item.video_url;});
+    renderSources();resumeSavedSource();restoreLatestResult(items);
   }).catch(function(e){$('sourceGrid').innerHTML='<div class="state"><b>口播资产读取失败</b>'+esc(e.message)+'</div>';});
 }
 function selectedCount(){return Object.keys(selectedMaterialIds).filter(function(id){return selectedMaterialIds[id];}).length;}
@@ -253,7 +261,7 @@ function poll(){
   }).catch(function(){setTimeout(poll,3000);});
 }
 function retryJob(){if(!lastFailedJob)return;api('/api/v1/edit-jobs/'+lastFailedJob+'/retry',{method:'POST',json:{}}).then(function(d){currentJob=Number(d.job_id);lastFailedJob=0;saveActive();$('retryBtn').style.display='none';setBilling('HELD');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();}).catch(function(e){toast(e.message);});}
-function showResult(url,autoplay,posterUrl){var video=$('previewVideo');video.pause();video.removeAttribute('src');video.load();setVideoPoster(video,posterUrl).catch(function(){});blobUrl(url).then(function(src){video.src=src;video.style.display='block';video.load();if(autoplay)video.play().catch(function(){});});}
+function showResult(url,autoplay,posterUrl){var video=$('previewVideo');$('previewEmpty').style.display='none';$('previewLabel').style.display='none';$('previewTitle').style.display='none';video.pause();video.removeAttribute('src');video.load();setVideoPoster(video,posterUrl).catch(function(){});blobUrl(url).then(function(src){video.src=src;video.style.display='block';video.load();if(autoplay)video.play().catch(function(){});});}
 function loadResultDetails(jobId){
   api('/api/v1/edit-jobs/'+jobId+'/result',{cache:'no-store'}).then(function(data){
     var result=data.result||{},timeline=data.timeline||{},breakdown=result.material_breakdown||{};

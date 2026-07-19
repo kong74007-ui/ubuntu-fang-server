@@ -317,6 +317,12 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("video.poster=src", PAGE)
         self.assertIn("showResult(resultUrl,true,resultCoverUrl)", PAGE)
 
+    def test_latest_completed_edit_is_restored_after_page_reload(self):
+        self.assertIn("item.mode==='ai_edit'", PAGE)
+        self.assertIn("restoreLatestResult(items)", PAGE)
+        self.assertIn("resultCoverUrl=sourceCover(latest)", PAGE)
+        self.assertIn("loadResultDetails(latest.job_id)", PAGE)
+
     def test_price_and_fixed_output_are_visible(self):
         self.assertIn("生成一键剪辑 · 30 点", PAGE)
         self.assertIn("功能单价：<b>30 点 / 条</b>", PAGE)
