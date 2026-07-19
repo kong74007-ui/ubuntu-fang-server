@@ -327,6 +327,8 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("product_facts:productFacts()", PAGE)
         self.assertNotIn('id="cancelBtn"', PAGE)
         self.assertNotIn("function cancelJob", PAGE)
+        self.assertNotIn('id="downloadTimeline"', PAGE)
+        self.assertNotIn("timelineUrl", PAGE)
         self.assertIn("/retry", PAGE)
         self.assertIn("HELD", PAGE)
         self.assertIn("CAPTURED", PAGE)

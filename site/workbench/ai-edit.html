@@ -100,7 +100,6 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
       <div id="resultActions" class="actions">
         <button id="playResult" class="secondary" type="button">播放成片</button>
         <a id="downloadResult" class="gold" href="#">下载成片</a>
-        <a id="downloadTimeline" class="secondary" href="#">下载时间轴</a>
         <button id="retryBtn" class="gold" type="button">失败后重试</button>
       </div>
       <div id="resultMeta" class="result-meta"></div>
@@ -116,7 +115,7 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
 'use strict';
 var token='__cookie__';
 var sources=[],selectedSource=null,materials=[],selectedMaterialIds={},styles=[],styleId='auto';
-var currentJob=0,lastFailedJob=0,resultUrl='',timelineUrl='',previewUrl='',objectUrls=[];
+var currentJob=0,lastFailedJob=0,resultUrl='',previewUrl='',objectUrls=[];
 var $=function(id){return document.getElementById(id);};
 var fallbackStyles=[
   {id:'auto',label:'AI 自动推荐',description:'根据内容和素材自动选择节奏'},
@@ -239,8 +238,8 @@ function poll(){
     setProgress(job);
     if(job.status==='done'){
       var finishedJob=currentJob;
-      resultUrl=job.result&&job.result.video_url||'';timelineUrl=job.result&&job.result.timeline_url||'';
-      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false);loadResultDetails(finishedJob);toast('一键剪辑完成，成片、封面和时间轴已保存');return;
+      resultUrl=job.result&&job.result.video_url||'';
+      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false);loadResultDetails(finishedJob);toast('一键剪辑完成，成片和封面已保存');return;
     }
     if(['error','failed','canceled'].indexOf(job.status)>=0){
       lastFailedJob=currentJob;currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='重新创建 · 30 点';$('retryBtn').style.display='block';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();toast(job.error||'任务未完成，点数已释放');return;
@@ -269,7 +268,6 @@ $('materialInput').onchange=function(){uploadFiles(this.files);this.value='';};
 $('generateBtn').onclick=submit;$('retryBtn').onclick=retryJob;
 $('playResult').onclick=function(){if(resultUrl)showResult(resultUrl,true);};
 $('downloadResult').onclick=function(e){e.preventDefault();download(resultUrl,'huangque-ai-edit.mp4');};
-$('downloadTimeline').onclick=function(e){e.preventDefault();download(timelineUrl,'huangque-ai-edit-timeline.json');};
 window.addEventListener('beforeunload',revokeAll);
 resume();loadStyles();loadSources();loadMaterials();renderStyles();
 })();
