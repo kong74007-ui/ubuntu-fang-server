@@ -22,9 +22,23 @@ import time
 from contextlib import closing
 
 
+HEYGEN_FAILED_PUBLIC_ERROR = (
+    "内容审核失败，请尝试更换其他图片，视频或提示词。\n"
+    "点数已退还。"
+)
+
+
+def _public_error(error):
+    """隐藏 HeyGen 的内部失败详情，只向用户返回可操作的审核提示。"""
+    if error and "HeyGen视频生成失败" in str(error):
+        return HEYGEN_FAILED_PUBLIC_ERROR
+    return error
+
+
 def public_dict(row, phase=None):
     data = {key: row[key] for key in (
         "id", "kind", "username", "cost", "status", "result", "error", "created_at", "updated_at")}
+    data["error"] = _public_error(data.get("error"))
     data["refunded"] = bool(row["refunded"]) if "refunded" in row.keys() else False
     if data.get("result"):
         try:
