@@ -28,6 +28,7 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
 .progress{display:none;margin-top:13px;padding:12px;border:1px solid rgba(45,212,191,.18);border-radius:11px;background:rgba(45,212,191,.045)}.progress.show{display:block}.progress-top{display:flex;justify-content:space-between;gap:10px;color:#74d8cb;font-size:11px}.track{height:7px;margin-top:9px;border-radius:99px;background:rgba(143,160,183,.12);overflow:hidden}.bar{height:100%;width:5%;border-radius:inherit;background:linear-gradient(90deg,#2dd4bf,#e7b24c);transition:width .4s}
 .actions{display:none;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.actions.show{display:grid}.actions button,.actions a{height:39px;display:flex;align-items:center;justify-content:center;border-radius:9px;font:650 11px inherit;text-decoration:none;cursor:pointer}.secondary{border:1px solid rgba(143,160,183,.18);background:rgba(143,160,183,.05);color:#eaf1fa}.gold{border:1px solid rgba(231,178,76,.3);background:rgba(231,178,76,.09);color:#e7b24c}
 .result-meta{display:none;margin-top:12px;padding:11px;border:1px solid rgba(143,160,183,.12);border-radius:11px;background:rgba(6,10,18,.34)}.result-meta.show{display:block}.result-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.result-stat{padding:7px;border-radius:7px;background:rgba(143,160,183,.05);font-size:9px;color:#718096}.result-stat b{display:block;margin-top:3px;color:#dce5f1;font-size:11px}.scene-list{max-height:150px;overflow:auto;margin-top:8px;display:grid;gap:5px}.scene-row{display:grid;grid-template-columns:34px 1fr auto;gap:6px;align-items:center;padding:6px 7px;border-radius:7px;background:rgba(143,160,183,.04);font-size:9px;color:#718096}.scene-row b{color:#dce5f1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scene-row em{color:#e7b24c;font-style:normal}
+.history-list{display:grid;gap:8px}.history-card{width:100%;display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border:1px solid rgba(143,160,183,.12);border-radius:11px;background:rgba(6,10,18,.4);color:#eaf1fa;text-align:left;font-family:inherit;cursor:pointer}.history-card:hover{border-color:rgba(231,178,76,.34);background:rgba(231,178,76,.04)}.history-card:disabled{cursor:default;opacity:.72}.history-thumb{width:48px;height:66px;border-radius:8px;object-fit:cover;background:#080d16}.history-copy{min-width:0}.history-copy b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.history-copy span{display:block;margin-top:5px;color:#718096;font-size:9px}.history-status{padding:5px 7px;border-radius:999px;background:rgba(143,160,183,.08);color:#9aabc0;font-size:9px;white-space:nowrap}.history-status.done{background:rgba(45,212,191,.09);color:#72d8ca}.history-status.error,.history-status.failed{background:rgba(239,68,68,.09);color:#fb7185}.history-pager{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:10px}.history-pager button{height:30px;padding:0 10px;border:1px solid rgba(143,160,183,.14);border-radius:8px;background:rgba(143,160,183,.04);color:#a7b4c6;font:600 10px inherit;cursor:pointer}.history-pager button:disabled{opacity:.35;cursor:not-allowed}.history-pager span{color:#718096;font:600 10px monospace}
 .state{grid-column:1/-1;padding:34px 16px;text-align:center;border:1px dashed rgba(143,160,183,.15);border-radius:12px;color:#68778c;font-size:11px}.state b{display:block;color:#9aabc0;font-size:12px;margin-bottom:5px}.toast{position:fixed;left:50%;bottom:30px;z-index:4000;transform:translate(-50%,18px);padding:10px 15px;border-radius:9px;background:#172131;color:#eaf1fa;font-size:12px;opacity:0;pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}
 @media(max-width:1180px){.workspace{grid-template-columns:1fr}.side{position:static}.material-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.hero{display:block}.hero-badges{justify-content:flex-start;margin-top:10px}.flow{grid-template-columns:1fr 1fr}.source-grid,.style-grid{grid-template-columns:repeat(2,1fr)}.material-grid{grid-template-columns:repeat(2,1fr)}.facts{grid-template-columns:1fr}.field.wide{grid-column:auto}.panel{padding:13px}}
 </style>
@@ -75,6 +76,15 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
         <div class="panel-head"><div><h2>4. 选择剪辑风格</h2><p>风格会影响布局、信息密度、配色和节奏，不只是换颜色</p></div></div>
         <div id="styleGrid" class="style-grid"></div>
       </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>我的剪辑作品</h2><p>每页展示 10 条，点击已完成作品可重新打开预览和下载</p></div><span id="historyCount" class="panel-meta">读取中</span></div>
+        <div id="historyList" class="history-list"><div class="state"><b>正在读取剪辑记录</b>请稍候</div></div>
+        <div class="history-pager">
+          <button id="historyPrev" type="button" disabled>上一页</button>
+          <span id="historyPage">1 / 1</span>
+          <button id="historyNext" type="button" disabled>下一页</button>
+        </div>
+      </section>
     </div>
     <aside class="panel side">
       <div class="panel-head"><div><h2>任务预览</h2><p id="styleSummary">AI 自动推荐</p></div></div>
@@ -115,6 +125,7 @@ body{overflow:hidden}.edit-page{height:100%;overflow:auto;padding:0 2px 42px;col
 'use strict';
 var token='__cookie__';
 var sources=[],selectedSource=null,materials=[],selectedMaterialIds={},styles=[],styleId='auto';
+var historyItems=[],historyPage=1,historyPages=1;
 var currentJob=0,lastFailedJob=0,resultUrl='',resultCoverUrl='',previewUrl='',objectUrls=[];
 var $=function(id){return document.getElementById(id);};
 var fallbackStyles=[
@@ -156,6 +167,43 @@ function renderStyles(){
   $('styleGrid').querySelectorAll('[data-style]').forEach(function(btn){btn.onclick=function(){if(currentJob)return;styleId=btn.getAttribute('data-style');renderStyles();var item=styles.find(function(v){return v.id===styleId;});$('styleSummary').textContent=item?item.label:'AI 自动推荐';};});
 }
 function loadStyles(){api('/api/v1/edit-styles').then(function(d){styles=d.items||fallbackStyles;renderStyles();}).catch(function(){styles=fallbackStyles;renderStyles();});}
+function formatHistoryTime(value){
+  var date=new Date((Number(value)||0)*1000);if(!Number(value)||isNaN(date.getTime()))return '';
+  return (date.getMonth()+1)+'月'+date.getDate()+'日 '+String(date.getHours()).padStart(2,'0')+':'+String(date.getMinutes()).padStart(2,'0');
+}
+function historyStyle(value){
+  var item=(styles.length?styles:fallbackStyles).find(function(row){return row.id===value;});
+  return item?item.label:(value==='auto'?'AI 自动推荐':value||'AI 自动推荐');
+}
+function renderHistory(data){
+  historyItems=data.items||[];historyPage=Number(data.page)||1;historyPages=Number(data.pages)||1;
+  $('historyCount').textContent=(Number(data.total)||0)+' 条';
+  $('historyPage').textContent=historyPage+' / '+historyPages;
+  $('historyPrev').disabled=!data.has_prev;$('historyNext').disabled=!data.has_next;
+  if(!historyItems.length){$('historyList').innerHTML='<div class="state"><b>还没有剪辑作品</b>完成第一条一键剪辑后会显示在这里</div>';return;}
+  var statusNames={done:'已完成',running:'生成中',pending:'排队中',queued:'排队中',error:'失败',failed:'失败',canceled:'已取消'};
+  $('historyList').innerHTML=historyItems.map(function(item){
+    var result=item.result||{},status=String(item.status||'pending').toLowerCase(),title=result.text||('一键剪辑任务 #'+item.job_id);
+    return '<button type="button" class="history-card" data-history="'+item.job_id+'"><span class="history-thumb" data-history-cover="'+item.job_id+'"></span><span class="history-copy"><b>'+esc(title)+'</b><span>'+esc(historyStyle(item.style_id||result.style_id))+' · '+esc(formatHistoryTime(item.created_at))+(result.duration?' · '+duration(result.duration):'')+'</span></span><em class="history-status '+esc(status)+'">'+esc(statusNames[status]||item.message||status)+'</em></button>';
+  }).join('');
+  $('historyList').querySelectorAll('[data-history]').forEach(function(btn){btn.onclick=function(){openHistory(Number(btn.getAttribute('data-history')));};});
+  historyItems.forEach(function(item){var result=item.result||{},cover=result.image_url||(result.image_file?'/api/gen/file/'+result.image_file:'');var holder=document.querySelector('[data-history-cover="'+item.job_id+'"]');if(!holder||!cover)return;blobUrl(cover).then(function(src){if(!holder.isConnected)return;var img=document.createElement('img');img.className='history-thumb';img.src=src;holder.replaceWith(img);}).catch(function(){});});
+}
+function loadHistory(page){
+  page=Math.max(1,Number(page)||1);
+  api(fresh('/api/v1/edit-jobs?page='+page+'&page_size=10'),{cache:'no-store'}).then(renderHistory).catch(function(e){$('historyList').innerHTML='<div class="state"><b>剪辑记录读取失败</b>'+esc(e.message)+'</div>';});
+}
+function openHistory(jobId){
+  var item=historyItems.find(function(row){return Number(row.job_id)===Number(jobId);});
+  if(!item)return;
+  if(item.status!=='done'){toast(item.error||item.message||(item.status==='running'?'任务仍在生成中':'该任务暂时没有可播放成片'));return;}
+  api('/api/v1/edit-jobs/'+jobId+'/result',{cache:'no-store'}).then(function(data){
+    var result=data.result||{};resultUrl=result.video_url||'';resultCoverUrl=result.image_url||(result.image_file?'/api/gen/file/'+result.image_file:'');
+    if(!resultUrl){toast('该作品暂时没有可用成片');return;}
+    $('resultActions').classList.add('show');showResult(resultUrl,false,resultCoverUrl);loadResultDetails(jobId);
+    document.querySelector('.side').scrollIntoView({behavior:'smooth',block:'start'});
+  }).catch(function(e){toast(e.message);});
+}
 function sourceCover(item){return item.image_url||(item.image_file?'/api/gen/file/'+item.image_file:'');}
 function renderSources(){
   $('sourceCount').textContent=sources.length+' 条可用';
@@ -243,7 +291,7 @@ function submit(){
   $('generateBtn').disabled=true;$('generateBtn').textContent='正在提交…';$('resultActions').classList.remove('show');
   var key='ai-edit-v2-'+selectedSource.id+'-'+Date.now()+'-'+Math.random().toString(16).slice(2);
   api('/api/v1/edit-jobs',{method:'POST',headers:{'Idempotency-Key':key},json:{source_video_asset_id:selectedSource.id,style_id:styleId,materials:refs,product_facts:productFacts()}}).then(function(d){
-    currentJob=Number(d.job_id);lastFailedJob=0;saveActive();setBilling(d.billing_state);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();
+    currentJob=Number(d.job_id);lastFailedJob=0;saveActive();setBilling(d.billing_state);loadHistory(1);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();
   }).catch(function(e){$('generateBtn').disabled=false;$('generateBtn').textContent='生成一键剪辑 · 30 点';toast(e.message);});
 }
 function poll(){
@@ -252,10 +300,10 @@ function poll(){
     if(job.status==='done'){
       var finishedJob=currentJob;
       resultUrl=job.result&&job.result.video_url||'';resultCoverUrl=job.result&&(job.result.image_url||(job.result.image_file?'/api/gen/file/'+job.result.image_file:''))||'';
-      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false,resultCoverUrl);loadResultDetails(finishedJob);toast('一键剪辑完成，成片和封面已保存');return;
+      currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='再剪一条 · 30 点';$('retryBtn').style.display='none';$('resultActions').classList.add('show');loadHistory(1);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();if(resultUrl)showResult(resultUrl,false,resultCoverUrl);loadResultDetails(finishedJob);toast('一键剪辑完成，成片和封面已保存');return;
     }
     if(['error','failed','canceled'].indexOf(job.status)>=0){
-      lastFailedJob=currentJob;currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='重新创建 · 30 点';$('retryBtn').style.display='block';$('resultActions').classList.add('show');if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();toast(job.error||'任务未完成，点数已释放');return;
+      lastFailedJob=currentJob;currentJob=0;localStorage.removeItem('hq_active_ai_edit_job');$('generateBtn').disabled=false;$('generateBtn').textContent='重新创建 · 30 点';$('retryBtn').style.display='block';$('resultActions').classList.add('show');loadHistory(1);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();toast(job.error||'任务未完成，点数已释放');return;
     }
     setTimeout(poll,1500);
   }).catch(function(){setTimeout(poll,3000);});
@@ -279,10 +327,12 @@ function resume(){
 }
 $('materialInput').onchange=function(){uploadFiles(this.files);this.value='';};
 $('generateBtn').onclick=submit;$('retryBtn').onclick=retryJob;
+$('historyPrev').onclick=function(){if(historyPage>1)loadHistory(historyPage-1);};
+$('historyNext').onclick=function(){if(historyPage<historyPages)loadHistory(historyPage+1);};
 $('playResult').onclick=function(){if(resultUrl)showResult(resultUrl,true,resultCoverUrl);};
 $('downloadResult').onclick=function(e){e.preventDefault();download(resultUrl,'huangque-ai-edit.mp4');};
 window.addEventListener('beforeunload',revokeAll);
-resume();loadStyles();loadSources();loadMaterials();renderStyles();
+resume();loadStyles();loadSources();loadMaterials();loadHistory(1);renderStyles();
 })();
 </script>
 </body>

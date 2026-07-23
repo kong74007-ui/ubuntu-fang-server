@@ -376,6 +376,14 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("loadResultDetails(finishedJob)", PAGE)
         self.assertIn("material_breakdown", PAGE)
 
+    def test_paginated_edit_history_can_restore_completed_results(self):
+        self.assertIn('id="historyList"', PAGE)
+        self.assertIn("/api/v1/edit-jobs?page=", PAGE)
+        self.assertIn("page_size=10", PAGE)
+        self.assertIn("function openHistory(jobId)", PAGE)
+        self.assertIn("'/result'", PAGE)
+        self.assertIn("loadHistory(1)", PAGE)
+
 
 class AiEditStoreTests(unittest.TestCase):
     def setUp(self):
@@ -426,6 +434,29 @@ class AiEditStoreTests(unittest.TestCase):
         job = ai_edit_store.public_job(104, "fang")
         self.assertEqual(job["provider_usage"]["asr"]["audio_seconds"], 12)
         self.assertEqual(job["cost_breakdown"]["billable_points"], 30)
+
+    def test_job_history_is_paginated_and_keeps_result_compact(self):
+        for job_id in range(201, 213):
+            ai_edit_store.create_job(
+                job_id, "fang",
+                {"source_video_asset_id": job_id, "style_id": "content_first", "materials": []},
+                30,
+            )
+            ai_edit_store.mark_done(job_id, {
+                "video_url": "https://example.invalid/%d.mp4" % job_id,
+                "image_url": "https://example.invalid/%d.jpg" % job_id,
+                "text": "作品 %d" % job_id,
+                "timeline": {"scenes": [{"id": "large-field"}]},
+            })
+        first = ai_edit_store.list_jobs("fang", page=1, page_size=10)
+        second = ai_edit_store.list_jobs("fang", page=2, page_size=10)
+        self.assertEqual(first["total"], 12)
+        self.assertEqual(first["pages"], 2)
+        self.assertEqual(len(first["items"]), 10)
+        self.assertTrue(first["has_next"])
+        self.assertEqual(first["items"][0]["job_id"], 212)
+        self.assertNotIn("timeline", first["items"][0]["result"])
+        self.assertEqual(second["items"][-1]["job_id"], 201)
 
 
 if __name__ == "__main__":

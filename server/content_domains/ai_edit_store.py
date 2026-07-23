@@ -672,3 +672,53 @@ def public_job(job_id, username, include_timeline=False):
         for material in job_materials(job_id, username)
     ]
     return item
+
+
+def list_jobs(username, page=1, page_size=10):
+    """Return a compact, paginated history for one user's editor jobs.
+
+    ``result_json`` contains the full timeline, which can be large.  The
+    history endpoint deliberately exposes only the fields needed to render a
+    card; callers fetch ``/result`` when a user opens one item.
+    """
+    init_db()
+    page = max(1, int(page or 1))
+    page_size = max(1, min(50, int(page_size or 10)))
+    offset = (page - 1) * page_size
+    with closing(_db()) as c:
+        total = int(c.execute(
+            "SELECT COUNT(*) FROM edit_jobs WHERE username=?", (username,)
+        ).fetchone()[0])
+        rows = c.execute(
+            """SELECT job_id,source_video_asset_id,style_id,status,stage,progress,
+                      message,error,billing_state,result_json,
+                      warning_codes_json,created_at,updated_at
+               FROM edit_jobs WHERE username=?
+               ORDER BY job_id DESC LIMIT ? OFFSET ?""",
+            (username, page_size, offset),
+        ).fetchall()
+    result_fields = {
+        "video_url", "video_file", "image_url", "image_file", "text", "duration",
+        "size_bytes", "result_version", "style_id", "scene_count",
+        "material_count", "material_breakdown",
+    }
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            raw_result = json.loads(item.pop("result_json") or "{}")
+        except Exception:
+            raw_result = {}
+        item["result"] = {
+            key: raw_result.get(key) for key in result_fields if raw_result.get(key) is not None
+        }
+        try:
+            item["warning_codes"] = json.loads(item.pop("warning_codes_json") or "[]")
+        except Exception:
+            item["warning_codes"] = []
+        items.append(item)
+    pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "items": items, "total": total, "page": page, "page_size": page_size,
+        "pages": pages, "has_prev": page > 1, "has_next": page < pages,
+    }

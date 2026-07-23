@@ -300,6 +300,24 @@ def handle_get(handler, path):
             handler._send(400, {"detail": str(exc)[:180]})
         return True
 
+    if path == "/api/v1/edit-jobs":
+        user = core.verify(handler._token())
+        if not user:
+            handler._send(401, {"detail": "未登录"})
+            return True
+        from . import ai_edit_store
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        try:
+            page = int((query.get("page") or ["1"])[0])
+            page_size = int((query.get("page_size") or ["10"])[0])
+            handler._send(200, ai_edit_store.list_jobs(
+                user["username"], page=page, page_size=page_size))
+        except (TypeError, ValueError):
+            handler._send(400, {"detail": "分页参数无效"})
+        except Exception as exc:
+            handler._send(500, {"detail": str(exc)[:180]})
+        return True
+
     match = re.fullmatch(r"/api/v1/edit-assets/(\d+)/content", path)
     if match:
         user = core.verify(handler._token())
