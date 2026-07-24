@@ -395,13 +395,11 @@ def check_clone_status(username, slot_id):
             result["clone_error"] = current["clone_error"]
         return result
     if not cosyvoice.enabled():
-        raise ValueError("声音复刻仅支持 CosyVoice，当前未配置 DASHSCOPE_API_KEY")
-    # CosyVoice：provider_voice 是 CosyVoice voice_id 就查询其训练状态。
+        return {"status": "failed", "clone_error": "声音复刻服务暂不可用"}
+    # provider_voice 只有在后台复刻完成交接后才会替换成真实 CosyVoice voice_id。
+    # 状态查询必须绑定槽位当前 voice_id，不能读取同槽位的旧音色行。
     if cosyvoice.enabled():
-        with closing(adb()) as c:
-            pv = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
-                ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
-        provider_voice = (pv["provider_voice"] if pv else "") or ""
+        provider_voice = (voice["provider_voice"] if voice else "") or ""
         if provider_voice.startswith(cosyvoice.CLONE_MODEL):
             if slot["status"] == "failed":
                 return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
