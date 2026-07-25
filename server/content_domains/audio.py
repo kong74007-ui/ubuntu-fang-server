@@ -611,22 +611,14 @@ def clone_vip_voice_background(username, payload):
             except Exception:
                 pass
 
-def prepare_clone_audio(audio_b64, audio_format):
-    raw = base64.b64decode(audio_b64)
-    safe_format = _clone_audio_format(audio_format)
-    if safe_format not in ALLOWED_CLONE_AUDIO_FORMATS:
-        raise ValueError("样音仅支持 MP3、16-bit WAV、M4A")
-    if len(raw) > CLONE_AUDIO_MAX_BYTES:
-        raise ValueError("样音文件不能超过 10MB")
-    src = _out_path("audio/clone_probe_%s.%s" % (uuid.uuid4().hex, safe_format))
-    src.write_bytes(raw)
+def _probe_clone_audio(path):
     cmd = [
         "ffprobe", "-v", "error",
         "-select_streams", "a:0",
         "-show_entries", "stream=codec_name,sample_rate,bits_per_sample",
         "-show_entries", "format=duration,format_name",
         "-of", "json",
-        str(src),
+        str(path),
     ]
     try:
         proc = subprocess.run(
@@ -636,12 +628,6 @@ def prepare_clone_audio(audio_b64, audio_format):
         probe = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
     except Exception as e:
         raise ValueError("无法读取样音，请确认文件未损坏且格式正确") from e
-    finally:
-        try:
-            if src.exists():
-                src.unlink()
-        except Exception:
-            pass
     streams = probe.get("streams") or []
     stream = streams[0] if streams else {}
     try:
@@ -651,19 +637,63 @@ def prepare_clone_audio(audio_b64, audio_format):
     except (TypeError, ValueError):
         raise ValueError("无法读取样音参数，请重新选择音频")
     codec_name = str(stream.get("codec_name") or "").lower()
-    if duration < CLONE_AUDIO_MIN_SECONDS:
-        raise ValueError("样音至少需要 5 秒连续清晰人声")
-    if duration > CLONE_AUDIO_MAX_SECONDS:
-        raise ValueError("样音最长 60 秒，请裁剪后重新上传")
-    if sample_rate < 16000:
-        raise ValueError("样音采样率不能低于 16kHz")
-    if safe_format == "wav" and (codec_name != "pcm_s16le" or bits_per_sample != 16):
-        raise ValueError("WAV 样音必须为 16-bit PCM")
-    if safe_format == "mp3" and codec_name != "mp3":
-        raise ValueError("文件扩展名与 MP3 音频内容不一致")
-    if safe_format == "m4a" and codec_name not in {"aac", "alac"}:
-        raise ValueError("M4A 样音必须使用 AAC 或 ALAC 音频编码")
-    return base64.b64encode(raw).decode(), safe_format
+    return duration, sample_rate, bits_per_sample, codec_name
+
+
+def prepare_clone_audio(audio_b64, audio_format):
+    raw = base64.b64decode(audio_b64)
+    safe_format = _clone_audio_format(audio_format)
+    if safe_format not in ALLOWED_CLONE_AUDIO_FORMATS:
+        raise ValueError("样音仅支持 MP3、16-bit WAV、M4A")
+    if len(raw) > CLONE_AUDIO_MAX_BYTES:
+        raise ValueError("样音文件不能超过 10MB")
+    token = uuid.uuid4().hex
+    src = _out_path("audio/clone_probe_%s.%s" % (token, safe_format))
+    trimmed = _out_path("audio/clone_trim_%s.%s" % (token, safe_format))
+    src.write_bytes(raw)
+    try:
+        duration, sample_rate, bits_per_sample, codec_name = _probe_clone_audio(src)
+        if duration < CLONE_AUDIO_MIN_SECONDS:
+            raise ValueError("样音至少需要 5 秒连续清晰人声")
+        if sample_rate < 16000:
+            raise ValueError("样音采样率不能低于 16kHz")
+        if safe_format == "wav" and (codec_name != "pcm_s16le" or bits_per_sample != 16):
+            raise ValueError("WAV 样音必须为 16-bit PCM")
+        if safe_format == "mp3" and codec_name != "mp3":
+            raise ValueError("文件扩展名与 MP3 音频内容不一致")
+        if safe_format == "m4a" and codec_name not in {"aac", "alac"}:
+            raise ValueError("M4A 样音必须使用 AAC 或 ALAC 音频编码")
+        data = raw
+        if duration > CLONE_AUDIO_MAX_SECONDS:
+            cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(src),
+                "-map", "0:a:0",
+                "-t", "59",
+                "-c:a", "copy",
+                str(trimmed),
+            ]
+            try:
+                subprocess.run(
+                    cmd, check=True, timeout=120,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                trimmed_duration, _, _, _ = _probe_clone_audio(trimmed)
+                if not CLONE_AUDIO_MIN_SECONDS <= trimmed_duration <= CLONE_AUDIO_MAX_SECONDS:
+                    raise ValueError("自动裁剪后的样音时长异常")
+                data = trimmed.read_bytes()
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError("样音自动裁剪失败，请裁剪到 60 秒以内后重试") from e
+        return base64.b64encode(data).decode(), safe_format
+    finally:
+        for path in (src, trimmed):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
 
 CLONE_PREVIEW_TEXT = "你好，这是我的专属复刻音色试听。声音清晰自然，适合用于短视频口播和文案配音。"
 

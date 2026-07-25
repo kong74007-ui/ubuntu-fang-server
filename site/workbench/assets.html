@@ -1334,7 +1334,7 @@
       +'<button type="button" data-close-clone style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
       +'<div style="padding:20px;display:flex;flex-direction:column;gap:16px;">'
       +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="cloneVoiceName" maxlength="24" placeholder="例如：我的门店口播音色" style="height:40px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
-      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u63a8\u8350\u4e0a\u4f2010-20\u79d2\u6e05\u6670\u4eba\u58f0</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">\u4ec5\u652f\u6301 MP3\u300116-bit WAV\u3001M4A\uff0c\u6700\u957f60\u79d2\u3001\u4e0d\u8d85\u8fc710MB</div></div></label>'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u63a8\u8350\u4e0a\u4f2010-20\u79d2\u6e05\u6670\u4eba\u58f0</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">\u4ec5\u652f\u6301 MP3\u300116-bit WAV\u3001M4A\uff1b\u8d85\u8fc760\u79d2\u81ea\u52a8\u4fdd\u7559\u524d59\u79d2</div></div></label>'
       +'<audio id="cloneVoicePreview" controls style="display:none;width:100%;height:36px;"></audio>'
       +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
       +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
@@ -1429,9 +1429,8 @@
       note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u68c0\u67e5\u97f3\u9891\u65f6\u957f...';
       getAudioDuration(f).then(function(sec){
         if(sec>60){
-          setCloneBusy(false); note.style.color='#f4708a';
-          note.textContent='\u6837\u97f3\u6700\u957f60\u79d2\uff0c\u8bf7\u88c1\u526a\u540e\u91cd\u65b0\u4e0a\u4f20';
-          return;
+          note.style.color='#e7b24c';
+          note.textContent='\u97f3\u9891\u8d85\u8fc760\u79d2\uff0c\u5c06\u81ea\u52a8\u4fdd\u7559\u524d59\u79d2\u5e76\u4fdd\u6301\u539f\u683c\u5f0f...';
         }
         if(sec<5){
           setCloneBusy(false); note.style.color='#f4708a';
