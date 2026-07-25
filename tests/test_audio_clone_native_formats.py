@@ -60,7 +60,6 @@ class NativeCloneAudioTest(unittest.TestCase):
     def test_rejects_invalid_duration_sample_rate_and_wav_depth(self):
         cases = [
             ("mp3", self._probe("mp3", duration=4.9), "至少需要 5 秒"),
-            ("mp3", self._probe("mp3", duration=60.1), "最长 60 秒"),
             ("mp3", self._probe("mp3", sample_rate=8000), "不能低于 16kHz"),
             ("wav", self._probe("pcm_s24le", bits=24), "必须为 16-bit PCM"),
         ]
@@ -73,6 +72,38 @@ class NativeCloneAudioTest(unittest.TestCase):
                         patch.object(audio.subprocess, "run", return_value=probe):
                     with self.assertRaisesRegex(ValueError, message):
                         audio.prepare_clone_audio(raw, audio_format)
+
+    def test_long_audio_is_stream_copied_to_59_seconds(self):
+        raw = base64.b64encode(b"long-original-mp3").decode()
+        trimmed_bytes = b"trimmed-mp3-without-reencoding"
+        calls = []
+        probes = iter([
+            self._probe("mp3", duration=77),
+            self._probe("mp3", duration=59),
+        ])
+        with tempfile.TemporaryDirectory() as td:
+            src = pathlib.Path(td) / "source.mp3"
+            trimmed = pathlib.Path(td) / "trimmed.mp3"
+
+            def run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd[0] == "ffprobe":
+                    return next(probes)
+                trimmed.write_bytes(trimmed_bytes)
+                return SimpleNamespace(stdout=b"")
+
+            with patch.object(audio, "_out_path", side_effect=[src, trimmed]), \
+                    patch.object(audio.subprocess, "run", side_effect=run):
+                result_b64, result_format = audio.prepare_clone_audio(raw, "mp3")
+
+            self.assertFalse(src.exists())
+            self.assertFalse(trimmed.exists())
+        self.assertEqual(trimmed_bytes, base64.b64decode(result_b64))
+        self.assertEqual("mp3", result_format)
+        ffmpeg_cmd = next(cmd for cmd in calls if cmd[0] == "ffmpeg")
+        self.assertEqual("59", ffmpeg_cmd[ffmpeg_cmd.index("-t") + 1])
+        self.assertEqual("copy", ffmpeg_cmd[ffmpeg_cmd.index("-c:a") + 1])
+        self.assertTrue(ffmpeg_cmd[-1].endswith(".mp3"))
 
     def test_upload_uses_original_extension(self):
         raw = base64.b64encode(b"original-m4a").decode()
@@ -118,11 +149,14 @@ class NativeCloneAudioFrontendTest(unittest.TestCase):
         self.assertNotIn("trimAudioTo60(file)", submit)
         self.assertNotIn("audio_format:'wav'", submit)
 
-    def test_duration_and_size_are_rejected_not_converted(self):
+    def test_duration_and_size_handling(self):
         self.assertIn("if(f.size>10*1024*1024)", self.html)
         self.assertIn("if(sec>60)", self.html)
         self.assertIn("if(sec<5)", self.html)
-        self.assertNotIn("系统将自动截取前60秒并压缩后复刻", self.html)
+        over_limit = self.html.split("if(sec>60){", 1)[1]
+        over_limit = over_limit.split("if(sec<5){", 1)[0]
+        self.assertNotIn("return;", over_limit)
+        self.assertIn(r"\u81ea\u52a8\u4fdd\u7559\u524d59\u79d2", over_limit)
 
 
 if __name__ == "__main__":
