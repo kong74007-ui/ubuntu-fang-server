@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 class ContentDomainTests(unittest.TestCase):
@@ -291,7 +292,7 @@ class ContentDomainTests(unittest.TestCase):
                 before = self._slot_snapshot(test_adb, "fang", "S_demo")
                 cases = [
                     ({"slot_id": "S_demo", "audio_format": "wav"}, 400, "请先上传样音"),
-                    ({"slot_id": "S_demo", "audio": "YQ==", "audio_format": "exe"}, 400, "audio_format 仅支持"),
+                    ({"slot_id": "S_demo", "audio": "YQ==", "audio_format": "exe"}, 400, "样音仅支持"),
                     ({"slot_id": "S_missing", "audio": "YQ==", "audio_format": "wav"}, 404, "音色槽位不存在"),
                 ]
                 for payload, status, msg in cases:
@@ -337,14 +338,18 @@ class ContentDomainTests(unittest.TestCase):
                         (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
                         VALUES('fang','S_demo','active',NULL,0,100,100)""")
                     c.commit()
-                payload = audio.validate_clone_vip_payload("fang", {
-                    "slot_id": " S_demo ",
-                    "audio": "data:audio/wav;base64," + base64.b64encode(b'audio').decode(),
-                    "audio_format": ".WAV",
-                })
+                encoded = base64.b64encode(b'audio').decode()
+                with patch.object(audio, "prepare_clone_audio",
+                                  return_value=(encoded, "wav")):
+                    payload = audio.validate_clone_vip_payload("fang", {
+                        "slot_id": " S_demo ",
+                        "audio": "data:audio/wav;base64," + encoded,
+                        "audio_format": ".WAV",
+                    })
                 self.assertEqual(payload["slot_id"], "S_demo")
-                self.assertEqual(payload["audio"], base64.b64encode(b'audio').decode())
+                self.assertEqual(payload["audio"], encoded)
                 self.assertEqual(payload["audio_format"], "wav")
+                self.assertTrue(payload["_audio_validated"])
             finally:
                 audio.adb = original_adb
 

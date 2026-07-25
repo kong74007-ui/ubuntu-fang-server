@@ -1293,48 +1293,6 @@
       a.src=url;
     });
   }
-  function encodeWav(buffer){
-    var ch=buffer.numberOfChannels, rate=buffer.sampleRate, len=buffer.length, bytes=44+len*ch*2;
-    var out=new ArrayBuffer(bytes), view=new DataView(out), pos=0;
-    function str(s){ for(var i=0;i<s.length;i++) view.setUint8(pos++,s.charCodeAt(i)); }
-    str('RIFF'); view.setUint32(pos,bytes-8,true); pos+=4; str('WAVE'); str('fmt ');
-    view.setUint32(pos,16,true); pos+=4; view.setUint16(pos,1,true); pos+=2; view.setUint16(pos,ch,true); pos+=2;
-    view.setUint32(pos,rate,true); pos+=4; view.setUint32(pos,rate*ch*2,true); pos+=4; view.setUint16(pos,ch*2,true); pos+=2; view.setUint16(pos,16,true); pos+=2;
-    str('data'); view.setUint32(pos,len*ch*2,true); pos+=4;
-    var data=[]; for(var c=0;c<ch;c++) data.push(buffer.getChannelData(c));
-    for(var i=0;i<len;i++) for(var c=0;c<ch;c++){ var v=Math.max(-1,Math.min(1,data[c][i])); view.setInt16(pos,v<0?v*0x8000:v*0x7fff,true); pos+=2; }
-    return new Blob([out],{type:'audio/wav'});
-  }
-  function trimAudioTo60(file){
-    return file.arrayBuffer().then(function(buf){
-      var Ctx=window.AudioContext||window.webkitAudioContext, ctx=new Ctx();
-      return ctx.decodeAudioData(buf).then(function(audio){
-        var len=Math.min(audio.length, Math.floor(audio.sampleRate*60));
-        var out=ctx.createBuffer(1, len, audio.sampleRate);
-        var mono=out.getChannelData(0);
-        for(var i=0;i<len;i++){
-          var sum=0;
-          for(var c=0;c<audio.numberOfChannels;c++) sum+=audio.getChannelData(c)[i]||0;
-          mono[i]=sum/audio.numberOfChannels;
-        }
-        if(ctx.close) ctx.close();
-        return new File([encodeWav(out)], (file.name.replace(/\.[^.]+$/,'')||'sample')+'-60s.wav', {type:'audio/wav'});
-      });
-    });
-  }
-  function confirmShortAudio(){
-    return new Promise(function(resolve){
-      var old=document.getElementById('shortAudioModal'); if(old) old.remove();
-      var wrap=document.createElement('div'); wrap.id='shortAudioModal';
-      wrap.style.cssText='position:fixed;inset:0;z-index:11000;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(3,7,15,.72);backdrop-filter:blur(10px);';
-      wrap.innerHTML='<div style="width:min(420px,100%);border:1px solid rgba(148,164,187,.16);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.98),rgba(8,13,24,.98));box-shadow:0 28px 80px rgba(0,0,0,.48);overflow:hidden;"><div style="padding:20px;border-bottom:1px solid rgba(148,164,187,.12);"><div style="font-size:17px;font-weight:700;color:#eaf1fa;">\u6837\u97f3\u65f6\u957f\u504f\u77ed</div><div style="margin-top:8px;font-size:13px;color:#94a4bb;line-height:1.7;">\u97f3\u9891\u65f6\u957f\u5927\u4e8e60s\uff0c\u6548\u679c\u6700\u4f73</div></div><div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;"><button type="button" data-short-cancel style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" data-short-ok style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">\u7ee7\u7eed\u590d\u523b</button></div></div>';
-      document.body.appendChild(wrap);
-      function done(v){ wrap.remove(); resolve(v); }
-      wrap.querySelector('[data-short-cancel]').onclick=function(){ done(false); };
-      wrap.querySelector('[data-short-ok]').onclick=function(){ done(true); };
-      wrap.addEventListener('click',function(e){ if(e.target===wrap) done(false); });
-    });
-  }
   function pollCloneReady(slotId, note, tries, onReady, currentSlot){
     tries=tries||0;
     fetch(freshUrl('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
@@ -1376,7 +1334,7 @@
       +'<button type="button" data-close-clone style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
       +'<div style="padding:20px;display:flex;flex-direction:column;gap:16px;">'
       +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="cloneVoiceName" maxlength="24" placeholder="例如：我的门店口播音色" style="height:40px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
-      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept="audio/*" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u9009\u62e960\u79d2\u4ee5\u4e0a\u7684\u97f3\u9891\u6548\u679c\u66f4\u597d</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">支持 mp3、wav、m4a，建议 10-60 秒清晰人声</div></div></label>'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u63a8\u8350\u4e0a\u4f2010-20\u79d2\u6e05\u6670\u4eba\u58f0</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">\u4ec5\u652f\u6301 MP3\u300116-bit WAV\u3001M4A\uff0c\u6700\u957f60\u79d2\u3001\u4e0d\u8d85\u8fc710MB</div></div></label>'
       +'<audio id="cloneVoicePreview" controls style="display:none;width:100%;height:36px;"></audio>'
       +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
       +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
@@ -1408,6 +1366,19 @@
     picker.onclick=function(e){ e.stopPropagation(); };
     picker.onchange=function(){
       var f=picker.files&&picker.files[0]; if(!f) return;
+      var ext=(f.name.split('.').pop()||'').toLowerCase();
+      if(['mp3','wav','m4a'].indexOf(ext)<0){
+        picker.value=''; preview.style.display='none';
+        fileName.textContent='\u4ec5\u652f\u6301 MP3\u300116-bit WAV\u3001M4A';
+        note.style.color='#f4708a'; note.textContent='\u6587\u4ef6\u683c\u5f0f\u4e0d\u652f\u6301\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9';
+        return;
+      }
+      if(f.size>10*1024*1024){
+        picker.value=''; preview.style.display='none';
+        fileName.textContent='\u6837\u97f3\u6587\u4ef6\u4e0d\u80fd\u8d85\u8fc710MB';
+        note.style.color='#f4708a'; note.textContent='\u8bf7\u9009\u62e910MB\u4ee5\u5185\u7684\u6837\u97f3';
+        return;
+      }
       fileName.textContent=f.name;
       preview.src=URL.createObjectURL(f);
       preview.style.display='block';
@@ -1420,11 +1391,10 @@
     };
     function submitVipFile(file, ext){
       setCloneBusy(true); note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5904\u7406\u6837\u97f3\u5e76\u63d0\u4ea4VIP\u590d\u523b...';
-      trimAudioTo60(file).then(function(sendFile){
       var reader=new FileReader();
       reader.onload=function(){
         var data=String(reader.result||''), audio=data.indexOf(',')>=0?data.split(',').pop():data;
-        fetch('/api/gen/audio/clone-vip',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:(voiceName&&voiceName.value)||'',audio:audio,audio_format:'wav'})})
+        fetch('/api/gen/audio/clone-vip',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:(voiceName&&voiceName.value)||'',audio:audio,audio_format:ext})})
           .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
           .then(function(res){
             if(res.status===401){ HQ.login(); return; }
@@ -1448,10 +1418,7 @@
           });
       };
       reader.onerror=function(){ setCloneBusy(false); note.style.color='#f4708a'; note.textContent='\u6837\u97f3\u8bfb\u53d6\u5931\u8d25'; };
-      reader.readAsDataURL(sendFile);
-      }).catch(function(e){
-        setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'\u6837\u97f3\u5904\u7406\u5931\u8d25';
-      });
+      reader.readAsDataURL(file);
     }
     vipBtn.onclick=function(){
       if(cloneSubmitting) return;
@@ -1462,11 +1429,14 @@
       note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u68c0\u67e5\u97f3\u9891\u65f6\u957f...';
       getAudioDuration(f).then(function(sec){
         if(sec>60){
-          note.textContent='\u97f3\u9891\u8d85\u8fc760\u79d2\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u622a\u53d6\u524d60\u79d2\u5e76\u538b\u7f29\u540e\u590d\u523b...';
-          return submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
+          setCloneBusy(false); note.style.color='#f4708a';
+          note.textContent='\u6837\u97f3\u6700\u957f60\u79d2\uff0c\u8bf7\u88c1\u526a\u540e\u91cd\u65b0\u4e0a\u4f20';
+          return;
         }
-        if(sec<40){
-          return confirmShortAudio().then(function(ok){ if(ok) submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase()); else { setCloneBusy(false); note.textContent='\u5df2\u53d6\u6d88VIP\u590d\u523b'; } });
+        if(sec<5){
+          setCloneBusy(false); note.style.color='#f4708a';
+          note.textContent='\u6837\u97f3\u81f3\u5c11\u9700\u89815\u79d2\u8fde\u7eed\u6e05\u6670\u4eba\u58f0';
+          return;
         }
         submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
       }).catch(function(e){

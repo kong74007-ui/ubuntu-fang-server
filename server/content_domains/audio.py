@@ -492,7 +492,10 @@ def check_clone_status(username, slot_id):
         return {"status": "failed", "doubao_status": st}
     return {"status": "training", "doubao_status": st}
 
-ALLOWED_CLONE_AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "ogg"}
+ALLOWED_CLONE_AUDIO_FORMATS = {"mp3", "wav", "m4a"}
+CLONE_AUDIO_MAX_BYTES = 10 * 1024 * 1024
+CLONE_AUDIO_MIN_SECONDS = 5.0
+CLONE_AUDIO_MAX_SECONDS = 60.0
 
 class CloneVipValidationError(ValueError):
     def __init__(self, status, detail):
@@ -521,11 +524,13 @@ def validate_clone_vip_payload(username, payload):
         raise CloneVipValidationError(400, "请先上传样音")
     audio_format = _clone_audio_format(payload.get("audio_format"))
     if audio_format not in ALLOWED_CLONE_AUDIO_FORMATS:
-        raise CloneVipValidationError(400, "audio_format 仅支持 mp3/wav/m4a/aac/ogg")
+        raise CloneVipValidationError(400, "样音仅支持 MP3、16-bit WAV、M4A")
     try:
-        base64.b64decode(audio_b64, validate=True)
+        raw_audio = base64.b64decode(audio_b64, validate=True)
     except Exception:
         raise CloneVipValidationError(400, "样音不是有效的 base64 音频")
+    if len(raw_audio) > CLONE_AUDIO_MAX_BYTES:
+        raise CloneVipValidationError(400, "样音文件不能超过 10MB")
     with closing(adb()) as c:
         slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count,
                 updated_at, clone_upload_at
@@ -542,10 +547,15 @@ def validate_clone_vip_payload(username, payload):
     reclone_count = int(slot["reclone_count"] or 0)
     if is_reclone and reclone_count >= VOICE_RECLONE_MAX:
         raise CloneVipValidationError(409, "该槽位已达复刻上限")
+    try:
+        audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
+    except ValueError as e:
+        raise CloneVipValidationError(400, str(e)) from e
     checked = dict(payload)
     checked["slot_id"] = slot_id
     checked["audio"] = audio_b64
     checked["audio_format"] = audio_format
+    checked["_audio_validated"] = True
     return checked
 
 def mark_clone_training(username, slot_id, name):
@@ -603,35 +613,57 @@ def clone_vip_voice_background(username, payload):
 
 def prepare_clone_audio(audio_b64, audio_format):
     raw = base64.b64decode(audio_b64)
-    ts = int(time.time() * 1000)
-    safe_format = re.sub(r"[^a-zA-Z0-9]", "", audio_format or "mp3")[:8] or "mp3"
-    src = _out_path("audio/clone_src_%d.%s" % (ts, safe_format))
-    dst = _out_path("audio/clone_60s_%d.mp3" % ts)
+    safe_format = _clone_audio_format(audio_format)
+    if safe_format not in ALLOWED_CLONE_AUDIO_FORMATS:
+        raise ValueError("样音仅支持 MP3、16-bit WAV、M4A")
+    if len(raw) > CLONE_AUDIO_MAX_BYTES:
+        raise ValueError("样音文件不能超过 10MB")
+    src = _out_path("audio/clone_probe_%s.%s" % (uuid.uuid4().hex, safe_format))
     src.write_bytes(raw)
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(src),
-        "-t", "60",
-        "-ac", "1",
-        "-ar", "16000",
-        "-b:a", "48k",
-        str(dst),
+        "ffprobe", "-v", "error",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,sample_rate,bits_per_sample",
+        "-show_entries", "format=duration,format_name",
+        "-of", "json",
+        str(src),
     ]
     try:
-        subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        data = dst.read_bytes()
-    except Exception:
-        data = raw
-        dst = src
+        proc = subprocess.run(
+            cmd, check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        probe = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        raise ValueError("无法读取样音，请确认文件未损坏且格式正确") from e
     finally:
         try:
-            if src.exists() and src != dst:
+            if src.exists():
                 src.unlink()
         except Exception:
             pass
-    if len(data) > 8 * 1024 * 1024:
-        raise ValueError("\u6837\u97f3\u6587\u4ef6\u8fc7\u5927\uff0c\u8bf7\u4e0a\u4f20\u66f4\u77ed\u6216\u66f4\u4f4e\u7801\u7387\u7684\u97f3\u9891")
-    return base64.b64encode(data).decode(), "mp3"
+    streams = probe.get("streams") or []
+    stream = streams[0] if streams else {}
+    try:
+        duration = float((probe.get("format") or {}).get("duration") or 0)
+        sample_rate = int(stream.get("sample_rate") or 0)
+        bits_per_sample = int(stream.get("bits_per_sample") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("无法读取样音参数，请重新选择音频")
+    codec_name = str(stream.get("codec_name") or "").lower()
+    if duration < CLONE_AUDIO_MIN_SECONDS:
+        raise ValueError("样音至少需要 5 秒连续清晰人声")
+    if duration > CLONE_AUDIO_MAX_SECONDS:
+        raise ValueError("样音最长 60 秒，请裁剪后重新上传")
+    if sample_rate < 16000:
+        raise ValueError("样音采样率不能低于 16kHz")
+    if safe_format == "wav" and (codec_name != "pcm_s16le" or bits_per_sample != 16):
+        raise ValueError("WAV 样音必须为 16-bit PCM")
+    if safe_format == "mp3" and codec_name != "mp3":
+        raise ValueError("文件扩展名与 MP3 音频内容不一致")
+    if safe_format == "m4a" and codec_name not in {"aac", "alac"}:
+        raise ValueError("M4A 样音必须使用 AAC 或 ALAC 音频编码")
+    return base64.b64encode(raw).decode(), safe_format
 
 CLONE_PREVIEW_TEXT = "你好，这是我的专属复刻音色试听。声音清晰自然，适合用于短视频口播和文案配音。"
 
@@ -689,15 +721,20 @@ def _cosy_backfill_preview_async(voice_id, username, voice_key):
             print("[cosyvoice] 试听回填落库失败: %s" % str(e)[:120], flush=True)
     threading.Thread(target=_run, name="cosy-preview-backfill", daemon=True).start()
 
-def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
-    """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
+def _clone_via_cosyvoice(username, slot_id, name, audio_b64, audio_format):
+    """CosyVoice 复刻：已校验的原始参考音频 → COS 预签名 URL
     → create_voice 拿 voice_id → 落库。voice_id 直接作为 provider_voice，合成时按它选复刻模型。
     坑位免费，所以不再走豆包那套付费 slot 校验；create_voice 同步返回，可用即 ready。"""
     if not cos.enabled():
         raise ValueError("声音复刻需要 COS 存参考音频，当前未启用 COS")
     raw = base64.b64decode(audio_b64)
-    key = "voice-clone-input/%s_%d.mp3" % (uuid.uuid4().hex, int(time.time()))
-    tmp = _out_path("audio/_cvref_%d.mp3" % int(time.time() * 1000))
+    safe_format = _clone_audio_format(audio_format)
+    if safe_format not in ALLOWED_CLONE_AUDIO_FORMATS:
+        raise ValueError("样音仅支持 MP3、16-bit WAV、M4A")
+    key = "voice-clone-input/%s_%d.%s" % (
+        uuid.uuid4().hex, int(time.time()), safe_format,
+    )
+    tmp = _out_path("audio/_cvref_%s.%s" % (uuid.uuid4().hex, safe_format))
     tmp.write_bytes(raw)
     try:
         cos.upload(str(tmp), key)
@@ -741,7 +778,7 @@ def clone_vip_voice(username, payload):
     audio_b64 = _clone_audio_b64(payload.get("audio"))
     audio_format = _clone_audio_format(payload.get("audio_format"))
     if audio_format not in ALLOWED_CLONE_AUDIO_FORMATS:
-        raise ValueError("audio_format 仅支持 mp3/wav/m4a/aac/ogg")
+        raise ValueError("样音仅支持 MP3、16-bit WAV、M4A")
     if not slot_id:
         raise ValueError("\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d")
     if not audio_b64:
@@ -753,8 +790,9 @@ def clone_vip_voice(username, payload):
             WHERE username=? AND slot_id=? AND status IN ('active','training','failed','ready')""", (username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
-    audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
-    return _clone_via_cosyvoice(username, slot_id, name, audio_b64)
+    if not payload.get("_audio_validated"):
+        audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
+    return _clone_via_cosyvoice(username, slot_id, name, audio_b64, audio_format)
     baseline_version = baseline_icl = baseline_demo = ""
     try:
         baseline = query_doubao_clone_status(slot_id)
