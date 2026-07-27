@@ -15,6 +15,7 @@ from . import ai_edit_v2_store as store
 from . import ai_edit_v2_cos as cos
 from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_pipeline as pipeline
+from . import ai_edit_v2_media as media
 from . import ai_edit_v2_feature as feature
 from . import points
 from .ai_edit_v2_schema import (
@@ -188,6 +189,11 @@ def _complete_upload(handler: Any, owner: str, upload_id: str) -> bool:
             raise ValueError("COS核验类型与上传声明不一致")
         if actual_size < 1 or actual_size > _size_limit(row):
             raise ValueError("COS核验文件容量超过限制")
+        metadata = {}
+        if row["kind"] in {"video", "audio"}:
+            metadata = media.probe_media(
+                cos.presign_get(row["cos_key"], expires=300), media_type=row["kind"]
+            )
         now = _now()
         with closing(store.open_store(store._db_path())) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -198,9 +204,12 @@ def _complete_upload(handler: Any, owner: str, upload_id: str) -> bool:
             if current["status"] != "ready":
                 conn.execute(
                     """UPDATE edit_v2_materials
-                       SET mime_type=?,size_bytes=?,etag=?,status='ready',updated_at=?
+                       SET mime_type=?,size_bytes=?,etag=?,duration_ms=?,width=?,height=?,
+                           status='ready',updated_at=?
                        WHERE id=? AND status='uploading'""",
-                    (actual_type, actual_size, verified.get("etag"), now, current["id"]),
+                    (actual_type, actual_size, verified.get("etag"),
+                     metadata.get("duration_ms"), metadata.get("width"), metadata.get("height"),
+                     now, current["id"]),
                 )
             ready = conn.execute(
                 "SELECT * FROM edit_v2_materials WHERE id=?", (current["id"],)

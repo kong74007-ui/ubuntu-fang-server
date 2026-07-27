@@ -87,6 +87,9 @@ class FakeCos:
     def presign_put(self, object_key, content_type, expires=900):
         return f"https://upload.example/{object_key}?signature=private"
 
+    def presign_get(self, object_key, expires=300):
+        return f"https://download.example/{object_key}?signature=private"
+
     def head_object(self, object_key):
         return dict(self.head)
 
@@ -114,6 +117,12 @@ class ApiTests(unittest.TestCase):
         self.fake_cos = FakeCos()
         self.cos_patch = patch.object(api, "cos", self.fake_cos)
         self.cos_patch.start()
+        self.probe_patch = patch.object(
+            api.media,
+            "probe_media",
+            return_value={"duration_ms": 42_000, "width": 1920, "height": 1080},
+        )
+        self.probe_patch.start()
         self.uuid_patch = patch.object(
             api,
             "_new_uuid",
@@ -129,6 +138,7 @@ class ApiTests(unittest.TestCase):
         self.user = {"username": "alice"}
 
     def tearDown(self):
+        self.probe_patch.stop()
         self.ready_patch.stop()
         self.points_patch.stop()
         self.uuid_patch.stop()
@@ -232,6 +242,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first["material"]["size_bytes"], 12 * MB)
         self.assertEqual(first["material"]["content_type"], "video/mp4")
         self.assertEqual(first["material"]["etag"], "verified-etag")
+        self.assertEqual(first["material"]["duration_ms"], 42_000)
+        self.assertEqual(first["material"]["width"], 1920)
+        self.assertEqual(first["material"]["height"], 1080)
         with closing(store.open_store(self.db_path)) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM edit_v2_materials WHERE upload_id=?",

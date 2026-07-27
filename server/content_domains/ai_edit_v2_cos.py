@@ -52,6 +52,15 @@ def presign_put(rel_key: str, content_type: str, expires: int = 900) -> str:
         Expired=expires, Headers={"Content-Type": content_type, "x-cos-acl": "private"})
 
 
+def presign_get(rel_key: str, expires: int = 300) -> str:
+    _require_enabled()
+    if not isinstance(expires, int) or isinstance(expires, bool) or not 1 <= expires <= 900:
+        raise ValueError("GET signature expiry must be between 1 and 900 seconds")
+    return _client().get_presigned_url(
+        Method="GET", Bucket=_BUCKET, Key=_object_key(rel_key), Expired=expires
+    )
+
+
 def head_object(rel_key: str) -> dict[str, object]:
     _require_enabled()
     response = _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
