@@ -146,6 +146,25 @@ def get_owned_job(path, username, job_id):
     return _row_dict(row)
 
 
+def get_job(path, job_id):
+    db_path = init_db(path)
+    with closing(_connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM edit_jobs WHERE job_id=?", (int(job_id),)
+        ).fetchone()
+    return _row_dict(row)
+
+
+def get_job_by_provider_id(path, provider_job_id):
+    db_path = init_db(path)
+    with closing(_connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM edit_jobs WHERE provider_job_id=?",
+            (str(provider_job_id),),
+        ).fetchone()
+    return _row_dict(row)
+
+
 def update_stage(path, job_id, stage, error_code=None, error_detail=None):
     db_path = init_db(path)
     with closing(_connect(db_path)) as connection:
@@ -225,6 +244,33 @@ def create_material(
     return _row_dict(row)
 
 
+def get_owned_material(path, username, material_id):
+    db_path = init_db(path)
+    with closing(_connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM edit_materials WHERE id=? AND username=?",
+            (str(material_id), str(username)),
+        ).fetchone()
+    return _row_dict(row)
+
+
+def list_owned_materials(path, username, kinds=("image", "video"), limit=50):
+    db_path = init_db(path)
+    allowed = tuple(str(kind) for kind in kinds if str(kind))
+    if not allowed:
+        return []
+    limit = max(1, min(100, int(limit or 50)))
+    placeholders = ",".join("?" for _ in allowed)
+    with closing(_connect(db_path)) as connection:
+        rows = connection.execute(
+            """SELECT * FROM edit_materials
+               WHERE username=? AND status='ready' AND kind IN (%s)
+               ORDER BY updated_at DESC,id DESC LIMIT ?""" % placeholders,
+            (str(username),) + allowed + (limit,),
+        ).fetchall()
+    return [_row_dict(row) for row in rows]
+
+
 def complete_material(path, material_id, username, actual_size):
     db_path = init_db(path)
     with closing(_connect(db_path)) as connection:
@@ -276,3 +322,30 @@ def confirm_hold(path, job_id):
 
 def release_hold(path, job_id):
     return _finish_hold(path, job_id, "released")
+
+
+def safe_finish_hold(path, job_id, succeeded):
+    try:
+        return confirm_hold(path, job_id) if succeeded else release_hold(path, job_id)
+    except Exception:
+        return False
+
+
+def requeue_orphaned_provider_job(path, jobs_db, job_id):
+    """有供应商任务号的孤儿任务恢复为 pending；不触碰计费 hold。"""
+    detail = get_job(path, job_id)
+    if not detail or not detail.get("provider_job_id"):
+        return False
+    with closing(_connect(pathlib.Path(jobs_db))) as connection:
+        cursor = connection.execute(
+            "UPDATE jobs SET status='pending',updated_at=? WHERE id=? AND status='running'",
+            (int(time.time()), int(job_id)),
+        )
+        connection.commit()
+    if cursor.rowcount != 1:
+        return False
+    try:
+        update_stage(path, job_id, "recovering_render")
+    except Exception:
+        pass
+    return True

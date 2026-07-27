@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import ai_edit_store, assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -197,6 +197,7 @@ TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # �
 CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
 AVATAR_JOB_WORKERS = _env_positive_int("CONTENT_AVATAR_JOB_WORKERS", 5)        # 建形象池。5 路是实测的干净档位(2026-07-12)：5并发 5/5成功、0×429、零降速(就绪中位19.7s vs 单条基线19.8s)；10并发 HeyGen 侧照样零429不降速，但【我们的出境隧道】开始丢包(1条TLS握手超时、1条提交花了57s)。所以瓶颈是隧道不是HeyGen，隧道扩容后可再往上调。串行(1)的吞吐只有144个/小时——500人集中建形象要排3.5小时，而建形象是电影化身的【入口】，堵在这里等于整个功能没法用；5路→约900个/小时，排队压到35分钟
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
+AI_EDIT_JOB_WORKERS = _env_positive_int("AI_EDIT_JOB_WORKERS", 1)            # AI智能剪辑独立池
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 3)  # 单用户果肉/豆姐/欧米视频 active 上限：别让单一渠道吃满全部任务位
@@ -226,7 +227,7 @@ CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)
 CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
-KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
+KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200, "ai_edit": 1500,
               "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
@@ -671,6 +672,7 @@ _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mo
 _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _cinematic_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # AI剧情视频队列(kind=cinematic，HeyGen，约8分钟/条)
 _avatar_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 建形象队列(kind=avatar，串行池)
+_ai_edit_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # AI智能剪辑专用队列(kind=ai_edit)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
@@ -724,6 +726,8 @@ def _pick_job_queue(kind, mode=None):
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
         return _avatar_job_queue        # 建形象，串行 1 个 worker
+    if kind == "ai_edit":
+        return _ai_edit_job_queue       # Shotstack 云渲染专用池
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
@@ -878,7 +882,8 @@ def _pending_job_scanner():
         time.sleep(30)
 
 _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
-                   _image_job_queue, _cinematic_job_queue, _avatar_job_queue)
+                   _image_job_queue, _cinematic_job_queue, _avatar_job_queue,
+                   _ai_edit_job_queue)
 
 
 def start_job_workers():
@@ -891,7 +896,8 @@ def start_job_workers():
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
                              (CINEMATIC_JOB_WORKERS, _cinematic_job_queue, "content-cinematic-worker"),
-                             (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
+                             (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker"),
+                             (AI_EDIT_JOB_WORKERS, _ai_edit_job_queue, "content-ai-edit-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
@@ -942,7 +948,7 @@ def install_signal_handlers():
 
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
-    if kind not in {"video", "tryon", "xiaole_video", "cinematic"}:
+    if kind not in {"video", "tryon", "xiaole_video", "cinematic", "ai_edit"}:
         return
     try:
         _, _, video_domain = _domains()
@@ -1015,7 +1021,7 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar", "breakdown"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar", "breakdown", "ai_edit"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1036,11 +1042,12 @@ def run_job(job_id):
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
+            if kind in {"video", "tryon", "xiaole_video", "cinematic", "ai_edit"}:
                 video_domain.record_video_asset(job_id, username, result)
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
+        if kind == "ai_edit": ai_edit_store.safe_finish_hold(None, job_id, True)
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
@@ -1048,6 +1055,7 @@ def run_job(job_id):
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
+        if kind == "ai_edit": ai_edit_store.safe_finish_hold(None, job_id, False)
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1081,6 +1089,7 @@ def reaper():
                 if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
                     _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，已退点")
+                    if r["kind"] == "ai_edit": ai_edit_store.safe_finish_hold(None, r["id"], False)
         except Exception:
             pass
         time.sleep(60)
@@ -1102,9 +1111,12 @@ def reclaim_orphaned_running():
         return 0
     n = 0
     for r in rows:
+        if r["kind"] == "ai_edit" and ai_edit_store.requeue_orphaned_provider_job(None, JOB_DB, r["id"]):
+            enqueue_job(r["id"], "ai_edit"); n += 1; continue
         if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
             _refund_once(r["id"], r["username"], r["cost"])
             _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
+            if r["kind"] == "ai_edit": ai_edit_store.safe_finish_hold(None, r["id"], False)
             n += 1
     if n:
         print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
@@ -1139,6 +1151,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        from . import ai_edit_api
+        if ai_edit_api.handle_post(self):
+            return
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1427,6 +1442,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        from . import ai_edit_api
+        if ai_edit_api.handle_get(self):
+            return
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()

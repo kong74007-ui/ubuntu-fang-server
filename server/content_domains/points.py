@@ -28,10 +28,13 @@ SEEDREAM_VARIANT_COST = {
 }
 # 数量上限必须与 image.gen_image 里的 cap 逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
 _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
+AI_EDIT_POINTS = max(1, int(os.environ.get("AI_EDIT_POINTS", "30")))
 
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
+    if kind == "ai_edit":
+        return AI_EDIT_POINTS
     if kind == "collect":
         # 提取文案（want 含 transcript）保留 6 点；其余即「内容爬取」，固定 30 点
         # （kongli 2026-07-15，原为 3 点）。前端两个动作共用这一个 collect 接口，靠 want 区分：
