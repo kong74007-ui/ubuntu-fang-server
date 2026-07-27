@@ -344,7 +344,7 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
             },
         )
     except billing.BillingError as exc:
-        return _send(handler, 409, {"detail": exc.code})
+        return _send(handler, 409, {"code": exc.code, "detail": exc.code})
     except points.AuthPointsError as exc:
         return _send(handler, 402 if exc.status == 402 else 502, {"detail": exc.detail})
     except (TypeError, ValueError) as exc:
@@ -405,21 +405,48 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
             old = conn.execute(
                 "SELECT * FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
             ).fetchone()
+            old_bindings = conn.execute(
+                """SELECT material_id,purpose FROM edit_v2_job_materials
+                   WHERE job_id=? ORDER BY material_id,purpose""",
+                (job_id,),
+            ).fetchall()
         if old is None:
             return _send(handler, 404, {"detail": "任务不存在"})
         if old["status"] not in FAILURE_STATES:
             return _send(handler, 409, {"detail": "仅终态失败任务允许重试"})
         payload = json.loads(old["payload_json"])
+        draft, bindings = canonicalize_job_draft(owner, payload.get("draft"))
+        expected_bindings = sorted(
+            (int(row["material_id"]), str(row["purpose"])) for row in old_bindings
+        )
+        current_bindings = sorted(
+            (int(binding["material_id"]), str(binding["purpose"]))
+            for binding in bindings
+        )
+        if current_bindings != expected_bindings:
+            raise ValueError("retry_material_bindings_mismatch")
+        payload = {"draft": draft}
         now = _now()
-        quote = billing.create_quote(owner, payload["draft"], now, uuid_factory=_new_uuid)
+        retry_key = f"retry:{job_id}:{client_key}"
+        with closing(store.open_store(store._db_path())) as conn:
+            existing_successor = conn.execute(
+                "SELECT quote_id FROM edit_v2_jobs WHERE owner=? AND idempotency_key=?",
+                (owner, retry_key),
+            ).fetchone()
+        quote = (
+            {"id": existing_successor["quote_id"]}
+            if existing_successor is not None
+            else billing.create_quote(owner, draft, now, uuid_factory=_new_uuid)
+        )
         result = billing.precharge_and_create_job(
             owner,
             payload,
             quote["id"],
-            f"retry:{job_id}:{client_key}",
+            retry_key,
             now,
             points_client=_points_client,
             uuid_factory=_new_uuid,
+            material_bindings=bindings,
         )
         successor = result["job"]
         return _send(
@@ -433,6 +460,23 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         )
     except ValueError as exc:
         return _send(handler, 400, {"detail": str(exc)})
+    except billing.PrechargePending as exc:
+        return _send(
+            handler,
+            202,
+            {
+                "job_id": exc.job_id,
+                "predecessor_job_id": job_id,
+                "status": "billing_pending",
+                "billing_status": "pending",
+                "held_points": exc.held_points,
+                "retry_after_seconds": 3,
+            },
+        )
+    except billing.BillingError as exc:
+        return _send(handler, 409, {"code": exc.code, "detail": exc.code})
+    except points.AuthPointsError as exc:
+        return _send(handler, 402 if exc.status == 402 else 502, {"detail": exc.detail})
 
 
 def dispatch(

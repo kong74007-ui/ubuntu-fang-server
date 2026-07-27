@@ -223,7 +223,15 @@ def create_job(
     *,
     uuid_factory: Callable[[], Any] = uuid.uuid4,
     db_path: str | None = None,
+    material_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    payload_json = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    requested_bindings = sorted(
+        (int(binding["material_id"]), str(binding["purpose"]))
+        for binding in (material_bindings or [])
+    )
     with _connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -232,6 +240,26 @@ def create_job(
                 (owner, idempotency_key),
             ).fetchone()
             if existing is not None:
+                existing_bindings = [
+                    (int(row["material_id"]), str(row["purpose"]))
+                    for row in conn.execute(
+                        """SELECT material_id,purpose FROM edit_v2_job_materials
+                           WHERE job_id=? ORDER BY material_id,purpose""",
+                        (existing["id"],),
+                    ).fetchall()
+                ]
+                existing_payload = json.dumps(
+                    json.loads(existing["payload_json"]),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if (
+                    existing["quote_id"] != quote_id
+                    or existing_payload != payload_json
+                    or existing_bindings != requested_bindings
+                ):
+                    raise ValueError("idempotency_conflict")
                 conn.commit()
                 return dict(existing)
             job_id = str(uuid_factory())
@@ -246,12 +274,26 @@ def create_job(
                     idempotency_key,
                     quote_id,
                     "created",
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    payload_json,
                     "[]",
                     now,
                     now,
                 ),
             )
+            for material_id, purpose in requested_bindings:
+                material = conn.execute(
+                    """SELECT purpose FROM edit_v2_materials
+                       WHERE id=? AND owner=? AND status='ready'""",
+                    (material_id, owner),
+                ).fetchone()
+                if material is None or material["purpose"] != purpose:
+                    raise ValueError("material_not_available")
+                conn.execute(
+                    """INSERT INTO edit_v2_job_materials(
+                           job_id,material_id,purpose,created_at
+                       ) VALUES(?,?,?,?)""",
+                    (job_id, material_id, purpose, now),
+                )
             row = conn.execute(
                 "SELECT * FROM edit_v2_jobs WHERE id=?", (job_id,)
             ).fetchone()

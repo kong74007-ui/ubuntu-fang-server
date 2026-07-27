@@ -413,19 +413,39 @@ def precharge_and_create_job(
     material_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     draft = payload.get("draft") if isinstance(payload, dict) else None
-    quote = validate_quote(owner, draft, quote_id, now, db_path=db_path)
-    job = store.create_job(
-        owner,
-        payload,
-        quote_id,
-        idempotency_key,
-        now,
-        uuid_factory=uuid_factory,
-        db_path=db_path,
-    )
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        existing = conn.execute(
+            "SELECT id FROM edit_v2_jobs WHERE owner=? AND idempotency_key=?",
+            (owner, idempotency_key),
+        ).fetchone()
+    quote = None
+    if existing is None:
+        quote = validate_quote(owner, draft, quote_id, now, db_path=db_path)
+    try:
+        job = store.create_job(
+            owner,
+            payload,
+            quote_id,
+            idempotency_key,
+            now,
+            uuid_factory=uuid_factory,
+            db_path=db_path,
+            material_bindings=material_bindings,
+        )
+    except ValueError as exc:
+        if str(exc) == "idempotency_conflict":
+            raise BillingError("idempotency_conflict") from exc
+        raise
+    if quote is None:
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            quote_row = conn.execute(
+                "SELECT * FROM edit_v2_quotes WHERE id=? AND owner=?",
+                (quote_id, owner),
+            ).fetchone()
+        if quote_row is None:
+            raise BillingError("quote_not_found")
+        quote = _quote_public(quote_row)
     transaction_key = f"ai-edit-v2:{job['id']}:hold"
-    if material_bindings is not None:
-        store.bind_job_materials(job["id"], owner, material_bindings, now, db_path=db_path)
     with closing(store.open_store(store._db_path(db_path))) as conn:
         conn.execute(
             """INSERT OR IGNORE INTO edit_v2_billing(

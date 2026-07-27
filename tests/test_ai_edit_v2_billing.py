@@ -140,7 +140,7 @@ class BillingTests(unittest.TestCase):
             {"draft": draft()},
             quote["id"],
             "request-1",
-            102,
+            quote["expires_at"] + 1,
             points_client=fake_points,
             uuid_factory=lambda: "should-not-be-used",
         )

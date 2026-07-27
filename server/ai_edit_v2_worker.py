@@ -89,9 +89,16 @@ def run_worker(
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
     if not config["enabled"]:
-        billing.reconcile_pending_precharges(int(time.time()), db_path=config["db_path"])
-        pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
-        LOG.warning("[ai-edit-v2] submissions disabled; reconciliation completed")
+        LOG.warning("[ai-edit-v2] submissions disabled; reconciliation-only mode")
+        while not stop_event.is_set():
+            try:
+                billing.reconcile_pending_precharges(
+                    int(time.time()), db_path=config["db_path"]
+                )
+                pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+            except Exception:
+                LOG.exception("[ai-edit-v2] billing reconciliation failed")
+            stop_event.wait(config["poll_seconds"])
         return
     worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
     active: set[Future] = set()

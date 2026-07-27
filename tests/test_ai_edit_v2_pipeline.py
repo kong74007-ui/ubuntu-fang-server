@@ -237,10 +237,18 @@ class PipelineTests(unittest.TestCase):
             "repair_timeout_seconds": 900,
             "db_path": self.db_path,
         }
-        with patch.object(worker.billing, "reconcile_pending_precharges") as pending, \
+        stop_event = threading.Event()
+
+        def finish_after_reconciliation(*_args, **_kwargs):
+            stop_event.set()
+
+        with patch.object(
+             worker.billing, "reconcile_pending_precharges",
+             side_effect=finish_after_reconciliation,
+        ) as pending, \
              patch.object(worker.pipeline, "reconcile_terminal_refunds") as refunds, \
              patch.object(worker.store, "claim_next_job") as claim:
-            worker.run_worker(threading.Event(), config=config)
+            worker.run_worker(stop_event, config=config)
 
         pending.assert_called_once()
         refunds.assert_called_once()

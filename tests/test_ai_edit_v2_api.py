@@ -372,6 +372,24 @@ class ApiTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([(row["material_id"], row["purpose"]) for row in bound], [(1, "primary")])
 
+    def test_reusing_idempotency_key_with_another_quote_returns_409(self):
+        draft = valid_api_draft()
+        _, first_quote = self._dispatch("POST", "/api/v2/edit/quotes", {"draft": draft})
+        first_status, first = self._dispatch(
+            "POST", "/api/v2/edit/jobs",
+            {"draft": draft, "quote_id": first_quote["quote"]["id"], "idempotency_key": "same-key"},
+        )
+        _, second_quote = self._dispatch("POST", "/api/v2/edit/quotes", {"draft": draft})
+        replay_status, replay = self._dispatch(
+            "POST", "/api/v2/edit/jobs",
+            {"draft": draft, "quote_id": second_quote["quote"]["id"], "idempotency_key": "same-key"},
+        )
+
+        self.assertEqual(first_status, 201)
+        self.assertTrue(first["job_id"])
+        self.assertEqual(replay_status, 409)
+        self.assertEqual(replay["code"], "idempotency_conflict")
+
     def test_ambiguous_precharge_returns_queryable_pending_job(self):
         draft = valid_api_draft()
         _, quote_payload = self._dispatch(
@@ -430,6 +448,7 @@ class ApiTests(unittest.TestCase):
             "old-request",
             100,
             uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
         )
         with closing(store.open_store(self.db_path)) as conn:
             conn.execute(
@@ -457,10 +476,42 @@ class ApiTests(unittest.TestCase):
                 "SELECT status,payload_json,quote_id FROM edit_v2_jobs WHERE id=?",
                 (first["job_id"],),
             ).fetchone()
+            successor_bindings = conn.execute(
+                "SELECT material_id,purpose FROM edit_v2_job_materials WHERE job_id=?",
+                (first["job_id"],),
+            ).fetchall()
         self.assertEqual(old_row["status"], "render_failed")
         self.assertEqual(successor["status"], "queued")
         self.assertEqual(json.loads(successor["payload_json"]), {"draft": valid_api_draft()})
         self.assertNotEqual(successor["quote_id"], "old-quote")
+        self.assertEqual(
+            [(row["material_id"], row["purpose"]) for row in successor_bindings],
+            [(1, "primary")],
+        )
+
+    def test_retry_rejects_unavailable_material_before_precharge(self):
+        old = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_jobs SET status='render_failed' WHERE id=?", (old["id"],))
+            conn.execute("UPDATE edit_v2_materials SET status='deleted' WHERE id=1")
+            conn.commit()
+        points_before = api._points_client.balance
+
+        status, payload = self._dispatch(
+            "POST", f"/api/v2/edit/jobs/{old['id']}/retry",
+            {"idempotency_key": "retry-unavailable"},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["detail"], "material_not_available")
+        self.assertEqual(api._points_client.balance, points_before)
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
 
     def test_retry_rejects_non_terminal_job(self):
         old = store.create_job(

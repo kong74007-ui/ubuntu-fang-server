@@ -83,6 +83,40 @@ class StoreTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_create_job_rejects_idempotency_key_reuse_with_changed_request(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            for material_id in (1, 2):
+                conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           id,owner,kind,purpose,source,cos_key,filename,mime_type,
+                           size_bytes,status,created_at,updated_at
+                       ) VALUES(?, 'user-a','image','required','user_upload',?,?,
+                                'image/png',100,'ready',1,1)""",
+                    (material_id, f"private/{material_id}.png", f"{material_id}.png"),
+                )
+        first = store.create_job(
+            "user-a", {"draft": {"brief": "first"}}, "quote-1", "same-key", 100,
+            material_bindings=[{"material_id": 1, "purpose": "required"}],
+        )
+        cases = (
+            ({"draft": {"brief": "first"}}, "quote-2", [{"material_id": 1, "purpose": "required"}]),
+            ({"draft": {"brief": "second"}}, "quote-1", [{"material_id": 1, "purpose": "required"}]),
+            ({"draft": {"brief": "first"}}, "quote-1", [{"material_id": 2, "purpose": "required"}]),
+        )
+        for payload, quote_id, bindings in cases:
+            with self.subTest(quote_id=quote_id, payload=payload, bindings=bindings):
+                with self.assertRaisesRegex(ValueError, "idempotency_conflict"):
+                    store.create_job(
+                        "user-a", payload, quote_id, "same-key", 101,
+                        material_bindings=bindings,
+                    )
+        with closing(store.open_store(self.db_path)) as conn:
+            actual = conn.execute(
+                "SELECT material_id FROM edit_v2_job_materials WHERE job_id=?",
+                (first["id"],),
+            ).fetchall()
+        self.assertEqual([row["material_id"] for row in actual], [1])
+
     def test_two_workers_cannot_claim_the_same_job(self):
         job = self._create_job()
         self._queue(job["id"])
