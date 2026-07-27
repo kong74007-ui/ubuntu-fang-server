@@ -674,6 +674,23 @@ def list_video_assets(username, limit=120):
         print("[video-assets] COS 签名刷新失败: %s" % e, flush=True)
     return items
 
+
+def get_owned_video_asset(username, asset_id):
+    """按主键读取当前用户可用的视频资产，禁止跨用户引用。"""
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None
+    if asset_id <= 0 or not str(username or "").strip():
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT * FROM video_assets
+               WHERE id=? AND username=? AND COALESCE(status,'')!='deleted'""",
+            (asset_id, str(username)),
+        ).fetchone()
+    return dict(row) if row else None
+
 def get_video_job_phase(job_id):
     try:
         with closing(adb()) as c:

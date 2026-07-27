@@ -1186,6 +1186,25 @@ def list_audio_assets(username, limit=120):
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 
+
+def get_owned_audio_asset(username, asset_id):
+    """按主键读取当前用户未删除的配音资产，禁止跨用户引用。"""
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None
+    if asset_id <= 0 or not str(username or "").strip():
+        return None
+    with closing(adb()) as c:
+        _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+        row = c.execute(
+            """SELECT * FROM audio_assets
+               WHERE id=? AND username=? AND COALESCE(deleted,0)=0""",
+            (asset_id, str(username)),
+        ).fetchone()
+        c.commit()
+    return dict(row) if row else None
+
 # ============ 配音能力：OpenAI TTS（同事的 audio 能力，合并保留） ============
 VOICE_MAP = {
     "personal": os.environ.get("VOICE_PERSONAL", "alloy"),

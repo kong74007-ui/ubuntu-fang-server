@@ -20,6 +20,10 @@
 服务器前置：`pip install cos-python-sdk-v5`（提供 qcloud_cos）。
 """
 import os
+import pathlib
+import tempfile
+import urllib.parse
+import urllib.request
 
 _SECRET_ID   = os.environ.get("COS_SECRET_ID", "").strip()
 _SECRET_KEY  = os.environ.get("COS_SECRET_KEY", "").strip()
@@ -73,6 +77,105 @@ def object_url(rel_key, private=False):
     if not enabled():
         raise RuntimeError("COS 未配置")
     return _url(_object_key(rel_key), private=private)
+
+
+def create_presigned_put(rel_key, content_type, expires=900):
+    """生成仅允许上传一个指定对象的短时 PUT URL。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    try:
+        expires = int(expires)
+    except (TypeError, ValueError):
+        raise ValueError("上传签名有效期无效")
+    if not 60 <= expires <= 3600:
+        raise ValueError("上传签名有效期必须在60到3600秒之间")
+    content_type = str(content_type or "").strip().lower()
+    if not content_type or "\r" in content_type or "\n" in content_type:
+        raise ValueError("上传文件类型无效")
+    return _client().get_presigned_url(
+        Method="PUT",
+        Bucket=_BUCKET,
+        Key=_object_key(rel_key),
+        Expired=expires,
+        Headers={"Content-Type": content_type},
+    )
+
+
+def head(rel_key):
+    """读取对象大小和类型；调用方据此完成直传确认。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    response = _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
+    raw_size = response.get("Content-Length", response.get("ContentLength", 0))
+    return {
+        "size_bytes": int(raw_size or 0),
+        "content_type": str(
+            response.get("Content-Type", response.get("ContentType", "")) or ""
+        ).split(";", 1)[0].strip().lower(),
+        "etag": str(response.get("ETag") or "").strip('"'),
+    }
+
+
+def get_media_info(rel_key):
+    """通过 COS 数据万象读取媒体时长、视频流和音轨信息。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    response = _client().get_media_info(Bucket=_BUCKET, Key=_object_key(rel_key))
+    info = response.get("MediaInfo") if isinstance(response, dict) else None
+    if not isinstance(info, dict):
+        raise RuntimeError("COS 未返回媒体信息")
+    return info
+
+
+def transfer_remote(remote_url, rel_key, max_bytes):
+    """有界流式转存供应商 HTTPS 文件，不在内存中缓存整段视频。"""
+    parsed = urllib.parse.urlsplit(str(remote_url or ""))
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("远程媒体必须使用HTTPS地址")
+    try:
+        max_bytes = int(max_bytes)
+    except (TypeError, ValueError):
+        raise ValueError("远程媒体大小限制无效")
+    if max_bytes <= 0:
+        raise ValueError("远程媒体大小限制无效")
+
+    temp_path = None
+    try:
+        request = urllib.request.Request(
+            remote_url,
+            headers={"User-Agent": "HuangqueMediaTransfer/1.0"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            content_type = str(response.headers.get("Content-Type") or "").split(
+                ";", 1
+            )[0].strip().lower()
+            suffix = pathlib.PurePosixPath(parsed.path).suffix[:12] or ".bin"
+            with tempfile.NamedTemporaryFile(
+                prefix="hq-ai-edit-transfer-", suffix=suffix, delete=False
+            ) as output:
+                temp_path = output.name
+                total = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("远程媒体大小超过限制")
+                    output.write(chunk)
+        return put_file(
+            temp_path,
+            rel_key,
+            content_type or "application/octet-stream",
+            private=True,
+        )
+    finally:
+        if temp_path:
+            try:
+                pathlib.Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def upload(local_path, rel_key, content_type=None, private=False):
