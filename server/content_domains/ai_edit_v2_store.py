@@ -262,6 +262,37 @@ def create_job(
             raise
 
 
+def bind_job_materials(
+    job_id: str, owner: str, bindings: list[dict[str, Any]], now: int, *, db_path: str | None = None
+) -> None:
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = conn.execute(
+                "SELECT id FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
+            ).fetchone()
+            if job is None:
+                raise ValueError("job_not_found")
+            for binding in bindings:
+                material_id = int(binding["material_id"])
+                material = conn.execute(
+                    "SELECT purpose FROM edit_v2_materials WHERE id=? AND owner=? AND status='ready'",
+                    (material_id, owner),
+                ).fetchone()
+                if material is None or material["purpose"] != binding["purpose"]:
+                    raise ValueError("material_not_available")
+                conn.execute(
+                    """INSERT OR IGNORE INTO edit_v2_job_materials(
+                           job_id,material_id,purpose,created_at
+                       ) VALUES(?,?,?,?)""",
+                    (job_id, material_id, binding["purpose"], now),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def claim_next_job(
     worker_id: str,
     lease_seconds: int,

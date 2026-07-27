@@ -234,11 +234,71 @@ def _list_materials(handler: Any, owner: str) -> bool:
     return _send(handler, 200, {"items": [_material_public(row) for row in rows]})
 
 
+def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(client_draft, dict):
+        raise ValueError("draft must be an object")
+    groups = [
+        ("primary", [client_draft.get("main_input")]),
+        ("required", client_draft.get("required_materials") or []),
+        ("reference", client_draft.get("reference_materials") or []),
+    ]
+    requested: list[tuple[str, int, dict[str, Any]]] = []
+    seen: set[int] = set()
+    for purpose, items in groups:
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("material_not_available")
+            try:
+                material_id = int(item.get("asset_id"))
+            except (TypeError, ValueError):
+                raise ValueError("material_not_available") from None
+            if material_id in seen:
+                raise ValueError("material_reused_across_groups")
+            seen.add(material_id)
+            requested.append((purpose, material_id, item))
+    if not requested:
+        raise ValueError("material_not_available")
+    placeholders = ",".join("?" for _ in requested)
+    with closing(store.open_store(store._db_path())) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM edit_v2_materials WHERE id IN ({placeholders}) AND owner=? AND status='ready'",
+            (*[item[1] for item in requested], owner),
+        ).fetchall()
+    by_id = {int(row["id"]): row for row in rows}
+    canonical_groups: dict[str, list[dict[str, Any]]] = {"primary": [], "required": [], "reference": []}
+    bindings: list[dict[str, Any]] = []
+    for purpose, material_id, client_item in requested:
+        row = by_id.get(material_id)
+        if row is None or row["purpose"] != purpose:
+            raise ValueError("material_not_available")
+        reference_mode = client_item.get("reference_mode") if purpose == "reference" else None
+        if purpose == "reference" and reference_mode not in REFERENCE_MODES:
+            raise ValueError("reference_mode_invalid")
+        material = {
+            "asset_id": str(material_id),
+            "kind": row["kind"],
+            "size_bytes": int(row["size_bytes"] or 0),
+            "duration_ms": row["duration_ms"],
+        }
+        if reference_mode:
+            material["reference_mode"] = reference_mode
+        canonical_groups[purpose].append(material)
+        bindings.append({"material_id": material_id, "purpose": purpose})
+    canonical = {
+        key: client_draft.get(key)
+        for key in ("creation_mode", "brief", "language", "aspect_ratio", "target_duration_ms")
+    }
+    canonical["main_input"] = canonical_groups["primary"][0]
+    canonical["required_materials"] = canonical_groups["required"]
+    canonical["reference_materials"] = canonical_groups["reference"]
+    validate_job_draft(canonical)
+    return canonical, bindings
+
+
 def _validate_job_request(handler: Any, owner: str) -> bool:
     try:
         body = _read_body(handler)
-        draft = body.get("draft")
-        validate_job_draft(draft)
+        draft, bindings = canonicalize_job_draft(owner, body.get("draft"))
         quote_id = str(body.get("quote_id") or "").strip()
         idempotency_key = str(body.get("idempotency_key") or "").strip()
         if not quote_id or not idempotency_key:
@@ -251,6 +311,7 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
             _now(),
             points_client=_points_client,
             uuid_factory=_new_uuid,
+            material_bindings=bindings,
         )
         return _send(
             handler,
@@ -272,7 +333,8 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
 def _validate_quote_request(handler: Any, owner: str) -> bool:
     try:
         body = _read_body(handler)
-        quote = billing.create_quote(owner, body.get("draft"), _now(), uuid_factory=_new_uuid)
+        draft, _bindings = canonicalize_job_draft(owner, body.get("draft"))
+        quote = billing.create_quote(owner, draft, _now(), uuid_factory=_new_uuid)
         return _send(handler, 201, {"quote": quote})
     except (TypeError, ValueError) as exc:
         return _send(handler, 400, {"detail": str(exc)})

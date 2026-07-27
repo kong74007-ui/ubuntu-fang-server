@@ -403,6 +403,7 @@ def precharge_and_create_job(
     points_client: Any = points,
     uuid_factory: Callable[[], Any] = uuid.uuid4,
     db_path: str | None = None,
+    material_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     draft = payload.get("draft") if isinstance(payload, dict) else None
     quote = validate_quote(owner, draft, quote_id, now, db_path=db_path)
@@ -416,6 +417,8 @@ def precharge_and_create_job(
         db_path=db_path,
     )
     transaction_key = f"ai-edit-v2:{job['id']}:hold"
+    if material_bindings is not None:
+        store.bind_job_materials(job["id"], owner, material_bindings, now, db_path=db_path)
     with closing(store.open_store(store._db_path(db_path))) as conn:
         conn.execute(
             """INSERT OR IGNORE INTO edit_v2_billing(

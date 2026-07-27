@@ -26,7 +26,7 @@ def valid_api_draft():
         "aspect_ratio": "16:9",
         "target_duration_ms": 30_000,
         "main_input": {
-            "asset_id": "main",
+            "asset_id": "1",
             "kind": "video",
             "size_bytes": MB,
             "duration_ms": 30_000,
@@ -97,6 +97,15 @@ class ApiTests(unittest.TestCase):
         self.ready_patch = patch.object(api.feature, "runtime_ready", return_value=True)
         self.ready_patch.start()
         store.init_db(self.db_path)
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                """INSERT INTO edit_v2_materials(
+                       id,owner,kind,purpose,source,cos_key,filename,mime_type,
+                       size_bytes,duration_ms,status,created_at,updated_at
+                   ) VALUES(1,'alice','video','primary','user_upload','private/main.mp4',
+                            'main.mp4','video/mp4',?,?, 'ready',1,1)""",
+                (MB, 30_000),
+            )
         self.fake_cos = FakeCos()
         self.cos_patch = patch.object(api, "cos", self.fake_cos)
         self.cos_patch.start()
@@ -180,6 +189,26 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 503)
             self.assertEqual(payload["code"], "ai_edit_v2_disabled")
 
+    def test_quote_rejects_cross_account_material_before_precharge(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                """INSERT INTO edit_v2_materials(
+                       id,owner,kind,purpose,source,cos_key,filename,mime_type,
+                       size_bytes,duration_ms,status,created_at,updated_at
+                   ) VALUES(99,'bob','video','primary','user_upload','private/bob.mp4',
+                            'bob.mp4','video/mp4',?,?, 'ready',1,1)""",
+                (MB, 30_000),
+            )
+        changed = valid_api_draft()
+        changed["main_input"]["asset_id"] = "99"
+
+        status, payload = self._dispatch(
+            "POST", "/api/v2/edit/quotes", {"draft": changed}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["detail"], "material_not_available")
+
     def test_upload_completion_uses_cos_head_and_is_idempotent(self):
         upload = self._create_upload()
         self.assertNotIn("cos_key", upload)
@@ -199,7 +228,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first["material"]["content_type"], "video/mp4")
         self.assertEqual(first["material"]["etag"], "verified-etag")
         with closing(store.open_store(self.db_path)) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM edit_v2_materials").fetchone()[0]
+            count = conn.execute(
+                "SELECT COUNT(*) FROM edit_v2_materials WHERE upload_id=?",
+                (upload["upload_id"],),
+            ).fetchone()[0]
         self.assertEqual(count, 1)
 
     def test_material_owner_mismatch_returns_not_found(self):
@@ -285,21 +317,8 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("provider", str(capabilities).lower())
 
     def test_quote_route_creates_dynamic_quote(self):
-        draft = {
-            "creation_mode": "open_generation",
-            "brief": "中文测试",
-            "language": "zh-CN",
-            "aspect_ratio": "9:16",
-            "target_duration_ms": 30_000,
-            "main_input": {
-                "asset_id": "main",
-                "kind": "audio",
-                "size_bytes": MB,
-                "duration_ms": 10_000,
-            },
-            "required_materials": [],
-            "reference_materials": [],
-        }
+        draft = valid_api_draft()
+        draft.update(creation_mode="open_generation", aspect_ratio="9:16")
 
         status, payload = self._dispatch(
             "POST", "/api/v2/edit/quotes", {"draft": draft}
@@ -328,6 +347,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["held_points"], quote_payload["quote"]["max_points"])
+        with closing(store.open_store(self.db_path)) as conn:
+            bound = conn.execute(
+                "SELECT material_id,purpose FROM edit_v2_job_materials WHERE job_id=?",
+                (payload["job_id"],),
+            ).fetchall()
+        self.assertEqual([(row["material_id"], row["purpose"]) for row in bound], [(1, "primary")])
 
     def test_job_status_is_owner_scoped(self):
         job = store.create_job(
