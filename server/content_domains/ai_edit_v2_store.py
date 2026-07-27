@@ -85,6 +85,7 @@ def init_db(db_path: str | None = None) -> None:
 
             CREATE TABLE IF NOT EXISTS edit_v2_materials(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                upload_id TEXT UNIQUE,
                 owner TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 purpose TEXT NOT NULL,
@@ -92,7 +93,10 @@ def init_db(db_path: str | None = None) -> None:
                 semantic_label TEXT,
                 source TEXT,
                 cos_key TEXT NOT NULL,
+                filename TEXT,
+                declared_content_type TEXT,
                 mime_type TEXT,
+                etag TEXT,
                 size_bytes INTEGER,
                 duration_ms INTEGER,
                 width INTEGER,

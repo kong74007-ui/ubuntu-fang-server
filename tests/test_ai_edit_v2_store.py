@@ -204,6 +204,26 @@ class StoreTests(unittest.TestCase):
             )
         )
 
+    def test_generated_material_does_not_require_a_user_upload_id(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            material_id = conn.execute(
+                """INSERT INTO edit_v2_materials(
+                       owner,kind,purpose,source,cos_key,status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    "user-a",
+                    "image",
+                    "required",
+                    "generated",
+                    "ai-edit-v2/owner/task/generated/image.png",
+                    "ready",
+                    100,
+                    100,
+                ),
+            ).lastrowid
+
+        self.assertGreater(material_id, 0)
+
     def test_terminal_transition_clears_style_analysis_but_keeps_cos_and_audit(self):
         job = self._create_job()
         with closing(store.open_store(self.db_path)) as conn:
@@ -212,10 +232,11 @@ class StoreTests(unittest.TestCase):
             )
             material_id = conn.execute(
                 """INSERT INTO edit_v2_materials(
-                       owner, kind, purpose, reference_mode, cos_key,
+                       upload_id, owner, kind, purpose, reference_mode, cos_key,
                        reference_analysis_json, created_at, updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
+                    "123e4567-e89b-42d3-a456-426614174000",
                     "user-a",
                     "video",
                     "reference",

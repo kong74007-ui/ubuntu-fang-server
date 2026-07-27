@@ -7,9 +7,7 @@
 - 鉴权：复用现有认证服务(:8095)，前端带 Bearer <hq_token>；本服务调 /api/auth/me 校验 + 取 username/points/role。
 - 异步任务模型：/api/gen/<能力> 提交 → job_id → 轮询 /api/gen/job/{id}（与 leadgen 同套路）。
 - 点数：提交即预扣（够才受理），失败自动退点。点数落在 auth 的 users.db。
-
 端口 127.0.0.1:8096，nginx 把 /api/gen/ 路由过来。零第三方依赖外只用 requests(已在 venv)。
-
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
 import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys
@@ -17,13 +15,12 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import ai_edit_v2_api, assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
     import asset_batch
     import feature_flags
-
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
@@ -50,7 +47,6 @@ DL_MIME_EXT = {
     "video/mp4": ".mp4",
     "video/quicktime": ".mov",
 }
-
 def _download_content_type_ext(headers):
     ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
     return ctype or "application/octet-stream", DL_MIME_EXT.get(ctype, ".mp4")
@@ -1139,6 +1135,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p.startswith("/api/v2/edit/"):
+            return ai_edit_v2_api.dispatch(self, "POST", p, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1427,6 +1425,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p.startswith("/api/v2/edit/"):
+            return ai_edit_v2_api.dispatch(self, "GET", p, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
