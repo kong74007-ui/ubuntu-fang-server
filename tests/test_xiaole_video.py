@@ -1,5 +1,7 @@
+import io
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,47 @@ class XiaoleVideoTests(unittest.TestCase):
             sys.path.insert(0, server_dir)
         from content_domains import video
         self.video = video
+
+    def test_xiaole_request_retry_deadline_caps_internal_backoff(self):
+        now = [0.0]
+        calls = []
+
+        def monotonic():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        def rate_limited(_request, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError(
+                "https://example.test", 429, "busy", None, io.BytesIO(b"busy")
+            )
+
+        with patch.object(self.video, "XIAOLEVIDEO_API_KEY", "test-key"), \
+             patch.object(self.video.time, "monotonic", side_effect=monotonic), \
+             patch.object(self.video.time, "sleep", side_effect=sleep), \
+             patch.object(self.video.urllib.request, "urlopen", side_effect=rate_limited):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+                self.video._xiaole_request("POST", "/api/v1/generations", {}, retry_deadline=10)
+
+        self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(now[0], 10)
+        self.assertEqual(calls, [10, 2])
+
+    def test_unstable_micro_and_omni_channels_are_rejected(self):
+        for channel in ("micro", "omni"):
+            with self.subTest(channel=channel):
+                with self.assertRaisesRegex(ValueError, "渠道维护中"):
+                    self.video.validate_xiaole_video_payload({"channel": channel, "prompt": "demo"})
+                with self.assertRaisesRegex(ValueError, "渠道维护中"):
+                    self.video.gen_xiaole_video({"channel": channel, "prompt": "demo"})
+
+    def test_unstable_channel_tabs_are_hidden(self):
+        html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text()
+        self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
+        self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
+        self.assertIn("if(ch!=='grok') ch='grok';", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
         calls = []
@@ -162,6 +205,31 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(result["model"], "grok-imagine-video")
         self.assertEqual(result["duration"], 10)
         generate.assert_called_once()
+
+    def test_existing_xai_provider_id_resumes_without_generate(self):
+        resumed = {
+            "request_id": "rid-existing", "model": "grok-imagine-video",
+            "source_video_url": "https://vidgen.x.ai/existing.mp4", "duration": 10,
+        }
+        payload = {
+            "channel": "grok", "prompt": "demo", "model": "grok-imagine-video",
+            "ratio": "9:16", "duration": 10, "resolution": "720p",
+            "_job_id": 7, "_username": "qilin",
+        }
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch("content_domains.video.get_resumable_xai_request", return_value={
+                 "request_id": "rid-existing", "model": "grok-imagine-video",
+             }), \
+             patch("content_domains.video_xai.resume", return_value=resumed) as resume, \
+             patch("content_domains.video_xai.generate") as generate, \
+             patch("content_domains.video._download_xiaole_video", return_value="video/out.mp4"), \
+             patch("content_domains.video._extract_first_frame_cover", return_value=None), \
+             patch("content_domains.video.update_video_asset_phase") as update:
+            result = self.video.gen_xiaole_video(payload)
+        generate.assert_not_called()
+        resume.assert_called_once()
+        self.assertNotIn("queued", [call.args[1] for call in update.call_args_list])
+        self.assertEqual(result["provider_video_id"], "rid-existing")
 
     def test_gen_grok_official_edit_uploads_source_and_preserves_contract(self):
         fake = {"request_id": "edit-1", "model": "grok-imagine-video",

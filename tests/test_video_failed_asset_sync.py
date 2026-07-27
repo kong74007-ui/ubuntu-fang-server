@@ -21,6 +21,10 @@ import pathlib
 import unittest
 
 CORE = (pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py").read_text(encoding="utf-8")
+STARTUP_RECOVERY = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "server/content_domains/startup_recovery.py"
+).read_text(encoding="utf-8")
 
 
 class FailedAssetSyncTests(unittest.TestCase):
@@ -32,11 +36,12 @@ class FailedAssetSyncTests(unittest.TestCase):
         self.assertIn("update_video_asset_phase(job_id, \"failed\", status=\"failed\"", block)
         self.assertNotIn("video_domain.record_video_asset", block)   # 实际调用不能是 record_video_asset
         # 只对视频类 kind 生效
-        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "cinematic"}', block)
+        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}', block)
 
     def test_run_job_error_branch_syncs_via_helper(self):
         """失败分支不再 record_video_asset(dict(payload))——那正是 mode=None 抛 NOT NULL 的地方。"""
-        err = CORE[CORE.index("claimed = _set_terminal(job_id, \"error\""):]
+        run_job = CORE[CORE.index("def run_job("):CORE.index("# ============ 超时清道夫")]
+        err = run_job[run_job.index("claimed = _set_terminal(job_id, \"error\""):]
         err = err[:err.index("_refund_once(job_id")]
         self.assertIn("_mark_video_asset_failed(job_id, kind, e)", err)
         self.assertNotIn("record_video_asset", err)
@@ -50,10 +55,9 @@ class FailedAssetSyncTests(unittest.TestCase):
 
     def test_reclaim_orphan_syncs_video_asset(self):
         """启动回收重启孤儿时也要同步 video_asset。SELECT 要带上 kind。"""
-        recl = CORE[CORE.index("def reclaim_orphaned_running"):]
-        recl = recl[:recl.index("# ============ HTTP")]
+        recl = STARTUP_RECOVERY[STARTUP_RECOVERY.index("def reclaim_orphaned_running"):]
         self.assertIn("SELECT id, username, cost, kind FROM jobs", recl)
-        self.assertIn('_mark_video_asset_failed(r["id"], r["kind"]', recl)
+        self.assertIn('mark_video_asset_failed(row["id"], row["kind"]', recl)
 
 
 if __name__ == "__main__":
