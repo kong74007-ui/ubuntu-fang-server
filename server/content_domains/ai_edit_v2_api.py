@@ -12,7 +12,7 @@ from contextlib import closing
 from typing import Any
 
 from . import ai_edit_v2_store as store
-from . import cos
+from . import ai_edit_v2_cos as cos
 from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_pipeline as pipeline
 from . import ai_edit_v2_feature as feature

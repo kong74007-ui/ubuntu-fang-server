@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from server.content_domains import cos
+from server.content_domains import ai_edit_v2_cos as cos
 
 
 VALID_KEY = (
@@ -66,7 +66,10 @@ class V2CosTests(unittest.TestCase):
         self.assertEqual(request["Bucket"], "private-bucket-123")
         self.assertEqual(request["Key"], "huangque/" + VALID_KEY)
         self.assertEqual(request["Expired"], 900)
-        self.assertEqual(request["Headers"], {"Content-Type": "video/mp4"})
+        self.assertEqual(
+            request["Headers"],
+            {"Content-Type": "video/mp4", "x-cos-acl": "private"},
+        )
 
         with self.assertRaisesRegex(ValueError, "900"):
             cos.presign_put(VALID_KEY, "video/mp4", expires=901)

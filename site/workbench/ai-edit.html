@@ -58,6 +58,7 @@
 </div></div></div>
 <script src="cloud-shell.js?v=27cdcbf4"></script>
 <script>
+(function(){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method){this.__aiEditPrivatePut=String(method).toUpperCase()==='PUT';return nativeOpen.apply(this,arguments)};XMLHttpRequest.prototype.send=function(body){if(this.__aiEditPrivatePut)this.setRequestHeader('x-cos-acl','private');return nativeSend.call(this,body)}})();
 (function(){
   'use strict';
   var state={mode:'natural_brief',main:null,required:[],reference:[],quote:null,jobRequestKey:null,jobId:null,pollTimer:null,acceptsSubmissions:false};
