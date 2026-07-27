@@ -106,6 +106,14 @@ def init_db():
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS points_transactions(
+        transaction_key TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        username TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        points_after INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -1085,7 +1093,34 @@ def _write_audit(c, who_admin, username, delta, before, after, reason):
         (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time())))
 
 
-def deduct_points(username, amount, reason=""):
+def _transaction_replay(c, transaction_key, operation, username, amount):
+    if not transaction_key:
+        return None, None
+    row = c.execute(
+        "SELECT operation,username,amount,points_after FROM points_transactions WHERE transaction_key=?",
+        (transaction_key,),
+    ).fetchone()
+    if row is None:
+        return None, None
+    if row["operation"] != operation or row["username"] != username or int(row["amount"]) != amount:
+        return None, "transaction_conflict"
+    user = get_points_row(username, c)
+    return {
+        "username": username,
+        "user_id": user["id"] if user else None,
+        "points": int(row["points_after"]),
+    }, "replay"
+
+
+def _transaction_key(value):
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200:
+        raise ValueError("invalid transaction_key")
+    return value.strip()
+
+
+def deduct_points(username, amount, reason="", transaction_key=None):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
     在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
@@ -1093,11 +1128,21 @@ def deduct_points(username, amount, reason=""):
     (280 点)也因此没法核。
     """
     amount = int(amount or 0)
+    transaction_key = _transaction_key(transaction_key)
     if amount < 0:
         raise ValueError("amount must be >= 0")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        replay, replay_status = _transaction_replay(
+            c, transaction_key, "deduct", username, amount
+        )
+        if replay_status == "transaction_conflict":
+            c.rollback()
+            return None, replay_status
+        if replay_status == "replay":
+            c.commit()
+            return replay, None
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1117,6 +1162,13 @@ def deduct_points(username, amount, reason=""):
             return None, "not_found"
         if amount:
             _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason)
+        if transaction_key:
+            c.execute(
+                """INSERT INTO points_transactions(
+                       transaction_key,operation,username,amount,points_after,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (transaction_key, "deduct", username, amount, int(row["points"] or 0), int(time.time())),
+            )
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1125,14 +1177,24 @@ def deduct_points(username, amount, reason=""):
     finally:
         c.close()
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=None):
     """任务失败/超时后退点。reason 同 deduct_points。"""
     amount = int(amount or 0)
+    transaction_key = _transaction_key(transaction_key)
     if amount < 0:
         raise ValueError("amount must be >= 0")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        replay, replay_status = _transaction_replay(
+            c, transaction_key, "refund", username, amount
+        )
+        if replay_status == "transaction_conflict":
+            c.rollback()
+            return None, replay_status
+        if replay_status == "replay":
+            c.commit()
+            return replay, None
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1149,6 +1211,13 @@ def refund_points(username, amount, reason=""):
             return None, "not_found"
         if amount:
             _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason)
+        if transaction_key:
+            c.execute(
+                """INSERT INTO points_transactions(
+                       transaction_key,operation,username,amount,points_after,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (transaction_key, "refund", username, amount, int(row["points"] or 0), int(time.time())),
+            )
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1718,16 +1787,21 @@ class H(BaseHTTPRequestHandler):
             if amount < 0:
                 return self._send(400, {"detail": "amount must be >= 0"})
             reason = str(d.get("reason") or "")   # 形如 job:collect#1354；老调用方不传就留空
+            transaction_key = d.get("transaction_key")
             try:
                 if p.endswith("/deduct"):
-                    points, err = deduct_points(username, amount, reason)
+                    points, err = deduct_points(username, amount, reason, transaction_key)
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount, reason)
+                    points, err = refund_points(username, amount, reason, transaction_key)
+                if err == "transaction_conflict":
+                    return self._send(409, {"detail": "transaction_key conflict"})
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception:
                 return self._send(500, {"detail": "points update failed"})
         if p == "/api/auth/register":

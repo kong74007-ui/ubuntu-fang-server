@@ -13,6 +13,8 @@ from typing import Any
 
 from . import ai_edit_v2_store as store
 from . import cos
+from . import ai_edit_v2_billing as billing
+from . import points
 from .ai_edit_v2_schema import (
     ASPECT_RATIOS,
     CREATION_MODES,
@@ -50,6 +52,7 @@ _EXTENSIONS = {
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
 }
+_points_client = points
 
 
 def _new_uuid() -> str:
@@ -226,22 +229,48 @@ def _list_materials(handler: Any, owner: str) -> bool:
     return _send(handler, 200, {"items": [_material_public(row) for row in rows]})
 
 
-def _validate_job_request(handler: Any) -> bool:
+def _validate_job_request(handler: Any, owner: str) -> bool:
     try:
         body = _read_body(handler)
-        validate_job_draft(body.get("draft"))
+        draft = body.get("draft")
+        validate_job_draft(draft)
+        quote_id = str(body.get("quote_id") or "").strip()
+        idempotency_key = str(body.get("idempotency_key") or "").strip()
+        if not quote_id or not idempotency_key:
+            raise ValueError("缺少报价或幂等键")
+        result = billing.precharge_and_create_job(
+            owner,
+            {"draft": draft},
+            quote_id,
+            idempotency_key,
+            _now(),
+            points_client=_points_client,
+            uuid_factory=_new_uuid,
+        )
+        return _send(
+            handler,
+            201,
+            {
+                "job_id": result["job"]["id"],
+                "status": result["job"]["status"],
+                "held_points": result["held_points"],
+            },
+        )
+    except billing.BillingError as exc:
+        return _send(handler, 409, {"detail": exc.code})
+    except points.AuthPointsError as exc:
+        return _send(handler, 402 if exc.status == 402 else 502, {"detail": exc.detail})
     except (TypeError, ValueError) as exc:
         return _send(handler, 400, {"detail": str(exc)})
-    return _send(handler, 503, {"detail": "V2计费与任务创建尚未启用"})
 
 
-def _validate_quote_request(handler: Any) -> bool:
+def _validate_quote_request(handler: Any, owner: str) -> bool:
     try:
         body = _read_body(handler)
-        validate_job_draft(body.get("draft"))
+        quote = billing.create_quote(owner, body.get("draft"), _now(), uuid_factory=_new_uuid)
+        return _send(handler, 201, {"quote": quote})
     except (TypeError, ValueError) as exc:
         return _send(handler, 400, {"detail": str(exc)})
-    return _send(handler, 503, {"detail": "V2动态计费尚未启用"})
 
 
 def _get_job(handler: Any, owner: str, job_id: str) -> bool:
@@ -283,14 +312,18 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         if old["status"] not in FAILURE_STATES:
             return _send(handler, 409, {"detail": "仅终态失败任务允许重试"})
         payload = json.loads(old["payload_json"])
-        successor = store.create_job(
+        now = _now()
+        quote = billing.create_quote(owner, payload["draft"], now, uuid_factory=_new_uuid)
+        result = billing.precharge_and_create_job(
             owner,
             payload,
-            "retry-" + _new_uuid(),
+            quote["id"],
             f"retry:{job_id}:{client_key}",
-            _now(),
+            now,
+            points_client=_points_client,
             uuid_factory=_new_uuid,
         )
+        successor = result["job"]
         return _send(
             handler,
             201,
@@ -343,9 +376,9 @@ def dispatch(
     if method == "POST" and upload_match:
         return _complete_upload(handler, owner, upload_match.group(1))
     if method == "POST" and path == API_PREFIX + "jobs":
-        return _validate_job_request(handler)
+        return _validate_job_request(handler, owner)
     if method == "POST" and path == API_PREFIX + "quotes":
-        return _validate_quote_request(handler)
+        return _validate_quote_request(handler, owner)
     job_match = _JOB_RE.fullmatch(path)
     if method == "GET" and job_match:
         return _get_job(handler, owner, job_match.group(1))

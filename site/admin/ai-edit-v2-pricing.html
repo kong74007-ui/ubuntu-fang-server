@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI 剪辑 V2 · 价格表</title>
+  <style>
+    :root{color-scheme:dark;--bg:#101412;--panel:#171d1a;--line:#334039;--gold:#f0be55;--muted:#9aa69f}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:#eef3ef;font:14px/1.55 system-ui,"PingFang SC",sans-serif}
+    main{max-width:1100px;margin:auto;padding:28px}header,.actions{display:flex;gap:12px;align-items:center;justify-content:space-between}
+    a{color:var(--gold)}section{margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+    textarea,input{width:100%;padding:10px;border:1px solid var(--line);border-radius:7px;background:#0d110f;color:#fff}
+    textarea{min-height:330px;font:13px/1.5 Consolas,monospace}label{display:block;margin:12px 0 6px;color:var(--muted)}
+    button{padding:10px 14px;border:1px solid var(--line);border-radius:7px;background:#26322c;color:#fff;cursor:pointer}
+    button.primary{background:var(--gold);color:#241900;font-weight:800}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .card{padding:12px;border:1px solid var(--line);border-radius:8px}.muted{color:var(--muted)}pre{white-space:pre-wrap;word-break:break-word}
+    @media(max-width:760px){.cards{grid-template-columns:1fr}header,.actions{align-items:stretch;flex-direction:column}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>AI 剪辑 V2 价格表</h1><div class="muted">草稿、分项预览、二次确认发布；已发布版本不可修改。</div></div><a href="/admin-console/">返回运营后台</a></header>
+  <section>
+    <h2>价格表预览</h2>
+    <label for="version">新版本号</label><input id="version" placeholder="例如 ai-edit-v2-price-2026-08-01">
+    <label for="config">价格配置 JSON</label><textarea id="config"></textarea>
+    <div class="actions"><button id="preview">预览三个典型场景</button><button id="save">保存为不可覆盖草稿</button></div>
+    <div id="scenarios" class="cards" style="margin-top:14px"></div>
+  </section>
+  <section>
+    <h2>发布版本</h2>
+    <p class="muted">二次确认必须完整输入：<b>发布 VERSION</b></p>
+    <label for="publishVersion">草稿版本号</label><input id="publishVersion">
+    <label for="confirmation">确认语</label><input id="confirmation" placeholder="发布 VERSION">
+    <button class="primary" id="publish">确认发布</button>
+  </section>
+  <section><h2>版本与审计状态</h2><pre id="versions">加载中…</pre></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+async function api(path,options={}){const r=await fetch(path,{credentials:'include',headers:{'Content-Type':'application/json'},...options});const data=await r.json();if(!r.ok)throw new Error(data.detail||`HTTP ${r.status}`);return data}
+function body(){return {version:$('version').value.trim(),config:JSON.parse($('config').value)}}
+async function load(){const data=await api('/api/admin/ai-edit-v2/pricing');if(!$('config').value)$('config').value=JSON.stringify(data.default_config,null,2);$('versions').textContent=JSON.stringify({active_version:data.active_version,versions:data.items},null,2)}
+$('preview').onclick=async()=>{try{const data=await api('/api/admin/ai-edit-v2/pricing/preview',{method:'POST',body:JSON.stringify(body())});$('scenarios').innerHTML=data.scenarios.map(x=>`<div class="card"><b>${x.creation_mode}</b><div>${x.duration_ms/1000} 秒</div><h3>${x.min_points}–${x.max_points} 点</h3><pre>${JSON.stringify(x.breakdown,null,2)}</pre></div>`).join('')}catch(e){alert(e.message)}};
+$('save').onclick=async()=>{try{await api('/api/admin/ai-edit-v2/pricing/drafts',{method:'POST',body:JSON.stringify(body())});await load()}catch(e){alert(e.message)}};
+$('publish').onclick=async()=>{try{await api('/api/admin/ai-edit-v2/pricing/publish',{method:'POST',body:JSON.stringify({version:$('publishVersion').value.trim(),confirmation:$('confirmation').value})});await load()}catch(e){alert(e.message)}};
+load().catch(e=>$('versions').textContent=e.message);
+</script>
+</body>
+</html>

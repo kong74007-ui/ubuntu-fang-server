@@ -2,8 +2,14 @@
 import math
 import os
 import time
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from contextlib import closing
 
-from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urllib, _ensure_column
+AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
+AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 
 # 各引擎的质量基价（点）。**1 点 = 0.1 元**，按上游官网价折算（汇率 7.1）。
 # gpt-image-2 按官方 $30/M image output token 实测（2026-07-10，读 API 返回的 usage）：
@@ -79,6 +85,9 @@ def cost_of(kind, body):
         else:
             duration = min(15, int(body.get("duration") or 10))
         return max(30, int(math.ceil(duration)) * 30)
+    # Legacy prices still live in core. Importing them only when this fallback is
+    # actually used keeps the points HTTP client independent from the API router.
+    from .core import COST
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):
@@ -125,7 +134,7 @@ def get_points(username):
     except Exception:
         return 0
 
-def deduct_points(username, amount, reason=""):
+def deduct_points(username, amount, reason="", transaction_key=None):
     """预扣点。reason 落 points_audit，供对账。
 
     注意：三个服务都是「先扣点、后 INSERT jobs 行」，所以扣点这一刻还没有 job_id，
@@ -136,16 +145,20 @@ def deduct_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/deduct",
-                               {"username": username, "amount": amount, "reason": reason})
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key is not None:
+        payload["transaction_key"] = transaction_key
+    res = _auth_points_request("/api/auth/points/deduct", payload)
     return int(res.get("points") or 0)
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=None):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/refund",
-                               {"username": username, "amount": amount, "reason": reason})
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key is not None:
+        payload["transaction_key"] = transaction_key
+    res = _auth_points_request("/api/auth/points/refund", payload)
     return int(res.get("points") or 0)
 
 def safe_refund_points(username, amount, reason=""):
@@ -194,6 +207,10 @@ def _history_status_label(status, refunded):
     return status or "未知"
 
 def history(username, days=30, kind="", page=1, page_size=20):
+    # History is the only points feature coupled to the legacy jobs database.
+    # Keep that dependency at the call boundary so core can safely import V2.
+    from .core import _ensure_column, jdb
+
     days = max(1, min(int(days or 30), 365))
     page = max(1, int(page or 1))
     page_size = max(5, min(int(page_size or 20), 50))

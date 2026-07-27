@@ -7,11 +7,51 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+server_dir = str(Path(__file__).resolve().parents[1] / "server")
+if server_dir not in sys.path:
+    sys.path.insert(0, server_dir)
+
 from server.content_domains import ai_edit_v2_api as api
 from server.content_domains import ai_edit_v2_store as store
 
 
 MB = 1024 * 1024
+
+
+def valid_api_draft():
+    return {
+        "creation_mode": "natural_brief",
+        "brief": "保留原任务输入",
+        "language": "zh-CN",
+        "aspect_ratio": "16:9",
+        "target_duration_ms": 30_000,
+        "main_input": {
+            "asset_id": "main",
+            "kind": "video",
+            "size_bytes": MB,
+            "duration_ms": 30_000,
+        },
+        "required_materials": [],
+        "reference_materials": [],
+    }
+
+
+class FakePoints:
+    def __init__(self):
+        self.balance = 500
+        self.transactions = {}
+
+    def deduct_points(self, username, amount, reason="", transaction_key=None):
+        if transaction_key not in self.transactions:
+            self.balance -= amount
+            self.transactions[transaction_key] = self.balance
+        return self.transactions[transaction_key]
+
+    def refund_points(self, username, amount, reason="", transaction_key=None):
+        if transaction_key not in self.transactions:
+            self.balance += amount
+            self.transactions[transaction_key] = self.balance
+        return self.transactions[transaction_key]
 
 
 class FakeHandler:
@@ -66,9 +106,12 @@ class ApiTests(unittest.TestCase):
             ],
         )
         self.uuid_patch.start()
+        self.points_patch = patch.object(api, "_points_client", FakePoints())
+        self.points_patch.start()
         self.user = {"username": "alice"}
 
     def tearDown(self):
+        self.points_patch.stop()
         self.uuid_patch.stop()
         self.cos_patch.stop()
         self.env.stop()
@@ -219,7 +262,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(capabilities["version"], "2.0")
         self.assertNotIn("provider", str(capabilities).lower())
 
-    def test_quote_route_validates_draft_before_billing_is_enabled(self):
+    def test_quote_route_creates_dynamic_quote(self):
         draft = {
             "creation_mode": "open_generation",
             "brief": "中文测试",
@@ -240,8 +283,29 @@ class ApiTests(unittest.TestCase):
             "POST", "/api/v2/edit/quotes", {"draft": draft}
         )
 
-        self.assertEqual(status, 503)
-        self.assertIn("计费", payload["detail"])
+        self.assertEqual(status, 201)
+        self.assertGreater(payload["quote"]["max_points"], 0)
+
+    def test_confirmed_quote_precharges_and_creates_job(self):
+        draft = valid_api_draft()
+        quote_status, quote_payload = self._dispatch(
+            "POST", "/api/v2/edit/quotes", {"draft": draft}
+        )
+
+        status, payload = self._dispatch(
+            "POST",
+            "/api/v2/edit/jobs",
+            {
+                "draft": draft,
+                "quote_id": quote_payload["quote"]["id"],
+                "idempotency_key": "confirm-1",
+            },
+        )
+
+        self.assertEqual(quote_status, 201)
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["status"], "created")
+        self.assertEqual(payload["held_points"], quote_payload["quote"]["max_points"])
 
     def test_job_status_is_owner_scoped(self):
         job = store.create_job(
@@ -270,7 +334,7 @@ class ApiTests(unittest.TestCase):
     def test_retry_creates_an_idempotent_successor_without_reviving_old_job(self):
         old = store.create_job(
             "alice",
-            {"draft": {"brief": "保留原任务输入"}},
+            {"draft": valid_api_draft()},
             "old-quote",
             "old-request",
             100,
@@ -304,7 +368,7 @@ class ApiTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(old_row["status"], "render_failed")
         self.assertEqual(successor["status"], "created")
-        self.assertEqual(json.loads(successor["payload_json"]), {"draft": {"brief": "保留原任务输入"}})
+        self.assertEqual(json.loads(successor["payload_json"]), {"draft": valid_api_draft()})
         self.assertNotEqual(successor["quote_id"], "old-quote")
 
     def test_retry_rejects_non_terminal_job(self):

@@ -28,6 +28,10 @@ try:
     from content_domains import feature_flags
 except ImportError:
     feature_flags = None
+try:
+    from content_domains import ai_edit_v2_billing
+except ImportError:
+    from .content_domains import ai_edit_v2_billing
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 
@@ -1241,6 +1245,96 @@ def save_feature(actor, body):
     return item
 
 
+def _ai_edit_price_audit(actor, action, target, detail, now):
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            (actor, action, target, json.dumps(detail, ensure_ascii=False), now),
+        )
+        c.commit()
+
+
+def _price_sample_draft(mode, duration_ms):
+    return {
+        "creation_mode": mode,
+        "brief": "AI video editing pricing preview",
+        "language": "zh-CN",
+        "aspect_ratio": "16:9",
+        "target_duration_ms": duration_ms,
+        "main_input": {
+            "asset_id": "pricing-preview",
+            "kind": "video",
+            "size_bytes": 1_000_000,
+            "duration_ms": duration_ms,
+        },
+        "required_materials": [],
+        "reference_materials": [],
+    }
+
+
+def preview_ai_edit_v2_pricing(body):
+    config = body.get("config") if isinstance(body, dict) else None
+    scenarios = []
+    for mode, duration_ms in (
+        ("natural_brief", 30_000),
+        ("platform_template", 60_000),
+        ("open_generation", 60_000),
+    ):
+        result = ai_edit_v2_billing.preview_price_config(
+            config, _price_sample_draft(mode, duration_ms)
+        )
+        scenarios.append({"creation_mode": mode, "duration_ms": duration_ms, **result})
+    return {"config": config, "scenarios": scenarios}
+
+
+def save_ai_edit_v2_price_draft(actor, body):
+    now = int(time.time())
+    try:
+        item = ai_edit_v2_billing.create_price_draft(
+            actor,
+            body.get("version"),
+            body.get("config"),
+            now,
+            pricing_db_path=str(ADMIN_DB),
+        )
+    except ai_edit_v2_billing.BillingError as exc:
+        raise ValueError(exc.code) from exc
+    _ai_edit_price_audit(
+        actor, "ai_edit_v2_price_draft_created", item["version"],
+        {"config": item["config"]}, now,
+    )
+    return item
+
+
+def publish_ai_edit_v2_price(actor, body):
+    now = int(time.time())
+    try:
+        item = ai_edit_v2_billing.publish_price_version(
+            actor,
+            str(body.get("version") or "").strip(),
+            str(body.get("confirmation") or ""),
+            now,
+            pricing_db_path=str(ADMIN_DB),
+        )
+    except ai_edit_v2_billing.BillingError as exc:
+        raise ValueError(exc.code) from exc
+    _ai_edit_price_audit(
+        actor, "ai_edit_v2_price_published", item["version"],
+        {"published_at": item["published_at"]}, now,
+    )
+    return item
+
+
+def load_ai_edit_v2_pricing():
+    items = ai_edit_v2_billing.list_price_versions(pricing_db_path=str(ADMIN_DB))
+    active = next((item for item in items if item["status"] == "published"), None)
+    return {
+        "items": items,
+        "active_version": active["version"] if active else ai_edit_v2_billing.PRICE_VERSION,
+        "default_config": ai_edit_v2_billing.default_price_config(),
+    }
+
+
 def _empty_stats(message=None):
     return {
         "days": 7,
@@ -1425,6 +1519,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
             return self._send(200, {"items": load_features()})
+        if path == "/api/admin/ai-edit-v2/pricing":
+            return self._send(200, load_ai_edit_v2_pricing())
         if path == "/api/admin/users":
             q = urllib.parse.urlparse(self.path).query
             suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
@@ -1544,6 +1640,27 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"detail": str(e)[:160] or "保存失败"})
             return self._send(200, {"ok": True, "feature": item})
+        if path == "/api/admin/ai-edit-v2/pricing/preview":
+            try:
+                return self._send(200, preview_ai_edit_v2_pricing(self._body()))
+            except (ValueError, ai_edit_v2_billing.BillingError) as e:
+                return self._send(400, {"detail": getattr(e, "code", str(e))})
+        if path == "/api/admin/ai-edit-v2/pricing/drafts":
+            try:
+                item = save_ai_edit_v2_price_draft(
+                    user.get("username") or "admin", self._body()
+                )
+                return self._send(201, {"price_version": item})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+        if path == "/api/admin/ai-edit-v2/pricing/publish":
+            try:
+                item = publish_ai_edit_v2_price(
+                    user.get("username") or "admin", self._body()
+                )
+                return self._send(200, {"price_version": item})
+            except ValueError as e:
+                return self._send(409, {"detail": str(e)})
         if path == "/api/admin/points/adjust":
             try:
                 return self._send(
