@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/content-api
+EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=/etc/huangque/ai-edit-v2.env
 ExecStart=/usr/bin/python3 /home/ubuntu/content-api/ai_edit_v2_worker.py
 Restart=always

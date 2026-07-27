@@ -213,7 +213,13 @@ class PipelineTests(unittest.TestCase):
         service = (root / "deploy/systemd/huangque-ai-edit-v2.service").read_text(encoding="utf-8")
         env_example = (root / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
         self.assertIn("ExecStart=/usr/bin/python3 /home/ubuntu/content-api/ai_edit_v2_worker.py", service)
+        self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", service)
+        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v2.env", service)
         self.assertIn("TimeoutStopSec=120", service)
+        drop_in = (
+            root / "deploy/systemd/huangque-content.service.d/ai-edit-v2.conf"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(drop_in.strip(), "[Service]\nEnvironmentFile=/etc/huangque/ai-edit-v2.env")
         self.assertIn("AI_EDIT_V2_ENABLED=0", env_example)
         self.assertIn("AI_EDIT_V2_WORKERS=5", env_example)
         self.assertIn("AI_EDIT_V2_NORMAL_TIMEOUT_SECONDS=2700", env_example)
