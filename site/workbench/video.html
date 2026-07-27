@@ -284,6 +284,16 @@
   .line-tab>span{font-size:11px;color:#8b97a8}
   .line-tab.active{border-color:#4fd1c5;background:rgba(79,209,197,.12);color:#fff}
   .line-tab.active>span{color:#a8d8d2}
+  .ai-edit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+  .ai-edit-block{border:1px solid rgba(148,164,187,.12);border-radius:12px;background:rgba(7,11,19,.26);padding:14px}
+  .ai-edit-style-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:10px}
+  .ai-edit-style{min-height:94px;padding:12px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.04);color:#94a4bb;text-align:left;font-family:inherit;cursor:pointer}
+  .ai-edit-style b{display:block;color:#eaf1fa;font-size:13px;margin-bottom:6px}.ai-edit-style span{font-size:11px;line-height:1.5}
+  .ai-edit-style.on{border-color:rgba(231,178,76,.5);background:rgba(231,178,76,.08)}.ai-edit-style.on b{color:#e7b24c}
+  .ai-edit-select{width:100%;min-height:42px;margin-top:9px;padding:9px 11px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:#0b1220;color:#eaf1fa;font:inherit;font-size:12.5px}
+  .ai-edit-switches{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:12px}
+  .ai-edit-check{display:flex;align-items:center;gap:8px;padding:10px;border:1px solid rgba(148,164,187,.12);border-radius:9px;color:#cbd5e1;font-size:12px}
+  @media (max-width:700px){.ai-edit-grid,.ai-edit-style-grid,.ai-edit-switches{grid-template-columns:1fr}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -306,6 +316,7 @@
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
+        <button class="function-tab" type="button" data-function="ai-edit" data-video-function="ai-edit">AI智能剪辑</button>
         <button class="function-tab" type="button" data-function="omni">欧米视频生成</button>
       </div>
 
@@ -770,6 +781,63 @@
         <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Seedance 2.0 Fast · 生成后自动保存到视频资产</div>
       </div>
 
+      <div id="aiEditPanel" class="function-panel motion-panel hidden" aria-labelledby="aiEditTitle">
+        <div class="row">
+          <div><div id="aiEditTitle" class="label">AI智能剪辑</div><div class="muted" style="font-size:12px;margin-top:6px;">选择已有口播素材或直传文件，由 AI 分析内容并完成云端剪辑</div></div>
+          <span class="faint" style="font-size:11.5px;">最长 10 分钟 · 输出 1080p</span>
+        </div>
+
+        <div class="ai-edit-grid">
+          <div class="ai-edit-block">
+            <div class="label">1. 选择源素材</div>
+            <div id="aiEditSourceType" class="seg" style="grid-template-columns:repeat(2,1fr);margin-top:10px;">
+              <button class="on" type="button" data-ai-edit-source="video">视频资产</button>
+              <button type="button" data-ai-edit-source="audio">音频资产</button>
+            </div>
+            <select id="aiEditSourceSelect" class="ai-edit-select" aria-label="选择已有源素材"><option value="">正在读取素材...</option></select>
+            <label class="file-row" style="margin-top:10px;">
+              <input id="aiEditUpload" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
+              <span id="aiEditUploadLabel">或从本地直传视频</span>
+            </label>
+            <div id="aiEditUploadProgress" class="faint" aria-live="polite" style="font-size:11px;margin-top:8px;">选择已有素材，或上传一个本地文件</div>
+          </div>
+
+          <div class="ai-edit-block">
+            <div class="label">2. 补充参考素材（可选）</div>
+            <select id="aiEditMaterials" class="ai-edit-select" multiple size="5" aria-label="选择补充素材">
+              <option disabled>暂无可复用的剪辑素材</option>
+            </select>
+            <div class="faint" style="font-size:11px;line-height:1.6;margin-top:8px;">按住 Ctrl / ⌘ 可多选。用户已有素材优先，缺失画面可由系统自动生成。</div>
+          </div>
+        </div>
+
+        <div class="ai-edit-block" style="margin-top:12px;">
+          <div class="label">3. 选择剪辑风格</div>
+          <div id="aiEditStyle" class="ai-edit-style-grid" role="radiogroup" aria-label="剪辑风格">
+            <button class="ai-edit-style on" type="button" data-ai-edit-style="knowledge_dynamic"><b>知识快讲</b><span>快速提炼观点，用标题卡强化信息密度</span></button>
+            <button class="ai-edit-style" type="button" data-ai-edit-style="product_story"><b>产品故事</b><span>围绕痛点、证据、过程和结果组织画面</span></button>
+            <button class="ai-edit-style" type="button" data-ai-edit-style="story_broll"><b>故事画面</b><span>用全画幅情绪素材承接叙事和转折</span></button>
+          </div>
+        </div>
+
+        <div class="ai-edit-block" style="margin-top:12px;">
+          <div class="label">4. 输出设置</div>
+          <div class="ai-edit-switches">
+            <label class="ai-edit-check" for="aiEditRatio">比例 <select id="aiEditRatio" style="margin-left:auto;background:#0b1220;color:#eaf1fa;border:0;"><option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option></select></label>
+            <label class="ai-edit-check" for="aiEditCaptions"><input id="aiEditCaptions" type="checkbox" checked> 自动字幕</label>
+            <label class="ai-edit-check" for="aiEditAutoAssets"><input id="aiEditAutoAssets" type="checkbox" checked> 缺图自动生成</label>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:14px;align-items:flex-end;">
+          <div><div id="aiEditCost" class="talking-cost">功能价格由服务器在提交时确认</div><div id="aiEditStatus" class="faint" aria-live="polite" style="font-size:11.5px;margin-top:6px;">请先选择或上传一条源素材</div></div>
+          <button id="aiEditRetry" class="hidden" type="button" style="height:42px;padding:0 16px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:transparent;color:#e7b24c;font:800 12px inherit;cursor:pointer;">重新提交</button>
+        </div>
+        <button id="aiEditSubmit" class="hv-lift" type="button" disabled style="width:100%;height:54px;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:not-allowed;opacity:.72;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          开始 AI 智能剪辑
+        </button>
+      </div>
+
       <div id="omniPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
@@ -818,6 +886,8 @@
 (function(){
   var token='__cookie__';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
+  var aiEditSourceType='video', aiEditSourceUploadId='', aiEditStyle='knowledge_dynamic', aiEditBusy=false, aiEditLoaded=false;
+  var aiEditAssets={video:[],audio:[]};
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
   var bgmData='', selectedBgmVolume=0.18;
@@ -1409,6 +1479,7 @@
     if(m==='grok') return '果肉视频';
     if(m==='micro') return '豆姐视频';
     if(m==='omni') return '欧米视频';
+    if(m==='ai_edit') return 'AI智能剪辑';
     return motionLabel((x&&x.motion)||'medium');
   }
   function videoDurationTag(x){
@@ -1446,6 +1517,15 @@
       tryon_running:{label:'换装生成中（较久）',step:3,percent:55,eta:'预计还需 2-5 分钟'},
       bg_running:{label:'换背景生成中（较久）',step:4,percent:80,eta:'预计还需 2-5 分钟'},
       downloading:{label:'下载成品',step:5,percent:94,eta:'即将完成'}
+      ,created:{label:'任务已创建',step:1,percent:8,eta:'等待开始'}
+      ,resolving_source:{label:'读取源素材',step:1,percent:14,eta:'正在分析媒体'}
+      ,transcribing:{label:'识别口播内容',step:2,percent:28,eta:'正在生成逐字时间轴'}
+      ,planning:{label:'生成剪辑方案',step:3,percent:42,eta:'AI 正在编排镜头'}
+      ,preparing_assets:{label:'准备补充素材',step:3,percent:58,eta:'优先匹配已有素材'}
+      ,rendering:{label:'云端渲染',step:4,percent:76,eta:'正在合成成片'}
+      ,recovering_render:{label:'恢复云端渲染',step:4,percent:78,eta:'正在恢复任务'}
+      ,transferring:{label:'转存成片',step:5,percent:92,eta:'即将完成'}
+      ,verifying:{label:'检查成片',step:5,percent:97,eta:'即将完成'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -1595,6 +1675,180 @@
         if(videoDrafts.length) renderVideoOutput();   // 历史拉不动，至少别把在飞的那条也弄没了
         else renderVideoHistoryState('生成记录加载失败',true);
       });
+  }
+
+  function aiEditHeaders(extra){
+    return Object.assign({Authorization:'Bearer '+token},extra||{});
+  }
+  function aiEditJson(url,options){
+    options=options||{};
+    options.cache='no-store';
+    options.headers=aiEditHeaders(options.headers);
+    return fetch(url,options).then(function(r){
+      return r.json().catch(function(){return {};}).then(function(d){
+        if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('请先登录');}
+        if(!r.ok){var e=new Error(d.detail||('请求失败（HTTP '+r.status+'）'));e.status=r.status;e.code=d.code||'';throw e;}
+        return d;
+      });
+    });
+  }
+  function setAiEditStatus(message,error){
+    var el=$('aiEditStatus');if(!el)return;
+    el.textContent=message||'';el.style.color=error?'#f4708a':'#5c6b82';
+  }
+  function aiEditAssetLabel(item,index){
+    var text=item.text||item.prompt||item.file||item.video_file||item.audio_file||('素材 '+(index+1));
+    return String(text).replace(/\s+/g,' ').slice(0,42);
+  }
+  function renderAiEditSourceOptions(){
+    var select=$('aiEditSourceSelect');if(!select)return;
+    var items=aiEditAssets[aiEditSourceType]||[];
+    select.innerHTML='<option value="">选择已有'+(aiEditSourceType==='video'?'视频':'音频')+'资产</option>'
+      +items.map(function(item,index){return '<option value="'+esc(item.id)+'">'+esc(aiEditAssetLabel(item,index))+'</option>';}).join('');
+    var upload=$('aiEditUpload'),label=$('aiEditUploadLabel');
+    if(upload){upload.value='';upload.accept=aiEditSourceType==='video'?'video/mp4,video/quicktime,video/webm':'audio/mpeg,audio/wav,audio/mp4';}
+    if(label)label.textContent='或从本地直传'+(aiEditSourceType==='video'?'视频':'音频');
+    aiEditSourceUploadId='';
+    setAiEditStatus(items.length?'请选择一条已有素材，或上传本地文件':'暂无已有素材，可从本地直接上传');
+    syncAiEditSubmit();
+  }
+  function renderAiEditStyles(styles){
+    (styles||[]).forEach(function(style){
+      var button=document.querySelector('[data-ai-edit-style="'+String(style.id||'').replace(/"/g,'\\"')+'"]');
+      if(!button)return;
+      button.innerHTML='<b>'+esc(style.name||style.id)+'</b><span>'+esc(style.description||'')+'</span>';
+    });
+  }
+  function renderAiEditMaterials(materials){
+    var select=$('aiEditMaterials');if(!select)return;
+    var items=(materials||[]).filter(function(x){return x&&x.id&&x.status==='ready';});
+    select.innerHTML=items.length?items.map(function(item,index){return '<option value="'+esc(item.id)+'">'+esc(item.name||item.title||item.role||('剪辑素材 '+(index+1)))+'</option>';}).join(''):'<option disabled>暂无可复用的剪辑素材</option>';
+  }
+  function loadAiEditAssets(){
+    if(aiEditLoaded)return;
+    aiEditLoaded=true;
+    setAiEditStatus('正在读取可用素材和剪辑风格...');
+    Promise.all([
+      aiEditJson('/api/gen/video/assets?limit=30'),
+      aiEditJson('/api/gen/audio/assets?limit=30'),
+      aiEditJson('/api/v1/edit/styles')
+    ]).then(function(results){
+      aiEditAssets.video=(results[0].items||[]).filter(function(x){return x&&x.id&&x.status==='done'&&x.video_file;});
+      aiEditAssets.audio=(results[1].items||[]).filter(function(x){return x&&x.id&&x.file;});
+      renderAiEditStyles(results[2].styles||[]);
+      renderAiEditMaterials(results[2].materials||[]);
+      if(results[2].cost!=null)$('aiEditCost').textContent='功能单价 '+results[2].cost+' 点/条 · 失败自动退点';
+      renderAiEditSourceOptions();
+    }).catch(function(error){
+      aiEditLoaded=false;setAiEditStatus(error.message||'素材读取失败，请稍后重试',true);
+    });
+  }
+  function setAiEditStyle(next){
+    aiEditStyle=next||'knowledge_dynamic';
+    document.querySelectorAll('[data-ai-edit-style]').forEach(function(button){
+      var selected=button.dataset.aiEditStyle===aiEditStyle;
+      button.classList.toggle('on',selected);button.setAttribute('aria-checked',selected?'true':'false');
+    });
+  }
+  function syncAiEditSubmit(){
+    var ready=!!aiEditSourceUploadId||!!(($('aiEditSourceSelect')||{}).value);
+    var button=$('aiEditSubmit');if(!button)return;
+    button.disabled=!ready||aiEditBusy;
+    button.style.opacity=button.disabled?'.72':'1';button.style.cursor=button.disabled?'not-allowed':'pointer';
+  }
+  function aiEditUploadFile(file){
+    if(!file)return;
+    var allowed=aiEditSourceType==='video'?['video/mp4','video/quicktime','video/webm']:['audio/mpeg','audio/wav','audio/mp4'];
+    if(allowed.indexOf(file.type)<0){setAiEditStatus('文件格式不支持，请重新选择',true);return;}
+    if(!file.size||file.size>1024*1024*1024){setAiEditStatus('文件大小必须在 1GiB 以内',true);return;}
+    aiEditBusy=true;aiEditSourceUploadId='';syncAiEditSubmit();setAiEditStatus('正在申请安全上传地址...');
+    aiEditJson('/api/v1/edit/uploads',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content_type:file.type,size_bytes:file.size})
+    }).then(function(upload){
+      setAiEditStatus('正在直传源素材，请勿关闭页面...');
+      return fetch(upload.put_url,{method:'PUT',headers:upload.headers||{'Content-Type':file.type},body:file,credentials:'omit'})
+        .then(function(r){if(!r.ok)throw new Error('源素材上传失败（HTTP '+r.status+'）');return upload.upload_id;});
+    }).then(function(uploadId){
+      return aiEditJson('/api/v1/edit/uploads/'+encodeURIComponent(uploadId)+'/complete',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+      }).then(function(){return uploadId;});
+    }).then(function(uploadId){
+      aiEditSourceUploadId=uploadId;if($('aiEditSourceSelect'))$('aiEditSourceSelect').value='';
+      setAiEditStatus('本地素材已上传完成，可以开始剪辑');
+    }).catch(function(error){
+      setAiEditStatus(error.message||'上传失败，请重新选择文件',true);
+    }).finally(function(){aiEditBusy=false;syncAiEditSubmit();});
+  }
+  function newAiEditIdempotencyKey(){
+    return window.crypto&&crypto.randomUUID?crypto.randomUUID():('edit-'+Date.now()+'-'+Math.random().toString(16).slice(2));
+  }
+  function aiEditSubmitPayload(){
+    var payload={style:aiEditStyle,ratio:($('aiEditRatio')||{}).value||'9:16',captions:!!(($('aiEditCaptions')||{}).checked),auto_assets:!!(($('aiEditAutoAssets')||{}).checked)};
+    if(aiEditSourceUploadId)payload.source_upload_id=aiEditSourceUploadId;
+    else{
+      var assetId=Number(($('aiEditSourceSelect')||{}).value||0);
+      if(aiEditSourceType==='video')payload.source_video_asset_id=assetId;
+      else payload.source_audio_asset_id=assetId;
+    }
+    var selected=Array.prototype.filter.call(($('aiEditMaterials')||{}).options||[],function(option){return option.selected&&!option.disabled;}).map(function(option){return option.value;});
+    if(selected.length)payload.material_ids=selected;
+    return payload;
+  }
+  function showAiEditRetry(show){
+    var retry=$('aiEditRetry');if(retry)retry.classList.toggle('hidden',!show);
+  }
+  function pollAiEditJob(id,tries){
+    aiEditJson('/api/v1/edit/jobs/'+encodeURIComponent(id)).then(function(job){
+      var phase=job.phase||(job.edit&&job.edit.stage)||'created';
+      if(job.status==='done'&&job.result){
+        var result=typeof job.result==='string'?JSON.parse(job.result):job.result;
+        result.phase='done';result.mode='ai_edit';
+        trackVideoJob(id,{status:'done',phase:'done',mode:'ai_edit',modeLabel:'AI智能剪辑'});
+        aiEditBusy=false;setBusy(false);currentVideoDraft=null;showAiEditRetry(false);
+        videoHistoryItems.unshift(Object.assign({created_at:Math.floor(Date.now()/1000),job_id:String(id)},result));
+        renderVideoDrafts([]);setTimeout(loadVideoHistory,800);refreshVideoPoints();
+        setAiEditStatus('剪辑完成，成片已保存到视频资产');syncAiEditSubmit();return;
+      }
+      if(job.status==='error'||job.status==='failed'){
+        var terminal=new Error(job.error||(job.edit&&job.edit.error_detail)||'剪辑失败');terminal.jobTerminal=true;throw terminal;
+      }
+      trackVideoJob(id,{status:job.status||'running',phase:phase,mode:'ai_edit',modeLabel:'AI智能剪辑'});
+      updateJobProgress(Object.assign({},job,{phase:phase}));
+      setAiEditStatus(phaseInfo(phase,job.status).label+' · 任务 #'+id);
+      if(tries<600)setTimeout(function(){pollAiEditJob(id,tries+1);},3000);
+      else throw new Error('前台轮询已结束，任务仍在后台处理');
+    }).catch(function(error){
+      if(error&&error.jobTerminal){
+        trackVideoJob(id,{status:'failed',lastError:error.message||'剪辑失败',mode:'ai_edit'});
+        aiEditBusy=false;setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
+        setAiEditStatus((error.message||'剪辑失败')+'；点数已自动退还',true);refreshVideoPoints();showAiEditRetry(true);syncAiEditSubmit();
+      }else if(tries<600){
+        setAiEditStatus('连接暂时中断，正在继续查询任务 #'+id+'...',true);
+        setTimeout(function(){pollAiEditJob(id,tries+1);},3000);
+      }else{
+        aiEditBusy=false;setBusy(false);setAiEditStatus(error.message||'任务仍在后台处理',true);syncAiEditSubmit();
+      }
+    });
+  }
+  function submitAiEdit(){
+    if(aiEditBusy)return;
+    var payload=aiEditSubmitPayload();
+    if(!payload.source_upload_id&&!payload.source_video_asset_id&&!payload.source_audio_asset_id){setAiEditStatus('请先选择或上传一条源素材',true);return;}
+    aiEditBusy=true;showAiEditRetry(false);syncAiEditSubmit();setBusy(true);setAiEditStatus('正在提交 AI 智能剪辑任务...');
+    currentVideoDraft={mode:'ai_edit',text:'AI智能剪辑',ratio:payload.ratio,resolution:'1080p',status:'processing',phase:'created',created_at:Math.floor(Date.now()/1000)};
+    renderVideoDrafts([currentVideoDraft]);
+    aiEditJson('/api/v1/edit/jobs',{
+      method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':newAiEditIdempotencyKey()},body:JSON.stringify(payload)
+    }).then(function(response){
+      if(!response.job_id)throw new Error(response.detail||'提交失败');
+      $('aiEditCost').textContent='本次总价 '+response.cost+' 点 · 失败自动退点';
+      setAiEditStatus('任务已提交，正在分析源素材...');refreshVideoPoints();
+      trackVideoJob(response.job_id,{status:'queued',phase:'created',label:'AI智能剪辑',mode:'ai_edit',modeLabel:'AI智能剪辑',ratio:payload.ratio});
+      pollAiEditJob(response.job_id,0);
+    }).catch(function(error){
+      aiEditBusy=false;setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
+      setAiEditStatus(error.message||'提交失败',true);showAiEditRetry(true);syncAiEditSubmit();
+    });
   }
   function selectMotionAvatar(id){
     selectedMotionAvatarId=id||null;
@@ -2143,6 +2397,7 @@
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
+    if($('aiEditPanel')) $('aiEditPanel').classList.toggle('hidden',videoFunction!=='ai-edit');
     if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
     // 面板 hidden 的时候量不到卡片高度（getBoundingClientRect 全是 0），刚显示出来要重量一次，
     // 否则那个面板里的形象网格是不受限的 —— 形象一多就又拉长了
@@ -2161,6 +2416,10 @@
     }else if(videoFunction==='micro'){
       $('modeSummary').textContent='豆姐视频（Seedance 2.0 Fast）：输入提示词，或上传参考图做图生视频';
       if($('modeName')) $('modeName').textContent='豆姐视频';
+    }else if(videoFunction==='ai-edit'){
+      $('modeSummary').textContent='选择口播视频或音频素材，由 AI 分析内容并一键完成剪辑';
+      if($('modeName')) $('modeName').textContent='AI智能剪辑';
+      loadAiEditAssets();
     }else if(videoFunction==='omni'){
       $('modeSummary').textContent='欧米视频（Omni Fast）：约100秒快出片，输入提示词或上传参考图生成';
       if($('modeName')) $('modeName').textContent='欧米视频';
@@ -2304,6 +2563,23 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
+  document.querySelectorAll('[data-ai-edit-source]').forEach(function(button){
+    button.onclick=function(){
+      aiEditSourceType=button.dataset.aiEditSource;
+      document.querySelectorAll('[data-ai-edit-source]').forEach(function(item){item.classList.toggle('on',item===button);});
+      document.querySelectorAll('[data-ai-edit-style]').forEach(function(styleButton){
+        styleButton.disabled=aiEditSourceType==='audio'&&styleButton.dataset.aiEditStyle!=='story_broll';
+        styleButton.style.opacity=styleButton.disabled?'.45':'1';
+      });
+      if(aiEditSourceType==='audio')setAiEditStyle('story_broll');
+      renderAiEditSourceOptions();
+    };
+  });
+  document.querySelectorAll('[data-ai-edit-style]').forEach(function(button){button.onclick=function(){if(!button.disabled)setAiEditStyle(button.dataset.aiEditStyle);};});
+  if($('aiEditSourceSelect'))$('aiEditSourceSelect').onchange=function(){if(this.value){aiEditSourceUploadId='';setAiEditStatus('已选择已有素材，可以开始剪辑');}syncAiEditSubmit();};
+  if($('aiEditUpload'))$('aiEditUpload').onchange=function(){var file=this.files&&this.files[0];if(file)aiEditUploadFile(file);};
+  if($('aiEditSubmit'))$('aiEditSubmit').onclick=submitAiEdit;
+  if($('aiEditRetry'))$('aiEditRetry').onclick=function(){showAiEditRetry(false);submitAiEdit();};
   function applyTryonDurationOptions(){
     var allowed=tryonIsLine2()?[5,6,10,15]:[3,5,6];
     if(allowed.indexOf(selectedTryonSeconds)<0) selectedTryonSeconds=6;
