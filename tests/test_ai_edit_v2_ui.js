@@ -43,6 +43,8 @@ test('page implements draft quote confirmation upload retry and job polling', ()
   assert.match(page, /files\.length>10/);
   assert.match(page, /setInterval\(pollJob/);
   assert.match(page, /state\.jobRequestKey/);
+  assert.match(page, /sessionStorage/);
+  assert.match(page, /billing_pending/);
 });
 
 test('user page does not expose provider internals or an editable timeline', () => {

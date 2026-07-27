@@ -13,6 +13,7 @@ if server_dir not in sys.path:
 
 from server.content_domains import ai_edit_v2_api as api
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains import points
 
 
 MB = 1024 * 1024
@@ -53,6 +54,10 @@ class FakePoints:
             self.transactions[transaction_key] = self.balance
         return self.transactions[transaction_key]
 
+
+class PendingPoints(FakePoints):
+    def deduct_points(self, username, amount, reason="", transaction_key=None):
+        raise points.AuthPointsError(502, "auth response unavailable")
 
 class FakeHandler:
     def __init__(self, body=None, token="token"):
@@ -353,6 +358,27 @@ class ApiTests(unittest.TestCase):
                 (payload["job_id"],),
             ).fetchall()
         self.assertEqual([(row["material_id"], row["purpose"]) for row in bound], [(1, "primary")])
+
+    def test_ambiguous_precharge_returns_queryable_pending_job(self):
+        draft = valid_api_draft()
+        _, quote_payload = self._dispatch(
+            "POST", "/api/v2/edit/quotes", {"draft": draft}
+        )
+        with patch.object(api, "_points_client", PendingPoints()):
+            status, payload = self._dispatch(
+                "POST",
+                "/api/v2/edit/jobs",
+                {
+                    "draft": draft,
+                    "quote_id": quote_payload["quote"]["id"],
+                    "idempotency_key": "pending-1",
+                },
+            )
+
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["status"], "billing_pending")
+        self.assertEqual(payload["billing_status"], "pending")
+        self.assertTrue(payload["job_id"])
 
     def test_job_status_is_owner_scoped(self):
         job = store.create_job(

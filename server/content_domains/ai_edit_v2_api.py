@@ -322,6 +322,18 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
                 "held_points": result["held_points"],
             },
         )
+    except billing.PrechargePending as exc:
+        return _send(
+            handler,
+            202,
+            {
+                "job_id": exc.job_id,
+                "status": "billing_pending",
+                "billing_status": "pending",
+                "held_points": exc.held_points,
+                "retry_after_seconds": 3,
+            },
+        )
     except billing.BillingError as exc:
         return _send(handler, 409, {"detail": exc.code})
     except points.AuthPointsError as exc:
@@ -347,6 +359,11 @@ def _get_job(handler: Any, owner: str, job_id: str) -> bool:
         ).fetchone()
     if row is None:
         return _send(handler, 404, {"detail": "任务不存在"})
+    with closing(store.open_store(store._db_path())) as conn:
+        bill = conn.execute(
+            "SELECT status,amount FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+            (job_id,),
+        ).fetchone()
     return _send(
         handler,
         200,
@@ -361,6 +378,10 @@ def _get_job(handler: Any, owner: str, job_id: str) -> bool:
                 "updated_at": row["updated_at"],
             },
             "timing": pipeline.timing_status(job_id, _now(), db_path=store._db_path()),
+            "billing": {
+                "status": bill["status"] if bill else None,
+                "held_points": int(bill["amount"]) if bill else 0,
+            },
         },
     )
 

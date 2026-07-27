@@ -44,6 +44,13 @@ class BillingError(RuntimeError):
         super().__init__(code)
 
 
+class PrechargePending(BillingError):
+    def __init__(self, job_id: str, held_points: int):
+        super().__init__("billing_pending")
+        self.job_id = job_id
+        self.held_points = held_points
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -440,7 +447,8 @@ def precharge_and_create_job(
         except Exception as exc:
             if _is_definitive_points_rejection(exc):
                 _reject_precharge(bill, exc, now, db_path)
-            raise
+                raise
+            raise PrechargePending(job["id"], int(bill["amount"])) from exc
         with closing(store.open_store(store._db_path(db_path))) as conn:
             conn.execute(
                 """UPDATE edit_v2_billing SET status='held',response_json=?,updated_at=?

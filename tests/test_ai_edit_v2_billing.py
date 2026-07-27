@@ -220,8 +220,9 @@ class BillingTests(unittest.TestCase):
             "uuid_factory": lambda: "job-crash",
         }
 
-        with self.assertRaises(points.AuthPointsError):
+        with self.assertRaises(billing.PrechargePending) as pending:
             billing.precharge_and_create_job(now=101, **kwargs)
+        self.assertEqual(pending.exception.job_id, "job-crash")
         billing.precharge_and_create_job(now=102, **kwargs)
         self.assertEqual(fake_points.balance, 500 - quote["max_points"])
 
