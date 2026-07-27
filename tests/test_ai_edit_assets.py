@@ -12,7 +12,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import audio, cos, video
+from content_domains import ai_edit_assets, ai_edit_store, audio, cos, video
 
 
 class _RemoteResponse:
@@ -155,6 +155,119 @@ class AiEditAssetTests(unittest.TestCase):
                 cos.transfer_remote(
                     "https://provider.example/out.mp4", "out.mp4", max_bytes=10
                 )
+
+
+class AiEditMaterialResolverTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = pathlib.Path(self.tmp.name) / "ai_edit.db"
+        self.env = mock.patch.dict(os.environ, {"AI_EDIT_DB": str(self.db)})
+        self.env.start()
+        ai_edit_store.create_edit_job(
+            self.db, 10, "fang", "product_story", "shotstack", 30
+        )
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_vtt_uses_word_timestamps(self):
+        vtt = ai_edit_assets.words_to_vtt(
+            [
+                {"begin_time": 100, "end_time": 500, "text": "你好"},
+                {"begin_time": 500, "end_time": 900, "text": "黄雀"},
+            ]
+        )
+        self.assertTrue(vtt.startswith("WEBVTT\n"))
+        self.assertIn("00:00:00.100 --> 00:00:00.900", vtt)
+        self.assertIn("你好黄雀", vtt)
+
+    @mock.patch("content_domains.ai_edit_assets._generate_image")
+    def test_user_material_wins_over_generation(self, generate):
+        plan = {
+            "material_requests": [
+                {"role": "product", "kind": "image", "prompt": "产品展示"}
+            ]
+        }
+        result = ai_edit_assets.resolve_materials(
+            10,
+            "fang",
+            plan,
+            [
+                {
+                    "id": "mine",
+                    "role": "product",
+                    "kind": "image",
+                    "origin": "uploaded",
+                    "cos_key": "edit-input/fang/product.png",
+                }
+            ],
+            lambda _stage: None,
+        )
+        self.assertEqual("uploaded", result["product"]["origin"])
+        generate.assert_not_called()
+
+    @mock.patch("content_domains.ai_edit_assets._generate_image")
+    def test_generates_only_missing_roles_and_persists_material(self, generate):
+        generate.return_value = {
+            "url": "https://cos.example/generated.png",
+            "cos_key": "edit/fang/10/generated/scene.png",
+            "content_type": "image/png",
+            "size_bytes": 321,
+        }
+        heartbeat = mock.Mock()
+        result = ai_edit_assets.resolve_materials(
+            10,
+            "fang",
+            {
+                "material_requests": [
+                    {"role": "scene", "kind": "image", "prompt": "城市夜景"}
+                ]
+            },
+            [],
+            heartbeat,
+        )
+        self.assertEqual(1, generate.call_count)
+        self.assertEqual("generated", result["scene"]["origin"])
+        heartbeat.assert_called_once_with("generating_assets")
+        with closing(sqlite3.connect(self.db)) as connection:
+            row = connection.execute(
+                "SELECT origin,status,role FROM edit_materials"
+            ).fetchone()
+        self.assertEqual(("generated", "ready", "scene"), row)
+
+    @mock.patch("content_domains.ai_edit_assets._generate_image")
+    def test_rejects_more_than_eight_generated_images(self, generate):
+        requests = [
+            {"role": "role-%d" % index, "kind": "image", "prompt": "画面"}
+            for index in range(9)
+        ]
+        with self.assertRaisesRegex(ValueError, "8"):
+            ai_edit_assets.resolve_materials(
+                10, "fang", {"material_requests": requests}, [], lambda _stage: None
+            )
+        generate.assert_not_called()
+
+    @mock.patch("content_domains.ai_edit_assets.cos.put_bytes")
+    def test_uploads_word_timed_vtt_without_exposing_it_as_material_role(self, put_bytes):
+        put_bytes.return_value = "https://cos.example/captions.vtt"
+        result = ai_edit_assets.resolve_materials(
+            10,
+            "fang",
+            {
+                "material_requests": [],
+                "_words": [
+                    {"begin_time": 0, "end_time": 500, "text": "黄雀"}
+                ],
+            },
+            [],
+            lambda _stage: None,
+        )
+        self.assertEqual(
+            "edit/fang/10/captions.vtt", result["_captions"]["cos_key"]
+        )
+        self.assertIn(b"WEBVTT", put_bytes.call_args.args[0])
+        self.assertTrue(put_bytes.call_args.kwargs["private"])
 
 
 if __name__ == "__main__":
