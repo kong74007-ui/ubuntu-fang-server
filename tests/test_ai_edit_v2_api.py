@@ -2,7 +2,9 @@ import os
 import json
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -512,6 +514,73 @@ class ApiTests(unittest.TestCase):
         with closing(store.open_store(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
+
+    def test_concurrent_identical_retries_return_one_successor_and_charge_once(self):
+        old = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_jobs SET status='render_failed' WHERE id=?", (old["id"],))
+            conn.commit()
+        barrier = threading.Barrier(2)
+        original_create_quote = api.billing.create_quote
+
+        def synchronized_create_quote(*args, **kwargs):
+            barrier.wait(timeout=5)
+            return original_create_quote(*args, **kwargs)
+
+        body = {"idempotency_key": "same-retry"}
+        with patch.object(api.billing, "create_quote", side_effect=synchronized_create_quote):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(
+                        self._dispatch,
+                        "POST",
+                        f"/api/v2/edit/jobs/{old['id']}/retry",
+                        body,
+                    )
+                    for _ in range(2)
+                ]
+                responses = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual([status for status, _payload in responses], [201, 201])
+        job_ids = {payload["job_id"] for _status, payload in responses}
+        self.assertEqual(len(job_ids), 1)
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 1)
+            charged = conn.execute(
+                "SELECT amount FROM edit_v2_billing WHERE operation='hold'"
+            ).fetchone()["amount"]
+        self.assertEqual(len(api._points_client.transactions), 1)
+        self.assertEqual(api._points_client.balance, 500 - charged)
+
+    def test_retry_replay_returns_existing_successor_after_material_is_deleted(self):
+        old = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_jobs SET status='render_failed' WHERE id=?", (old["id"],))
+            conn.commit()
+        body = {"idempotency_key": "replay-after-delete"}
+        first_status, first = self._dispatch(
+            "POST", f"/api/v2/edit/jobs/{old['id']}/retry", body
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_materials SET status='deleted' WHERE id=1")
+            conn.commit()
+
+        replay_status, replay = self._dispatch(
+            "POST", f"/api/v2/edit/jobs/{old['id']}/retry", body
+        )
+
+        self.assertEqual(first_status, 201)
+        self.assertEqual(replay_status, 201)
+        self.assertEqual(replay["job_id"], first["job_id"])
 
     def test_retry_rejects_non_terminal_job(self):
         old = store.create_job(

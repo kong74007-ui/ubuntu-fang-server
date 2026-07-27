@@ -251,25 +251,36 @@ def create_quote(
     maximum = preview["max_points"]
     quote_id = str(uuid_factory())
     expires_at = now + QUOTE_TTL_SECONDS
-    with closing(store.open_store(store._db_path(db_path))) as conn:
-        conn.execute(
-            """INSERT INTO edit_v2_quotes(
-                   id,owner,draft_hash,min_points,max_points,breakdown_json,
-                   price_version,expires_at,created_at
-               ) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (
-                quote_id,
-                owner,
-                _draft_hash(draft),
-                minimum,
-                maximum,
-                _canonical(breakdown),
-                price_version,
-                expires_at,
-                now,
-            ),
-        )
-        row = conn.execute("SELECT * FROM edit_v2_quotes WHERE id=?", (quote_id,)).fetchone()
+    draft_hash = _draft_hash(draft)
+    try:
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            conn.execute(
+                """INSERT INTO edit_v2_quotes(
+                       id,owner,draft_hash,min_points,max_points,breakdown_json,
+                       price_version,expires_at,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    quote_id,
+                    owner,
+                    draft_hash,
+                    minimum,
+                    maximum,
+                    _canonical(breakdown),
+                    price_version,
+                    expires_at,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM edit_v2_quotes WHERE id=?", (quote_id,)
+            ).fetchone()
+    except sqlite3.IntegrityError as exc:
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            row = conn.execute(
+                "SELECT * FROM edit_v2_quotes WHERE id=?", (quote_id,)
+            ).fetchone()
+        if row is None or row["owner"] != owner or row["draft_hash"] != draft_hash:
+            raise BillingError("quote_id_conflict") from exc
     return _quote_public(row)
 
 

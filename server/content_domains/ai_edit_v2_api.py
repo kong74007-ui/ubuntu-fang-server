@@ -401,6 +401,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         client_key = str(body.get("idempotency_key") or "").strip()
         if not client_key or len(client_key) > 160:
             raise ValueError("重试请求必须提供有效幂等键")
+        retry_key = f"retry:{job_id}:{client_key}"
         with closing(store.open_store(store._db_path())) as conn:
             old = conn.execute(
                 "SELECT * FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
@@ -410,8 +411,48 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                    WHERE job_id=? ORDER BY material_id,purpose""",
                 (job_id,),
             ).fetchall()
+            existing_successor = conn.execute(
+                "SELECT * FROM edit_v2_jobs WHERE owner=? AND idempotency_key=?",
+                (owner, retry_key),
+            ).fetchone()
+            successor_bindings = (
+                conn.execute(
+                    """SELECT material_id,purpose FROM edit_v2_job_materials
+                       WHERE job_id=? ORDER BY material_id,purpose""",
+                    (existing_successor["id"],),
+                ).fetchall()
+                if existing_successor is not None
+                else []
+            )
         if old is None:
             return _send(handler, 404, {"detail": "任务不存在"})
+        now = _now()
+        if existing_successor is not None:
+            payload = json.loads(existing_successor["payload_json"])
+            bindings = [
+                {"material_id": int(row["material_id"]), "purpose": row["purpose"]}
+                for row in successor_bindings
+            ]
+            result = billing.precharge_and_create_job(
+                owner,
+                payload,
+                existing_successor["quote_id"],
+                retry_key,
+                now,
+                points_client=_points_client,
+                uuid_factory=_new_uuid,
+                material_bindings=bindings,
+            )
+            successor = result["job"]
+            return _send(
+                handler,
+                201,
+                {
+                    "job_id": successor["id"],
+                    "predecessor_job_id": job_id,
+                    "status": successor["status"],
+                },
+            )
         if old["status"] not in FAILURE_STATES:
             return _send(handler, 409, {"detail": "仅终态失败任务允许重试"})
         payload = json.loads(old["payload_json"])
@@ -426,17 +467,11 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         if current_bindings != expected_bindings:
             raise ValueError("retry_material_bindings_mismatch")
         payload = {"draft": draft}
-        now = _now()
-        retry_key = f"retry:{job_id}:{client_key}"
-        with closing(store.open_store(store._db_path())) as conn:
-            existing_successor = conn.execute(
-                "SELECT quote_id FROM edit_v2_jobs WHERE owner=? AND idempotency_key=?",
-                (owner, retry_key),
-            ).fetchone()
-        quote = (
-            {"id": existing_successor["quote_id"]}
-            if existing_successor is not None
-            else billing.create_quote(owner, draft, now, uuid_factory=_new_uuid)
+        quote_id = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"ai-edit-v2:{owner}:{retry_key}:quote")
+        )
+        quote = billing.create_quote(
+            owner, draft, now, uuid_factory=lambda: quote_id
         )
         result = billing.precharge_and_create_job(
             owner,
