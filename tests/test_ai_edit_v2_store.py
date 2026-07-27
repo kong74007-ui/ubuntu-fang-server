@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -45,6 +46,24 @@ class StoreTests(unittest.TestCase):
             now,
         )
 
+    def _create_v1_jobs_table(self, path, *, wal=False):
+        with closing(sqlite3.connect(path)) as conn:
+            if wal:
+                conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """CREATE TABLE edit_v2_jobs(
+                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
+                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                       director_plan_json TEXT,
+                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
+                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
+                       output_cos_key TEXT,
+                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                       UNIQUE(owner,idempotency_key)
+                   )"""
+            )
+
     def _queue(self, job_id):
         with closing(store.open_store(self.db_path)) as conn:
             conn.execute(
@@ -72,20 +91,7 @@ class StoreTests(unittest.TestCase):
 
     def test_init_db_migrates_existing_jobs_to_explicit_predecessor_links(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v1.db")
-        with closing(store.open_store(legacy_path)) as conn:
-            conn.execute(
-                """CREATE TABLE edit_v2_jobs(
-                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
-                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
-                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
-                       director_plan_json TEXT,
-                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
-                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
-                       output_cos_key TEXT,
-                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                       UNIQUE(owner,idempotency_key)
-                   )"""
-            )
+        self._create_v1_jobs_table(legacy_path)
 
         store.init_db(legacy_path)
 
@@ -98,45 +104,38 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(version, 2)
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
-        for attempt in range(50):
-            legacy_path = os.path.join(
-                self.temp_dir.name, f"concurrent-v1-{attempt}.db"
-            )
-            with closing(store.open_store(legacy_path)) as conn:
-                conn.execute(
-                    """CREATE TABLE edit_v2_jobs(
-                           id TEXT PRIMARY KEY, owner TEXT NOT NULL,
-                           idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
-                           status TEXT NOT NULL, payload_json TEXT NOT NULL,
-                           director_plan_json TEXT,
-                           checkpoint_json TEXT NOT NULL DEFAULT '[]',
-                           lease_owner TEXT, lease_until INTEGER, error_code TEXT,
-                           output_cos_key TEXT,
-                           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                           UNIQUE(owner,idempotency_key)
-                       )"""
+        for scenario in ("new", "delete_v1", "wal_v1"):
+            for attempt in range(50):
+                legacy_path = os.path.join(
+                    self.temp_dir.name, f"concurrent-{scenario}-{attempt}.db"
                 )
-            barrier = threading.Barrier(2)
+                if scenario != "new":
+                    self._create_v1_jobs_table(
+                        legacy_path, wal=scenario == "wal_v1"
+                    )
+                barrier = threading.Barrier(2)
 
-            def initialize_together():
-                barrier.wait(timeout=5)
-                store.init_db(legacy_path)
+                def initialize_together():
+                    barrier.wait(timeout=5)
+                    store.init_db(legacy_path)
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = [executor.submit(initialize_together) for _ in range(2)]
-                for future in futures:
-                    future.result(timeout=10)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(initialize_together) for _ in range(2)
+                    ]
+                    for future in futures:
+                        future.result(timeout=15)
 
-            with closing(store.open_store(legacy_path)) as conn:
-                columns = [
-                    row["name"]
-                    for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
-                ]
-                version = conn.execute(
-                    "SELECT version FROM edit_v2_schema_meta WHERE id=1"
-                ).fetchone()["version"]
-            self.assertEqual(columns.count("predecessor_job_id"), 1)
-            self.assertEqual(version, 2)
+                with closing(store.open_store(legacy_path)) as conn:
+                    columns = [
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
+                    ]
+                    version = conn.execute(
+                        "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+                    ).fetchone()["version"]
+                self.assertEqual(columns.count("predecessor_job_id"), 1)
+                self.assertEqual(version, 2)
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:

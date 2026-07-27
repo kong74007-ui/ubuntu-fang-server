@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
@@ -35,11 +36,29 @@ def _db_path(db_path: str | None = None) -> str:
 
 def open_store(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(
+                        conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                    ).lower()
+                if mode != "wal":
+                    raise sqlite3.OperationalError("failed to enable WAL journal mode")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.025)
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+    except Exception:
+        conn.close()
+        raise
 
 
 @contextmanager
