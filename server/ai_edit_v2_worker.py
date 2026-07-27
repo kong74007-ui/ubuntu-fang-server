@@ -16,14 +16,16 @@ try:
     from content_domains import ai_edit_v2_billing as billing
     from content_domains import ai_edit_v2_pipeline as pipeline
     from content_domains import ai_edit_v2_store as store
+    from content_domains import ai_edit_v2_runtime as runtime
 except ImportError:
     from .content_domains import ai_edit_v2_billing as billing
     from .content_domains import ai_edit_v2_pipeline as pipeline
     from .content_domains import ai_edit_v2_store as store
+    from .content_domains import ai_edit_v2_runtime as runtime
 
 
 LOG = logging.getLogger("ai-edit-v2")
-STAGE_HANDLERS: dict[str, pipeline.Handler] = {}
+STAGE_HANDLERS = runtime.STAGE_HANDLERS
 
 
 def _enabled(value: str | None) -> bool:
@@ -85,10 +87,12 @@ def run_worker(
     handlers: dict[str, pipeline.Handler] | None = None,
 ) -> None:
     config = dict(config or worker_config())
-    if not config["enabled"]:
-        LOG.warning("[ai-edit-v2] disabled; set AI_EDIT_V2_ENABLED=1 to start claiming")
-        return
     store.init_db(config["db_path"])
+    if not config["enabled"]:
+        billing.reconcile_pending_precharges(int(time.time()), db_path=config["db_path"])
+        pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+        LOG.warning("[ai-edit-v2] submissions disabled; reconciliation completed")
+        return
     worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
     active: set[Future] = set()
     with ThreadPoolExecutor(

@@ -56,13 +56,15 @@
     <section class="card" id="jobPanel"><h2>任务状态</h2><div id="jobStatus" class="status">尚未创建任务</div><div class="timings"><div class="timing"><b id="queueTime">0:00</b><span>排队</span></div><div class="timing"><b id="processingTime">0:00</b><span>处理</span></div><div class="timing"><b id="repairTime">0:00</b><span>修复</span></div></div><div class="hint" id="remainingTime">剩余预算：—</div><video id="resultVideo" controls hidden></video><a id="downloadResult" class="download" download>下载 MP4</a></section>
   </aside></div>
 </div></div></div>
-<script src="cloud-shell.js?v=9dc7c8de"></script>
+<script src="cloud-shell.js?v=27cdcbf4"></script>
 <script>
 (function(){
   'use strict';
-  var state={mode:'natural_brief',main:null,required:[],reference:[],quote:null,jobRequestKey:null,jobId:null,pollTimer:null};
+  var state={mode:'natural_brief',main:null,required:[],reference:[],quote:null,jobRequestKey:null,jobId:null,pollTimer:null,acceptsSubmissions:false};
   var $=function(id){return document.getElementById(id)};
   function escapeHtml(value){return String(value==null?'':value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function setSubmissionEnabled(enabled){state.acceptsSubmissions=!!enabled;document.querySelectorAll('input,select,textarea,button').forEach(function(el){if(!el.closest('.hq-aside')&&!el.closest('.hq-topbar'))el.disabled=!enabled});if(!enabled)$('formMessage').textContent='功能尚未开放'}
+  async function loadCapability(){try{var d=await api('/api/v2/edit/capabilities');setSubmissionEnabled(!!d.accepts_submissions)}catch(_error){setSubmissionEnabled(false)}}
   async function api(path,options){var response=await fetch(path,Object.assign({credentials:'include',headers:{'Content-Type':'application/json'}},options||{}));var data=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(data.detail||('请求失败 '+response.status));return data}
   function fileKind(file){if(file.type.indexOf('video/')===0)return 'video';if(file.type.indexOf('audio/')===0)return 'audio';if(file.type.indexOf('image/')===0)return 'image';throw new Error('不支持的文件类型')}
   function mediaDuration(file){return new Promise(function(resolve,reject){if(fileKind(file)==='image')return resolve(null);var kind=fileKind(file);var el=document.createElement(kind==='video'?'video':'audio');var local=URL.createObjectURL(file);el.preload='metadata';el.onloadedmetadata=function(){var value=Math.round(el.duration*1000);if(kind==='video'&&el.videoWidth&&el.videoHeight)$('aspectRatio').value=el.videoHeight>el.videoWidth?'9:16':'16:9';URL.revokeObjectURL(local);value>0?resolve(value):reject(new Error('无法读取媒体时长'))};el.onerror=function(){URL.revokeObjectURL(local);reject(new Error('无法读取媒体时长'))};el.src=local})}
@@ -82,7 +84,7 @@
   $('mainInput').onchange=function(){uploadFiles(this,'main').catch(function(error){$('formMessage').textContent=error.message})};$('requiredInput').onchange=function(){uploadFiles(this,'required').catch(function(error){$('formMessage').textContent=error.message})};$('referenceInput').onchange=function(){uploadFiles(this,'reference').catch(function(error){$('formMessage').textContent=error.message})};
   $('mainAssetSelect').onchange=function(){var option=this.options[this.selectedIndex];if(!option.value){state.main=null;renderFiles('main');invalidateQuote();return}if(option.dataset.kind==='video'&&Number(option.dataset.width)&&Number(option.dataset.height))$('aspectRatio').value=Number(option.dataset.height)>Number(option.dataset.width)?'9:16':'16:9';state.main={file:{name:option.textContent},status:'已选择',message:'素材库',progress:100,asset:{asset_id:option.value,kind:option.dataset.kind,size_bytes:Number(option.dataset.size),duration_ms:Number(option.dataset.duration)}};renderFiles('main');invalidateQuote()};
   $('referenceMode').onchange=function(){state.reference.forEach(function(item){if(item.asset)item.asset.reference_mode=$('referenceMode').value});invalidateQuote()};$('quoteBtn').onclick=requestQuote;$('jobBtn').onclick=confirmJob;$('confirmPrecharge').onchange=function(){$('jobBtn').disabled=!(this.checked&&state.quote)};['brief','aspectRatio','targetDuration','templateSelect'].forEach(function(id){$(id).addEventListener('change',invalidateQuote)});
-  loadMaterials();api('/api/v2/edit/templates').then(function(data){var items=data.items||[];$('templateSelect').innerHTML='<option value="">请选择模板</option>'+items.map(function(x){return '<option value="'+escapeHtml(x.id)+'">'+escapeHtml(x.name)+'</option>'}).join('')}).catch(function(){});
+  setSubmissionEnabled(false);loadCapability().then(function(){if(!state.acceptsSubmissions)return;loadMaterials();api('/api/v2/edit/templates').then(function(data){var items=data.items||[];$('templateSelect').innerHTML='<option value="">请选择模板</option>'+items.map(function(x){return '<option value="'+escapeHtml(x.id)+'">'+escapeHtml(x.name)+'</option>'}).join('')}).catch(function(){})});
 })();
 </script>
 </body>

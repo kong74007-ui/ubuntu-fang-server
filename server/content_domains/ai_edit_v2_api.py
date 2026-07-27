@@ -15,6 +15,7 @@ from . import ai_edit_v2_store as store
 from . import cos
 from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_pipeline as pipeline
+from . import ai_edit_v2_feature as feature
 from . import points
 from .ai_edit_v2_schema import (
     ASPECT_RATIOS,
@@ -358,16 +359,26 @@ def dispatch(
     owner = _owner(user)
 
     if method == "GET" and path == API_PREFIX + "capabilities":
+        capability = feature.capability()
         return _send(
             handler,
             200,
             {
+                **capability,
                 "version": EDIT_PLAN_VERSION,
                 "creation_modes": sorted(CREATION_MODES),
                 "aspect_ratios": sorted(ASPECT_RATIOS),
                 "material_window_limit": MAX_MATERIALS_PER_WINDOW,
             },
         )
+    if method == "GET" and (path == API_PREFIX + "materials" or _MATERIAL_RE.fullmatch(path)):
+        pass
+    elif method == "GET" and _JOB_RE.fullmatch(path):
+        pass
+    else:
+        rejection = feature.rejection()
+        if rejection is not None:
+            return _send(handler, rejection[0], rejection[1])
     if method == "GET" and path == API_PREFIX + "templates":
         return _send(handler, 200, {"items": []})
     if method == "GET" and path == API_PREFIX + "materials":

@@ -90,8 +90,12 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.temp_dir.name, "ai_edit_v2.db")
-        self.env = patch.dict(os.environ, {"AI_EDIT_V2_DB": self.db_path})
+        self.env = patch.dict(
+            os.environ, {"AI_EDIT_V2_DB": self.db_path, "AI_EDIT_V2_ENABLED": "1"}
+        )
         self.env.start()
+        self.ready_patch = patch.object(api.feature, "runtime_ready", return_value=True)
+        self.ready_patch.start()
         store.init_db(self.db_path)
         self.fake_cos = FakeCos()
         self.cos_patch = patch.object(api, "cos", self.fake_cos)
@@ -111,6 +115,7 @@ class ApiTests(unittest.TestCase):
         self.user = {"username": "alice"}
 
     def tearDown(self):
+        self.ready_patch.stop()
         self.points_patch.stop()
         self.uuid_patch.stop()
         self.cos_patch.stop()
@@ -157,6 +162,23 @@ class ApiTests(unittest.TestCase):
 
         self.assertFalse(api.dispatch(handler, "GET", "/api/gen/assets", self.user))
         self.assertEqual(handler.responses, [])
+
+    def test_disabled_feature_reports_capability_and_rejects_new_work(self):
+        with patch.dict(os.environ, {"AI_EDIT_V2_ENABLED": "0"}):
+            status, capability = self._dispatch(
+                "GET", "/api/v2/edit/capabilities"
+            )
+            self.assertEqual(status, 200)
+            self.assertFalse(capability["enabled"])
+            self.assertFalse(capability["accepts_submissions"])
+
+            status, payload = self._dispatch(
+                "POST",
+                "/api/v2/edit/quotes",
+                {"draft": valid_api_draft()},
+            )
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["code"], "ai_edit_v2_disabled")
 
     def test_upload_completion_uses_cos_head_and_is_idempotent(self):
         upload = self._create_upload()

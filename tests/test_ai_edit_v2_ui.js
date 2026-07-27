@@ -56,9 +56,13 @@ test('user page does not expose provider internals or an editable timeline', () 
   assert.doesNotMatch(page, /可编辑时间线|时间线编辑器/);
 });
 
-test('shared shell exposes one AI edit navigation route', () => {
+test('shared shell exposes AI edit only after the server capability allows it', () => {
   const shell = fs.readFileSync(shellPath, 'utf8');
-  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑',i:'edit'\}/);
+  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑',i:'edit',gated:true\}/);
+  assert.match(shell, /\/api\/v2\/edit\/capabilities/);
+  assert.match(shell, /accepts_submissions/);
   assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit\.html'\}/);
-  assert.match(shell, /ai_edit_v2:'ai-edit\.html'/);
+  const page = fs.readFileSync(pagePath, 'utf8');
+  assert.match(page, /loadCapability/);
+  assert.match(page, /功能尚未开放/);
 });

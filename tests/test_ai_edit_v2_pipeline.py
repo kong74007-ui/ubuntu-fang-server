@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import tempfile
 import unittest
 from contextlib import closing
@@ -217,6 +218,27 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("AI_EDIT_V2_WORKERS=5", env_example)
         self.assertIn("AI_EDIT_V2_NORMAL_TIMEOUT_SECONDS=2700", env_example)
         self.assertIn("AI_EDIT_V2_REPAIR_TIMEOUT_SECONDS=900", env_example)
+
+    def test_disabled_worker_reconciles_billing_without_claiming_jobs(self):
+        from server import ai_edit_v2_worker as worker
+
+        config = {
+            "enabled": False,
+            "workers": 1,
+            "lease_seconds": 30,
+            "poll_seconds": 0.1,
+            "normal_timeout_seconds": 2700,
+            "repair_timeout_seconds": 900,
+            "db_path": self.db_path,
+        }
+        with patch.object(worker.billing, "reconcile_pending_precharges") as pending, \
+             patch.object(worker.pipeline, "reconcile_terminal_refunds") as refunds, \
+             patch.object(worker.store, "claim_next_job") as claim:
+            worker.run_worker(threading.Event(), config=config)
+
+        pending.assert_called_once()
+        refunds.assert_called_once()
+        claim.assert_not_called()
 
     def test_terminal_failure_refund_is_reconciled_after_lost_response(self):
         lost_points = LoseFirstRefundResponse()
