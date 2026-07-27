@@ -20,10 +20,13 @@ test('V2 editor uses its isolated page and API namespace', () => {
 
 test('backend namespaces and V2 database remain isolated', () => {
   const legacyApi = fs.readFileSync(path.join(root, 'server/content_domains/ai_edit_api.py'), 'utf8');
+  const legacyStore = fs.readFileSync(path.join(root, 'server/content_domains/ai_edit_store.py'), 'utf8');
   const v2Api = fs.readFileSync(path.join(root, 'server/content_domains/ai_edit_v2_api.py'), 'utf8');
   const v2Store = fs.readFileSync(path.join(root, 'server/content_domains/ai_edit_v2_store.py'), 'utf8');
   assert.match(legacyApi, /LEGACY_API_PREFIX = "\/api\/gen\/ai-edit\/"/);
   assert.doesNotMatch(legacyApi, /ai_edit_v2\.db/);
+  assert.match(legacyStore, /BASE \/ "ai_edit\.db"/);
+  assert.doesNotMatch(legacyStore, /ai_edit_v2\.db/);
   assert.match(v2Api, /API_PREFIX = "\/api\/v2\/edit\/"/);
   assert.match(v2Store, /DEFAULT_DB_NAME = "ai_edit_v2\.db"/);
 });

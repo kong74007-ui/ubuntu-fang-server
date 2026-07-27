@@ -122,6 +122,15 @@ class AuthPointsTests(unittest.TestCase):
         self.assertEqual(err, "transaction_conflict")
         self.assertEqual(self.auth.get_points_row("fang")["points"], 15)
 
+    def test_refund_accepts_shared_transaction_key_limit(self):
+        for length in (161, 200):
+            with self.subTest(length=length):
+                points, err = self.auth.refund_points(
+                    "fang", 1, "boundary refund", "r" * length
+                )
+                self.assertIsNone(err)
+                self.assertIsNotNone(points)
+
     def test_wechat_transaction_can_only_approve_one_recharge_order(self):
         first, first_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
         second, second_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")

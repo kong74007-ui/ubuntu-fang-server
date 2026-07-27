@@ -1412,9 +1412,6 @@ def refund_points(username, amount, reason="", transaction_key=None):
     transaction_key = _transaction_key(transaction_key)
     if amount < 0:
         raise ValueError("amount must be >= 0")
-    transaction_key = str(transaction_key or "").strip()
-    if len(transaction_key) > 160:
-        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
