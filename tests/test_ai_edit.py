@@ -4,9 +4,11 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +19,7 @@ if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
 
 ai_edit = importlib.import_module("content_domains.ai_edit")
+ai_edit_api = importlib.import_module("content_domains.ai_edit_api")
 ai_edit_store = importlib.import_module("content_domains.ai_edit_store")
 core = importlib.import_module("content_domains.core")
 feature_flags = importlib.import_module("content_domains.feature_flags")
@@ -53,7 +56,9 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('/api/v1/edit-jobs', API)
         self.assertIn('billing_state', API)
         self.assertIn('payload["_retry_from_job_id"]', API)
-        self.assertIn('return handler._send(202, {"job_id": new_id', API)
+        self.assertIn('new_id, points_left = jobs_store.create_paid_job(', API)
+        self.assertIn('core._idempotency_complete(user["username"], retry_route, idem_key, response)', API)
+        self.assertIn('return handler._send(202, response)', API)
         self.assertIn("exc.status if exc.status in (402, 403) else 502", API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
 
@@ -384,6 +389,260 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("function openHistory(jobId)", PAGE)
         self.assertIn("'/result'", PAGE)
         self.assertIn("loadHistory(1)", PAGE)
+
+    def test_retry_reuses_a_stable_idempotency_key(self):
+        self.assertIn("function retryRequestKey(jobId)", PAGE)
+        self.assertIn("localStorage.getItem(storageKey)", PAGE)
+        self.assertIn("headers:{'Idempotency-Key':retryKey}", PAGE)
+
+
+class _RetryPoints:
+    class AuthPointsError(Exception):
+        def __init__(self, status, detail):
+            super().__init__(detail)
+            self.status = status
+            self.detail = detail
+
+    def __init__(self, balance=100):
+        self.balance = balance
+        self.deduct_calls = 0
+        self.refund_calls = 0
+        self.lock = threading.Lock()
+
+    def cost_of(self, kind, payload):
+        return 30
+
+    def deduct_points(self, username, cost, reason):
+        with self.lock:
+            if self.balance < cost:
+                raise self.AuthPointsError(402, "insufficient points")
+            self.balance -= cost
+            self.deduct_calls += 1
+            return self.balance
+
+    def refund_points(self, username, cost, reason, transaction_key=None):
+        with self.lock:
+            self.balance += cost
+            self.refund_calls += 1
+            return self.balance
+
+
+class _RetryVideoDomain:
+    def __init__(self):
+        self.error = None
+
+    def record_video_pending_asset(self, job_id, username, payload):
+        if self.error:
+            raise self.error
+
+
+class _RetryHandler:
+    def __init__(self, key):
+        self.headers = {"Idempotency-Key": key}
+        self.response = None
+
+    def _token(self):
+        return "token"
+
+    def _send(self, status, payload):
+        self.response = (status, payload)
+        return self.response
+
+
+class AiEditRetryTransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.jobs_path = root / "jobs.db"
+        self.assets_path = root / "assets.db"
+        self.video_path = root / "source.mp4"
+        self.video_path.write_bytes(b"video")
+        self.old_edit_db = ai_edit_store.EDIT_DB
+        self.old_material_dir = ai_edit_store.MATERIAL_DIR
+        ai_edit_store.EDIT_DB = root / "ai-edit.db"
+        ai_edit_store.MATERIAL_DIR = root / "materials"
+        ai_edit_store.init_db()
+        with closing(sqlite3.connect(str(self.jobs_path))) as db:
+            db.execute(
+                """CREATE TABLE jobs(
+                       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+                       username TEXT NOT NULL, cost INTEGER NOT NULL DEFAULT 0,
+                       status TEXT NOT NULL DEFAULT 'pending', payload TEXT,
+                       result TEXT, error TEXT, refunded INTEGER DEFAULT 0,
+                       created_at INTEGER, updated_at INTEGER, owner TEXT,
+                       deleted INTEGER DEFAULT 0)"""
+            )
+            payload = {"source_video_asset_id": 1, "style_id": "product_seeding",
+                       "materials": [], "product_facts": {}}
+            cursor = db.execute(
+                """INSERT INTO jobs(kind,username,cost,status,payload,refunded,created_at,updated_at,owner)
+                   VALUES('ai_edit','fang',30,'error',?,1,1,1,?)""",
+                (json.dumps(payload, ensure_ascii=False), core.SERVICE_OWNER),
+            )
+            self.old_job_id = cursor.lastrowid
+            db.commit()
+        with closing(sqlite3.connect(str(self.assets_path))) as db:
+            db.execute(
+                """CREATE TABLE video_assets(
+                       id INTEGER PRIMARY KEY, job_id INTEGER, username TEXT, mode TEXT,
+                       video_file TEXT, video_url TEXT, text TEXT, resolution TEXT,
+                       ratio TEXT, status TEXT, created_at INTEGER)"""
+            )
+            db.execute(
+                "INSERT INTO video_assets VALUES(1,7,'fang','text','video/source.mp4','/v.mp4','source','1080p','9:16','done',1)"
+            )
+            db.commit()
+        self.points = _RetryPoints()
+        self.video = _RetryVideoDomain()
+        self.patchers = [
+            patch.object(core, "jdb", self._jobs_db),
+            patch.object(core, "verify", return_value={"username": "fang"}),
+            patch.object(core, "enqueue_job", return_value=True),
+            patch.object(core, "_domains", side_effect=lambda: (None, self.points, self.video)),
+            patch.object(ai_edit, "adb", self._assets_db),
+            patch.object(ai_edit, "_resolve_out_file", return_value=self.video_path),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        ai_edit_store.EDIT_DB = self.old_edit_db
+        ai_edit_store.MATERIAL_DIR = self.old_material_dir
+        self.temp.cleanup()
+
+    def _jobs_db(self):
+        db = sqlite3.connect(str(self.jobs_path), timeout=5, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def _assets_db(self):
+        db = sqlite3.connect(str(self.assets_path), timeout=5, check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def _retry(self, key):
+        handler = _RetryHandler(key)
+        handled, _ = ai_edit_api.handle_post(
+            handler, "/api/gen/ai-edit/jobs/%d/retry" % self.old_job_id,
+            self.points, self.video,
+        )
+        self.assertTrue(handled)
+        return handler.response
+
+    def _successor_rows(self):
+        with closing(self._jobs_db()) as db:
+            return db.execute(
+                "SELECT * FROM jobs WHERE id<>? AND status='pending' ORDER BY id",
+                (self.old_job_id,),
+            ).fetchall()
+
+    def test_retry_insert_failure_records_recoverable_compensation_and_aborts_request(self):
+        with closing(self._jobs_db()) as db:
+            db.execute(
+                """CREATE TRIGGER fail_retry_insert BEFORE INSERT ON jobs
+                   WHEN NEW.kind='ai_edit' AND NEW.status='pending'
+                   BEGIN SELECT RAISE(FAIL, 'forced retry insert failure'); END"""
+            )
+            db.commit()
+
+        status, payload = self._retry("retry-insert-failure")
+
+        self.assertEqual(status, 500)
+        self.assertIn(payload.get("compensation"), {"refunded", "queued"})
+        self.assertEqual(self.points.balance, 100)
+        self.assertEqual(self.points.deduct_calls, 1)
+        self.assertEqual(self.points.refund_calls, 1)
+        self.assertEqual(self._successor_rows(), [])
+        with closing(self._jobs_db()) as db:
+            compensation = db.execute(
+                "SELECT status,refunded,payload FROM jobs WHERE id<>? ORDER BY id",
+                (self.old_job_id,),
+            ).fetchall()
+            idem_count = db.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+        self.assertEqual(len(compensation), 1)
+        self.assertEqual((compensation[0]["status"], compensation[0]["refunded"]), ("error", 1))
+        self.assertIn("_submission_ref", compensation[0]["payload"])
+        self.assertEqual(idem_count, 0)
+
+    def test_retry_same_request_replays_one_successor_and_one_charge(self):
+        first = self._retry("retry-replay-key")
+        second = self._retry("retry-replay-key")
+
+        self.assertEqual(first[0], 202)
+        self.assertEqual(second, first)
+        self.assertEqual(self.points.balance, 70)
+        self.assertEqual(self.points.deduct_calls, 1)
+        successors = self._successor_rows()
+        self.assertEqual(len(successors), 1)
+        self.assertEqual(json.loads(successors[0]["payload"])["_retry_from_job_id"], self.old_job_id)
+
+    def test_retry_metadata_failure_leaves_a_scannable_refund(self):
+        self.video.error = RuntimeError("video metadata failed")
+        with patch.object(self.points, "refund_points", side_effect=RuntimeError("auth unavailable")):
+            status, payload = self._retry("retry-metadata-failure")
+
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["job_id"], self.old_job_id + 1)
+        self.assertEqual(self.points.balance, 70)
+        with closing(self._jobs_db()) as db:
+            row = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()
+            idem_count = db.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+        self.assertEqual((row["status"], row["refunded"]), ("error", 2))
+        self.assertEqual(idem_count, 0)
+
+        recovered = core.jobs_store.retry_failed_refunds(core.jdb, core._refund_once, 10)
+        self.assertEqual(recovered, 1)
+        self.assertEqual(self.points.balance, 100)
+        with closing(self._jobs_db()) as db:
+            refunded = db.execute("SELECT refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()[0]
+        self.assertEqual(refunded, 1)
+
+    def test_concurrent_retry_replays_one_successor_and_one_charge(self):
+        barrier = threading.Barrier(2)
+
+        def invoke():
+            barrier.wait(timeout=2)
+            return self._retry("retry-concurrent-key")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = [future.result() for future in [executor.submit(invoke), executor.submit(invoke)]]
+
+        self.assertEqual([response[0] for response in responses], [202, 202])
+        self.assertEqual(responses[0][1]["job_id"], responses[1][1]["job_id"])
+        self.assertEqual(self.points.balance, 70)
+        self.assertEqual(self.points.deduct_calls, 1)
+        self.assertEqual(len(self._successor_rows()), 1)
+
+    def test_initial_metadata_cleanup_failure_still_aborts_idempotency_and_responds(self):
+        route = "/api/gen/ai_edit"
+        key = "initial-cleanup-failure"
+        payload = ai_edit.validate_ai_edit_payload(
+            {"source_video_asset_id": 1, "style_id": "product_seeding"}, "fang")
+        state, _ = core._idempotency_begin("fang", route, key, payload)
+        self.assertEqual(state, "new")
+        job_id, _ = core.jobs_store.create_paid_job(
+            core.jdb, self.points.deduct_points, self.points.refund_points,
+            "ai_edit", "fang", 30, payload, core.SERVICE_OWNER,
+        )
+        self.video.error = RuntimeError("video registration failed")
+        handler = _RetryHandler(key)
+
+        with patch.object(ai_edit_store, "release_hold", side_effect=RuntimeError("release cleanup failed")), \
+             patch.object(ai_edit_store, "mark_failed", side_effect=RuntimeError("mark cleanup failed")):
+            handled = ai_edit_api.prepare_submission(
+                handler, "ai_edit", job_id, "fang", payload, 30, self.video, route, key)
+
+        self.assertTrue(handled)
+        self.assertEqual(handler.response[0], 500)
+        self.assertNotIn("cleanup failed", handler.response[1]["detail"])
+        self.assertEqual(self.points.balance, 100)
+        with closing(self._jobs_db()) as db:
+            row = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (job_id,)).fetchone()
+            idem_count = db.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+        self.assertEqual((row["status"], row["refunded"]), ("error", 1))
+        self.assertEqual(idem_count, 0)
 
 
 class AiEditStoreTests(unittest.TestCase):
