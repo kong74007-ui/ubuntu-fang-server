@@ -15,6 +15,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import closing
@@ -265,6 +266,137 @@ class JobsStoreTests(unittest.TestCase):
         with closing(self._conn()) as c:
             row = c.execute("SELECT payload FROM jobs WHERE id=-9002").fetchone()
         self.assertEqual(json.loads(row["payload"])["_submission_ref"], "winner-a")
+
+    def test_explicit_batch_replays_matching_database_winner_once(self):
+        balance = {"points": 100}
+        transactions = {}
+
+        def deduct(username, amount, reason="", transaction_key=None):
+            if transaction_key not in transactions:
+                balance["points"] -= amount
+                transactions[transaction_key] = balance["points"]
+            return transactions[transaction_key]
+
+        kwargs = dict(
+            jdb=self._jdb, deduct=deduct,
+            refund=lambda *_args, **_kwargs: self.fail("winner replay must not refund"),
+            kind="video", username="u", items=[(20, {"n": 1}), (20, {"n": 2})],
+            owner="content", job_ids=[-9101, -9102], submission_ref="batch-winner",
+            deduct_transaction_key="batch-hold", submission_state="initializing:owner",
+            return_created=True,
+        )
+        first = jobs_store.create_explicit_paid_jobs(**kwargs)
+        second = jobs_store.create_explicit_paid_jobs(**kwargs)
+
+        self.assertEqual(([-9101, -9102], 60, True), first)
+        self.assertEqual(([-9101, -9102], 60, False), second)
+        self.assertEqual(60, balance["points"])
+        self.assertEqual({"batch-hold": 60}, transactions)
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT id,payload FROM jobs ORDER BY id").fetchall()
+        self.assertEqual([-9102, -9101], [row["id"] for row in rows])
+        self.assertTrue(all(
+            json.loads(row["payload"])["_submission_ref"] == "batch-winner" for row in rows))
+
+    def test_explicit_batch_concurrent_loser_never_refunds_winner(self):
+        balance = {"points": 100}
+        transactions = {}
+        transaction_lock = threading.Lock()
+        deduct_barrier = threading.Barrier(2)
+        refunds = []
+        results = []
+        errors = []
+
+        def deduct(username, amount, reason="", transaction_key=None):
+            deduct_barrier.wait(timeout=5)
+            with transaction_lock:
+                if transaction_key not in transactions:
+                    balance["points"] -= amount
+                    transactions[transaction_key] = balance["points"]
+                return transactions[transaction_key]
+
+        def refund(*args, **kwargs):
+            refunds.append((args, kwargs))
+            return True
+
+        def submit():
+            try:
+                results.append(jobs_store.create_explicit_paid_jobs(
+                    self._jdb, deduct, refund, "video", "u",
+                    [(20, {"n": 1}), (20, {"n": 2})], "content",
+                    job_ids=[-9201, -9202], submission_ref="batch-race",
+                    deduct_transaction_key="batch-race-hold",
+                    submission_state="initializing:owner", return_created=True))
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual([], errors)
+        self.assertEqual(2, len(results))
+        self.assertEqual([False, True], sorted(result[2] for result in results))
+        self.assertEqual(60, balance["points"])
+        self.assertEqual([], refunds)
+        with closing(self._conn()) as c:
+            self.assertEqual(2, c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_explicit_batch_conflict_does_not_charge_or_replace_rows(self):
+        with closing(self._conn()) as c:
+            c.execute(
+                "INSERT INTO jobs(id,kind,username,cost,payload,created_at,updated_at,owner) "
+                "VALUES(-9301,'video','other',20,'{}',1,1,'content')")
+            c.commit()
+        deductions = []
+        with self.assertRaises(jobs_store.PaidJobConflictError):
+            jobs_store.create_explicit_paid_jobs(
+                self._jdb, lambda *args, **kwargs: deductions.append((args, kwargs)),
+                lambda *_args, **_kwargs: True, "video", "u",
+                [(20, {"n": 1}), (20, {"n": 2})], "content",
+                job_ids=[-9301, -9302], submission_ref="batch-conflict",
+                deduct_transaction_key="batch-conflict-hold")
+        self.assertEqual([], deductions)
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT id,username FROM jobs ORDER BY id").fetchall()
+        self.assertEqual([(-9301, "other")], [tuple(row) for row in rows])
+
+    def test_explicit_batch_owner_transition_is_all_or_none(self):
+        jobs_store.create_explicit_paid_jobs(
+            self._jdb, lambda *_args, **_kwargs: 60,
+            lambda *_args, **_kwargs: True, "video", "u",
+            [(20, {"n": 1}), (20, {"n": 2})], "content",
+            job_ids=[-9401, -9402], submission_ref="batch-state",
+            deduct_transaction_key="batch-state-hold", submission_state="initializing:a")
+        self.assertTrue(jobs_store.set_explicit_jobs_state(
+            self._jdb, [-9401, -9402], "ready", expected_states=("initializing:a",)))
+        with closing(self._conn()) as c:
+            c.execute("UPDATE jobs SET status='running' WHERE id=-9402")
+            c.commit()
+        self.assertFalse(jobs_store.set_explicit_jobs_state(
+            self._jdb, [-9401, -9402], "initializing:b", expected_states=("ready",)))
+        states = jobs_store.explicit_jobs_state(self._jdb, [-9401, -9402])
+        self.assertEqual("ready", states[-9401][1])
+        self.assertEqual("ready", states[-9402][1])
+
+    def test_publication_marks_the_whole_explicit_batch_ready_after_worker_claim(self):
+        jobs_store.create_explicit_paid_jobs(
+            self._jdb, lambda *_args, **_kwargs: 60,
+            lambda *_args, **_kwargs: True, "video", "u",
+            [(20, {"n": 1}), (20, {"n": 2})], "content",
+            job_ids=[-9451, -9452], submission_ref="batch-publish",
+            deduct_transaction_key="batch-publish-hold", submission_state="initializing:a")
+        with closing(self._conn()) as c:
+            c.execute("UPDATE jobs SET status='running' WHERE id=-9452")
+            c.commit()
+
+        self.assertTrue(jobs_store.publish_explicit_jobs_ready(
+            self._jdb, [-9451, -9452], expected_state="initializing:a"))
+        states = jobs_store.explicit_jobs_state(self._jdb, [-9451, -9452])
+        self.assertEqual("ready", states[-9451][1])
+        self.assertEqual("ready", states[-9452][1])
 
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):

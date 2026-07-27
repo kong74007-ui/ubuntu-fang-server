@@ -637,6 +637,51 @@ _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempote
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
 def _idempotency_complete(username, endpoint, key, response): return submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
+def _idempotency_abort_unprepared(username, endpoint, key, owner=None): return submission_idempotency.abort_unprepared(jdb, username, endpoint, key, owner=owner)
+def _idempotency_preparation(username, endpoint, key): return submission_idempotency.load_preparation(jdb, username, endpoint, key)
+def _idempotency_claim_admission(username, endpoint, key, body, owner): return submission_idempotency.claim_admission(jdb, username, endpoint, key, body, owner)
+def _idempotency_prepare(username, endpoint, key, body, preparation, owner=None): return submission_idempotency.prepare(jdb, username, endpoint, key, body, preparation, owner=owner)
+
+
+def _compact_video_batch_preparation(payloads, costs):
+    """Store shared batch media once instead of duplicating it per avatar."""
+    payloads = [dict(payload) for payload in payloads]
+    if not payloads:
+        raise ValueError("video batch preparation is empty")
+    common = {}
+    for key, value in payloads[0].items():
+        if all(key in payload and payload[key] == value for payload in payloads[1:]):
+            common[key] = value
+    items = [
+        {key: value for key, value in payload.items() if key not in common}
+        for payload in payloads
+    ]
+    return {
+        "kind": "video_batch_v1", "common": common, "items": items,
+        "costs": [int(value) for value in costs],
+    }
+
+
+def _expand_video_batch_preparation(prepared, expected_count=None):
+    if not isinstance(prepared, dict) or prepared.get("kind") != "video_batch_v1":
+        raise ValueError("invalid preparation kind")
+    common = prepared.get("common")
+    items = prepared.get("items")
+    costs = prepared.get("costs")
+    if not isinstance(common, dict) or not isinstance(items, list) or not isinstance(costs, list):
+        raise ValueError("invalid preparation shape")
+    payloads = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("invalid preparation item")
+        payload = dict(common)
+        payload.update(item)
+        payloads.append(payload)
+    parsed_costs = [int(value) for value in costs]
+    if (not payloads or len(payloads) != len(parsed_costs)
+            or (expected_count is not None and len(payloads) != int(expected_count))):
+        raise ValueError("invalid preparation shape")
+    return payloads, parsed_costs
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 # 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
@@ -712,6 +757,37 @@ DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1800)
 def is_shutting_down():
     return _shutting_down.is_set()
 
+
+def _content_submission_guard(body):
+    """Return a shared pre-charge HTTP rejection for unsafe paid submissions."""
+    try:
+        miniprogram_security.check_payload(body)
+    except miniprogram_security.ContentRejected as exc:
+        return 400, {"detail": str(exc), "code": "content_rejected"}
+    except miniprogram_security.SecurityUnavailable as exc:
+        return 503, {
+            "detail": str(exc), "code": "content_security_unavailable",
+            "retry_after_ms": 5000,
+        }
+    return None
+
+
+def _paid_submission_availability(kind, body):
+    """Apply the shared shutdown and upstream guards before cost or deduction."""
+    if is_shutting_down():
+        return 503, {
+            "detail": "服务正在更新，请稍等几秒后重试（未扣点）",
+            "code": "shutting_down", "retry_after_ms": 5000,
+        }
+    from . import upstream_guard
+    blocked = upstream_guard.exhausted_reason(kind, body)
+    if blocked:
+        return 503, {
+            "detail": blocked, "code": "upstream_exhausted",
+            "retry_after_ms": 60000,
+        }
+    return None
+
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
@@ -740,7 +816,7 @@ def _pick_job_queue(kind, mode=None):
         return _talking_job_queue
     return _job_queue
 
-def enqueue_jobs(job_ids, kind=None, mode=None):
+def enqueue_jobs(job_ids, kind=None, mode=None, before_enqueue=None):
     try:
         ids = [int(job_id) for job_id in job_ids]
     except Exception:
@@ -750,13 +826,19 @@ def enqueue_jobs(job_ids, kind=None, mode=None):
         fresh = [job_id for job_id in ids if job_id not in _queued_job_ids]
         if q.maxsize > 0 and q.qsize() + len(fresh) > q.maxsize:
             return False
+        if before_enqueue is not None:
+            try:
+                if not before_enqueue():
+                    return None
+            except Exception:
+                return None
         for job_id in fresh:
             q.put_nowait(job_id)
             _queued_job_ids.add(job_id)
         return True
 
-def enqueue_job(job_id, kind=None, mode=None):
-    return enqueue_jobs([job_id], kind, mode)
+def enqueue_job(job_id, kind=None, mode=None, before_enqueue=None):
+    return enqueue_jobs([job_id], kind, mode, before_enqueue=before_enqueue)
 
 def _user_active_job_count(username):
     if not username:
@@ -1336,75 +1418,290 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try:
-                feature_flags.require_enabled("video")
                 request_body = self._json_body_strict()
-                payloads = video_domain.validate_video_batch_payload(
-                    request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
-            except feature_flags.FeatureDisabled as e:
-                return self._send(503, {"detail": str(e)})
+                if not idem_key:
+                    raise ValueError("批量视频提交必须提供 Idempotency-Key")
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
-            costs = [points_domain.cost_of("video", body) for body in payloads]
-            total = sum(costs)
-            with _submission_lock:
-                idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
-                if idem_state == "replay":
-                    return self._send(200, idem_response)
-                if idem_state == "conflict":
-                    return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
-                if idem_state == "processing":
-                    return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
-                active_jobs = _user_active_job_count(user["username"])
-                if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
-                    _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
-                        (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
-                        "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
-                batch_id = uuid.uuid4().hex
-                for body in payloads:
-                    body["batch_id"] = batch_id
-                job_ids = []
+
+            idem_state, idem_response = _idempotency_begin(
+                user["username"], p, idem_key, request_body)
+            if idem_state == "replay":
+                return self._send(200, idem_response)
+            if idem_state == "conflict":
+                return self._send(409, {
+                    "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                    "code": "idempotency_conflict"})
+            prepared = _idempotency_preparation(user["username"], p, idem_key)
+            admission_owner = ""
+            if not prepared:
+                admission_owner = uuid.uuid4().hex
+                if not _idempotency_claim_admission(
+                        user["username"], p, idem_key, request_body,
+                        admission_owner):
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
+            if prepared:
                 try:
-                    job_ids, points_left = jobs_store.create_paid_jobs(
+                    payloads, costs = _expand_video_batch_preparation(prepared)
+                except Exception:
+                    return self._send(502, {
+                        "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                        "code": "submission_result_unknown", "retry_after_ms": 1000})
+            else:
+                try:
+                    feature_flags.require_enabled("video")
+                    rejected = _content_submission_guard(request_body)
+                    if rejected:
+                        if _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return self._send(*rejected)
+                        return self._send(409, {
+                            "detail": "相同请求正在受理，请稍后查询",
+                            "code": "idempotency_in_progress", "retry_after_ms": 500})
+                    payloads = video_domain.validate_video_batch_payload(
+                        request_body, user["username"],
+                        min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+                    unavailable = _paid_submission_availability("video", payloads[0])
+                    if unavailable:
+                        if _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return self._send(*unavailable)
+                        return self._send(409, {
+                            "detail": "相同请求正在受理，请稍后查询",
+                            "code": "idempotency_in_progress", "retry_after_ms": 500})
+                    costs = [points_domain.cost_of("video", body) for body in payloads]
+                except feature_flags.FeatureDisabled as e:
+                    if _idempotency_abort_unprepared(
+                            user["username"], p, idem_key,
+                            admission_owner):
+                        return self._send(503, {"detail": str(e)})
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
+                except ValueError as e:
+                    if _idempotency_abort_unprepared(
+                            user["username"], p, idem_key,
+                            admission_owner):
+                        return self._send(400, {"detail": str(e)[:220]})
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
+            total = sum(costs)
+            identity = submission_idempotency.paid_submission_identity(
+                user["username"], p, idem_key, len(payloads))
+            batch_id = identity["batch_id"]
+            job_ids = identity["job_ids"]
+            for body in payloads:
+                body["batch_id"] = batch_id
+            initialization_state = "initializing:" + uuid.uuid4().hex
+
+            def batch_response():
+                jobs = [{"job_id": jid, "label": body.get("batch_label"),
+                         "index": body.get("batch_index")}
+                        for jid, body in zip(job_ids, payloads)]
+                return {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
+                        "count": len(job_ids), "cost": total,
+                        "cost_per_job": costs[0], "points_left": None}
+
+            def batch_in_progress():
+                return self._send(409, {
+                    "detail": "相同请求正在受理，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 500,
+                    "batch_id": batch_id, "job_ids": job_ids})
+
+            with _submission_lock:
+                latest_state, latest_response = _idempotency_begin(
+                    user["username"], p, idem_key, request_body)
+                if latest_state == "replay":
+                    return self._send(200, latest_response)
+                if latest_state == "conflict":
+                    return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
+                latest_prepared = _idempotency_preparation(
+                    user["username"], p, idem_key)
+                # The row may have been terminally aborted while this request
+                # waited for the submission lock.  Only the snapshot observed
+                # inside the lock is authoritative; never charge from a stale
+                # lock-outside copy.
+                prepared = latest_prepared
+                if latest_prepared:
+                    try:
+                        payloads, costs = _expand_video_batch_preparation(
+                            latest_prepared, expected_count=len(job_ids))
+                        total = sum(costs)
+                    except Exception:
+                        return self._send(502, {
+                            "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                            "code": "submission_result_unknown", "retry_after_ms": 1000})
+                existing_states = jobs_store.explicit_jobs_state(jdb, job_ids)
+                if not prepared and not existing_states:
+                    active_jobs = _user_active_job_count(user["username"])
+                    if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
+                            (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
+                            "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
+                if not prepared:
+                    try:
+                        prepared = _idempotency_prepare(
+                            user["username"], p, idem_key, request_body,
+                            _compact_video_batch_preparation(payloads, costs),
+                            owner=admission_owner)
+                    except submission_idempotency.PreparationTooLarge:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(413, {
+                            "detail": "批量媒体过大，无法安全保存付费恢复快照",
+                            "code": "submission_snapshot_too_large"})
+                    except submission_idempotency.PreparationCapacityError:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(429, {
+                            "detail": "尚有过多付费提交等待确认，请先用原请求编号恢复",
+                            "code": "pending_submission_cap", "retry_after_ms": 1000})
+                    if not prepared:
+                        state, winner = _idempotency_begin(
+                            user["username"], p, idem_key, request_body)
+                        if state == "replay":
+                            return self._send(200, winner)
+                        return batch_in_progress()
+                    try:
+                        payloads, costs = _expand_video_batch_preparation(
+                            prepared, expected_count=len(job_ids))
+                        total = sum(costs)
+                    except Exception:
+                        return self._send(502, {
+                            "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                            "code": "submission_result_unknown", "retry_after_ms": 1000})
+                try:
+                    job_ids, _points_left, _created = jobs_store.create_explicit_paid_jobs(
                         jdb, points_domain.deduct_points, points_domain.refund_points, "video",
-                        user["username"], zip(costs, payloads), SERVICE_OWNER, "video_batch")
-                    for jid, body in zip(job_ids, payloads):
-                        video_domain.record_video_pending_asset(jid, user["username"], body)
+                        user["username"], list(zip(costs, payloads)), SERVICE_OWNER,
+                        job_ids=job_ids, submission_ref=identity["submission_ref"],
+                        deduct_transaction_key=identity["deduct_transaction_key"],
+                        submission_state=initialization_state, return_created=True,
+                        reason_kind="video_batch")
                 except points_domain.AuthPointsError as e:
-                    _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": total})
+                    status = e.status if e.status in (402, 403, 409) else 502
+                    if status in (402, 403, 409):
+                        _idempotency_abort(user["username"], p, idem_key)
+                        payload = {"detail": e.detail, "need": total}
+                        if status == 409:
+                            payload["code"] = "points_transaction_conflict"
+                        return self._send(status, payload)
+                    return self._send(502, {
+                        "detail": e.detail, "code": "points_result_unknown",
+                        "retry_after_ms": 1000, "need": total,
+                        "batch_id": batch_id, "job_ids": job_ids})
                 except jobs_store.PaidJobInsertError as e:
-                    _idempotency_abort(user["username"], p, idem_key)
+                    if e.compensation in {"refunded", "queued"}:
+                        _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
                         "queued": "批量任务创建失败，退款正在自动重试"}.get(e.compensation,
-                        "批量任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
-                except Exception:
-                    for jid, cost in zip(job_ids, costs):
-                        _reject_pending_job(jid, user["username"], cost, "批量任务创建失败")
-                        try:
-                            video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
-                        except Exception:
-                            pass
+                        "批量任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref,
+                        "code": "submission_compensated" if e.compensation in {"refunded", "queued"} else "submission_result_unknown",
+                        "compensation": e.compensation,
+                        "batch_id": batch_id, "job_ids": job_ids})
+                except jobs_store.PaidJobConflictError:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理"})
-                if not enqueue_jobs(job_ids, "video", "text"):
-                    for jid, cost in zip(job_ids, costs):
-                        _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                        video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    return self._send(409, {"detail": "批量提交身份与现有任务冲突",
+                                            "code": "job_identity_conflict"})
+
+                states = jobs_store.explicit_jobs_state(jdb, job_ids)
+                if len(states) != len(job_ids):
+                    return batch_in_progress()
+                statuses = {value[0] for value in states.values()}
+                submission_states = {value[1] for value in states.values()}
+                if statuses <= {"running", "done", "success"} or submission_states == {"ready"}:
+                    response = batch_response()
+                    winner = _idempotency_complete(user["username"], p, idem_key, response)
+                    return self._send(200, winner or response)
+                if statuses & {"error", "failed"}:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，退款正在处理", "need": total})
-            jobs = [{"job_id": jid, "label": body.get("batch_label"), "index": body.get("batch_index")}
-                    for jid, body in zip(job_ids, payloads)]
-            response = {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
-                        "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left}
-            _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理",
+                                            "code": "submission_compensated",
+                                            "batch_id": batch_id, "job_ids": job_ids})
+                if statuses != {"pending"} or len(submission_states) != 1:
+                    return batch_in_progress()
+                previous_state = next(iter(submission_states))
+                if not jobs_store.set_explicit_jobs_state(
+                        jdb, job_ids, initialization_state, expected_states=(previous_state,)):
+                    return batch_in_progress()
+
+                def still_batch_owner():
+                    current = jobs_store.explicit_jobs_state(jdb, job_ids)
+                    return len(current) == len(job_ids) and all(
+                        status == "pending" and state == initialization_state
+                        for status, state, _updated_at in current.values())
+
+                try:
+                    for jid, body in zip(job_ids, payloads):
+                        video_domain.record_video_pending_asset(jid, user["username"], body)
+                except Exception as e:
+                    if not still_batch_owner():
+                        return batch_in_progress()
+                    if jobs_store.reject_explicit_jobs_owner(
+                            jdb, job_ids, initialization_state, "批量任务创建失败"):
+                        for jid, cost in zip(job_ids, costs):
+                            try: _refund_once(jid, user["username"], cost)
+                            except Exception: pass
+                            try: video_domain.update_video_asset_phase(
+                                jid, "failed", status="failed", error="批量任务创建失败")
+                            except Exception: pass
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理",
+                                            "code": "submission_compensated",
+                                            "batch_id": batch_id, "job_ids": job_ids})
+                if not still_batch_owner():
+                    return batch_in_progress()
+                queued = enqueue_jobs(
+                    job_ids, "video", "text",
+                    before_enqueue=lambda: jobs_store.publish_explicit_jobs_ready(
+                        jdb, job_ids, initialization_state))
+                if queued is None:
+                    return batch_in_progress()
+                if not queued:
+                    if jobs_store.reject_explicit_jobs_owner(
+                            jdb, job_ids, initialization_state, "任务队列已满，请稍后再试"):
+                        for jid, cost in zip(job_ids, costs):
+                            try: _refund_once(jid, user["username"], cost)
+                            except Exception: pass
+                            try: video_domain.update_video_asset_phase(
+                                jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                            except Exception: pass
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，退款正在处理",
+                                            "need": total, "batch_id": batch_id, "job_ids": job_ids})
+                response = batch_response()
+                winner = _idempotency_complete(user["username"], p, idem_key, response)
+                return self._send(200, winner or response)
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            if kind == "ai_edit":
+                try:
+                    request_body = self._json_body_strict()
+                    idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                    if not idem_key:
+                        raise ValueError("AI-edit 提交必须提供 Idempotency-Key")
+                except ValueError as e:
+                    return self._send(400, {"detail": str(e)[:220]})
+                return ai_edit_api.submit_initial(
+                    self, points_domain, video_domain, user["username"],
+                    request_body, p, idem_key)
             try:
                 feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e:
@@ -1414,7 +1711,9 @@ class H(BaseHTTPRequestHandler):
                 request_body = dict(body) if isinstance(body, dict) else body
                 # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
                 # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
-                miniprogram_security.check_payload(body)
+                rejected = _content_submission_guard(body)
+                if rejected:
+                    return self._send(*rejected)
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1423,9 +1722,6 @@ class H(BaseHTTPRequestHandler):
                     body = video_domain.validate_cinematic_payload(body, user["username"])
                 elif kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
-                elif kind == "ai_edit":
-                    from . import ai_edit as ai_edit_domain
-                    body = ai_edit_domain.validate_ai_edit_payload(body, user["username"])
                 elif kind == "xiaole_video":
                     body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "sora_video":
@@ -1434,31 +1730,16 @@ class H(BaseHTTPRequestHandler):
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"} else ""
-                if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
-            except miniprogram_security.ContentRejected as e:
-                return self._send(400, {"detail": str(e), "code": "content_rejected"})
-            except miniprogram_security.SecurityUnavailable as e:
-                return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                if kind == "sora_video" and not idem_key:
+                    raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
-            if is_shutting_down():
-                return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）",
-                                        "code": "shutting_down", "retry_after_ms": 5000})
-
-            # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
-            # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
-            # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
-            # 一句天书（"积分余额不足，请先充值" / "Insufficient credits"）。近 14 天 48 条
-            # 任务是这么死的。这里把它们挡在门外：不扣点、不排队、不让用户等。
-            # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
-            from . import upstream_guard
-            blocked = upstream_guard.exhausted_reason(kind, body)
-            if blocked:
-                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
-                                        "retry_after_ms": 60000})
+            unavailable = _paid_submission_availability(kind, body)
+            if unavailable:
+                return self._send(*unavailable)
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)

@@ -109,6 +109,21 @@ def purchase_quote(amount, product_type="points", jsapi=False):
     if points is None:
         return None
     return int(amount), points, "points"
+
+
+def _membership_order_invite_preflight(user_row, now=None):
+    """Freeze invite eligibility before accepting an online membership order.
+
+    Orders accepted by this gate remain fulfillable if the inviter changes
+    state afterwards; callbacks must not strand an already paid customer.
+    """
+    c = db()
+    try:
+        invites.invited_membership_limit(
+            c, user_row["id"], "experience",
+            now=int(time.time() if now is None else now))
+    finally:
+        c.close()
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -1528,7 +1543,7 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
             c.rollback()
             return None, "not_found"
         if tier:
-            invites.invited_membership_limit(c, row["id"], tier)
+            invites.invited_membership_limit(c, row["id"], tier, now=now)
         before = membership_for_row(row, now)
         started_at = now if tier else None
         expires_at = now + MEMBERSHIP_YEAR_SECONDS if tier else None
@@ -1569,7 +1584,7 @@ def membership_recharge_preview(username, tier, now=None):
         if not row:
             return None, "not_found"
         before = membership_for_row(row, now)
-        invites.invited_membership_limit(c, row["id"], tier)
+        invites.invited_membership_limit(c, row["id"], tier, now=now)
         same_active_tier = before["membership_active"] and before["membership_tier"] == tier
         base = max(now, int(row["membership_expires_at"] or 0)) if same_active_tier else now
         reward = invites.reward_upgrade_preview(c, row["id"], tier, now=now)
@@ -1619,7 +1634,7 @@ def recharge_membership_admin(who_admin, username, tier, reason="", request_id="
         if not row:
             c.rollback()
             return None, "not_found"
-        invites.invited_membership_limit(c, row["id"], tier)
+        invites.invited_membership_limit(c, row["id"], tier, now=now)
         before = membership_for_row(row, now)
         same_active_tier = before["membership_active"] and before["membership_tier"] == tier
         base = max(now, int(row["membership_expires_at"] or 0)) if same_active_tier else now
@@ -2736,8 +2751,13 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            if order_type == MEMBERSHIP_ORDER_TYPE:
+                if membership_for_row(row)["membership_active"]:
+                    return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+                try:
+                    _membership_order_invite_preflight(row)
+                except invites.InviteError as exc:
+                    return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
             try:
                 order, err = create_recharge_order(
                     row["username"], amount, points, d.get("note") or "", order_type,
@@ -2762,8 +2782,13 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            if order_type == MEMBERSHIP_ORDER_TYPE:
+                if membership_for_row(row)["membership_active"]:
+                    return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+                try:
+                    _membership_order_invite_preflight(row)
+                except invites.InviteError as exc:
+                    return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
             try:
                 order, err = create_recharge_order(
                     row["username"], amount, points,
@@ -2799,8 +2824,13 @@ class H(BaseHTTPRequestHandler):
             amount, points, order_type = quote
             if order_type == "points" and not self._require_membership(row):
                 return
-            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
-                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+            if order_type == MEMBERSHIP_ORDER_TYPE:
+                if membership_for_row(row)["membership_active"]:
+                    return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
+                try:
+                    _membership_order_invite_preflight(row)
+                except invites.InviteError as exc:
+                    return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
             try:
                 openid = wxpay.jscode2session(js_code)
                 order, err = create_recharge_order(

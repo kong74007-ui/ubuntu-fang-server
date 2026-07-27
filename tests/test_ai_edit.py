@@ -47,7 +47,8 @@ class AiEditWiringTests(unittest.TestCase):
 
     def test_video_asset_lifecycle_includes_ai_edit(self):
         self.assertIn('{"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}', CORE)
-        self.assertIn('body = ai_edit_domain.validate_ai_edit_payload(body, user["username"])', CORE)
+        self.assertIn(
+            'payload = ai_edit.validate_ai_edit_payload(request_body, username)', API)
 
     def test_versioned_routes_are_delegated_out_of_core(self):
         self.assertIn("ai_edit_api.handle_post", CORE)
@@ -282,6 +283,15 @@ class HyperframesProjectTests(unittest.TestCase):
         self.assertEqual(result[0]["source"], "reused")
         self.assertEqual(result[0]["generation_prompt"], "生活场景")
 
+    def test_retry_of_retry_loads_a_negative_predecessor_timeline(self):
+        timeline = {"materials": [{"source": "ai_generated"}]}
+        with patch.object(
+                ai_edit.store, "public_job",
+                return_value={"timeline": timeline}) as public_job:
+            result = ai_edit._retry_timeline(-9001, "fang")
+        self.assertEqual(result, timeline)
+        public_job.assert_called_once_with(-9001, "fang", include_timeline=True)
+
     def test_technical_qc_enforces_delivery_contract(self):
         valid = {"width": 1080, "height": 1920, "video_codec": "h264", "pix_fmt": "yuv420p",
                  "audio_codec": "aac", "sample_rate": 48000, "fps": 30.0, "r_fps": 30.0,
@@ -336,7 +346,7 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("item.mode==='text'||item.mode==='audio'", PAGE)
         self.assertIn("/api/gen/ai-edit/jobs", PAGE)
         self.assertIn("source_video_asset_id:selectedSource.id", PAGE)
-        self.assertIn("'Idempotency-Key':key", PAGE)
+        self.assertIn("'Idempotency-Key':request.key", PAGE)
 
     def test_asset_cards_load_the_protected_source_image_as_cover(self):
         self.assertIn("item.image_file?'/api/gen/file/'+item.image_file", PAGE)

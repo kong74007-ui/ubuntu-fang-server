@@ -380,7 +380,9 @@ def prepare_submission(handler, kind, job_id, username, payload, cost, video_dom
                 "code": "compensation_persistence_failed", "job_id": job_id})
             return True
         _best_effort_idempotency_abort(core, username, route, idem_key, job_id)
-        handler._send(500, {"detail": "剪辑任务创建失败，点数已释放"})
+        handler._send(500, {
+            "detail": "剪辑任务创建失败，点数已释放",
+            "code": "submission_compensated", "job_id": job_id})
         return True
 
 
@@ -399,6 +401,238 @@ def decorate_submission(kind, response):
 
 def submission_status(handler, kind):
     return 202 if kind == "ai_edit" and getattr(handler, "_versioned_edit_job", False) else 200
+
+
+def submit_initial(handler, points_domain, video_domain, username, request_body,
+                   route, idem_key):
+    """Create or recover the deterministic first AI-edit job for one request key."""
+    core = _core()
+    from . import ai_edit, jobs_store
+
+    identity = core.submission_idempotency.paid_submission_identity(
+        username, route, idem_key, 1)
+    job_id = identity["job_ids"][0]
+    initialization_state = "initializing:" + uuid.uuid4().hex
+
+    def response():
+        return {
+            "job_id": job_id, "cost": int(cost or 0), "points_left": None,
+            "billing_state": "HELD",
+        }
+
+    def in_progress():
+        return handler._send(409, {
+            "detail": "相同请求正在受理，请稍后查询",
+            "code": "idempotency_in_progress", "retry_after_ms": 500,
+            "job_id": job_id,
+        })
+
+    with core._submission_lock:
+        idem_state, idem_response = core._idempotency_begin(
+            username, route, idem_key, request_body)
+        if idem_state == "replay":
+            return handler._send(submission_status(handler, "ai_edit"), idem_response)
+        if idem_state == "conflict":
+            return handler._send(409, {
+                "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                "code": "idempotency_conflict"})
+
+        prepared = core._idempotency_preparation(username, route, idem_key)
+        admission_owner = ""
+        if not prepared:
+            admission_owner = uuid.uuid4().hex
+            if not core._idempotency_claim_admission(
+                    username, route, idem_key, request_body, admission_owner):
+                return in_progress()
+        if prepared:
+            try:
+                if prepared.get("kind") != "ai_edit_initial_v1":
+                    raise ValueError("invalid preparation kind")
+                payload = dict(prepared["payload"])
+                cost = int(prepared["cost"])
+            except Exception:
+                return handler._send(502, {
+                    "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                    "code": "submission_result_unknown", "retry_after_ms": 1000,
+                    "job_id": job_id})
+        else:
+            try:
+                core.feature_flags.require_enabled("ai_edit")
+                rejected = core._content_submission_guard(request_body)
+                if rejected:
+                    if core._idempotency_abort_unprepared(
+                            username, route, idem_key, admission_owner):
+                        return handler._send(*rejected)
+                    return in_progress()
+                payload = ai_edit.validate_ai_edit_payload(request_body, username)
+                unavailable = core._paid_submission_availability("ai_edit", payload)
+                if unavailable:
+                    if core._idempotency_abort_unprepared(
+                            username, route, idem_key, admission_owner):
+                        return handler._send(*unavailable)
+                    return in_progress()
+                cost = points_domain.cost_of("ai_edit", payload)
+            except core.feature_flags.FeatureDisabled as exc:
+                if core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return handler._send(503, {"detail": str(exc)})
+                return in_progress()
+            except ValueError as exc:
+                if core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return handler._send(400, {"detail": str(exc)[:220]})
+                return in_progress()
+
+        existing_state = jobs_store.explicit_job_state(core.jdb, job_id)
+        if not prepared and not existing_state:
+            limit_hit = core._user_video_submit_limit("ai_edit", payload, username, cost)
+            if limit_hit:
+                if not core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return in_progress()
+                return handler._send(429, limit_hit)
+            active_jobs = core._user_active_job_count(username)
+            if active_jobs >= core.MAX_USER_ACTIVE_JOBS:
+                if not core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return in_progress()
+                return handler._send(429, {
+                    "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
+                    "code": "active_job_cap", "active_jobs": active_jobs,
+                    "max_active_jobs": core.MAX_USER_ACTIVE_JOBS,
+                    "retry_after_ms": 4000, "need": cost})
+        if not prepared:
+            try:
+                prepared = core._idempotency_prepare(
+                    username, route, idem_key, request_body,
+                    {"kind": "ai_edit_initial_v1", "payload": payload,
+                     "cost": int(cost or 0)}, owner=admission_owner)
+            except core.submission_idempotency.PreparationTooLarge:
+                if not core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return in_progress()
+                return handler._send(413, {
+                    "detail": "提交媒体过大，无法安全保存付费恢复快照",
+                    "code": "submission_snapshot_too_large"})
+            except core.submission_idempotency.PreparationCapacityError:
+                if not core._idempotency_abort_unprepared(
+                        username, route, idem_key, admission_owner):
+                    return in_progress()
+                return handler._send(429, {
+                    "detail": "尚有过多付费提交等待确认，请先用原请求编号恢复",
+                    "code": "pending_submission_cap", "retry_after_ms": 1000})
+            if not prepared:
+                state, winner = core._idempotency_begin(
+                    username, route, idem_key, request_body)
+                if state == "replay":
+                    return handler._send(submission_status(handler, "ai_edit"), winner)
+                return in_progress()
+            try:
+                if prepared.get("kind") != "ai_edit_initial_v1":
+                    raise ValueError("invalid preparation kind")
+                payload = dict(prepared["payload"])
+                cost = int(prepared["cost"])
+            except Exception:
+                return handler._send(502, {
+                    "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                    "code": "submission_result_unknown", "retry_after_ms": 1000,
+                    "job_id": job_id})
+        try:
+            _job_id, _points_left, _created = jobs_store.create_paid_job(
+                core.jdb, points_domain.deduct_points, points_domain.refund_points,
+                "ai_edit", username, cost, payload, core.SERVICE_OWNER,
+                submission_ref=identity["submission_ref"],
+                deduct_transaction_key=identity["deduct_transaction_key"],
+                job_id=job_id, return_created=True,
+                submission_state=initialization_state)
+        except points_domain.AuthPointsError as exc:
+            status = exc.status if exc.status in (402, 403, 409) else 502
+            if status in (402, 403, 409):
+                core._idempotency_abort(username, route, idem_key)
+                error_payload = {"detail": exc.detail, "need": cost}
+                if status == 409:
+                    error_payload["code"] = "points_transaction_conflict"
+                return handler._send(status, error_payload)
+            return handler._send(502, {
+                "detail": exc.detail, "code": "points_result_unknown",
+                "retry_after_ms": 1000, "need": cost, "job_id": job_id})
+        except jobs_store.PaidJobInsertError as exc:
+            if exc.compensation in {"refunded", "queued"}:
+                core._idempotency_abort(username, route, idem_key)
+            return handler._send(500, {
+                "detail": {"refunded": "任务创建失败，点数已退回",
+                           "queued": "任务创建失败，退款正在自动重试"}.get(
+                               exc.compensation, "任务创建失败，退款需人工核对"),
+                "compensation": exc.compensation,
+                "code": "submission_compensated" if exc.compensation in {"refunded", "queued"} else "submission_result_unknown",
+                "submission_ref": exc.submission_ref, "job_id": job_id})
+        except jobs_store.PaidJobConflictError:
+            core._idempotency_abort(username, route, idem_key)
+            return handler._send(409, {
+                "detail": "AI-edit 提交身份与现有任务冲突",
+                "code": "job_identity_conflict", "job_id": job_id})
+
+        current = jobs_store.explicit_job_state(core.jdb, job_id)
+        if not current:
+            return in_progress()
+        status, submission_state, _updated_at = current
+        if status in {"running", "done", "success"} or submission_state == "ready":
+            result = response()
+            winner = core._idempotency_complete(username, route, idem_key, result)
+            return handler._send(submission_status(handler, "ai_edit"), winner or result)
+        if status in {"error", "failed"}:
+            core._idempotency_abort(username, route, idem_key)
+            return handler._send(500, {
+                "detail": "任务创建失败，退款正在自动处理",
+                "code": "submission_compensated", "job_id": job_id})
+        if status != "pending" or not jobs_store.set_explicit_job_state(
+                core.jdb, job_id, initialization_state,
+                expected_states=(submission_state,)):
+            return in_progress()
+
+        def still_owner():
+            state = jobs_store.explicit_job_state(core.jdb, job_id)
+            return bool(state and state[0] == "pending" and state[1] == initialization_state)
+
+        if prepare_submission(
+                handler, "ai_edit", job_id, username, payload, cost,
+                video_domain, route, idem_key):
+            return
+        if not still_owner():
+            return in_progress()
+        try:
+            queued = core.enqueue_job(
+                job_id, "ai_edit", payload.get("mode"),
+                before_enqueue=lambda: jobs_store.publish_explicit_jobs_ready(
+                    core.jdb, [job_id], initialization_state))
+        except Exception:
+            queued = None
+        if queued is None:
+            return in_progress()
+        if not queued:
+            if jobs_store.reject_explicit_job_owner(
+                    core.jdb, job_id, initialization_state,
+                    "任务队列已满，请稍后再试"):
+                try:
+                    core._refund_once(job_id, username, cost)
+                except Exception:
+                    pass
+                try:
+                    video_domain.update_video_asset_phase(
+                        job_id, "failed", status="failed", error="任务队列已满，请稍后再试")
+                except Exception:
+                    pass
+                try:
+                    queue_rejected("ai_edit", job_id, "任务队列已满，请稍后再试")
+                except Exception:
+                    pass
+            core._idempotency_abort(username, route, idem_key)
+            return handler._send(429, {
+                "detail": "任务队列已满，请稍后再试", "code": "queue_full",
+                "retry_after_ms": 4000, "need": cost, "job_id": job_id})
+        result = response()
+        winner = core._idempotency_complete(username, route, idem_key, result)
+        return handler._send(submission_status(handler, "ai_edit"), winner or result)
 
 
 def _send_file_range(handler, path, content_type, filename="material"):

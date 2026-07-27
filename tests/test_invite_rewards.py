@@ -1,7 +1,15 @@
 import importlib
+import http.cookiejar
+import json
 import os
 import tempfile
+import threading
+import types
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 
 class InviteRewardTests(unittest.TestCase):
@@ -13,6 +21,7 @@ class InviteRewardTests(unittest.TestCase):
 
         self.auth = importlib.reload(auth_server)
         self.auth.DB = os.environ["HQ_TEST_AUTH_DB"]
+        self.auth.AUTH_COOKIE_SECURE = False
         self.auth.init_db()
         self.auth.create_user("admin", "secret123", 0, "admin")
         self.auth.create_user("inviter", "secret123", 88)
@@ -44,6 +53,47 @@ class InviteRewardTests(unittest.TestCase):
             row = self.auth.invites.ensure_user_code(c, self._user_id(c, "inviter"), now=self.now)
             c.commit()
             return row["code"]
+        finally:
+            c.close()
+
+    def _register_bound(self, username):
+        created, err = self.auth.register_account(
+            username, "secret123", invite_code=self._invite_code())
+        self.assertIsNone(err)
+        return created
+
+    def _set_inviter_state(self, *, expires_at=None, account_status=None):
+        assignments = []
+        params = []
+        if expires_at is not None:
+            assignments.append("membership_expires_at=?")
+            params.append(int(expires_at))
+        if account_status is not None:
+            assignments.append("account_status=?")
+            params.append(str(account_status))
+        c = self._connect()
+        try:
+            c.execute(
+                "UPDATE users SET %s WHERE username='inviter'" % ",".join(assignments),
+                tuple(params))
+            c.commit()
+        finally:
+            c.close()
+
+    def _assert_membership_upgrade_was_not_written(self, username):
+        c = self._connect()
+        try:
+            row = c.execute(
+                "SELECT id,membership_tier FROM users WHERE username=?", (username,)).fetchone()
+            self.assertEqual("", row["membership_tier"] or "")
+            self.assertEqual(0, c.execute(
+                "SELECT COUNT(*) FROM membership_audit WHERE username=?", (username,)).fetchone()[0])
+            self.assertEqual(0, c.execute(
+                "SELECT COUNT(*) FROM membership_upgrade_records WHERE user_id=?", (row["id"],)).fetchone()[0])
+            self.assertEqual(0, c.execute(
+                """SELECT COUNT(*) FROM invite_reward_point_records rewards
+                     JOIN membership_upgrade_records upgrades ON upgrades.id=rewards.upgrade_record_id
+                    WHERE upgrades.user_id=?""", (row["id"],)).fetchone()[0])
         finally:
             c.close()
 
@@ -120,6 +170,77 @@ class InviteRewardTests(unittest.TestCase):
                 "admin", "limited", "initiator", "不允许越级", now=self.now + 2,
             )
         self.assertEqual(caught.exception.code, "invite_membership_limit")
+
+    def test_expired_inviter_cannot_authorize_membership_upgrade(self):
+        self._register_bound("expired-limited")
+        self._set_inviter_state(expires_at=self.now)
+
+        with self.assertRaises(self.auth.invites.InviteError) as caught:
+            self.auth.set_membership_admin(
+                "admin", "expired-limited", "experience", "过期邀请人不得授权", now=self.now + 1)
+
+        self.assertEqual("invite_membership_limit", caught.exception.code)
+        self.assertEqual(409, caught.exception.http_status)
+        self._assert_membership_upgrade_was_not_written("expired-limited")
+
+    def test_banned_inviter_cannot_authorize_membership_upgrade(self):
+        self._register_bound("banned-limited")
+        self._set_inviter_state(account_status="banned")
+
+        with self.assertRaises(self.auth.invites.InviteError) as caught:
+            self.auth.set_membership_admin(
+                "admin", "banned-limited", "experience", "封禁邀请人不得授权", now=self.now + 1)
+
+        self.assertEqual("invite_membership_limit", caught.exception.code)
+        self.assertEqual(409, caught.exception.http_status)
+        self._assert_membership_upgrade_was_not_written("banned-limited")
+
+    def test_invalid_inviter_blocks_all_online_membership_orders_before_payment(self):
+        self._register_bound("online-limited")
+        self._set_inviter_state(expires_at=1)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        jar = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        try:
+            login = urllib.request.Request(
+                base + "/api/auth/login",
+                data=json.dumps({"username": "online-limited", "password": "secret123"}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            client.open(login, timeout=3).close()
+
+            cases = [
+                ("/api/auth/recharge/order", {}),
+                ("/api/auth/wxpay/native", {}),
+                ("/api/auth/wxpay/jsapi", {"js_code": "not-used"}),
+            ]
+            fake_wxpay = types.SimpleNamespace(configured=lambda: True)
+            with patch.object(self.auth, "wxpay", fake_wxpay):
+                for path, extra in cases:
+                    with self.subTest(path=path):
+                        request = urllib.request.Request(
+                            base + path,
+                            data=json.dumps({
+                                "amount": 499, "product_type": "membership_experience", **extra,
+                            }).encode(),
+                            headers={"Content-Type": "application/json"}, method="POST")
+                        with self.assertRaises(urllib.error.HTTPError) as caught:
+                            client.open(request, timeout=3)
+                        self.assertEqual(409, caught.exception.code)
+                        payload = json.loads(caught.exception.read())
+                        self.assertEqual("invite_membership_limit", payload.get("code"))
+            c = self._connect()
+            try:
+                self.assertEqual(0, c.execute(
+                    "SELECT COUNT(*) FROM recharge_orders WHERE username='online-limited'").fetchone()[0])
+            finally:
+                c.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_admin_reward_ledger_can_void_and_restore_without_changing_user_points(self):
         code = self._invite_code()

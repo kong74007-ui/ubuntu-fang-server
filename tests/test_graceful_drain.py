@@ -98,7 +98,9 @@ class NoNewJobsWhileDrainingTests(unittest.TestCase):
         """⚠️ 拦在扣点之后等于没拦：用户被扣了点、任务入了队，进程下一秒就退了 ——
         又是一条「服务重启中断」。"""
         block = CORE_SRC.split('if p.startswith("/api/gen/") and p[9:] in HANDLERS:')[1][:8000]
-        i_guard = block.index("if is_shutting_down():")
+        helper = CORE_SRC.split("def _paid_submission_availability")[1].split("\ndef ")[0]
+        self.assertIn("if is_shutting_down():", helper)
+        i_guard = block.index("_paid_submission_availability")
         i_cost = block.index("points_domain.cost_of")
         i_deduct = block.index("deduct_points")
         self.assertLess(i_guard, i_cost, "停机拦截必须在算点数之前")

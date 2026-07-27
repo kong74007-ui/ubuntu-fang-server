@@ -817,6 +817,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
+  var VIDEO_BATCH_PENDING_STORAGE='hq_video_batch_pending_submit_v1';
   var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='keyword_highlight', selectedSubtitlePosition='bottom';
@@ -2824,20 +2825,100 @@
       bgm_data:bgmData,bgm_volume:selectedBgmVolume
     };
   }
+  function videoBatchFingerprint(body){
+    body=String(body||'');
+    var forward=2166136261,backward=2166136261;
+    for(var i=0;i<body.length;i++){
+      forward=Math.imul(forward^body.charCodeAt(i),16777619);
+      backward=Math.imul(backward^body.charCodeAt(body.length-1-i),2246822519);
+    }
+    return body.length.toString(36)+'-'+(forward>>>0).toString(36)+'-'+(backward>>>0).toString(36);
+  }
+  function newVideoBatchRequestKey(){
+    var random=(window.crypto&&window.crypto.randomUUID)
+      ?window.crypto.randomUUID()
+      :(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
+    return 'video-batch-web-'+Date.now().toString(36)+'-'+random;
+  }
+  function paidSubmissionAccount(){
+    try{
+      var user=JSON.parse(localStorage.getItem('hq_user')||'null');
+      return user&&String(user.username||'').trim()?String(user.username).trim():'';
+    }catch(e){return '';}
+  }
+  function videoBatchPendingStorageKey(account){
+    return VIDEO_BATCH_PENDING_STORAGE+':'+encodeURIComponent(String(account||''));
+  }
+  function loadVideoBatchRequest(){
+    var account=paidSubmissionAccount(),saved=null;
+    if(!account)return null;
+    var storageKey=videoBatchPendingStorageKey(account);
+    try{saved=JSON.parse(localStorage.getItem(storageKey)||'null');}catch(e){}
+    if(!saved || saved.account!==account || !/^[A-Za-z0-9._:-]{8,128}$/.test(saved.key||'') || typeof saved.fingerprint!=='string' || !saved.fingerprint){
+      if(saved) try{localStorage.removeItem(storageKey);}catch(e){}
+      return null;
+    }
+    return {account:account,key:saved.key,fingerprint:saved.fingerprint};
+  }
+  function prepareVideoBatchRequest(body){
+    var account=paidSubmissionAccount();
+    if(!account)return {blocked:true,storageError:true};
+    var fingerprint=videoBatchFingerprint(body),saved=loadVideoBatchRequest();
+    if(saved && saved.fingerprint!==fingerprint) return {blocked:true,key:saved.key,fingerprint:saved.fingerprint};
+    if(!saved){
+      saved={account:account,key:newVideoBatchRequestKey(),fingerprint:fingerprint};
+      try{localStorage.setItem(videoBatchPendingStorageKey(account),JSON.stringify(saved));}catch(e){return {blocked:true,storageError:true};}
+      var durable=loadVideoBatchRequest();
+      if(!durable || durable.account!==account || durable.key!==saved.key || durable.fingerprint!==fingerprint){
+        return {blocked:true,storageError:true};
+      }
+      saved=durable;
+    }
+    return {blocked:false,key:saved.key,fingerprint:saved.fingerprint};
+  }
+  function clearVideoBatchRequest(key){
+    var account=paidSubmissionAccount();
+    if(!account)return;
+    var saved=loadVideoBatchRequest();
+    if(saved && saved.key!==key) return;
+    try{localStorage.removeItem(videoBatchPendingStorageKey(account));}catch(e){}
+  }
+  function paidSubmissionResponseUncertain(error,accepted){
+    if(accepted || !error)return false;
+    if(error.uncertain || !error.status)return true;
+    var data=error.data&&typeof error.data==='object'?error.data:{},code=String(data.code||'');
+    if(code==='points_result_unknown' || code==='submission_result_unknown' || code==='idempotency_in_progress')return true;
+    if(error.status===401 || error.status===403)return true;
+    if(error.status===409){
+      return !({idempotency_conflict:1,job_identity_conflict:1,points_transaction_conflict:1}[code]);
+    }
+    if(error.status>=500)return code!=='submission_compensated';
+    return false;
+  }
   function submitVideoBatch(text){
+    var body=talkingPayload({});
+    delete body.image_data; delete body.avatar_id;
+    body.avatars=talkingBatchItems.map(function(item){return {image_data:item.image_data||'',avatar_id:item.avatar_id||'',label:item.label};});
+    var bodyJson=JSON.stringify(body),request=prepareVideoBatchRequest(bodyJson);
+    if(request.blocked){
+      var blockedMessage=request.storageError?'浏览器无法保存安全提交编号，请启用本地存储后重试':'上一笔提交结果尚未确认，请保持原参数重试';
+      setVideoStatus(blockedMessage);toast(blockedMessage);return Promise.resolve(false);
+    }
     setSubmitLock('talking',true);
     setBusy(true); currentVideoDraft=null;
     var drafts=talkingBatchItems.map(function(item){return {mode:'text',image_url:item.preview||'',text:text,resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',phase:'queued',batch_label:item.label,created_at:Math.floor(Date.now()/1000)};});
     renderVideoDrafts(drafts);
     setVideoStatus('正在提交 '+talkingBatchItems.length+' 条批量视频任务...');
-    var body=talkingPayload({});
-    delete body.image_data; delete body.avatar_id;
-    body.avatars=talkingBatchItems.map(function(item){return {image_data:item.image_data||'',avatar_id:item.avatar_id||'',label:item.label};});
-    fetch('/api/gen/video/batch',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)})
+    var accepted=false;
+    return fetch('/api/gen/video/batch',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json','Idempotency-Key':request.key},body:bodyJson})
       .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
-        if(res.status<200||res.status>=300||!Array.isArray(res.data.job_ids)||!res.data.job_ids.length) throw new Error(res.data.detail||'批量任务提交失败');
+        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return false;}
+        if(res.status<200||res.status>=300||!Array.isArray(res.data.job_ids)||!res.data.job_ids.length){
+          var error=new Error(res.data.detail||'批量任务提交失败');
+          error.status=res.status;error.data=res.data;error.uncertain=res.status>=200&&res.status<300;throw error;
+        }
+        accepted=true;clearVideoBatchRequest(request.key);
         var jobs=Array.isArray(res.data.jobs)&&res.data.jobs.length?res.data.jobs:res.data.job_ids.map(function(id,i){return {job_id:id,label:talkingBatchItems[i]&&talkingBatchItems[i].label,index:i+1};});
         jobs.forEach(function(job){
           trackVideoJob(job.job_id,{status:'queued',label:'批量口播 · '+(job.label||('形象 '+job.index)),mode:'text',modeLabel:'数字人口播',ratio:selectedRatio,batchId:res.data.batch_id,batchSize:jobs.length,batchIndex:job.index});
@@ -2849,8 +2930,15 @@
         toast('批量任务已受理');
         setTimeout(loadVideoHistory,500);
         resumeTrackedVideoTask(jobs[0].job_id);
+        return true;
       })
-      .catch(function(e){setSubmitLock('talking',false);setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
+      .catch(function(e){
+        setSubmitLock('talking',false);setBusy(false);loadVideoHistory();
+        var uncertain=paidSubmissionResponseUncertain(e,accepted);
+        if(!uncertain) clearVideoBatchRequest(request.key);
+        var message=uncertain?'提交结果暂未确认；请保持参数不变后重试，系统会复用同一请求编号':(e.message||'批量任务提交失败');
+        setVideoStatus(message);toast(message);return false;
+      });
   }
   function submitVideo(){
     if(talkingBatch){

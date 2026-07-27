@@ -127,6 +127,7 @@ var token='__cookie__';
 var sources=[],selectedSource=null,materials=[],selectedMaterialIds={},styles=[],styleId='auto';
 var historyItems=[],historyPage=1,historyPages=1;
 var currentJob=0,lastFailedJob=0,resultUrl='',resultCoverUrl='',previewUrl='',objectUrls=[];
+var AI_EDIT_PENDING_STORAGE='hq_ai_edit_pending_submit_v1';
 var $=function(id){return document.getElementById(id);};
 var fallbackStyles=[
   {id:'auto',label:'AI 自动推荐',description:'根据内容和素材自动选择节奏'},
@@ -144,8 +145,78 @@ function api(url,options){
   options=options||{};options.headers=options.headers||{};options.headers.Authorization='Bearer '+token;
   if(options.json!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(options.json);delete options.json;}
   return fetch(url,options).then(function(r){return r.json().catch(function(){return {};}).then(function(d){
-    if(r.status===401){location.href='../login.html?redirect=workbench/ai-edit';return Promise.reject(new Error('登录已过期'));}
+    if(r.status===401){location.href='../login.html?redirect=workbench/ai-edit';var authError=new Error('登录已过期');authError.status=r.status;authError.data=d;throw authError;}
     if(!r.ok){var e=new Error(d.detail||'请求失败');e.status=r.status;e.data=d;throw e;}return d;});});
+}
+function aiEditSubmitFingerprint(body){
+  body=String(body||'');
+  var forward=2166136261,backward=2166136261;
+  for(var i=0;i<body.length;i++){
+    forward=Math.imul(forward^body.charCodeAt(i),16777619);
+    backward=Math.imul(backward^body.charCodeAt(body.length-1-i),2246822519);
+  }
+  return body.length.toString(36)+'-'+(forward>>>0).toString(36)+'-'+(backward>>>0).toString(36);
+}
+function newAiEditSubmitKey(){
+  var random=(window.crypto&&window.crypto.randomUUID)
+    ?window.crypto.randomUUID()
+    :(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
+  return 'ai-edit-web-'+Date.now().toString(36)+'-'+random;
+}
+function paidSubmissionAccount(){
+  try{
+    var user=JSON.parse(localStorage.getItem('hq_user')||'null');
+    return user&&String(user.username||'').trim()?String(user.username).trim():'';
+  }catch(e){return '';}
+}
+function aiEditPendingStorageKey(account){
+  return AI_EDIT_PENDING_STORAGE+':'+encodeURIComponent(String(account||''));
+}
+function loadAiEditSubmitRequest(){
+  var account=paidSubmissionAccount(),saved=null;
+  if(!account)return null;
+  var storageKey=aiEditPendingStorageKey(account);
+  try{saved=JSON.parse(localStorage.getItem(storageKey)||'null');}catch(e){}
+  if(!saved || saved.account!==account || !/^[A-Za-z0-9._:-]{8,128}$/.test(saved.key||'') || typeof saved.fingerprint!=='string' || !saved.fingerprint){
+    if(saved) try{localStorage.removeItem(storageKey);}catch(e){}
+    return null;
+  }
+  return {account:account,key:saved.key,fingerprint:saved.fingerprint};
+}
+function prepareAiEditSubmitRequest(body){
+  var account=paidSubmissionAccount();
+  if(!account)return {blocked:true,storageError:true};
+  var fingerprint=aiEditSubmitFingerprint(body),saved=loadAiEditSubmitRequest();
+  if(saved && saved.fingerprint!==fingerprint) return {blocked:true,key:saved.key,fingerprint:saved.fingerprint};
+  if(!saved){
+    saved={account:account,key:newAiEditSubmitKey(),fingerprint:fingerprint};
+    try{localStorage.setItem(aiEditPendingStorageKey(account),JSON.stringify(saved));}catch(e){return {blocked:true,storageError:true};}
+    var durable=loadAiEditSubmitRequest();
+    if(!durable || durable.account!==account || durable.key!==saved.key || durable.fingerprint!==fingerprint){
+      return {blocked:true,storageError:true};
+    }
+    saved=durable;
+  }
+  return {blocked:false,key:saved.key,fingerprint:saved.fingerprint};
+}
+function clearAiEditSubmitRequest(key){
+  var account=paidSubmissionAccount();
+  if(!account)return;
+  var saved=loadAiEditSubmitRequest();
+  if(saved && saved.key!==key) return;
+  try{localStorage.removeItem(aiEditPendingStorageKey(account));}catch(e){}
+}
+function paidSubmissionResponseUncertain(error,accepted){
+  if(accepted || !error)return false;
+  if(error.uncertain || !error.status)return true;
+  var data=error.data&&typeof error.data==='object'?error.data:{},code=String(data.code||'');
+  if(code==='points_result_unknown' || code==='submission_result_unknown' || code==='idempotency_in_progress')return true;
+  if(error.status===401 || error.status===403)return true;
+  if(error.status===409){
+    return !({idempotency_conflict:1,job_identity_conflict:1,points_transaction_conflict:1}[code]);
+  }
+  if(error.status>=500)return code!=='submission_compensated';
+  return false;
 }
 function blobUrl(url){
   var parsed=new URL(url,location.href),local=parsed.origin===location.origin;
@@ -288,11 +359,21 @@ function saveActive(){localStorage.setItem('hq_active_ai_edit_job',JSON.stringif
 function submit(){
   if(!selectedSource||currentJob)return;
   var refs=selectedRefs();if(refs.length>50){toast('单次最多选择 50 个素材');return;}
+  var body={source_video_asset_id:selectedSource.id,style_id:styleId,materials:refs,product_facts:productFacts()};
+  var request=prepareAiEditSubmitRequest(JSON.stringify(body));
+  if(request.blocked){toast(request.storageError?'浏览器无法保存安全提交编号，请启用本地存储后重试':'上一笔提交结果尚未确认，请保持原参数重试');return Promise.resolve(false);}
   $('generateBtn').disabled=true;$('generateBtn').textContent='正在提交…';$('resultActions').classList.remove('show');
-  var key='ai-edit-v2-'+selectedSource.id+'-'+Date.now()+'-'+Math.random().toString(16).slice(2);
-  api('/api/gen/ai-edit/jobs',{method:'POST',headers:{'Idempotency-Key':key},json:{source_video_asset_id:selectedSource.id,style_id:styleId,materials:refs,product_facts:productFacts()}}).then(function(d){
-    currentJob=Number(d.job_id);lastFailedJob=0;saveActive();setBilling(d.billing_state);loadHistory(1);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();
-  }).catch(function(e){$('generateBtn').disabled=false;$('generateBtn').textContent='生成一键剪辑 · 30 点';toast(e.message);});
+  var accepted=false;
+  return api('/api/gen/ai-edit/jobs',{method:'POST',headers:{'Idempotency-Key':request.key},json:body}).then(function(d){
+    if(!d || d.job_id===undefined || d.job_id===null){var error=new Error('一键剪辑提交结果缺少任务编号');error.uncertain=true;throw error;}
+    accepted=true;clearAiEditSubmitRequest(request.key);
+    currentJob=Number(d.job_id);lastFailedJob=0;saveActive();setBilling(d.billing_state);loadHistory(1);if(window.HQ&&HQ.refreshPoints)HQ.refreshPoints();poll();return true;
+  }).catch(function(e){
+    $('generateBtn').disabled=false;$('generateBtn').textContent='生成一键剪辑 · 30 点';
+    var uncertain=paidSubmissionResponseUncertain(e,accepted);
+    if(!uncertain) clearAiEditSubmitRequest(request.key);
+    toast(uncertain?'提交结果暂未确认；请保持参数不变后重试，系统会复用同一请求编号':e.message);return false;
+  });
 }
 function poll(){
   if(!currentJob)return;api(fresh('/api/gen/ai-edit/jobs/'+currentJob),{cache:'no-store'}).then(function(job){

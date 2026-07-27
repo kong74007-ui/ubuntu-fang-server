@@ -556,7 +556,7 @@ def _generate_fallback_material(transcript, product_facts, visual_need="", ordin
 def _retry_timeline(retry_from_job_id, username):
     try:
         retry_from_job_id = int(retry_from_job_id or 0)
-        if retry_from_job_id <= 0:
+        if retry_from_job_id == 0:
             return {}
         previous = store.public_job(retry_from_job_id, username, include_timeline=True)
         timeline = previous.get("timeline") or {}

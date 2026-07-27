@@ -29,11 +29,12 @@ def refund_transaction_key(job_id, username=""):
 
 
 class PaidJobInsertError(Exception):
-    def __init__(self, compensation, submission_ref, job_id=None):
+    def __init__(self, compensation, submission_ref, job_id=None, job_ids=None):
         super().__init__("paid job insert failed")
         self.compensation = compensation
         self.submission_ref = submission_ref
         self.job_id = job_id
+        self.job_ids = list(job_ids or ([] if job_id is None else [job_id]))
 
 
 class PaidJobDeductError(Exception):
@@ -256,6 +257,30 @@ def _explicit_job_row(jdb, job_id):
             "SELECT id,kind,username,cost,payload FROM jobs WHERE id=?", (job_id,)).fetchone()
 
 
+def _explicit_job_rows(jdb, job_ids, columns="id,kind,username,cost,payload,status,updated_at"):
+    job_ids = [int(job_id) for job_id in job_ids]
+    if not job_ids:
+        return {}
+    holes = ",".join("?" * len(job_ids))
+    with closing(jdb()) as c:
+        rows = c.execute(
+            "SELECT %s FROM jobs WHERE id IN (%s)" % (columns, holes), tuple(job_ids)).fetchall()
+    return {int(row["id"]): row for row in rows}
+
+
+def _explicit_batch_matches(rows, job_ids, kind, username, items, submission_ref):
+    if len(rows) != len(job_ids):
+        return False
+    return all(_explicit_job_matches(
+        rows.get(int(job_id)), kind, username, cost, payload, submission_ref)
+        for job_id, (cost, payload) in zip(job_ids, items))
+
+
+def _explicit_batch_result(job_ids, points_left, created, return_created):
+    result = (list(job_ids), points_left)
+    return result + (bool(created),) if return_created else result
+
+
 def _paid_job_result(job_id, points_left, created, return_created):
     if return_created:
         return job_id, points_left, bool(created)
@@ -272,6 +297,19 @@ def explicit_job_state(jdb, job_id):
     except Exception:
         payload = {}
     return row["status"], payload.get("_submission_state"), int(row["updated_at"] or 0)
+
+
+def explicit_jobs_state(jdb, job_ids):
+    rows = _explicit_job_rows(jdb, job_ids, columns="id,status,payload,updated_at")
+    states = {}
+    for job_id, row in rows.items():
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        states[job_id] = (
+            row["status"], payload.get("_submission_state"), int(row["updated_at"] or 0))
+    return states
 
 
 def set_explicit_job_state(jdb, job_id, state, expected_states=()):
@@ -292,6 +330,84 @@ def set_explicit_job_state(jdb, job_id, state, expected_states=()):
         payload["_submission_state"] = state
         c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='pending'",
                   (json.dumps(payload, ensure_ascii=False), int(time.time()), job_id))
+        c.commit()
+        return True
+
+
+def set_explicit_jobs_state(jdb, job_ids, state, expected_states=()):
+    """Atomically move every pending explicit job to one submission state."""
+    job_ids = [int(job_id) for job_id in job_ids]
+    if not job_ids or len(set(job_ids)) != len(job_ids):
+        return False
+    expected_states = set(expected_states)
+    holes = ",".join("?" * len(job_ids))
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute(
+            "SELECT id,status,payload FROM jobs WHERE id IN (%s)" % holes,
+            tuple(job_ids)).fetchall()
+        if len(rows) != len(job_ids) or any(row["status"] != "pending" for row in rows):
+            c.rollback()
+            return False
+        encoded = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if expected_states and payload.get("_submission_state") not in expected_states:
+                c.rollback()
+                return False
+            payload["_submission_state"] = str(state)
+            encoded.append((json.dumps(payload, ensure_ascii=False), int(row["id"])))
+        now = int(time.time())
+        for payload_json, job_id in encoded:
+            c.execute(
+                "UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='pending'",
+                (payload_json, now, job_id))
+        c.commit()
+        return True
+
+
+def publish_explicit_jobs_ready(jdb, job_ids, expected_state):
+    """Atomically publish accepted explicit jobs before workers can observe them.
+
+    Unlike the initializer lease transition, publication is allowed after a
+    worker has claimed a row.  Every row must still belong to the same
+    initializer (or already be published) so a stale owner cannot revive a
+    compensated submission.
+    """
+    job_ids = [int(job_id) for job_id in job_ids]
+    if not job_ids or len(set(job_ids)) != len(job_ids):
+        return False
+    expected_state = str(expected_state or "")
+    if not expected_state:
+        return False
+    holes = ",".join("?" * len(job_ids))
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute(
+            "SELECT id,payload FROM jobs WHERE id IN (%s)" % holes,
+            tuple(job_ids)).fetchall()
+        if len(rows) != len(job_ids):
+            c.rollback()
+            return False
+        encoded = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if payload.get("_submission_state") not in {expected_state, "ready"}:
+                c.rollback()
+                return False
+            payload["_submission_state"] = "ready"
+            encoded.append((json.dumps(payload, ensure_ascii=False), int(row["id"])))
+        now = int(time.time())
+        for payload_json, job_id in encoded:
+            c.execute(
+                "UPDATE jobs SET payload=?,updated_at=? WHERE id=?",
+                (payload_json, now, job_id))
         c.commit()
         return True
 
@@ -319,6 +435,41 @@ def reject_explicit_job_owner(jdb, job_id, expected_state, error):
             (str(error or "")[:300], int(time.time()), job_id))
         c.commit()
         return cur.rowcount == 1
+
+
+def reject_explicit_jobs_owner(jdb, job_ids, expected_state, error):
+    """Atomically reject a whole batch only while the caller owns every row."""
+    job_ids = [int(job_id) for job_id in job_ids]
+    if not job_ids or len(set(job_ids)) != len(job_ids):
+        return False
+    holes = ",".join("?" * len(job_ids))
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows = c.execute(
+            "SELECT id,status,payload FROM jobs WHERE id IN (%s)" % holes,
+            tuple(job_ids)).fetchall()
+        if len(rows) != len(job_ids) or any(row["status"] != "pending" for row in rows):
+            c.rollback()
+            return False
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if payload.get("_submission_state") != expected_state:
+                c.rollback()
+                return False
+        now = int(time.time())
+        cur = c.execute(
+            """UPDATE jobs SET status='error',error=?,updated_at=?,
+                       refunded=CASE WHEN COALESCE(cost,0)>0 AND COALESCE(refunded,0)=0 THEN 2 ELSE refunded END
+               WHERE id IN (%s) AND status='pending'""" % holes,
+            (str(error or "")[:300], now) + tuple(job_ids))
+        if cur.rowcount != len(job_ids):
+            c.rollback()
+            return False
+        c.commit()
+        return True
 
 
 def _compensate_explicit_insert(jdb, refund, job_id, kind, username, cost, payload,
@@ -357,6 +508,123 @@ def _compensate_explicit_insert(jdb, refund, job_id, kind, username, cost, paylo
             u, c, "job:%s:insert_failed submit:%s" % (kind, submission_ref),
             transaction_key=refund_transaction_key(job_id, username)))
     return "refunded" if confirmed else "queued"
+
+
+def _compensate_explicit_batch_insert(jdb, refund, job_ids, kind, username, items,
+                                      stored_payloads, submission_ref, error, owner):
+    """Persist all compensation rows before releasing any part of one batch hold."""
+    now = int(time.time())
+    try:
+        with closing(jdb()) as c:
+            c.execute("BEGIN IMMEDIATE")
+            for job_id, (cost, _payload), stored_payload in zip(job_ids, items, stored_payloads):
+                c.execute(
+                    "INSERT INTO jobs(id,kind,username,cost,status,payload,error,created_at,updated_at,owner,refunded) "
+                    "VALUES(?,?,?,?, 'error',?,?,?,?,?,2)",
+                    (int(job_id), kind, username, int(cost or 0),
+                     json.dumps(stored_payload, ensure_ascii=False),
+                     "Task creation failed; refund pending: %s" % str(error or "")[:180],
+                     now, now, owner))
+            c.commit()
+    except Exception:
+        try:
+            winner = _explicit_job_rows(jdb, job_ids)
+        except Exception:
+            return "untracked"
+        if _explicit_batch_matches(
+                winner, job_ids, kind, username, items, submission_ref):
+            return "winner"
+        return "untracked"
+
+    confirmed = True
+    for job_id, (cost, _payload) in zip(job_ids, items):
+        if int(cost or 0) <= 0:
+            continue
+        reason = "job:%s:insert_failed submit:%s" % (kind, submission_ref)
+        ok = refund_once(
+            jdb, int(job_id), username, int(cost),
+            lambda u, c, jid=int(job_id): refund(
+                u, c, reason, transaction_key=refund_transaction_key(jid, username)))
+        confirmed = bool(ok) and confirmed
+    return "refunded" if confirmed else "queued"
+
+
+def create_explicit_paid_jobs(jdb, deduct, refund, kind, username, items, owner, *,
+                              job_ids, submission_ref, deduct_transaction_key,
+                              submission_state=None, return_created=False,
+                              reason_kind=""):
+    """Create a deterministically identified paid batch with one durable DB winner."""
+    items = [(int(cost or 0), dict(payload or {})) for cost, payload in items]
+    job_ids = [int(job_id) for job_id in job_ids]
+    submission_ref = str(submission_ref or "").strip()[:128]
+    deduct_transaction_key = str(deduct_transaction_key or "").strip()
+    if (not items or len(items) != len(job_ids) or len(set(job_ids)) != len(job_ids)
+            or not submission_ref or not deduct_transaction_key):
+        raise ValueError("explicit paid jobs require aligned ids and stable submission keys")
+
+    reason_label = str(reason_kind or kind)
+    existing = _explicit_job_rows(jdb, job_ids)
+    if existing:
+        if not _explicit_batch_matches(
+                existing, job_ids, kind, username, items, submission_ref):
+            raise PaidJobConflictError("explicit job_ids conflict")
+        points_left = deduct(
+            username, sum(cost for cost, _ in items),
+            "job:%s submit:%s" % (reason_label, submission_ref),
+            transaction_key=deduct_transaction_key)
+        return _explicit_batch_result(job_ids, points_left, False, return_created)
+
+    stored_payloads = []
+    for _cost, canonical_payload in items:
+        stored_payload = dict(canonical_payload)
+        stored_payload["_submission_ref"] = submission_ref
+        if submission_state:
+            stored_payload["_submission_state"] = str(submission_state)
+        stored_payloads.append(stored_payload)
+    total = sum(cost for cost, _ in items)
+    points_left = deduct(
+        username, total, "job:%s submit:%s" % (reason_label, submission_ref),
+        transaction_key=deduct_transaction_key)
+    now = int(time.time())
+    try:
+        with closing(jdb()) as c:
+            c.execute("BEGIN IMMEDIATE")
+            holes = ",".join("?" * len(job_ids))
+            rows = c.execute(
+                "SELECT id,kind,username,cost,payload,status,updated_at FROM jobs WHERE id IN (%s)" % holes,
+                tuple(job_ids)).fetchall()
+            winner = {int(row["id"]): row for row in rows}
+            if winner:
+                if not _explicit_batch_matches(
+                        winner, job_ids, kind, username, items, submission_ref):
+                    c.rollback()
+                    raise PaidJobConflictError("explicit job_ids conflict")
+                c.commit()
+                return _explicit_batch_result(job_ids, points_left, False, return_created)
+            for job_id, (cost, _payload), stored_payload in zip(job_ids, items, stored_payloads):
+                c.execute(
+                    "INSERT INTO jobs(id,kind,username,cost,payload,created_at,updated_at,owner) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (job_id, kind, username, cost,
+                     json.dumps(stored_payload, ensure_ascii=False), now, now, owner))
+            c.commit()
+        return _explicit_batch_result(job_ids, points_left, True, return_created)
+    except PaidJobConflictError:
+        raise
+    except Exception as error:
+        try:
+            winner = _explicit_job_rows(jdb, job_ids)
+        except Exception:
+            winner = {}
+        if _explicit_batch_matches(winner, job_ids, kind, username, items, submission_ref):
+            return _explicit_batch_result(job_ids, points_left, False, return_created)
+        state = _compensate_explicit_batch_insert(
+            jdb, refund, job_ids, kind, username, items, stored_payloads,
+            submission_ref, error, owner)
+        if state == "winner":
+            return _explicit_batch_result(job_ids, points_left, False, return_created)
+        raise PaidJobInsertError(
+            state, submission_ref, job_ids=job_ids) from error
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,

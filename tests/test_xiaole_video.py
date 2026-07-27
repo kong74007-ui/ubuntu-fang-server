@@ -50,7 +50,7 @@ class XiaoleVideoTests(unittest.TestCase):
                     self.video.gen_xiaole_video({"channel": channel, "prompt": "demo"})
 
     def test_unstable_channel_tabs_are_hidden(self):
-        html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text()
+        html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
         self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
         self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
         self.assertIn("if(ch!=='grok') ch='grok';", html)

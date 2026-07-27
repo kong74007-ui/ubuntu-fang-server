@@ -235,9 +235,10 @@ def require_inviter_eligibility(conn, user_id, now=None, public=False):
     raise InviteError("membership_required", eligibility["reason"], 403)
 
 
-def invited_membership_limit(conn, user_id, target_tier):
+def invited_membership_limit(conn, user_id, target_tier, now=None):
     """校验被邀请用户不能升级到高于一级邀请人的会员等级。"""
     target_tier = str(target_tier or "")
+    now = int(time.time() if now is None else now)
     relation = conn.execute(
         """SELECT ui.id,ui.inviter_user_id,inviter.username,inviter.display_name,
                   inviter.membership_tier
@@ -248,7 +249,8 @@ def invited_membership_limit(conn, user_id, target_tier):
     ).fetchone()
     if not relation or not target_tier:
         return {"allowed": True, "relation": dict(relation) if relation else None}
-    inviter_tier = str(relation["membership_tier"] or "")
+    eligibility = inviter_eligibility(conn, relation["inviter_user_id"], now=now)
+    inviter_tier = str(eligibility["membership_tier"] or "") if eligibility["eligible"] else ""
     if MEMBERSHIP_LEVEL_ORDER.get(target_tier, 0) > MEMBERSHIP_LEVEL_ORDER.get(inviter_tier, 0):
         inviter_name = MEMBERSHIP_NAMES.get(inviter_tier, "非会员")
         raise InviteError(
@@ -262,7 +264,7 @@ def invited_membership_limit(conn, user_id, target_tier):
 def reward_upgrade_preview(conn, user_id, target_tier, now=None):
     """预览会员升级将产生的一级邀请奖励积分，不写数据库。"""
     now = int(now or time.time())
-    invited_membership_limit(conn, user_id, target_tier)
+    invited_membership_limit(conn, user_id, target_tier, now=now)
     relation = conn.execute(
         """SELECT ui.id,ui.inviter_user_id,inviter.username,inviter.display_name,
                   inviter.membership_tier,inviter.membership_expires_at,inviter.account_status

@@ -5,7 +5,7 @@ from pathlib import Path
 
 class NginxCspTest(unittest.TestCase):
     def test_csp_is_active_and_consistent(self):
-        config = (Path(__file__).parents[1] / "deploy/nginx-huangquechuanmei.conf").read_text()
+        config = (Path(__file__).parents[1] / "deploy/nginx-huangquechuanmei.conf").read_text(encoding="utf-8")
         policies = re.findall(r'add_header Content-Security-Policy "([^"]+)" always;', config)
 
         self.assertEqual(len(policies), 2)

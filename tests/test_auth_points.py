@@ -131,6 +131,50 @@ class AuthPointsTests(unittest.TestCase):
                 self.assertIsNone(err)
                 self.assertIsNotNone(points)
 
+    def test_http_refund_transaction_key_boundary_is_200_characters(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+
+        def post(key):
+            request = urllib.request.Request(
+                base + "/api/auth/points/refund",
+                data=json.dumps({
+                    "username": "fang", "amount": 1,
+                    "reason": "boundary refund", "transaction_key": key,
+                }).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-HQ-Internal-Token": "test-internal-token",
+                }, method="POST")
+            return urllib.request.urlopen(request, timeout=3)
+
+        try:
+            key = "r" * 200
+            with post(key) as response:
+                self.assertEqual(11, json.loads(response.read())["points"])
+            with post(key) as response:
+                self.assertEqual(11, json.loads(response.read())["points"])
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                post("r" * 201)
+            self.assertEqual(400, caught.exception.code)
+            self.assertEqual("invalid transaction_key", json.loads(caught.exception.read())["detail"])
+            with closing(sqlite3.connect(self.auth.DB)) as conn:
+                self.assertEqual(11, conn.execute(
+                    "SELECT points FROM users WHERE username='fang'").fetchone()[0])
+                self.assertEqual(1, conn.execute(
+                    "SELECT COUNT(*) FROM points_transactions WHERE operation='refund' AND transaction_key=?",
+                    (key,)).fetchone()[0])
+                self.assertEqual(0, conn.execute(
+                    "SELECT COUNT(*) FROM points_transactions WHERE length(transaction_key)=201").fetchone()[0])
+                self.assertEqual(1, conn.execute(
+                    "SELECT COUNT(*) FROM points_audit WHERE transaction_key=?", (key,)).fetchone()[0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
     def test_wechat_transaction_can_only_approve_one_recharge_order(self):
         first, first_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
         second, second_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")

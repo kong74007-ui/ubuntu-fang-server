@@ -103,6 +103,7 @@ test('image video and audio workspaces fill the shell without breaking narrow la
   assert.match(audio, /@media \(max-width:1100px\)\{\.gAud\{height:auto/);
 });
 
-test('CI runs the compact sidebar regression suite', () => {
-  assert.match(workflow, /node tests\/test_cloud_shell_sidebar\.js/);
+test('CI runs every JavaScript regression file', () => {
+  assert.match(workflow, /run:\s+node --test tests\/\*\.js/);
+  assert.doesNotMatch(workflow, /run:\s+node tests\/test_cloud_shell_sidebar\.js/);
 });
