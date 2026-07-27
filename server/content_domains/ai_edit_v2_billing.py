@@ -295,6 +295,60 @@ def _billing_row(job_id: str, db_path: str | None = None):
         ).fetchone()
 
 
+def _queue_held_job(job_id: str, now: int, db_path: str | None = None) -> dict[str, Any]:
+    targets = {
+        "created": "validating",
+        "validating": "quoting",
+        "quoting": "precharging",
+        "precharging": "queued",
+    }
+    for _ in range(10):
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            row = conn.execute("SELECT * FROM edit_v2_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise BillingError("job_not_found")
+        if row["status"] == "queued":
+            return dict(row)
+        expected = row["status"]
+        if expected not in targets:
+            raise BillingError("job_queue_state_conflict")
+        target = targets[expected]
+        if not store.transition(
+            job_id, expected, target, {"synchronous": True}, now, db_path=db_path
+        ):
+            continue
+    raise BillingError("job_queue_state_conflict")
+
+
+def reconcile_pending_precharges(
+    now: int,
+    *,
+    points_client: Any = points,
+    db_path: str | None = None,
+) -> int:
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        rows = conn.execute(
+            """SELECT b.*,j.owner FROM edit_v2_billing b
+               JOIN edit_v2_jobs j ON j.id=b.job_id
+               WHERE b.operation='hold' AND b.status='pending'"""
+        ).fetchall()
+    recovered = 0
+    for row in rows:
+        points_after = points_client.deduct_points(
+            row["owner"], int(row["amount"]), "ai-edit-v2 maximum precharge",
+            transaction_key=row["transaction_key"],
+        )
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            conn.execute(
+                """UPDATE edit_v2_billing SET status='held',response_json=?,updated_at=?
+                   WHERE id=? AND status='pending'""",
+                (_canonical({"points_after": points_after}), now, row["id"]),
+            )
+        _queue_held_job(row["job_id"], now, db_path)
+        recovered += 1
+    return recovered
+
+
 def precharge_and_create_job(
     owner: str,
     payload: dict[str, Any],
@@ -339,6 +393,7 @@ def precharge_and_create_job(
                    WHERE id=? AND status='pending'""",
                 (_canonical({"points_after": points_after}), now, bill["id"]),
             )
+    job = _queue_held_job(job["id"], now, db_path)
     return {"job": job, "quote": quote, "held_points": int(bill["amount"])}
 
 

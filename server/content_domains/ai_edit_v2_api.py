@@ -14,6 +14,7 @@ from typing import Any
 from . import ai_edit_v2_store as store
 from . import cos
 from . import ai_edit_v2_billing as billing
+from . import ai_edit_v2_pipeline as pipeline
 from . import points
 from .ai_edit_v2_schema import (
     ASPECT_RATIOS,
@@ -292,7 +293,8 @@ def _get_job(handler: Any, owner: str, job_id: str) -> bool:
                 "error_code": row["error_code"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
-            }
+            },
+            "timing": pipeline.timing_status(job_id, _now(), db_path=store._db_path()),
         },
     )
 

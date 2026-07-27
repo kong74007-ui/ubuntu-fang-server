@@ -304,7 +304,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(quote_status, 201)
         self.assertEqual(status, 201)
-        self.assertEqual(payload["status"], "created")
+        self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["held_points"], quote_payload["quote"]["max_points"])
 
     def test_job_status_is_owner_scoped(self):
@@ -329,6 +329,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["job"]["id"], job["id"])
         self.assertNotIn("payload_json", payload["job"])
+        self.assertEqual(payload["timing"]["current_stage"], "created")
+        self.assertIn("queue_seconds", payload["timing"])
+        self.assertIn("processing_seconds", payload["timing"])
+        self.assertIn("repair_seconds", payload["timing"])
+        self.assertIn("remaining_seconds", payload["timing"])
         self.assertEqual(other_status, 404)
 
     def test_retry_creates_an_idempotent_successor_without_reviving_old_job(self):
@@ -367,7 +372,7 @@ class ApiTests(unittest.TestCase):
                 (first["job_id"],),
             ).fetchone()
         self.assertEqual(old_row["status"], "render_failed")
-        self.assertEqual(successor["status"], "created")
+        self.assertEqual(successor["status"], "queued")
         self.assertEqual(json.loads(successor["payload_json"]), {"draft": valid_api_draft()})
         self.assertNotEqual(successor["quote_id"], "old-quote")
 
