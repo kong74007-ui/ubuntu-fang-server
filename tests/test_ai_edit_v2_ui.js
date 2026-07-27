@@ -4,11 +4,11 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
-const pagePath = path.join(root, 'site/workbench/ai-edit.html');
+const pagePath = path.join(root, 'site/workbench/ai-edit-v2.html');
 const shellPath = path.join(root, 'site/workbench/cloud-shell.js');
 
 test('AI edit page exposes the frozen Phase A task flow', () => {
-  assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit.html must exist');
+  assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit-v2.html must exist');
   const page = fs.readFileSync(pagePath, 'utf8');
   assert.match(page, /data-active="ai_edit_v2"/);
   for (const mode of ['natural_brief', 'platform_template', 'open_generation']) {
@@ -63,7 +63,7 @@ test('shared shell exposes AI edit only after the server capability allows it', 
   assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑',i:'edit',gated:true\}/);
   assert.match(shell, /\/api\/v2\/edit\/capabilities/);
   assert.match(shell, /accepts_submissions/);
-  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit\.html'\}/);
+  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit-v2\.html'\}/);
   const page = fs.readFileSync(pagePath, 'utf8');
   assert.match(page, /loadCapability/);
   assert.match(page, /功能尚未开放/);
