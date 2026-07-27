@@ -203,20 +203,27 @@ def init_db(db_path: str | None = None) -> None:
                 ON edit_v2_stage_attempts(job_id, stage, attempt);
             """
         )
-        job_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
-        }
-        if "predecessor_job_id" not in job_columns:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
+            }
+            if "predecessor_job_id" not in job_columns:
+                conn.execute(
+                    """ALTER TABLE edit_v2_jobs
+                       ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
+                )
             conn.execute(
-                """ALTER TABLE edit_v2_jobs
-                   ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
+                """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
+                   VALUES(1,?,0)
+                   ON CONFLICT(id) DO UPDATE SET version=excluded.version""",
+                (SCHEMA_VERSION,),
             )
-        conn.execute(
-            """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
-               VALUES(1,?,0)
-               ON CONFLICT(id) DO UPDATE SET version=excluded.version""",
-            (SCHEMA_VERSION,),
-        )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from unittest.mock import patch
 
@@ -93,6 +94,38 @@ class StoreTests(unittest.TestCase):
                 "SELECT version FROM edit_v2_schema_meta WHERE id=1"
             ).fetchone()["version"]
         self.assertIn("predecessor_job_id", columns)
+        self.assertEqual(version, 2)
+
+    def test_concurrent_init_db_serializes_the_schema_migration(self):
+        legacy_path = os.path.join(self.temp_dir.name, "concurrent-v1.db")
+        with closing(store.open_store(legacy_path)) as conn:
+            conn.execute(
+                """CREATE TABLE edit_v2_jobs(
+                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
+                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                       director_plan_json TEXT,
+                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
+                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
+                       output_cos_key TEXT,
+                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                       UNIQUE(owner,idempotency_key)
+                   )"""
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(store.init_db, legacy_path) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=10)
+
+        with closing(store.open_store(legacy_path)) as conn:
+            columns = [
+                row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
+            ]
+            version = conn.execute(
+                "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+            ).fetchone()["version"]
+        self.assertEqual(columns.count("predecessor_job_id"), 1)
         self.assertEqual(version, 2)
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
