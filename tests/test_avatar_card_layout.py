@@ -138,12 +138,16 @@ class AvatarListLoadingTests(unittest.TestCase):
     def setUp(self):
         self.block = HTML.split("function loadMotionAvatars")[1].split("// =====", 1)[0]
 
-    def test_removed_talking_batch_renderer_is_not_called(self):
-        self.assertNotIn("renderTalkingBatchImages", self.block)
-
-    def test_loading_and_errors_target_the_cinematic_grid(self):
-        self.assertIn("var grid=$('cineAvatarGrid')", self.block)
+    def test_all_avatar_consumers_refresh_after_loading(self):
+        self.assertIn("renderMotionAvatars()", self.block)
+        self.assertIn("renderTalkingBatchImages()", self.block)
         self.assertIn("renderCineAvatars()", self.block)
+
+    def test_loading_and_errors_target_both_avatar_grids(self):
+        self.assertIn("motionGrid=$('motionAvatarGrid')", self.block)
+        self.assertIn("cineGrid=$('cineAvatarGrid')", self.block)
+        self.assertIn("if(motionGrid) motionGrid.innerHTML=error", self.block)
+        self.assertIn("if(cineGrid) cineGrid.innerHTML=error", self.block)
 
 
 if __name__ == "__main__":
