@@ -234,6 +234,41 @@ class BillingTests(unittest.TestCase):
         )
         self.assertEqual(fake_points.balance, 500 - quote["min_points"])
 
+    def test_definitive_precharge_rejection_is_terminal_and_never_reconciled(self):
+        quote = billing.create_quote(
+            "alice", draft(), now=100, uuid_factory=lambda: "quote-rejected"
+        )
+        fake_points = FakePoints(balance=0)
+        kwargs = {
+            "owner": "alice",
+            "payload": {"draft": draft()},
+            "quote_id": quote["id"],
+            "idempotency_key": "request-rejected",
+            "points_client": fake_points,
+            "uuid_factory": lambda: "job-rejected",
+        }
+
+        for now in (101, 102):
+            with self.assertRaises(points.AuthPointsError) as caught:
+                billing.precharge_and_create_job(now=now, **kwargs)
+            self.assertEqual(caught.exception.status, 402)
+
+        with closing(store.open_store(self.db_path)) as conn:
+            bill = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id='job-rejected'"
+            ).fetchone()
+            job = conn.execute(
+                "SELECT status FROM edit_v2_jobs WHERE id='job-rejected'"
+            ).fetchone()
+        self.assertEqual(bill["status"], "rejected")
+        self.assertEqual(job["status"], "validation_failed")
+        self.assertEqual(
+            billing.reconcile_pending_precharges(
+                103, points_client=FakePoints(balance=500), db_path=self.db_path
+            ),
+            0,
+        )
+
     def test_price_versions_require_preview_and_explicit_publish_confirmation(self):
         config = billing.default_price_config()
         config["base_points"] = 31

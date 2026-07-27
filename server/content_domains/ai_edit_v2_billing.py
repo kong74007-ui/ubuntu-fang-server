@@ -295,6 +295,44 @@ def _billing_row(job_id: str, db_path: str | None = None):
         ).fetchone()
 
 
+def _is_definitive_points_rejection(exc: Exception) -> bool:
+    status = int(getattr(exc, "status", 0) or 0)
+    return 400 <= status < 500
+
+
+def _reject_precharge(row: Any, exc: Exception, now: int, db_path: str | None) -> None:
+    rejection = {
+        "status": int(getattr(exc, "status", 400) or 400),
+        "detail": str(getattr(exc, "detail", str(exc))),
+    }
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_billing SET status='rejected',response_json=?,updated_at=?
+               WHERE id=? AND status='pending'""",
+            (_canonical(rejection), now, row["id"]),
+        ).rowcount
+        job = conn.execute(
+            "SELECT status FROM edit_v2_jobs WHERE id=?", (row["job_id"],)
+        ).fetchone()
+    if changed and job is not None:
+        store.transition(
+            row["job_id"],
+            job["status"],
+            "validation_failed",
+            {"reason": "precharge_rejected", "points_status": rejection["status"]},
+            now,
+            db_path=db_path,
+        )
+
+
+def _raise_rejected_precharge(row: Any) -> None:
+    rejection = json.loads(row["response_json"] or "{}")
+    raise points.AuthPointsError(
+        int(rejection.get("status") or 402),
+        str(rejection.get("detail") or "precharge rejected"),
+    )
+
+
 def _queue_held_job(job_id: str, now: int, db_path: str | None = None) -> dict[str, Any]:
     targets = {
         "created": "validating",
@@ -334,10 +372,16 @@ def reconcile_pending_precharges(
         ).fetchall()
     recovered = 0
     for row in rows:
-        points_after = points_client.deduct_points(
-            row["owner"], int(row["amount"]), "ai-edit-v2 maximum precharge",
-            transaction_key=row["transaction_key"],
-        )
+        try:
+            points_after = points_client.deduct_points(
+                row["owner"], int(row["amount"]), "ai-edit-v2 maximum precharge",
+                transaction_key=row["transaction_key"],
+            )
+        except Exception as exc:
+            if not _is_definitive_points_rejection(exc):
+                raise
+            _reject_precharge(row, exc, now, db_path)
+            continue
         with closing(store.open_store(store._db_path(db_path))) as conn:
             conn.execute(
                 """UPDATE edit_v2_billing SET status='held',response_json=?,updated_at=?
@@ -380,13 +424,20 @@ def precharge_and_create_job(
             (job["id"], transaction_key, "hold", quote["max_points"], "pending", now, now),
         )
     bill = _billing_row(job["id"], db_path)
+    if bill["status"] == "rejected":
+        _raise_rejected_precharge(bill)
     if bill["status"] == "pending":
-        points_after = points_client.deduct_points(
-            owner,
-            int(bill["amount"]),
-            "ai-edit-v2 maximum precharge",
-            transaction_key=transaction_key,
-        )
+        try:
+            points_after = points_client.deduct_points(
+                owner,
+                int(bill["amount"]),
+                "ai-edit-v2 maximum precharge",
+                transaction_key=transaction_key,
+            )
+        except Exception as exc:
+            if _is_definitive_points_rejection(exc):
+                _reject_precharge(bill, exc, now, db_path)
+            raise
         with closing(store.open_store(store._db_path(db_path))) as conn:
             conn.execute(
                 """UPDATE edit_v2_billing SET status='held',response_json=?,updated_at=?
