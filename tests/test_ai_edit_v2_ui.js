@@ -60,7 +60,7 @@ test('user page does not expose provider internals or an editable timeline', () 
 
 test('shared shell exposes AI edit only after the server capability allows it', () => {
   const shell = fs.readFileSync(shellPath, 'utf8');
-  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑',i:'edit',gated:true\}/);
+  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑 V2',i:'edit',gated:true\}/);
   assert.match(shell, /\/api\/v2\/edit\/capabilities/);
   assert.match(shell, /accepts_submissions/);
   assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit-v2\.html'\}/);

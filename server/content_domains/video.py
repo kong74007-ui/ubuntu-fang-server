@@ -1901,11 +1901,15 @@ _SUBTITLE_FONT_ALLOWLIST = tuple(dict.fromkeys((
     SUBTITLE_FONT,
     "Noto Sans CJK SC",
     "Noto Serif CJK SC",
+    "Smiley Sans",
+    "ZCOOL KuaiLe",
 )))
 _SUBTITLE_FONT_LABELS = {
     "Noto Sans SC": "简体中文黑体（推荐）",
     "Noto Sans CJK SC": "中日韩黑体",
     "Noto Serif CJK SC": "中日韩宋体",
+    "Smiley Sans": "得意黑（设计感）",
+    "ZCOOL KuaiLe": "站酷快乐体（活泼）",
 }
 _SUBTITLE_TEMPLATE_LABELS = {
     # 保留历史 key，避免旧任务/客户端失效；界面上把它作为无动画的基础字幕。
@@ -1981,6 +1985,7 @@ _LEGACY_SUBTITLE_DEFAULTS = {
 }
 _SUBTITLE_ALL_DEFAULTS = dict(_LEGACY_SUBTITLE_DEFAULTS, **_SUBTITLE_TEMPLATE_DEFAULTS)
 _SUBTITLE_WORD_TIMELINE_STYLES = {"word_highlight", "karaoke", "bounce"}
+_SUBTITLE_PROGRESS_COLOR_STYLES = {"word_highlight", "karaoke"}
 _SUBTITLE_KEYWORD_STYLES = {"keyword_highlight", "glow", "bilingual"}
 _SUBTITLE_COMMON_OPTION_KEYS = {
     "font_family", "font_size", "font_weight", "font_color", "highlight_color",
@@ -2549,7 +2554,7 @@ def _build_ass(segs, style_key, w, h, position="bottom", options=None, timed_wor
     max_chars = max(8, min(16, int((w - 2 * mlr) / (fs * 1.05))))
     primary_hex = options["font_color"]
     secondary_hex = options["highlight_color"]
-    if style_key in _SUBTITLE_WORD_TIMELINE_STYLES:
+    if style_key in _SUBTITLE_PROGRESS_COLOR_STYLES:
         primary_hex = options["highlight_color"]
         secondary_hex = options.get("pending_color", options["font_color"])
     border = 3 if float(options.get("background_opacity", 0)) > 0 else 1

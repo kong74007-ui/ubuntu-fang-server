@@ -148,7 +148,7 @@ class PipelineWiringTests(unittest.TestCase):
     def test_cinematic_results_reach_the_video_asset_library(self):
         # 剧情视频是视频，必须进视频资产库，否则用户在资产库里看不到它
         src = Path(core.__file__).read_text(encoding="utf-8")
-        self.assertIn('{"video", "tryon", "xiaole_video", "sora_video", "cinematic"}', src)
+        self.assertIn('{"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}', src)
 
     def test_both_features_are_toggleable_from_admin(self):
         self.assertIn("avatar", feature_flags.CATALOG_MAP)

@@ -9,7 +9,8 @@ const workflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'u
 const banana = fs.readFileSync(path.join(root, 'site/workbench/banana.html'), 'utf8');
 const video = fs.readFileSync(path.join(root, 'site/workbench/video.html'), 'utf8');
 const audio = fs.readFileSync(path.join(root, 'site/workbench/audio.html'), 'utf8');
-const aiEdit = fs.readFileSync(path.join(root, 'site/workbench/ai-edit.html'), 'utf8');
+const legacyAiEdit = fs.readFileSync(path.join(root, 'site/workbench/ai-edit.html'), 'utf8');
+const aiEditV2 = fs.readFileSync(path.join(root, 'site/workbench/ai-edit-v2.html'), 'utf8');
 
 function readNavDisplayMode() {
   const match = shell.match(/function navDisplayMode\(active,narrow\)\{[^}]+\}/);
@@ -30,16 +31,17 @@ test('desktop Inspiration keeps the sidebar expanded', () => {
 
 test('other desktop routes use the compact icon rail', () => {
   const navDisplayMode = readNavDisplayMode();
-  for (const route of ['leads', 'banana', 'ai_edit_v2', 'canvas', 'settings']) {
+  for (const route of ['leads', 'banana', 'ai-edit', 'ai_edit_v2', 'canvas', 'settings']) {
     assert.equal(navDisplayMode(route, false), 'compact', route);
   }
 });
 
-test('AI edit is registered once and points to its isolated page', () => {
+test('legacy and V2 AI editors are registered once and stay isolated', () => {
+  assert.equal((shell.match(/k:'ai-edit'/g) || []).length, 1);
   assert.equal((shell.match(/k:'ai_edit_v2'/g) || []).length, 1);
-  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit\.html'\}/);
-  assert.match(shell, /ai_edit_v2:'ai-edit\.html'/);
-  assert.match(aiEdit, /data-active="ai_edit_v2"/);
+  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit-v2\.html'\}/);
+  assert.match(legacyAiEdit, /data-active="ai-edit"/);
+  assert.match(aiEditV2, /data-active="ai_edit_v2"/);
 });
 
 test('narrow viewports keep the full drawer on every route', () => {

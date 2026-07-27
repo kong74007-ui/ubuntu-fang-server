@@ -15,7 +15,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import ai_edit_v2_api, assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
+import mimetypes; from . import ai_edit_api, ai_edit_v2_api, assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -188,6 +188,7 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
+AI_EDIT_COST = _env_positive_int("AI_EDIT_COST", 30)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 20)  # 口播(video mode=text/audio)专用池：20 路并发任务独立消费
 CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
@@ -202,6 +203,7 @@ MAX_USER_ACTIVE_SORA_VIDEO = _env_positive_int("MAX_USER_ACTIVE_SORA_VIDEO", 1) 
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
 MAX_USER_ACTIVE_CINEMATIC = _env_positive_int("MAX_USER_ACTIVE_CINEMATIC", 2)        # 单用户剧情视频 active 上限：重任务(约8分钟)，别让一个人占满 10 个 worker
 MAX_USER_ACTIVE_AVATAR = _env_positive_int("MAX_USER_ACTIVE_AVATAR", 2)              # 单用户建形象 active 上限。池已不再串行(5路)，但仍留 2：池只有 5 个槽，一个人占满就把别人挡在门外——而建形象是电影化身的入口
+MAX_USER_ACTIVE_AI_EDIT = _env_positive_int("MAX_USER_ACTIVE_AI_EDIT", 1)            # 一键剪辑会预处理+上传+云渲染，单用户一次只飞一条
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
 MAX_GLOBAL_RUNNING_BREAKDOWN = _env_positive_int("MAX_GLOBAL_RUNNING_BREAKDOWN", 2)  # 爆款拆解会跑下载+ffmpeg+ASR+多模态，全局限 2 条防慢任务挤爆机器
@@ -226,13 +228,15 @@ CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 900, "collect": 1200,
-              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600}
+              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600,
+              "ai_edit": 2100}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
-        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8}  # collect/leads/cinematic 走 cost_of() 动态算
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8,
+        "ai_edit": AI_EDIT_COST}  # collect/leads/cinematic 走 cost_of() 动态算
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -284,6 +288,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
+    ai_edit_api.init_db()
     init_audio_db()
 
 def init_audio_db():
@@ -723,6 +728,8 @@ def _pick_job_queue(kind, mode=None):
         return _image_job_queue
     if kind == "breakdown":
         return _job_queue               # 下载+ffmpeg+ASR+多模态，走慢池别堵快任务
+    if kind == "ai_edit":
+        return _job_queue               # 视频预处理+工程上传+云渲染，走慢池
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
@@ -801,6 +808,12 @@ def _user_video_submit_limit(kind, body, username, cost):
         if active >= MAX_USER_ACTIVE_AVATAR:
             return {"detail": "当前最多同时创建 %d 个形象，请等待完成后再继续" % MAX_USER_ACTIVE_AVATAR,
                     "code": "avatar_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_AVATAR,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "ai_edit":
+        active = _user_active_kind_count(username, "ai_edit")
+        if active >= MAX_USER_ACTIVE_AI_EDIT:
+            return {"detail": "当前已有一条视频正在一键剪辑，请等待完成后再继续",
+                    "code": "ai_edit_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_AI_EDIT,
                     "retry_after_ms": 4000, "need": cost}
     return None
 
@@ -945,7 +958,7 @@ def install_signal_handlers():
 
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
-    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
         return
     try:
         _, _, video_domain = _domains()
@@ -1018,7 +1031,7 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "ai_edit"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1039,11 +1052,12 @@ def run_job(job_id):
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
                 video_domain.record_video_asset(job_id, username, result)
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
+        ai_edit_api.job_completed(kind, job_id, result)
     except Exception as e:
         if kind == "sora_video":
             try:
@@ -1069,6 +1083,7 @@ def run_job(job_id):
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
+        ai_edit_api.job_failed(kind, job_id, e)
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1161,6 +1176,8 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v2/edit/"):
             return ai_edit_v2_api.dispatch(self, "POST", p, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
+        handled, p = ai_edit_api.handle_post(self, p, points_domain, video_domain)
+        if handled: return
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1369,7 +1386,7 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             try:
-                body = self._json_body_strict() if kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
+                body = self._json_body_strict() if kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "ai_edit"} else self._json_body()
                 request_body = dict(body) if isinstance(body, dict) else body
                 # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
                 # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
@@ -1382,6 +1399,9 @@ class H(BaseHTTPRequestHandler):
                     body = video_domain.validate_cinematic_payload(body, user["username"])
                 elif kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
+                elif kind == "ai_edit":
+                    from . import ai_edit as ai_edit_domain
+                    body = ai_edit_domain.validate_ai_edit_payload(body, user["username"])
                 elif kind == "xiaole_video":
                     body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "sora_video":
@@ -1390,7 +1410,7 @@ class H(BaseHTTPRequestHandler):
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
@@ -1446,20 +1466,27 @@ class H(BaseHTTPRequestHandler):
                     return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
                         "submission_ref": e.submission_ref})
-                if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+                if kind == "ai_edit":
+                    if ai_edit_api.prepare_submission(
+                            self, kind, jid, user["username"], body, cost,
+                            video_domain, p, idem_key):
+                        return
+                elif kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
                     try: video_domain.record_video_pending_asset(jid, user["username"], body)
                     except Exception:
                         _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
                         return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                    if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+                    if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    ai_edit_api.queue_rejected(kind, jid, "任务队列已满，请稍后再试")
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            ai_edit_api.decorate_submission(kind, response)
             _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+            return self._send(ai_edit_api.submission_status(self, kind), response)
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -1467,6 +1494,7 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v2/edit/"):
             return ai_edit_v2_api.dispatch(self, "GET", p, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
+        if ai_edit_api.handle_get(self, p): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/asset/marks":
@@ -1502,7 +1530,7 @@ class H(BaseHTTPRequestHandler):
             if not r: return self._send(404, {"detail": "任务不存在"})
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
-            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else None
+            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"} else None
             if phase is None and r["kind"] == "breakdown":
                 try:
                     phase = (json.loads(r["payload"] or "{}") or {}).get("phase")
@@ -1706,8 +1734,11 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
-        self._send(404, {"detail": "not found"})
+        p = self.path.split("?")[0]
+        if p == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
+        if ai_edit_api.handle_delete(self, p): return
+        return self._send(404, {"detail": "not found"})
 if __name__ == "__main__":
     init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点
     start_job_workers(); threading.Thread(target=reaper, daemon=True).start()
