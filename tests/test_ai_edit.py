@@ -59,7 +59,7 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('new_id, points_left = jobs_store.create_paid_job(', API)
         self.assertIn('core._idempotency_complete(user["username"], retry_route, idem_key, response)', API)
         self.assertIn('return handler._send(202, response)', API)
-        self.assertIn("exc.status if exc.status in (402, 403) else 502", API)
+        self.assertIn("status = exc.status if exc.status in (402, 403, 409) else 502", API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
 
     def test_test_domain_proxies_versioned_routes_to_content_api(self):
@@ -395,6 +395,10 @@ class AiEditUiTests(unittest.TestCase):
         self.assertIn("localStorage.getItem(storageKey)", PAGE)
         self.assertIn("headers:{'Idempotency-Key':retryKey}", PAGE)
 
+    def test_retry_persists_successor_before_deleting_the_retry_key(self):
+        retry_block = PAGE.split("function retryJob()", 1)[1].split("function showResult", 1)[0]
+        self.assertLess(retry_block.index("saveActive()"), retry_block.index("localStorage.removeItem"))
+
 
 class _RetryPoints:
     class AuthPointsError(Exception):
@@ -407,17 +411,22 @@ class _RetryPoints:
         self.balance = balance
         self.deduct_calls = 0
         self.refund_calls = 0
+        self.transactions = {}
         self.lock = threading.Lock()
 
     def cost_of(self, kind, payload):
         return 30
 
-    def deduct_points(self, username, cost, reason):
+    def deduct_points(self, username, cost, reason, transaction_key=None):
         with self.lock:
+            if transaction_key and transaction_key in self.transactions:
+                return self.transactions[transaction_key]
             if self.balance < cost:
                 raise self.AuthPointsError(402, "insufficient points")
             self.balance -= cost
             self.deduct_calls += 1
+            if transaction_key:
+                self.transactions[transaction_key] = self.balance
             return self.balance
 
     def refund_points(self, username, cost, reason, transaction_key=None):
@@ -425,6 +434,20 @@ class _RetryPoints:
             self.balance += cost
             self.refund_calls += 1
             return self.balance
+
+
+class _AmbiguousRetryPoints(_RetryPoints):
+    def __init__(self, balance=100):
+        super().__init__(balance)
+        self.drop_first_response = True
+
+    def deduct_points(self, username, cost, reason, transaction_key=None):
+        points_left = super().deduct_points(
+            username, cost, reason, transaction_key=transaction_key)
+        if self.drop_first_response:
+            self.drop_first_response = False
+            raise self.AuthPointsError(502, "auth response lost after commit")
+        return points_left
 
 
 class _RetryVideoDomain:
@@ -522,14 +545,26 @@ class AiEditRetryTransactionTests(unittest.TestCase):
         db.row_factory = sqlite3.Row
         return db
 
-    def _retry(self, key):
+    def _retry(self, key, job_id=None):
         handler = _RetryHandler(key)
         handled, _ = ai_edit_api.handle_post(
-            handler, "/api/gen/ai-edit/jobs/%d/retry" % self.old_job_id,
+            handler, "/api/gen/ai-edit/jobs/%d/retry" % (job_id or self.old_job_id),
             self.points, self.video,
         )
         self.assertTrue(handled)
         return handler.response
+
+    def _insert_failed_job(self):
+        with closing(self._jobs_db()) as db:
+            payload = {"source_video_asset_id": 1, "style_id": "product_seeding",
+                       "materials": [], "product_facts": {}}
+            cursor = db.execute(
+                """INSERT INTO jobs(kind,username,cost,status,payload,refunded,created_at,updated_at,owner)
+                   VALUES('ai_edit','fang',30,'error',?,1,1,1,?)""",
+                (json.dumps(payload, ensure_ascii=False), core.SERVICE_OWNER),
+            )
+            db.commit()
+            return cursor.lastrowid
 
     def _successor_rows(self):
         with closing(self._jobs_db()) as db:
@@ -578,6 +613,31 @@ class AiEditRetryTransactionTests(unittest.TestCase):
         self.assertEqual(len(successors), 1)
         self.assertEqual(json.loads(successors[0]["payload"])["_retry_from_job_id"], self.old_job_id)
 
+    def test_retry_recovers_when_auth_committed_deduction_but_lost_its_response(self):
+        self.points = _AmbiguousRetryPoints()
+
+        first_status, first_payload = self._retry("retry-auth-response-lost")
+        second_status, second_payload = self._retry("retry-auth-response-lost")
+
+        self.assertEqual(first_status, 502)
+        self.assertEqual(first_payload["code"], "points_result_unknown")
+        self.assertEqual(second_status, 202)
+        self.assertEqual(second_payload["retried_from"], self.old_job_id)
+        self.assertEqual(self.points.balance, 70)
+        self.assertEqual(self.points.deduct_calls, 1)
+        self.assertEqual(len(self._successor_rows()), 1)
+        self.assertEqual(len(self.points.transactions), 1)
+
+    def test_same_retry_key_for_another_predecessor_conflicts(self):
+        other_job_id = self._insert_failed_job()
+        first = self._retry("retry-cross-predecessor-key", self.old_job_id)
+        second = self._retry("retry-cross-predecessor-key", other_job_id)
+
+        self.assertEqual(first[0], 202)
+        self.assertEqual(second[0], 409)
+        self.assertEqual(second[1]["code"], "idempotency_conflict")
+        self.assertEqual(self.points.deduct_calls, 1)
+
     def test_retry_metadata_failure_leaves_a_scannable_refund(self):
         self.video.error = RuntimeError("video metadata failed")
         with patch.object(self.points, "refund_points", side_effect=RuntimeError("auth unavailable")):
@@ -598,6 +658,32 @@ class AiEditRetryTransactionTests(unittest.TestCase):
         with closing(self._jobs_db()) as db:
             refunded = db.execute("SELECT refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()[0]
         self.assertEqual(refunded, 1)
+
+    def test_retry_metadata_failure_recovers_from_a_transient_jobs_cas_error(self):
+        self.video.error = RuntimeError("video metadata failed")
+
+        def fail_primary_reject(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(core, "_reject_pending_job", side_effect=fail_primary_reject):
+            status, payload = self._retry("retry-transient-cas-failure")
+
+        self.assertEqual(status, 500)
+        with closing(self._jobs_db()) as db:
+            row = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()
+        self.assertEqual((row["status"], row["refunded"]), ("error", 1))
+        self.assertEqual(self._successor_rows(), [])
+
+    def test_retry_metadata_failure_still_responds_when_idempotency_abort_fails(self):
+        self.video.error = RuntimeError("video metadata failed")
+        with patch.object(core, "_idempotency_abort", side_effect=sqlite3.OperationalError("database is locked")):
+            status, payload = self._retry("retry-abort-failure")
+
+        self.assertEqual(status, 500)
+        self.assertIn("job_id", payload)
+        with closing(self._jobs_db()) as db:
+            row = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()
+        self.assertEqual((row["status"], row["refunded"]), ("error", 1))
 
     def test_concurrent_retry_replays_one_successor_and_one_charge(self):
         barrier = threading.Barrier(2)

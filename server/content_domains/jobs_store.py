@@ -198,13 +198,18 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
     return "refunded" if confirmed else "queued"
 
 
-def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind=""):
+def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
+                     submission_ref=None, deduct_transaction_key=None):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
-    submission_ref = uuid.uuid4().hex
-    points_left = deduct(username, total, "job:%s submit:%s" % (
-        reason_kind or kind, submission_ref))
+    submission_ref = str(submission_ref or uuid.uuid4().hex).strip()[:128] or uuid.uuid4().hex
+    reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
+    if deduct_transaction_key:
+        points_left = deduct(
+            username, total, reason, transaction_key=str(deduct_transaction_key))
+    else:
+        points_left = deduct(username, total, reason)
     now = int(time.time())
     try:
         with closing(jdb()) as c:
@@ -223,7 +228,10 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
         raise PaidJobInsertError(state, submission_ref) from error
 
 
-def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner):
+def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
+                    submission_ref=None, deduct_transaction_key=None):
     job_ids, points_left = create_paid_jobs(
-        jdb, deduct, refund, kind, username, [(cost, payload)], owner)
+        jdb, deduct, refund, kind, username, [(cost, payload)], owner,
+        submission_ref=submission_ref,
+        deduct_transaction_key=deduct_transaction_key)
     return job_ids[0], points_left

@@ -179,6 +179,25 @@ class JobsStoreTests(unittest.TestCase):
             row = c.execute("SELECT status,cost,refunded FROM jobs").fetchone()
         self.assertEqual(("error", 40, 1), tuple(row))
 
+    def test_paid_job_uses_explicit_stable_submission_and_deduct_keys(self):
+        deductions = []
+
+        def deduct(username, amount, reason="", transaction_key=None):
+            deductions.append((username, amount, reason, transaction_key))
+            return 90
+
+        job_id, points_left = jobs_store.create_paid_job(
+            self._jdb, deduct, lambda *_args, **_kwargs: True,
+            "ai_edit", "u", 10, {"source": 1}, "content",
+            submission_ref="stable-submission-ref",
+            deduct_transaction_key="stable-deduct-key",
+        )
+
+        self.assertGreater(job_id, 0)
+        self.assertEqual(points_left, 90)
+        self.assertEqual(deductions, [(
+            "u", 10, "job:ai_edit submit:stable-submission-ref", "stable-deduct-key")])
+
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):
         jid = self._insert(10)

@@ -2,6 +2,7 @@
 """Versioned HTTP surface and lifecycle hooks for the one-click AI editor."""
 
 import cgi
+import hashlib
 import json
 import pathlib
 import re
@@ -16,6 +17,13 @@ def _core():
 
 
 LEGACY_API_PREFIX = "/api/gen/ai-edit/"
+RETRY_IDEMPOTENCY_SCOPE = "/api/gen/ai-edit/jobs/retry"
+
+
+def _retry_submission_identity(username, job_id, idem_key):
+    seed = "%s\0%d\0%s" % (username, int(job_id), idem_key)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return "ai-edit-retry-" + digest, "ai-edit-retry-hold:" + digest
 
 
 def _canonical_path(path):
@@ -59,13 +67,55 @@ def job_failed(kind, job_id, error):
         pass
 
 
-def _best_effort_reject_and_cleanup(core, ai_edit_store, job_id, username, cost, reason, error):
-    """Keep the paid-job refund marker authoritative; editor metadata is secondary."""
+class PaidJobCompensationError(RuntimeError):
+    pass
+
+
+def _scannable_error_row(row, cost):
+    return bool(row and row["status"] == "error" and (
+        int(cost or 0) <= 0 or int(row["refunded"] or 0) in {1, 2}))
+
+
+def _paid_job_row(core, job_id):
+    with closing(core.jdb()) as db:
+        return db.execute(
+            "SELECT status,refunded FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+
+def _reject_paid_job(core, job_id, username, cost, reason):
+    """Persist a scanner-visible terminal state before any local cleanup."""
+    first_error = None
     try:
-        core._reject_pending_job(job_id, username, cost, reason)
-    except Exception as cleanup_error:
-        print("[ai-edit] paid-job cleanup failed job=%s: %s" % (
-            job_id, str(cleanup_error)[:180]), flush=True)
+        if core._reject_pending_job(job_id, username, cost, reason):
+            return
+    except Exception as exc:
+        first_error = exc
+    try:
+        row = _paid_job_row(core, job_id)
+        if _scannable_error_row(row, cost):
+            return
+        if not row or row["status"] != "pending":
+            raise RuntimeError("paid job is not rejectable: %s" % (
+                row["status"] if row else "missing"))
+        claimed = core.jobs_store.set_terminal(
+            core.jdb, job_id, "error", error=reason, from_states=("pending",))
+        if not claimed and not _scannable_error_row(_paid_job_row(core, job_id), cost):
+            raise RuntimeError("paid job rejection CAS did not persist")
+        if claimed:
+            try:
+                core._refund_once(job_id, username, cost)
+            except Exception as refund_error:
+                print("[ai-edit] refund confirmation deferred job=%s: %s" % (
+                    job_id, str(refund_error)[:180]), flush=True)
+        if _scannable_error_row(_paid_job_row(core, job_id), cost):
+            return
+        raise RuntimeError("paid job compensation is not scanner-visible")
+    except Exception as exc:
+        raise PaidJobCompensationError(
+            "paid job compensation persistence failed: %s" % str(exc)[:180]) from (first_error or exc)
+
+
+def _best_effort_editor_cleanup(ai_edit_store, job_id, error):
     for cleanup in (
             lambda: ai_edit_store.release_hold(job_id),
             lambda: ai_edit_store.mark_failed(job_id, error)):
@@ -74,6 +124,21 @@ def _best_effort_reject_and_cleanup(core, ai_edit_store, job_id, username, cost,
         except Exception as cleanup_error:
             print("[ai-edit] metadata cleanup failed job=%s: %s" % (
                 job_id, str(cleanup_error)[:180]), flush=True)
+
+
+def _reject_and_cleanup(core, ai_edit_store, job_id, username, cost, reason, error):
+    _reject_paid_job(core, job_id, username, cost, reason)
+    _best_effort_editor_cleanup(ai_edit_store, job_id, error)
+
+
+def _best_effort_idempotency_abort(core, username, route, idem_key, job_id=0):
+    try:
+        core._idempotency_abort(username, route, idem_key)
+        return True
+    except Exception as cleanup_error:
+        print("[ai-edit] idempotency cleanup failed job=%s: %s" % (
+            job_id or "unknown", str(cleanup_error)[:180]), flush=True)
+        return False
 
 
 def prepare_submission(handler, kind, job_id, username, payload, cost, video_domain, route, idem_key):
@@ -94,14 +159,17 @@ def prepare_submission(handler, kind, job_id, username, payload, cost, video_dom
     except Exception as exc:
         if kind != "ai_edit":
             raise
-        _best_effort_reject_and_cleanup(
-            core, ai_edit_store, job_id, username, cost,
-            "剪辑任务元数据创建失败", exc)
         try:
-            core._idempotency_abort(username, route, idem_key)
-        except Exception as cleanup_error:
-            print("[ai-edit] idempotency cleanup failed job=%s: %s" % (
-                job_id, str(cleanup_error)[:180]), flush=True)
+            _reject_and_cleanup(
+                core, ai_edit_store, job_id, username, cost,
+                "剪辑任务元数据创建失败", exc)
+        except PaidJobCompensationError as cleanup_error:
+            print("[ai-edit] %s" % cleanup_error, flush=True)
+            handler._send(503, {
+                "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
+                "code": "compensation_persistence_failed", "job_id": job_id})
+            return True
+        _best_effort_idempotency_abort(core, username, route, idem_key, job_id)
         handler._send(500, {"detail": "剪辑任务创建失败，点数已释放"})
         return True
 
@@ -263,7 +331,7 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
 
     if row["status"] not in {"error", "failed"}:
         return handler._send(409, {"detail": "只有失败任务可以重试"})
-    retry_route = "/api/gen/ai-edit/jobs/%d/retry" % job_id
+    retry_route = RETRY_IDEMPOTENCY_SCOPE
     request_body = {"action": "retry", "job_id": int(job_id)}
     try:
         idem_key = core._idempotency_key(handler.headers.get("Idempotency-Key"))
@@ -281,10 +349,8 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
             return handler._send(409, {
                 "detail": "同一个 Idempotency-Key 不能用于不同请求",
                 "code": "idempotency_conflict"})
-        if idem_state == "processing":
-            return handler._send(409, {
-                "detail": "相同重试请求正在受理，请稍后查询",
-                "code": "idempotency_in_progress", "retry_after_ms": 1000})
+        submission_ref, deduct_transaction_key = _retry_submission_identity(
+            user["username"], job_id, idem_key)
 
         try:
             payload = ai_edit.validate_ai_edit_payload(
@@ -293,17 +359,26 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
             cost = points_domain.cost_of("ai_edit", payload)
             limit_hit = core._user_video_submit_limit("ai_edit", payload, user["username"], cost)
             if limit_hit:
-                core._idempotency_abort(user["username"], retry_route, idem_key)
+                _best_effort_idempotency_abort(
+                    core, user["username"], retry_route, idem_key, job_id)
                 return handler._send(429, limit_hit)
             new_id, points_left = jobs_store.create_paid_job(
                 core.jdb, points_domain.deduct_points, points_domain.refund_points,
-                "ai_edit", user["username"], cost, payload, core.SERVICE_OWNER)
+                "ai_edit", user["username"], cost, payload, core.SERVICE_OWNER,
+                submission_ref=submission_ref,
+                deduct_transaction_key=deduct_transaction_key)
         except points_domain.AuthPointsError as exc:
-            core._idempotency_abort(user["username"], retry_route, idem_key)
-            return handler._send(exc.status if exc.status in (402, 403) else 502,
-                                 {"detail": exc.detail, "need": 30})
+            status = exc.status if exc.status in (402, 403, 409) else 502
+            if status in (402, 403, 409):
+                _best_effort_idempotency_abort(
+                    core, user["username"], retry_route, idem_key, job_id)
+                return handler._send(status, {"detail": exc.detail, "need": 30})
+            return handler._send(502, {
+                "detail": exc.detail, "code": "points_result_unknown",
+                "retry_after_ms": 1000, "need": 30})
         except jobs_store.PaidJobInsertError as exc:
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, job_id)
             return handler._send(500, {
                 "detail": {"refunded": "重试任务创建失败，点数已退回",
                            "queued": "重试任务创建失败，退款正在自动重试"}.get(
@@ -311,20 +386,29 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
                 "compensation": exc.compensation,
                 "submission_ref": exc.submission_ref})
         except ValueError as exc:
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, job_id)
             return handler._send(400, {"detail": str(exc)[:220]})
         except Exception as exc:
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, job_id)
             return handler._send(500, {"detail": "重试任务创建失败：" + str(exc)[:160]})
 
         try:
             ai_edit_store.create_job(new_id, user["username"], payload, cost)
             video_domain.record_video_pending_asset(new_id, user["username"], payload)
         except Exception as exc:
-            _best_effort_reject_and_cleanup(
-                core, ai_edit_store, new_id, user["username"], cost,
-                "重试任务元数据创建失败", exc)
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            try:
+                _reject_and_cleanup(
+                    core, ai_edit_store, new_id, user["username"], cost,
+                    "重试任务元数据创建失败", exc)
+            except PaidJobCompensationError as cleanup_error:
+                print("[ai-edit] %s" % cleanup_error, flush=True)
+                return handler._send(503, {
+                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
+                    "code": "compensation_persistence_failed", "job_id": new_id})
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, new_id)
             return handler._send(500, {
                 "detail": "重试任务创建失败，退款正在自动处理",
                 "job_id": new_id})
@@ -332,19 +416,33 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
         try:
             queued = core.enqueue_job(new_id, "ai_edit", "ai_edit")
         except Exception as exc:
-            _best_effort_reject_and_cleanup(
-                core, ai_edit_store, new_id, user["username"], cost,
-                "重试任务入队失败", exc)
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            try:
+                _reject_and_cleanup(
+                    core, ai_edit_store, new_id, user["username"], cost,
+                    "重试任务入队失败", exc)
+            except PaidJobCompensationError as cleanup_error:
+                print("[ai-edit] %s" % cleanup_error, flush=True)
+                return handler._send(503, {
+                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
+                    "code": "compensation_persistence_failed", "job_id": new_id})
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, new_id)
             return handler._send(500, {
                 "detail": "重试任务入队失败，退款正在自动处理",
                 "job_id": new_id})
         if not queued:
             queue_error = "任务队列已满"
-            _best_effort_reject_and_cleanup(
-                core, ai_edit_store, new_id, user["username"], cost,
-                queue_error, queue_error)
-            core._idempotency_abort(user["username"], retry_route, idem_key)
+            try:
+                _reject_and_cleanup(
+                    core, ai_edit_store, new_id, user["username"], cost,
+                    queue_error, queue_error)
+            except PaidJobCompensationError as cleanup_error:
+                print("[ai-edit] %s" % cleanup_error, flush=True)
+                return handler._send(503, {
+                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
+                    "code": "compensation_persistence_failed", "job_id": new_id})
+            _best_effort_idempotency_abort(
+                core, user["username"], retry_route, idem_key, new_id)
             return handler._send(429, {
                 "detail": "任务队列已满，点数已释放",
                 "code": "queue_full", "retry_after_ms": 4000})
