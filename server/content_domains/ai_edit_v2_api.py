@@ -86,6 +86,9 @@ def _material_public(row: Any) -> dict[str, Any]:
         "filename": row["filename"],
         "content_type": row["mime_type"],
         "size_bytes": row["size_bytes"],
+        "duration_ms": row["duration_ms"],
+        "width": row["width"],
+        "height": row["height"],
         "etag": row["etag"],
         "status": row["status"],
     }

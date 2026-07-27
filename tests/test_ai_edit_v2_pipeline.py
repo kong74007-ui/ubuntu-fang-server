@@ -242,6 +242,74 @@ class PipelineTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(status, "refunded")
 
+    def test_phase_a_fake_provider_reaches_directing_with_alignment_hold_and_checkpoint(self):
+        job = self._precharged_job()
+        submitted = []
+
+        def normalized(_job, _context):
+            return pipeline.StageResult(
+                "transcribing", {"normalized_cos_key": "private/normalized.mp4"}
+            )
+
+        def transcribed(_job, context):
+            self.assertIsNone(context["provider_task_id"])
+            context["save_provider_task_id"]("fake-asr-task-1")
+            submitted.append("fake-asr-task-1")
+            return pipeline.StageResult(
+                "aligning_transcript",
+                {"words": [{"text": "黄", "start_ms": 0, "end_ms": 100}]},
+                provider_task_id="fake-asr-task-1",
+            )
+
+        def aligned(_job, _context):
+            return pipeline.StageResult(
+                "directing",
+                {
+                    "aligned_transcript": {
+                        "text": "黄雀传媒",
+                        "coverage": 1.0,
+                        "monotonic": True,
+                    }
+                },
+            )
+
+        handlers = {
+            "normalizing": normalized,
+            "transcribing": transcribed,
+            "aligning_transcript": aligned,
+        }
+        pipeline.run_stage(job["id"], "queued", now=102, db_path=self.db_path)
+        pipeline.run_stage(
+            job["id"], "normalizing", handlers=handlers, now=103,
+            db_path=self.db_path, points_client=self.points,
+        )
+        pipeline.run_stage(
+            job["id"], "transcribing", handlers=handlers, now=104,
+            db_path=self.db_path, points_client=self.points,
+        )
+        pipeline.run_stage(
+            job["id"], "aligning_transcript", handlers=handlers, now=105,
+            db_path=self.db_path, points_client=self.points,
+        )
+
+        with closing(store.open_store(self.db_path)) as conn:
+            final = conn.execute(
+                "SELECT status,checkpoint_json FROM edit_v2_jobs WHERE id=?", (job["id"],)
+            ).fetchone()
+            bill = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id=?", (job["id"],)
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT provider_task_id FROM edit_v2_stage_attempts WHERE job_id=? AND stage='transcribing'",
+                (job["id"],),
+            ).fetchone()
+        checkpoints = json.loads(final["checkpoint_json"])
+        self.assertEqual(final["status"], "directing")
+        self.assertEqual(bill["status"], "held")
+        self.assertEqual(attempt["provider_task_id"], "fake-asr-task-1")
+        self.assertEqual(submitted, ["fake-asr-task-1"])
+        self.assertTrue(checkpoints[-1]["data"]["aligned_transcript"]["monotonic"])
+
 
 if __name__ == "__main__":
     unittest.main()
