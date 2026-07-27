@@ -123,6 +123,10 @@ def init_db():
             if column not in job_columns:
                 c.execute("ALTER TABLE edit_jobs ADD COLUMN %s %s" % (column, definition))
         c.execute("CREATE INDEX IF NOT EXISTS idx_edit_jobs_user ON edit_jobs(username, job_id DESC)")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edit_jobs_user_created "
+            "ON edit_jobs(username, created_at DESC, job_id DESC)"
+        )
         c.execute("""CREATE TABLE IF NOT EXISTS edit_job_assets(
             job_id INTEGER NOT NULL,
             material_id INTEGER NOT NULL,
@@ -694,7 +698,7 @@ def list_jobs(username, page=1, page_size=10):
                       message,error,billing_state,result_json,
                       warning_codes_json,created_at,updated_at
                FROM edit_jobs WHERE username=?
-               ORDER BY job_id DESC LIMIT ? OFFSET ?""",
+               ORDER BY created_at DESC, job_id DESC LIMIT ? OFFSET ?""",
             (username, page_size, offset),
         ).fetchall()
     result_fields = {

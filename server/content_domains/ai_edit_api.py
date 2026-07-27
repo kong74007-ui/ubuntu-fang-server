@@ -166,20 +166,21 @@ def _retry_successor_row(core, jobs_store, job_id, username, submission_ref):
     return row, payload, submission_state
 
 
-def _retry_response(job_id, cost, predecessor_id, points_left=None, recovery_state=None,
+def _retry_response(job_id, cost, predecessor_id, status, recovery_state,
                     billing_state="HELD"):
-    response = {
-        "job_id": int(job_id), "cost": int(cost or 0), "points_left": points_left,
-        "billing_state": billing_state, "retried_from": int(predecessor_id),
+    return {
+        "job_id": int(job_id), "status": str(status), "cost": int(cost or 0),
+        # The points service result is not part of the durable successor row.
+        # Returning null for every retry role keeps creator, DB loser and later
+        # recovery responses identical without re-contacting Auth.
+        "points_left": None, "billing_state": billing_state,
+        "retried_from": int(predecessor_id), "recovery_state": recovery_state,
     }
-    if recovery_state:
-        response["recovery_state"] = recovery_state
-    return response
 
 
 def _complete_retry(handler, core, username, route, idem_key, response):
-    core._idempotency_complete(username, route, idem_key, response)
-    return handler._send(202, response)
+    winner = core._idempotency_complete(username, route, idem_key, response)
+    return handler._send(202, winner or response)
 
 
 def _compensate_retry_successor(handler, core, ai_edit_store, row, username, cost,
@@ -214,7 +215,7 @@ def _compensate_retry_successor(handler, core, ai_edit_store, row, username, cos
             "code": "compensation_persistence_failed", "job_id": row["id"]})
     if not complete:
         response = _retry_response(
-            row["id"], cost, predecessor_id, recovery_state="compensated",
+            row["id"], cost, predecessor_id, "error", "compensated",
             billing_state="RELEASED")
         core._idempotency_complete(username, route, idem_key, response)
         _best_effort_idempotency_abort(core, username, route, idem_key, row["id"])
@@ -224,14 +225,14 @@ def _compensate_retry_successor(handler, core, ai_edit_store, row, username, cos
     return _complete_retry(
         handler, core, username, route, idem_key,
         _retry_response(
-            row["id"], cost, predecessor_id, recovery_state="compensated",
+            row["id"], cost, predecessor_id, "error", "compensated",
             billing_state="RELEASED"))
 
 
 def _recover_retry_successor(handler, core, ai_edit_store, video_domain, row, username,
                              payload, cost, predecessor_id, route, idem_key,
                              submission_state=None, initialization_token=None,
-                             initial_request=False, points_left=None):
+                             initial_request=False):
     job_id = int(row["id"])
     cost = int(row["cost"] or 0)
     if row["status"] in {"error", "failed"}:
@@ -239,21 +240,20 @@ def _recover_retry_successor(handler, core, ai_edit_store, video_domain, row, us
         return _complete_retry(
             handler, core, username, route, idem_key,
             _retry_response(
-                job_id, cost, predecessor_id, recovery_state="compensated",
+                job_id, cost, predecessor_id, row["status"], "compensated",
                 billing_state="RELEASED"))
     if row["status"] in {"running", "done", "success"}:
         return _complete_retry(
             handler, core, username, route, idem_key,
             _retry_response(
-                job_id, cost, predecessor_id, recovery_state="recovered",
+                job_id, cost, predecessor_id, row["status"], "recovered",
                 billing_state="CAPTURED" if row["status"] in {"done", "success"} else "HELD"))
 
     if submission_state == "ready":
         return _complete_retry(
             handler, core, username, route, idem_key,
             _retry_response(
-                job_id, cost, predecessor_id, points_left=points_left,
-                recovery_state="recovered"))
+                job_id, cost, predecessor_id, row["status"], "recovered"))
 
     initialization_token = initialization_token or uuid.uuid4().hex
     owned_state = "initializing:" + initialization_token
@@ -265,8 +265,7 @@ def _recover_retry_successor(handler, core, ai_edit_store, video_domain, row, us
         return _recover_retry_successor(
             handler, core, ai_edit_store, video_domain, latest, username,
             payload, cost, predecessor_id, route, idem_key,
-            submission_state=state, initialization_token=initialization_token,
-            points_left=points_left)
+            submission_state=state, initialization_token=initialization_token)
 
     if submission_state != owned_state and str(submission_state or "").startswith("initializing:"):
         deadline = time.time() + RETRY_INITIALIZATION_WAIT_SECONDS
@@ -349,8 +348,7 @@ def _recover_retry_successor(handler, core, ai_edit_store, video_domain, row, us
     return _complete_retry(
         handler, core, username, route, idem_key,
         _retry_response(
-            job_id, cost, predecessor_id, points_left=points_left,
-            recovery_state="recovered" if not initial_request else None))
+            job_id, cost, predecessor_id, row["status"], "recovered"))
 
 
 def prepare_submission(handler, kind, job_id, username, payload, cost, video_domain, route, idem_key):
@@ -596,7 +594,7 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
                 _best_effort_idempotency_abort(
                     core, user["username"], retry_route, idem_key, job_id)
                 return handler._send(429, limit_hit)
-            new_id, points_left, created = jobs_store.create_paid_job(
+            new_id, _points_left, created = jobs_store.create_paid_job(
                 core.jdb, points_domain.deduct_points, points_domain.refund_points,
                 "ai_edit", user["username"], cost, payload, core.SERVICE_OWNER,
                 submission_ref=submission_ref,
@@ -611,7 +609,7 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
                 user["username"], existing_payload, existing_row["cost"], job_id,
                 retry_route, idem_key, submission_state=existing_state,
                 initialization_token=initialization_token,
-                initial_request=created, points_left=points_left)
+                initial_request=created)
         except points_domain.AuthPointsError as exc:
             status = exc.status if exc.status in (402, 403, 409) else 502
             if status in (402, 403, 409):

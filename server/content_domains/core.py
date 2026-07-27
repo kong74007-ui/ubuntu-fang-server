@@ -635,7 +635,7 @@ def _must_change_password(user):
 
 _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
-def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
+def _idempotency_complete(username, endpoint, key, response): return submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
@@ -871,18 +871,42 @@ def _job_worker_loop(q):
 
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
-    with closing(jdb()) as c:
-        rows = c.execute("SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
-                         (SERVICE_OWNER, SERVICE_OWNER, limit)).fetchall()
     recovered = 0
-    for row in rows:
-        try:
-            mode = (json.loads(row["payload"] or "{}") or {}).get("mode", "")
-        except Exception:
-            mode = ""
-        if not enqueue_job(row["id"], row["kind"], mode):
+    last_id = None
+    while recovered < limit:
+        batch_size = max(1, limit - recovered)
+        with closing(jdb()) as c:
+            if last_id is None:
+                rows = c.execute(
+                    "SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
+                    (SERVICE_OWNER, SERVICE_OWNER, batch_size)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? AND id>? ORDER BY id ASC LIMIT ?",
+                    (SERVICE_OWNER, SERVICE_OWNER, last_id, batch_size)).fetchall()
+        if not rows:
             break
-        recovered += 1
+        for row in rows:
+            last_id = row["id"]
+            try:
+                payload = json.loads(row["payload"] or "{}") or {}
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            # Explicit retry successors are private until their owner has
+            # completed metadata creation and atomically published ``ready``.
+            # Missing state is the legacy protocol and remains queueable.
+            submission_state = payload.get("_submission_state")
+            if submission_state is not None and submission_state != "ready":
+                continue
+            if not enqueue_job(row["id"], row["kind"], payload.get("mode", "")):
+                return recovered
+            recovered += 1
+            if recovered >= limit:
+                return recovered
+        if len(rows) < batch_size:
+            break
     return recovered
 
 def _pending_job_scanner():

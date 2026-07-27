@@ -56,13 +56,20 @@ class _DbFixture(unittest.TestCase):
             c.commit()
         jobs_store.ensure_owner_column(self.core.jdb)
 
-    def insert(self, kind="image", owner="content", status="pending", username="u", cost=10, payload=None):
+    def insert(self, kind="image", owner="content", status="pending", username="u", cost=10,
+               payload=None, job_id=None):
         now = int(time.time())
         with closing(self.core.jdb()) as c:
-            cur = c.execute(
-                """INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (kind, username, cost, status, json.dumps(payload or {}), now, now, owner))
+            if job_id is None:
+                cur = c.execute(
+                    """INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (kind, username, cost, status, json.dumps(payload or {}), now, now, owner))
+            else:
+                cur = c.execute(
+                    """INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,owner)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (int(job_id), kind, username, cost, status, json.dumps(payload or {}), now, now, owner))
             c.commit()
             return cur.lastrowid
 
@@ -118,6 +125,54 @@ class RecoverPendingOwnershipTests(_DbFixture):
         legacy = self.insert_legacy()
         self.core._recover_pending_jobs()
         self.assertIn(legacy, self.enqueued)
+
+    def test_retry_initializing_is_not_published_or_allowed_to_starve_legacy_work(self):
+        initializing = self.insert(
+            kind="ai_edit", job_id=-9002,
+            payload={"_submission_ref": "retry-init", "_submission_state": "initializing:owner-a"},
+        )
+        ordinary = self.insert(kind="video", payload={"mode": "talking"})
+
+        recovered = self.core._recover_pending_jobs(limit=1)
+
+        self.assertEqual(recovered, 1)
+        self.assertNotIn(initializing, self.enqueued)
+        self.assertEqual(self.enqueued, [ordinary])
+
+    def test_retry_recovery_and_compensating_are_not_published(self):
+        recovering = self.insert(
+            kind="ai_edit", job_id=-9001,
+            payload={"_submission_ref": "retry-recovery", "_submission_state": "recovery"},
+        )
+        compensating = self.insert(
+            kind="ai_edit", job_id=-9000,
+            payload={"_submission_ref": "retry-compensating", "_submission_state": "compensating"},
+        )
+
+        recovered = self.core._recover_pending_jobs()
+
+        self.assertEqual(recovered, 0)
+        self.assertNotIn(recovering, self.enqueued)
+        self.assertNotIn(compensating, self.enqueued)
+
+    def test_retry_ready_is_published(self):
+        ready = self.insert(
+            kind="ai_edit", job_id=-9003,
+            payload={"_submission_ref": "retry-ready", "_submission_state": "ready"},
+        )
+
+        recovered = self.core._recover_pending_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(self.enqueued, [ready])
+
+    def test_ordinary_pending_job_without_submission_state_is_still_published(self):
+        ordinary = self.insert(kind="image", payload=["legacy-non-object-payload"])
+
+        recovered = self.core._recover_pending_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(self.enqueued, [ordinary])
 
 
 class ReclaimOrphanedOwnershipTests(_DbFixture):

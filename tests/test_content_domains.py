@@ -57,7 +57,9 @@ class ContentDomainTests(unittest.TestCase):
         # jobs 库 WAL+timeout30（堵 50 齐点压测暴露的 INSERT 超时孤儿扣款路径）：jdb() 是 core
         #   任务库基础设施，+5 行，门禁上调到 1715。
         # 一键剪辑只在 core 增加队列/幂等/资产状态薄接线，真正实现位于 ai_edit.py。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1760)
+        # retry successor readiness：通用 pending scanner 需跳过 initializing/recovery 等私有状态，
+        # 并用 keyset 继续扫描，避免负 ID 排在前面时饿死 ready/普通任务。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1780)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，

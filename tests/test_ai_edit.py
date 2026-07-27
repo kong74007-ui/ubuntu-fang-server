@@ -58,7 +58,7 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('payload["_retry_from_job_id"]', API)
         self.assertIn('jobs_store.create_paid_job(', API)
         self.assertIn('core._idempotency_complete(username, route, idem_key, response)', API)
-        self.assertIn('return handler._send(202, response)', API)
+        self.assertIn('return handler._send(202, winner or response)', API)
         self.assertIn("status = exc.status if exc.status in (402, 403, 409) else 502", API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
 
@@ -727,22 +727,58 @@ class AiEditRetryTransactionTests(unittest.TestCase):
         self.assertEqual(len(self._successor_rows()), 1)
 
     def test_same_key_has_one_database_winner_without_the_process_lock(self):
-        barrier = threading.Barrier(2)
+        request_barrier = threading.Barrier(2)
+        complete_barrier = threading.Barrier(2)
+        real_complete = core._idempotency_complete
 
         def invoke():
-            barrier.wait(timeout=2)
+            request_barrier.wait(timeout=2)
             return self._retry("retry-cross-process-key")
 
+        def complete_together(username, route, idem_key, response):
+            complete_barrier.wait(timeout=2)
+            return real_complete(username, route, idem_key, response)
+
         with patch.object(core, "_submission_lock", _NoopSubmissionLock()), \
+             patch.object(core, "_idempotency_complete", side_effect=complete_together), \
              ThreadPoolExecutor(max_workers=2) as executor:
             responses = [future.result() for future in [executor.submit(invoke), executor.submit(invoke)]]
 
+        job_id = responses[0][1]["job_id"]
+        canonical = {
+            "job_id": job_id,
+            "status": "pending",
+            "cost": 30,
+            "points_left": None,
+            "billing_state": "HELD",
+            "retried_from": self.old_job_id,
+            "recovery_state": "recovered",
+        }
+        replay = self._retry("retry-cross-process-key")
+
         self.assertEqual([response[0] for response in responses], [202, 202])
-        self.assertEqual(responses[0][1]["job_id"], responses[1][1]["job_id"])
-        self.assertLess(responses[0][1]["job_id"], 0)
-        self.assertLessEqual(abs(responses[0][1]["job_id"]), 2 ** 53 - 1)
+        self.assertEqual([response[1] for response in responses], [canonical, canonical])
+        self.assertEqual(replay, (202, canonical))
+        self.assertLess(job_id, 0)
+        self.assertLessEqual(abs(job_id), 2 ** 53 - 1)
         self.assertEqual(self.points.deduct_calls, 1)
         self.assertEqual(len(self._successor_rows()), 1)
+
+    def test_idempotency_complete_keeps_the_first_response_as_canonical_winner(self):
+        route = ai_edit_api.RETRY_IDEMPOTENCY_SCOPE
+        key = "retry-complete-cas"
+        body = {"action": "retry", "job_id": self.old_job_id}
+        first = {"job_id": -7, "status": "pending", "points_left": None}
+        late = {"job_id": -7, "status": "done", "points_left": 999}
+        self.assertEqual(core._idempotency_begin("fang", route, key, body), ("new", None))
+
+        first_winner = core._idempotency_complete("fang", route, key, first)
+        late_winner = core._idempotency_complete("fang", route, key, late)
+        replay = core._idempotency_begin("fang", route, key, body)
+
+        self.assertEqual(first_winner, first)
+        self.assertEqual(late_winner, first)
+        self.assertEqual(replay, ("replay", first))
 
     def test_database_loser_cannot_complete_held_while_initializer_compensates(self):
         initializer_entered = threading.Event()
@@ -1009,6 +1045,22 @@ class AiEditStoreTests(unittest.TestCase):
         self.assertEqual(first["items"][0]["job_id"], 212)
         self.assertNotIn("timeline", first["items"][0]["result"])
         self.assertEqual(second["items"][-1]["job_id"], 201)
+
+    def test_job_history_orders_mixed_positive_and_retry_ids_by_creation_time_across_pages(self):
+        payload = {"source_video_asset_id": 7, "style_id": "auto", "materials": []}
+        creation_order = [301, -9001, 302, -9002, 303, -9003]
+        with patch.object(ai_edit_store.time, "time", side_effect=range(1001, 1007)):
+            for job_id in creation_order:
+                ai_edit_store.create_job(job_id, "fang", payload, 30)
+
+        pages = [ai_edit_store.list_jobs("fang", page=page, page_size=2) for page in range(1, 4)]
+
+        self.assertEqual([page["total"] for page in pages], [6, 6, 6])
+        self.assertEqual([page["pages"] for page in pages], [3, 3, 3])
+        self.assertEqual(
+            [[item["job_id"] for item in page["items"]] for page in pages],
+            [[-9003, 303], [-9002, 302], [-9001, 301]],
+        )
 
 
 if __name__ == "__main__":

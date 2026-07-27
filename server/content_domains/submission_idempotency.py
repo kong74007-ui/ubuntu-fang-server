@@ -43,12 +43,21 @@ def begin(db_factory, username, endpoint, key, body):
         return ("replay", json.loads(row["response_json"])) if row["response_json"] else ("processing", None)
 
 def complete(db_factory, username, endpoint, key, response):
-    if key:
-        with closing(db_factory()) as connection:
-            connection.execute(
-                "UPDATE submission_idempotency SET response_json=?,updated_at=? WHERE username=? AND endpoint=? AND idem_key=?",
-                (json.dumps(response, ensure_ascii=False), int(time.time()), username, endpoint, key))
-            connection.commit()
+    if not key:
+        return response
+    encoded = json.dumps(response, ensure_ascii=False)
+    with closing(db_factory()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_table(connection)
+        connection.execute(
+            """UPDATE submission_idempotency SET response_json=?,updated_at=?
+               WHERE username=? AND endpoint=? AND idem_key=? AND response_json IS NULL""",
+            (encoded, int(time.time()), username, endpoint, key))
+        row = connection.execute(
+            "SELECT response_json FROM submission_idempotency WHERE username=? AND endpoint=? AND idem_key=?",
+            (username, endpoint, key)).fetchone()
+        connection.commit()
+    return json.loads(row[0]) if row and row[0] else response
 
 def abort(db_factory, username, endpoint, key):
     if key:
