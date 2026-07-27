@@ -1345,7 +1345,7 @@ def _transaction_key(value):
     return value.strip()
 
 
-def deduct_points(username, amount, reason="", transaction_key=None):
+def deduct_points(username, amount, reason="", transaction_key=None, require_active_membership=False):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
     在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
@@ -1368,6 +1368,9 @@ def deduct_points(username, amount, reason="", transaction_key=None):
         if replay_status == "replay":
             c.commit()
             return replay, None
+        if require_active_membership and not user_has_active_membership(username, conn=c):
+            c.rollback()
+            return None, "membership_required"
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -2873,18 +2876,21 @@ class H(BaseHTTPRequestHandler):
             transaction_key = d.get("transaction_key")
             try:
                 if p.endswith("/deduct"):
-                    if not user_has_active_membership(username):
-                        return self._send(403, {
-                            "detail": "请先开通会员后再使用该功能",
-                            "code": "membership_required",
-                        })
-                    points, err = deduct_points(username, amount, reason, transaction_key)
+                    points, err = deduct_points(
+                        username, amount, reason, transaction_key,
+                        require_active_membership=True,
+                    )
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
                     points, err = refund_points(username, amount, reason, transaction_key)
                 if err == "transaction_conflict":
                     return self._send(409, {"detail": "transaction_key conflict"})
+                if err == "membership_required":
+                    return self._send(403, {
+                        "detail": "请先开通会员后再使用该功能",
+                        "code": "membership_required",
+                    })
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})

@@ -212,20 +212,20 @@ class AuthPointsTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
-    def test_http_transaction_replay_is_idempotent_and_conflict_is_409(self):
+    def test_http_transaction_resolution_precedes_expired_membership_gate(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         url = "http://127.0.0.1:%d/api/auth/points/deduct" % server.server_address[1]
 
-        def request(amount):
+        def request(amount, transaction_key="http-hold-1"):
             return urllib.request.Request(
                 url,
                 data=json.dumps(
                     {
                         "username": "fang",
                         "amount": amount,
-                        "transaction_key": "http-hold-1",
+                        "transaction_key": transaction_key,
                     }
                 ).encode(),
                 headers={
@@ -238,6 +238,11 @@ class AuthPointsTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(request(4), timeout=3) as response:
                 first = json.loads(response.read())
+            with closing(sqlite3.connect(self.auth.DB)) as conn:
+                conn.execute(
+                    "UPDATE users SET membership_expires_at=1 WHERE username='fang'"
+                )
+                conn.commit()
             with urllib.request.urlopen(request(4), timeout=3) as response:
                 replay = json.loads(response.read())
             self.assertEqual(first["points"], 6)
@@ -245,6 +250,9 @@ class AuthPointsTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request(5), timeout=3)
             self.assertEqual(caught.exception.code, 409)
+            with self.assertRaises(urllib.error.HTTPError) as membership_required:
+                urllib.request.urlopen(request(4, "http-hold-new"), timeout=3)
+            self.assertEqual(membership_required.exception.code, 403)
             self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
         finally:
             server.shutdown()

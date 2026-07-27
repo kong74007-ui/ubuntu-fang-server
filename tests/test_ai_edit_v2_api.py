@@ -61,6 +61,17 @@ class PendingPoints(FakePoints):
     def deduct_points(self, username, amount, reason="", transaction_key=None):
         raise points.AuthPointsError(502, "auth response unavailable")
 
+
+class RejectingPoints(FakePoints):
+    def __init__(self, status, detail):
+        super().__init__()
+        self.status = status
+        self.detail = detail
+
+    def deduct_points(self, username, amount, reason="", transaction_key=None):
+        raise points.AuthPointsError(self.status, self.detail)
+
+
 class FakeHandler:
     def __init__(self, body=None, token="token"):
         self.body = body or {}
@@ -374,6 +385,28 @@ class ApiTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([(row["material_id"], row["purpose"]) for row in bound], [(1, "primary")])
 
+    def test_job_creation_preserves_membership_required_status(self):
+        draft = valid_api_draft()
+        _, quote_payload = self._dispatch(
+            "POST", "/api/v2/edit/quotes", {"draft": draft}
+        )
+
+        with patch.object(
+            api, "_points_client", RejectingPoints(403, "membership required")
+        ):
+            status, payload = self._dispatch(
+                "POST",
+                "/api/v2/edit/jobs",
+                {
+                    "draft": draft,
+                    "quote_id": quote_payload["quote"]["id"],
+                    "idempotency_key": "membership-required",
+                },
+            )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload, {"detail": "membership required"})
+
     def test_reusing_idempotency_key_with_another_quote_returns_409(self):
         draft = valid_api_draft()
         _, first_quote = self._dispatch("POST", "/api/v2/edit/quotes", {"draft": draft})
@@ -513,6 +546,30 @@ class ApiTests(unittest.TestCase):
             [(row["material_id"], row["purpose"]) for row in successor_bindings],
             [(1, "primary")],
         )
+
+    def test_retry_preserves_transaction_conflict_status(self):
+        old = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_jobs SET status='render_failed' WHERE id=?", (old["id"],)
+            )
+            conn.commit()
+
+        with patch.object(
+            api, "_points_client", RejectingPoints(409, "transaction_key conflict")
+        ):
+            status, payload = self._dispatch(
+                "POST",
+                f"/api/v2/edit/jobs/{old['id']}/retry",
+                {"idempotency_key": "retry-conflict"},
+            )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload, {"detail": "transaction_key conflict"})
 
     def test_retry_rejects_unavailable_material_before_precharge(self):
         old = store.create_job(
