@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -97,36 +98,45 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(version, 2)
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
-        legacy_path = os.path.join(self.temp_dir.name, "concurrent-v1.db")
-        with closing(store.open_store(legacy_path)) as conn:
-            conn.execute(
-                """CREATE TABLE edit_v2_jobs(
-                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
-                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
-                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
-                       director_plan_json TEXT,
-                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
-                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
-                       output_cos_key TEXT,
-                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                       UNIQUE(owner,idempotency_key)
-                   )"""
+        for attempt in range(50):
+            legacy_path = os.path.join(
+                self.temp_dir.name, f"concurrent-v1-{attempt}.db"
             )
+            with closing(store.open_store(legacy_path)) as conn:
+                conn.execute(
+                    """CREATE TABLE edit_v2_jobs(
+                           id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                           idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
+                           status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                           director_plan_json TEXT,
+                           checkpoint_json TEXT NOT NULL DEFAULT '[]',
+                           lease_owner TEXT, lease_until INTEGER, error_code TEXT,
+                           output_cos_key TEXT,
+                           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                           UNIQUE(owner,idempotency_key)
+                       )"""
+                )
+            barrier = threading.Barrier(2)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(store.init_db, legacy_path) for _ in range(2)]
-            for future in futures:
-                future.result(timeout=10)
+            def initialize_together():
+                barrier.wait(timeout=5)
+                store.init_db(legacy_path)
 
-        with closing(store.open_store(legacy_path)) as conn:
-            columns = [
-                row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
-            ]
-            version = conn.execute(
-                "SELECT version FROM edit_v2_schema_meta WHERE id=1"
-            ).fetchone()["version"]
-        self.assertEqual(columns.count("predecessor_job_id"), 1)
-        self.assertEqual(version, 2)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(initialize_together) for _ in range(2)]
+                for future in futures:
+                    future.result(timeout=10)
+
+            with closing(store.open_store(legacy_path)) as conn:
+                columns = [
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
+                ]
+                version = conn.execute(
+                    "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+                ).fetchone()["version"]
+            self.assertEqual(columns.count("predecessor_job_id"), 1)
+            self.assertEqual(version, 2)
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:
