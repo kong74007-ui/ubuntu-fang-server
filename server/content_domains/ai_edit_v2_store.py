@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -70,6 +70,7 @@ def init_db(db_path: str | None = None) -> None:
                 owner TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL,
                 quote_id TEXT NOT NULL,
+                predecessor_job_id TEXT REFERENCES edit_v2_jobs(id),
                 status TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 director_plan_json TEXT,
@@ -202,6 +203,14 @@ def init_db(db_path: str | None = None) -> None:
                 ON edit_v2_stage_attempts(job_id, stage, attempt);
             """
         )
+        job_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
+        }
+        if "predecessor_job_id" not in job_columns:
+            conn.execute(
+                """ALTER TABLE edit_v2_jobs
+                   ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
+            )
         conn.execute(
             """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
                VALUES(1,?,0)
@@ -224,6 +233,7 @@ def create_job(
     uuid_factory: Callable[[], Any] = uuid.uuid4,
     db_path: str | None = None,
     material_bindings: list[dict[str, Any]] | None = None,
+    predecessor_job_id: str | None = None,
 ) -> dict[str, Any]:
     payload_json = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -256,6 +266,7 @@ def create_job(
                 )
                 if (
                     existing["quote_id"] != quote_id
+                    or existing["predecessor_job_id"] != predecessor_job_id
                     or existing_payload != payload_json
                     or existing_bindings != requested_bindings
                 ):
@@ -265,14 +276,15 @@ def create_job(
             job_id = str(uuid_factory())
             conn.execute(
                 """INSERT INTO edit_v2_jobs(
-                       id,owner,idempotency_key,quote_id,status,payload_json,
-                       checkpoint_json,created_at,updated_at
-                   ) VALUES(?,?,?,?,? ,?,?,?,?)""",
+                       id,owner,idempotency_key,quote_id,predecessor_job_id,
+                       status,payload_json,checkpoint_json,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (
                     job_id,
                     owner,
                     idempotency_key,
                     quote_id,
+                    predecessor_job_id,
                     "created",
                     payload_json,
                     "[]",

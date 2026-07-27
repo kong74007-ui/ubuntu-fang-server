@@ -422,6 +422,7 @@ def precharge_and_create_job(
     uuid_factory: Callable[[], Any] = uuid.uuid4,
     db_path: str | None = None,
     material_bindings: list[dict[str, Any]] | None = None,
+    predecessor_job_id: str | None = None,
 ) -> dict[str, Any]:
     draft = payload.get("draft") if isinstance(payload, dict) else None
     with closing(store.open_store(store._db_path(db_path))) as conn:
@@ -442,6 +443,7 @@ def precharge_and_create_job(
             uuid_factory=uuid_factory,
             db_path=db_path,
             material_bindings=material_bindings,
+            predecessor_job_id=predecessor_job_id,
         )
     except ValueError as exc:
         if str(exc) == "idempotency_conflict":

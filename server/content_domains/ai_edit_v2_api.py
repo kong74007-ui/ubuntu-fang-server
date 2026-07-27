@@ -312,6 +312,8 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
         idempotency_key = str(body.get("idempotency_key") or "").strip()
         if not quote_id or not idempotency_key:
             raise ValueError("缺少报价或幂等键")
+        if idempotency_key.startswith("retry:"):
+            raise ValueError("idempotency_key_reserved")
         result = billing.precharge_and_create_job(
             owner,
             {"draft": draft},
@@ -412,8 +414,9 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                 (job_id,),
             ).fetchall()
             existing_successor = conn.execute(
-                "SELECT * FROM edit_v2_jobs WHERE owner=? AND idempotency_key=?",
-                (owner, retry_key),
+                """SELECT * FROM edit_v2_jobs
+                   WHERE owner=? AND idempotency_key=? AND predecessor_job_id=?""",
+                (owner, retry_key, job_id),
             ).fetchone()
             successor_bindings = (
                 conn.execute(
@@ -426,6 +429,8 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
             )
         if old is None:
             return _send(handler, 404, {"detail": "任务不存在"})
+        if old["status"] not in FAILURE_STATES:
+            return _send(handler, 409, {"detail": "仅终态失败任务允许重试"})
         now = _now()
         if existing_successor is not None:
             payload = json.loads(existing_successor["payload_json"])
@@ -442,6 +447,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                 points_client=_points_client,
                 uuid_factory=_new_uuid,
                 material_bindings=bindings,
+                predecessor_job_id=job_id,
             )
             successor = result["job"]
             return _send(
@@ -453,8 +459,6 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                     "status": successor["status"],
                 },
             )
-        if old["status"] not in FAILURE_STATES:
-            return _send(handler, 409, {"detail": "仅终态失败任务允许重试"})
         payload = json.loads(old["payload_json"])
         draft, bindings = canonicalize_job_draft(owner, payload.get("draft"))
         expected_bindings = sorted(
@@ -482,6 +486,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
             points_client=_points_client,
             uuid_factory=_new_uuid,
             material_bindings=bindings,
+            predecessor_job_id=job_id,
         )
         successor = result["job"]
         return _send(

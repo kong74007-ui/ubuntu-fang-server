@@ -68,6 +68,33 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(actual, EXPECTED_TABLES)
 
+    def test_init_db_migrates_existing_jobs_to_explicit_predecessor_links(self):
+        legacy_path = os.path.join(self.temp_dir.name, "legacy-v1.db")
+        with closing(store.open_store(legacy_path)) as conn:
+            conn.execute(
+                """CREATE TABLE edit_v2_jobs(
+                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
+                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                       director_plan_json TEXT,
+                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
+                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
+                       output_cos_key TEXT,
+                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                       UNIQUE(owner,idempotency_key)
+                   )"""
+            )
+
+        store.init_db(legacy_path)
+
+        with closing(store.open_store(legacy_path)) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")}
+            version = conn.execute(
+                "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+            ).fetchone()["version"]
+        self.assertIn("predecessor_job_id", columns)
+        self.assertEqual(version, 2)
+
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")

@@ -392,6 +392,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(replay_status, 409)
         self.assertEqual(replay["code"], "idempotency_conflict")
 
+    def test_normal_job_creation_rejects_reserved_retry_namespace(self):
+        draft = valid_api_draft()
+        _, quote = self._dispatch("POST", "/api/v2/edit/quotes", {"draft": draft})
+        points_before = api._points_client.balance
+
+        status, payload = self._dispatch(
+            "POST",
+            "/api/v2/edit/jobs",
+            {
+                "draft": draft,
+                "quote_id": quote["quote"]["id"],
+                "idempotency_key": "retry:server-owned:forged",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["detail"], "idempotency_key_reserved")
+        self.assertEqual(api._points_client.balance, points_before)
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 0)
+
     def test_ambiguous_precharge_returns_queryable_pending_job(self):
         draft = valid_api_draft()
         _, quote_payload = self._dispatch(
@@ -475,7 +496,8 @@ class ApiTests(unittest.TestCase):
                 "SELECT status FROM edit_v2_jobs WHERE id=?", (old["id"],)
             ).fetchone()
             successor = conn.execute(
-                "SELECT status,payload_json,quote_id FROM edit_v2_jobs WHERE id=?",
+                """SELECT status,payload_json,quote_id,predecessor_job_id
+                   FROM edit_v2_jobs WHERE id=?""",
                 (first["job_id"],),
             ).fetchone()
             successor_bindings = conn.execute(
@@ -486,6 +508,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(successor["status"], "queued")
         self.assertEqual(json.loads(successor["payload_json"]), {"draft": valid_api_draft()})
         self.assertNotEqual(successor["quote_id"], "old-quote")
+        self.assertEqual(successor["predecessor_job_id"], old["id"])
         self.assertEqual(
             [(row["material_id"], row["purpose"]) for row in successor_bindings],
             [(1, "primary")],
@@ -596,6 +619,30 @@ class ApiTests(unittest.TestCase):
             "POST",
             f"/api/v2/edit/jobs/{old['id']}/retry",
             {"idempotency_key": "retry-request-1"},
+        )
+
+        self.assertEqual(status, 409)
+        self.assertIn("终态失败", payload["detail"])
+
+    def test_retry_does_not_accept_forged_successor_for_non_failed_job(self):
+        old = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
+        )
+        store.create_job(
+            "alice",
+            {"draft": valid_api_draft()},
+            "forged-quote",
+            f"retry:{old['id']}:forged",
+            101,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174098",
+            material_bindings=[{"material_id": 1, "purpose": "primary"}],
+        )
+
+        status, payload = self._dispatch(
+            "POST",
+            f"/api/v2/edit/jobs/{old['id']}/retry",
+            {"idempotency_key": "forged"},
         )
 
         self.assertEqual(status, 409)
