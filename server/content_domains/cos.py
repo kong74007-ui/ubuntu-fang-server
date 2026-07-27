@@ -20,6 +20,7 @@
 服务器前置：`pip install cos-python-sdk-v5`（提供 qcloud_cos）。
 """
 import os
+import re
 
 _SECRET_ID   = os.environ.get("COS_SECRET_ID", "").strip()
 _SECRET_KEY  = os.environ.get("COS_SECRET_KEY", "").strip()
@@ -32,6 +33,13 @@ _SIGN_EXPIRE = int(os.environ.get("COS_SIGN_EXPIRE", "604800") or 604800)
 _DELETE_LOCAL = os.environ.get("COS_DELETE_LOCAL", "0").strip().lower() in ("1", "true", "yes")
 
 _client_singleton = None
+
+_V2_REL_KEY_RE = re.compile(
+    r"^ai-edit-v2/[0-9a-f]{16,64}/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+    r"[A-Za-z0-9._/-]+$"
+)
+_CONTENT_TYPE_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
 def enabled():
@@ -55,6 +63,23 @@ def _client():
 def _object_key(rel):
     rel = str(rel).lstrip("/")
     return (_PREFIX + "/" + rel) if _PREFIX else rel
+
+
+def _validate_rel_key(rel_key):
+    """Return a normalized V2 private key or reject scope/path injection."""
+    if not isinstance(rel_key, str) or not rel_key:
+        raise ValueError("COS对象键不能为空")
+    if (
+        rel_key.startswith(("/", "\\"))
+        or "\\" in rel_key
+        or "?" in rel_key
+        or "#" in rel_key
+        or ":" in rel_key
+        or any(part in ("", ".", "..") for part in rel_key.split("/"))
+        or not _V2_REL_KEY_RE.fullmatch(rel_key)
+    ):
+        raise ValueError("COS对象键不属于AI剪辑V2任务范围")
+    return rel_key
 
 
 def _url(full_key, private=False):
@@ -122,3 +147,64 @@ def put_file(path, rel_key, content_type=None, private=False):
             kwargs["ACL"] = "private"
         _client().put_object(**kwargs)
     return _url(full_key, private=private)
+
+
+def presign_put(rel_key, content_type, expires=900):
+    """Create a short-lived PUT URL for a task-scoped private V2 object."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    rel_key = _validate_rel_key(rel_key)
+    if (
+        not isinstance(expires, int)
+        or isinstance(expires, bool)
+        or expires < 1
+        or expires > 900
+    ):
+        raise ValueError("PUT签名有效期必须为1至900秒")
+    if not isinstance(content_type, str) or not _CONTENT_TYPE_RE.fullmatch(content_type):
+        raise ValueError("Content-Type不合法")
+    return _client().get_presigned_url(
+        Method="PUT",
+        Bucket=_BUCKET,
+        Key=_object_key(rel_key),
+        Expired=expires,
+        Headers={"Content-Type": content_type},
+    )
+
+
+def head_object(rel_key):
+    """Read verified object metadata without generating or exposing a URL."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    rel_key = _validate_rel_key(rel_key)
+    response = _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
+    normalized = {str(key).lower(): value for key, value in response.items()}
+    content_length = normalized.get("content-length", normalized.get("content_length"))
+    content_type = normalized.get("content-type", normalized.get("content_type"))
+    etag = normalized.get("etag")
+    return {
+        "content_length": int(content_length),
+        "content_type": str(content_type or ""),
+        "etag": str(etag or "").strip('"'),
+    }
+
+
+def download_file(rel_key, destination):
+    """Download a private V2 object to a caller-owned task directory."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    rel_key = _validate_rel_key(rel_key)
+    _client().download_file(
+        Bucket=_BUCKET,
+        Key=_object_key(rel_key),
+        DestFilePath=os.fspath(destination),
+    )
+    return os.fspath(destination)
+
+
+def delete_object(rel_key):
+    """Delete a private V2 object within its owner/task namespace."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    rel_key = _validate_rel_key(rel_key)
+    return _client().delete_object(Bucket=_BUCKET, Key=_object_key(rel_key))

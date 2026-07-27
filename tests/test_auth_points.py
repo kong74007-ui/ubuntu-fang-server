@@ -6,6 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 import unittest
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 
 
@@ -54,6 +55,45 @@ class AuthPointsTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(points["points"], 15)
 
+    def test_transaction_key_makes_deduct_and_refund_idempotent(self):
+        first, err = self.auth.deduct_points("fang", 4, "v2 hold", "job-1:hold")
+        replay, replay_err = self.auth.deduct_points("fang", 4, "v2 hold replay", "job-1:hold")
+
+        self.assertIsNone(err)
+        self.assertIsNone(replay_err)
+        self.assertEqual(first["points"], 6)
+        self.assertEqual(replay["points"], 6)
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
+
+        refunded, refund_err = self.auth.refund_points("fang", 4, "v2 refund", "job-1:refund")
+        refund_replay, refund_replay_err = self.auth.refund_points(
+            "fang", 4, "v2 refund replay", "job-1:refund"
+        )
+        self.assertIsNone(refund_err)
+        self.assertIsNone(refund_replay_err)
+        self.assertEqual(refunded["points"], 10)
+        self.assertEqual(refund_replay["points"], 10)
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 10)
+
+        with closing(sqlite3.connect(self.auth.DB)) as conn:
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM points_audit WHERE username='fang'"
+            ).fetchone()[0]
+            transaction_count = conn.execute(
+                "SELECT COUNT(*) FROM points_transactions WHERE username='fang'"
+            ).fetchone()[0]
+        self.assertEqual(audit_count, 2)
+        self.assertEqual(transaction_count, 2)
+
+    def test_transaction_key_conflict_does_not_change_points(self):
+        _, err = self.auth.deduct_points("fang", 4, "hold", "same-key")
+        conflict, conflict_err = self.auth.deduct_points("fang", 5, "changed", "same-key")
+
+        self.assertIsNone(err)
+        self.assertIsNone(conflict)
+        self.assertEqual(conflict_err, "transaction_conflict")
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
+
     def test_concurrent_deduct_never_overdraws(self):
         results = []
         lock = threading.Lock()
@@ -97,6 +137,45 @@ class AuthPointsTests(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=3) as r:
                 data = json.loads(r.read())
             self.assertEqual(data["points"], 6)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_transaction_replay_is_idempotent_and_conflict_is_409(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = "http://127.0.0.1:%d/api/auth/points/deduct" % server.server_address[1]
+
+        def request(amount):
+            return urllib.request.Request(
+                url,
+                data=json.dumps(
+                    {
+                        "username": "fang",
+                        "amount": amount,
+                        "transaction_key": "http-hold-1",
+                    }
+                ).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-HQ-Internal-Token": "test-internal-token",
+                },
+                method="POST",
+            )
+
+        try:
+            with urllib.request.urlopen(request(4), timeout=3) as response:
+                first = json.loads(response.read())
+            with urllib.request.urlopen(request(4), timeout=3) as response:
+                replay = json.loads(response.read())
+            self.assertEqual(first["points"], 6)
+            self.assertEqual(replay["points"], 6)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request(5), timeout=3)
+            self.assertEqual(caught.exception.code, 409)
+            self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
         finally:
             server.shutdown()
             server.server_close()

@@ -44,6 +44,10 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("theme.css", names)
         self.assertIn("theme-init.js", names)
 
+    def test_ai_edit_page_participates_in_shared_asset_stamping(self):
+        names = {path.name for path in stamp_assets.html_files()}
+        self.assertIn("ai-edit.html", names)
+
     def test_only_shell_is_required(self):
         """cloud-shell.js 每页都有；theme 是页面级的，没引用不算错。"""
         required = {a.name for a in stamp_assets.ASSETS if a.required}
