@@ -56,8 +56,8 @@ class AiEditWiringTests(unittest.TestCase):
         self.assertIn('/api/v1/edit-jobs', API)
         self.assertIn('billing_state', API)
         self.assertIn('payload["_retry_from_job_id"]', API)
-        self.assertIn('new_id, points_left = jobs_store.create_paid_job(', API)
-        self.assertIn('core._idempotency_complete(user["username"], retry_route, idem_key, response)', API)
+        self.assertIn('jobs_store.create_paid_job(', API)
+        self.assertIn('core._idempotency_complete(username, route, idem_key, response)', API)
         self.assertIn('return handler._send(202, response)', API)
         self.assertIn("status = exc.status if exc.status in (402, 403, 409) else 502", API)
         self.assertIn('self._send(ai_edit_api.submission_status(self, kind), response)', CORE)
@@ -472,6 +472,14 @@ class _RetryHandler:
         return self.response
 
 
+class _NoopSubmissionLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
 class AiEditRetryTransactionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -573,7 +581,7 @@ class AiEditRetryTransactionTests(unittest.TestCase):
                 (self.old_job_id,),
             ).fetchall()
 
-    def test_retry_insert_failure_records_recoverable_compensation_and_aborts_request(self):
+    def test_retry_insert_failure_records_recoverable_compensation_for_same_key(self):
         with closing(self._jobs_db()) as db:
             db.execute(
                 """CREATE TRIGGER fail_retry_insert BEFORE INSERT ON jobs
@@ -595,11 +603,26 @@ class AiEditRetryTransactionTests(unittest.TestCase):
                 "SELECT status,refunded,payload FROM jobs WHERE id<>? ORDER BY id",
                 (self.old_job_id,),
             ).fetchall()
-            idem_count = db.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+            idem = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-insert-failure'"
+            ).fetchone()
         self.assertEqual(len(compensation), 1)
         self.assertEqual((compensation[0]["status"], compensation[0]["refunded"]), ("error", 1))
         self.assertIn("_submission_ref", compensation[0]["payload"])
-        self.assertEqual(idem_count, 0)
+        self.assertIsNone(idem["response_json"])
+
+        replay_status, replay_payload = self._retry("retry-insert-failure")
+
+        self.assertEqual(replay_status, 202)
+        self.assertEqual(replay_payload["job_id"], payload["job_id"])
+        self.assertEqual(replay_payload["recovery_state"], "compensated")
+        self.assertEqual(self.points.balance, 100)
+        self.assertEqual(self.points.deduct_calls, 1)
+        self.assertEqual(self.points.refund_calls, 1)
+        with closing(self._jobs_db()) as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE id<>?", (self.old_job_id,)
+            ).fetchone()[0], 1)
 
     def test_retry_same_request_replays_one_successor_and_one_charge(self):
         first = self._retry("retry-replay-key")
@@ -644,13 +667,15 @@ class AiEditRetryTransactionTests(unittest.TestCase):
             status, payload = self._retry("retry-metadata-failure")
 
         self.assertEqual(status, 500)
-        self.assertEqual(payload["job_id"], self.old_job_id + 1)
+        self.assertLess(payload["job_id"], 0)
         self.assertEqual(self.points.balance, 70)
         with closing(self._jobs_db()) as db:
             row = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (payload["job_id"],)).fetchone()
-            idem_count = db.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+            idem_response = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-metadata-failure'"
+            ).fetchone()[0]
         self.assertEqual((row["status"], row["refunded"]), ("error", 2))
-        self.assertEqual(idem_count, 0)
+        self.assertEqual(json.loads(idem_response)["billing_state"], "RELEASED")
 
         recovered = core.jobs_store.retry_failed_refunds(core.jdb, core._refund_once, 10)
         self.assertEqual(recovered, 1)
@@ -700,6 +725,187 @@ class AiEditRetryTransactionTests(unittest.TestCase):
         self.assertEqual(self.points.balance, 70)
         self.assertEqual(self.points.deduct_calls, 1)
         self.assertEqual(len(self._successor_rows()), 1)
+
+    def test_same_key_has_one_database_winner_without_the_process_lock(self):
+        barrier = threading.Barrier(2)
+
+        def invoke():
+            barrier.wait(timeout=2)
+            return self._retry("retry-cross-process-key")
+
+        with patch.object(core, "_submission_lock", _NoopSubmissionLock()), \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            responses = [future.result() for future in [executor.submit(invoke), executor.submit(invoke)]]
+
+        self.assertEqual([response[0] for response in responses], [202, 202])
+        self.assertEqual(responses[0][1]["job_id"], responses[1][1]["job_id"])
+        self.assertLess(responses[0][1]["job_id"], 0)
+        self.assertLessEqual(abs(responses[0][1]["job_id"]), 2 ** 53 - 1)
+        self.assertEqual(self.points.deduct_calls, 1)
+        self.assertEqual(len(self._successor_rows()), 1)
+
+    def test_database_loser_cannot_complete_held_while_initializer_compensates(self):
+        initializer_entered = threading.Event()
+        release_initializer = threading.Event()
+        metadata_calls = []
+
+        def fail_initializer(job_id, username, payload):
+            metadata_calls.append(job_id)
+            initializer_entered.set()
+            release_initializer.wait(timeout=2)
+            raise RuntimeError("initializer metadata failed")
+
+        with patch.object(core, "_submission_lock", _NoopSubmissionLock()), \
+             patch.object(self.video, "record_video_pending_asset", side_effect=fail_initializer), \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            creator = executor.submit(self._retry, "retry-init-owner-key")
+            self.assertTrue(initializer_entered.wait(timeout=2))
+            loser = executor.submit(self._retry, "retry-init-owner-key")
+            release_initializer.set()
+            responses = [creator.result(), loser.result()]
+
+        self.assertEqual(sorted(response[0] for response in responses), [202, 500])
+        compensated = next(response[1] for response in responses if response[0] == 202)
+        self.assertEqual(compensated["recovery_state"], "compensated")
+        self.assertEqual(compensated["billing_state"], "RELEASED")
+        self.assertEqual(len(metadata_calls), 1)
+        with closing(self._jobs_db()) as db:
+            row = db.execute(
+                "SELECT status,refunded FROM jobs WHERE id=?", (compensated["job_id"],)
+            ).fetchone()
+            stored = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-init-owner-key'"
+            ).fetchone()
+        self.assertEqual((row["status"], row["refunded"]), ("error", 1))
+        self.assertEqual(json.loads(stored["response_json"])["billing_state"], "RELEASED")
+
+    def test_expired_initializer_cannot_compensate_after_takeover_is_ready(self):
+        old_initializer_entered = threading.Event()
+        release_old_initializer = threading.Event()
+        metadata_calls = []
+        call_lock = threading.Lock()
+
+        def old_fails_new_succeeds(job_id, username, payload):
+            with call_lock:
+                metadata_calls.append(job_id)
+                call_number = len(metadata_calls)
+            if call_number == 1:
+                old_initializer_entered.set()
+                release_old_initializer.wait(timeout=2)
+                raise RuntimeError("expired initializer failed late")
+
+        with patch.object(core, "_submission_lock", _NoopSubmissionLock()), \
+             patch.object(ai_edit_api, "RETRY_INITIALIZATION_WAIT_SECONDS", 0.05), \
+             patch.object(ai_edit_api, "RETRY_INITIALIZATION_LEASE_SECONDS", 0), \
+             patch.object(self.video, "record_video_pending_asset", side_effect=old_fails_new_succeeds), \
+             ThreadPoolExecutor(max_workers=2) as executor:
+            old_initializer = executor.submit(self._retry, "retry-init-takeover-key")
+            self.assertTrue(old_initializer_entered.wait(timeout=2))
+            takeover = executor.submit(self._retry, "retry-init-takeover-key")
+            takeover_response = takeover.result(timeout=2)
+            release_old_initializer.set()
+            old_response = old_initializer.result(timeout=2)
+
+        self.assertEqual([old_response[0], takeover_response[0]], [202, 202])
+        self.assertEqual(old_response[1]["job_id"], takeover_response[1]["job_id"])
+        self.assertEqual(old_response[1]["billing_state"], "HELD")
+        self.assertEqual(takeover_response[1]["billing_state"], "HELD")
+        self.assertEqual(len(metadata_calls), 2)
+        with closing(self._jobs_db()) as db:
+            row = db.execute(
+                "SELECT status,refunded FROM jobs WHERE id=?", (old_response[1]["job_id"],)
+            ).fetchone()
+            stored = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-init-takeover-key'"
+            ).fetchone()
+        self.assertEqual((row["status"], row["refunded"]), ("pending", 0))
+        self.assertEqual(json.loads(stored["response_json"])["billing_state"], "HELD")
+
+    def test_compensation_cas_loses_to_ready_owner_without_refund(self):
+        self.video.error = RuntimeError("old initializer failed")
+        real_reject_owner = core.jobs_store.reject_explicit_job_owner
+
+        def ready_wins_before_reject(jdb, job_id, expected_state, error):
+            self.assertTrue(core.jobs_store.set_explicit_job_state(
+                jdb, job_id, "ready", expected_states=(expected_state,)))
+            return real_reject_owner(jdb, job_id, expected_state, error)
+
+        with patch.object(
+                core.jobs_store, "reject_explicit_job_owner",
+                side_effect=ready_wins_before_reject):
+            status, payload = self._retry("retry-compensation-cas-key")
+
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["billing_state"], "HELD")
+        self.assertEqual(self.points.balance, 70)
+        self.assertEqual(self.points.refund_calls, 0)
+        with closing(self._jobs_db()) as db:
+            row = db.execute(
+                "SELECT status,refunded FROM jobs WHERE id=?", (payload["job_id"],)
+            ).fetchone()
+        self.assertEqual((row["status"], row["refunded"]), ("pending", 0))
+
+    def test_processing_retry_recovers_the_inserted_successor_after_complete_crash(self):
+        real_complete = core._idempotency_complete
+
+        with patch.object(core, "_idempotency_complete", side_effect=RuntimeError("crash before complete")):
+            with self.assertRaisesRegex(RuntimeError, "crash before complete"):
+                self._retry("retry-complete-crash")
+
+        successors = self._successor_rows()
+        self.assertEqual(len(successors), 1)
+        inserted_job_id = successors[0]["id"]
+        self.assertLess(inserted_job_id, 0)
+        with closing(self._assets_db()) as db:
+            db.execute("DELETE FROM video_assets WHERE id=1")
+            db.commit()
+        self.video_path.unlink()
+
+        with patch.object(core, "_idempotency_complete", side_effect=real_complete):
+            status, payload = self._retry("retry-complete-crash")
+
+        self.assertEqual(status, 202)
+        self.assertEqual(payload["job_id"], inserted_job_id)
+        self.assertEqual(len(self._successor_rows()), 1)
+        read_handler = _RetryHandler("unused-read-key")
+        self.assertTrue(ai_edit_api.handle_get(
+            read_handler, "/api/gen/ai-edit/jobs/%d" % inserted_job_id))
+        self.assertEqual(read_handler.response[0], 200)
+
+    def test_processing_retry_compensates_its_existing_pending_orphan_before_limits(self):
+        self.video.error = RuntimeError("video metadata failed")
+        with patch.object(core, "_reject_pending_job", side_effect=sqlite3.OperationalError("primary CAS failed")), \
+             patch.object(core.jobs_store, "set_terminal", side_effect=sqlite3.OperationalError("fallback CAS failed")), \
+             patch.object(core.jobs_store, "reject_explicit_job_owner",
+                          side_effect=sqlite3.OperationalError("owner compensation CAS failed")):
+            first_status, first_payload = self._retry("retry-orphan-recovery")
+
+        self.assertEqual(first_status, 503)
+        orphan_id = first_payload["job_id"]
+        with closing(self._jobs_db()) as db:
+            orphan = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (orphan_id,)).fetchone()
+            processing = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-orphan-recovery'"
+            ).fetchone()
+        self.assertEqual((orphan["status"], orphan["refunded"]), ("pending", 0))
+        self.assertIsNone(processing["response_json"])
+
+        second_status, second_payload = self._retry("retry-orphan-recovery")
+
+        self.assertEqual(second_status, 202)
+        self.assertEqual(second_payload["job_id"], orphan_id)
+        self.assertEqual(second_payload["recovery_state"], "compensated")
+        with closing(self._jobs_db()) as db:
+            recovered = db.execute("SELECT status,refunded FROM jobs WHERE id=?", (orphan_id,)).fetchone()
+            idem = db.execute(
+                "SELECT response_json FROM submission_idempotency WHERE idem_key='retry-orphan-recovery'"
+            ).fetchone()
+            successor_count = db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE id<>? AND kind='ai_edit'", (self.old_job_id,)
+            ).fetchone()[0]
+        self.assertEqual((recovered["status"], recovered["refunded"]), ("error", 1))
+        self.assertIsNotNone(idem["response_json"])
+        self.assertEqual(successor_count, 1)
 
     def test_initial_metadata_cleanup_failure_still_aborts_idempotency_and_responds(self):
         route = "/api/gen/ai_edit"

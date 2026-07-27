@@ -8,6 +8,7 @@ import pathlib
 import re
 import time
 import urllib.parse
+import uuid
 from contextlib import closing
 
 
@@ -18,12 +19,19 @@ def _core():
 
 LEGACY_API_PREFIX = "/api/gen/ai-edit/"
 RETRY_IDEMPOTENCY_SCOPE = "/api/gen/ai-edit/jobs/retry"
+RETRY_INITIALIZATION_WAIT_SECONDS = 2.0
+RETRY_INITIALIZATION_LEASE_SECONDS = 10
 
 
 def _retry_submission_identity(username, job_id, idem_key):
     seed = "%s\0%d\0%s" % (username, int(job_id), idem_key)
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return "ai-edit-retry-" + digest, "ai-edit-retry-hold:" + digest
+    # Negative ids do not advance SQLite's positive AUTOINCREMENT sequence and
+    # give every process the same primary-key arbitration point for a retry.
+    # Keep the numeric JSON id inside JavaScript's exact integer range because
+    # the legacy page stores and interpolates it as a Number.
+    successor_id = -(int(digest[:13], 16) + 1)
+    return successor_id, "ai-edit-retry-" + digest, "ai-edit-retry-hold:" + digest
 
 
 def _canonical_path(path):
@@ -139,6 +147,210 @@ def _best_effort_idempotency_abort(core, username, route, idem_key, job_id=0):
         print("[ai-edit] idempotency cleanup failed job=%s: %s" % (
             job_id or "unknown", str(cleanup_error)[:180]), flush=True)
         return False
+
+
+def _retry_successor_row(core, jobs_store, job_id, username, submission_ref):
+    with closing(core.jdb()) as db:
+        row = db.execute(
+            "SELECT * FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except Exception:
+        payload = {}
+    stored_ref = payload.pop("_submission_ref", None)
+    submission_state = payload.pop("_submission_state", None)
+    if row["kind"] != "ai_edit" or row["username"] != username or stored_ref != submission_ref:
+        raise jobs_store.PaidJobConflictError("explicit job_id conflict")
+    return row, payload, submission_state
+
+
+def _retry_response(job_id, cost, predecessor_id, points_left=None, recovery_state=None,
+                    billing_state="HELD"):
+    response = {
+        "job_id": int(job_id), "cost": int(cost or 0), "points_left": points_left,
+        "billing_state": billing_state, "retried_from": int(predecessor_id),
+    }
+    if recovery_state:
+        response["recovery_state"] = recovery_state
+    return response
+
+
+def _complete_retry(handler, core, username, route, idem_key, response):
+    core._idempotency_complete(username, route, idem_key, response)
+    return handler._send(202, response)
+
+
+def _compensate_retry_successor(handler, core, ai_edit_store, row, username, cost,
+                                predecessor_id, route, idem_key, reason, error,
+                                complete=True, expected_state=None):
+    try:
+        if expected_state is not None:
+            if not core.jobs_store.reject_explicit_job_owner(
+                    core.jdb, row["id"], expected_state, reason):
+                return None
+            try:
+                core._refund_once(row["id"], username, cost)
+            except Exception as refund_error:
+                print("[ai-edit] refund confirmation deferred job=%s: %s" % (
+                    row["id"], str(refund_error)[:180]), flush=True)
+            _best_effort_editor_cleanup(ai_edit_store, row["id"], error)
+        else:
+            _reject_and_cleanup(
+                core, ai_edit_store, row["id"], username, cost, reason, error)
+    except Exception as cleanup_error:
+        print("[ai-edit] %s" % cleanup_error, flush=True)
+        try:
+            current = core.jobs_store.explicit_job_state(core.jdb, row["id"])
+            core.jobs_store.set_explicit_job_state(
+                core.jdb, row["id"], "recovery",
+                expected_states=(current[1],) if current else ())
+        except Exception as state_error:
+            print("[ai-edit] recovery marker failed job=%s: %s" % (
+                row["id"], str(state_error)[:180]), flush=True)
+        return handler._send(503, {
+            "detail": "Retry compensation state could not be persisted",
+            "code": "compensation_persistence_failed", "job_id": row["id"]})
+    if not complete:
+        response = _retry_response(
+            row["id"], cost, predecessor_id, recovery_state="compensated",
+            billing_state="RELEASED")
+        core._idempotency_complete(username, route, idem_key, response)
+        _best_effort_idempotency_abort(core, username, route, idem_key, row["id"])
+        return handler._send(500, {
+            "detail": "Retry successor initialization failed; points are being released",
+            "job_id": row["id"]})
+    return _complete_retry(
+        handler, core, username, route, idem_key,
+        _retry_response(
+            row["id"], cost, predecessor_id, recovery_state="compensated",
+            billing_state="RELEASED"))
+
+
+def _recover_retry_successor(handler, core, ai_edit_store, video_domain, row, username,
+                             payload, cost, predecessor_id, route, idem_key,
+                             submission_state=None, initialization_token=None,
+                             initial_request=False, points_left=None):
+    job_id = int(row["id"])
+    cost = int(row["cost"] or 0)
+    if row["status"] in {"error", "failed"}:
+        _best_effort_editor_cleanup(ai_edit_store, job_id, row["error"] or "retry compensated")
+        return _complete_retry(
+            handler, core, username, route, idem_key,
+            _retry_response(
+                job_id, cost, predecessor_id, recovery_state="compensated",
+                billing_state="RELEASED"))
+    if row["status"] in {"running", "done", "success"}:
+        return _complete_retry(
+            handler, core, username, route, idem_key,
+            _retry_response(
+                job_id, cost, predecessor_id, recovery_state="recovered",
+                billing_state="CAPTURED" if row["status"] in {"done", "success"} else "HELD"))
+
+    if submission_state == "ready":
+        return _complete_retry(
+            handler, core, username, route, idem_key,
+            _retry_response(
+                job_id, cost, predecessor_id, points_left=points_left,
+                recovery_state="recovered"))
+
+    initialization_token = initialization_token or uuid.uuid4().hex
+    owned_state = "initializing:" + initialization_token
+
+    def recover_latest():
+        status, state, _updated_at = core.jobs_store.explicit_job_state(core.jdb, job_id)
+        with closing(core.jdb()) as db:
+            latest = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return _recover_retry_successor(
+            handler, core, ai_edit_store, video_domain, latest, username,
+            payload, cost, predecessor_id, route, idem_key,
+            submission_state=state, initialization_token=initialization_token,
+            points_left=points_left)
+
+    if submission_state != owned_state and str(submission_state or "").startswith("initializing:"):
+        deadline = time.time() + RETRY_INITIALIZATION_WAIT_SECONDS
+        while time.time() < deadline:
+            status, state, updated_at = core.jobs_store.explicit_job_state(core.jdb, job_id)
+            if status in {"error", "failed", "running", "done", "success"} or state != submission_state:
+                return recover_latest()
+            time.sleep(0.02)
+        if int(time.time()) - int(updated_at or 0) >= RETRY_INITIALIZATION_LEASE_SECONDS and core.jobs_store.set_explicit_job_state(
+                core.jdb, job_id, owned_state, expected_states=(submission_state,)):
+            submission_state = owned_state
+        else:
+            return handler._send(409, {
+                "detail": "Retry successor initialization is still in progress",
+                "code": "idempotency_in_progress", "job_id": job_id,
+                "retry_after_ms": 500})
+    elif submission_state != owned_state:
+        if not core.jobs_store.set_explicit_job_state(
+                core.jdb, job_id, owned_state, expected_states=(submission_state,)):
+            return recover_latest()
+        submission_state = owned_state
+
+    def still_owner():
+        current = core.jobs_store.explicit_job_state(core.jdb, job_id)
+        return bool(current and current[0] == "pending" and current[1] == owned_state)
+
+    def compensate_owned(reason, error):
+        result = _compensate_retry_successor(
+            handler, core, ai_edit_store, row, username, cost, predecessor_id,
+            route, idem_key, reason, error, complete=not initial_request,
+            expected_state=owned_state)
+        return result if result is not None else recover_latest()
+
+    # Renew the lease immediately before the local initialization side effects.
+    if not core.jobs_store.set_explicit_job_state(
+            core.jdb, job_id, owned_state, expected_states=(owned_state,)):
+        return recover_latest()
+
+    try:
+        editor_job = ai_edit_store.public_job(job_id, username)
+    except LookupError:
+        editor_job = None
+    if editor_job and (
+            editor_job.get("status") in {"error", "failed", "canceled"}
+            or editor_job.get("billing", {}).get("state") == "RELEASED"):
+        if not still_owner():
+            return recover_latest()
+        return compensate_owned(
+            "retry metadata was already rejected", "retry metadata was already rejected")
+
+    try:
+        ai_edit_store.create_job(job_id, username, payload, cost)
+        video_domain.record_video_pending_asset(job_id, username, payload)
+    except Exception as exc:
+        if not still_owner():
+            return recover_latest()
+        return compensate_owned("retry metadata recovery failed", exc)
+
+    # A slow metadata write may have crossed the lease deadline. A former
+    # owner must never enqueue or compensate after another process took over.
+    if not core.jobs_store.set_explicit_job_state(
+            core.jdb, job_id, owned_state, expected_states=(owned_state,)):
+        return recover_latest()
+
+    try:
+        queued = core.enqueue_job(job_id, "ai_edit", "ai_edit")
+    except Exception as exc:
+        if not still_owner():
+            return recover_latest()
+        return compensate_owned("retry queue recovery failed", exc)
+    if not queued:
+        if not still_owner():
+            return recover_latest()
+        return compensate_owned(
+            "retry queue recovery was full", "retry queue recovery was full")
+    if not core.jobs_store.set_explicit_job_state(
+            core.jdb, job_id, "ready",
+            expected_states=(owned_state,)):
+        return recover_latest()
+    return _complete_retry(
+        handler, core, username, route, idem_key,
+        _retry_response(
+            job_id, cost, predecessor_id, points_left=points_left,
+            recovery_state="recovered" if not initial_request else None))
 
 
 def prepare_submission(handler, kind, job_id, username, payload, cost, video_domain, route, idem_key):
@@ -292,7 +504,7 @@ def handle_post(handler, path, points_domain, video_domain):
             handler._send(500, {"detail": str(exc)[:180]})
         return True, path
 
-    match = re.fullmatch(r"/api/v1/edit-jobs/(\d+)/(cancel|retry)", path)
+    match = re.fullmatch(r"/api/v1/edit-jobs/(-?\d+)/(cancel|retry)", path)
     if match:
         _handle_job_action(handler, int(match.group(1)), match.group(2), points_domain, video_domain)
         return True, path
@@ -349,24 +561,57 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
             return handler._send(409, {
                 "detail": "同一个 Idempotency-Key 不能用于不同请求",
                 "code": "idempotency_conflict"})
-        submission_ref, deduct_transaction_key = _retry_submission_identity(
+        successor_id, submission_ref, deduct_transaction_key = _retry_submission_identity(
             user["username"], job_id, idem_key)
+        initialization_token = uuid.uuid4().hex
+        initialization_state = "initializing:" + initialization_token
 
         try:
+            existing = _retry_successor_row(
+                core, jobs_store, successor_id, user["username"], submission_ref)
+            if existing:
+                existing_row, existing_payload, existing_state = existing
+                return _recover_retry_successor(
+                    handler, core, ai_edit_store, video_domain, existing_row,
+                    user["username"], existing_payload, existing_row["cost"], job_id,
+                    retry_route, idem_key, submission_state=existing_state,
+                    initialization_token=initialization_token)
             payload = ai_edit.validate_ai_edit_payload(
                 json.loads(row["payload"] or "{}"), user["username"])
             payload["_retry_from_job_id"] = int(job_id)
             cost = points_domain.cost_of("ai_edit", payload)
             limit_hit = core._user_video_submit_limit("ai_edit", payload, user["username"], cost)
             if limit_hit:
+                # Another process may have inserted this exact submission after
+                # our first lookup; its deterministic PK wins over the cap.
+                existing = _retry_successor_row(
+                    core, jobs_store, successor_id, user["username"], submission_ref)
+                if existing:
+                    existing_row, existing_payload, existing_state = existing
+                    return _recover_retry_successor(
+                        handler, core, ai_edit_store, video_domain, existing_row,
+                        user["username"], existing_payload, existing_row["cost"], job_id,
+                        retry_route, idem_key, submission_state=existing_state,
+                        initialization_token=initialization_token)
                 _best_effort_idempotency_abort(
                     core, user["username"], retry_route, idem_key, job_id)
                 return handler._send(429, limit_hit)
-            new_id, points_left = jobs_store.create_paid_job(
+            new_id, points_left, created = jobs_store.create_paid_job(
                 core.jdb, points_domain.deduct_points, points_domain.refund_points,
                 "ai_edit", user["username"], cost, payload, core.SERVICE_OWNER,
                 submission_ref=submission_ref,
-                deduct_transaction_key=deduct_transaction_key)
+                deduct_transaction_key=deduct_transaction_key,
+                job_id=successor_id, return_created=True,
+                submission_state=initialization_state)
+            existing = _retry_successor_row(
+                core, jobs_store, successor_id, user["username"], submission_ref)
+            existing_row, existing_payload, existing_state = existing
+            return _recover_retry_successor(
+                handler, core, ai_edit_store, video_domain, existing_row,
+                user["username"], existing_payload, existing_row["cost"], job_id,
+                retry_route, idem_key, submission_state=existing_state,
+                initialization_token=initialization_token,
+                initial_request=created, points_left=points_left)
         except points_domain.AuthPointsError as exc:
             status = exc.status if exc.status in (402, 403, 409) else 502
             if status in (402, 403, 409):
@@ -377,81 +622,34 @@ def _handle_job_action(handler, job_id, action, points_domain, video_domain):
                 "detail": exc.detail, "code": "points_result_unknown",
                 "retry_after_ms": 1000, "need": 30})
         except jobs_store.PaidJobInsertError as exc:
-            _best_effort_idempotency_abort(
-                core, user["username"], retry_route, idem_key, job_id)
+            if exc.job_id is None:
+                _best_effort_idempotency_abort(
+                    core, user["username"], retry_route, idem_key, job_id)
             return handler._send(500, {
                 "detail": {"refunded": "重试任务创建失败，点数已退回",
                            "queued": "重试任务创建失败，退款正在自动重试"}.get(
                                exc.compensation, "重试任务创建失败，退款需人工核对"),
                 "compensation": exc.compensation,
-                "submission_ref": exc.submission_ref})
+                "submission_ref": exc.submission_ref,
+                "job_id": exc.job_id})
+        except jobs_store.PaidJobConflictError:
+            return handler._send(409, {
+                "detail": "Retry submission identity conflicts with an existing job",
+                "code": "job_identity_conflict"})
         except ValueError as exc:
             _best_effort_idempotency_abort(
                 core, user["username"], retry_route, idem_key, job_id)
             return handler._send(400, {"detail": str(exc)[:220]})
         except Exception as exc:
+            try:
+                if _retry_successor_row(
+                        core, jobs_store, successor_id, user["username"], submission_ref):
+                    raise
+            except jobs_store.PaidJobConflictError:
+                raise
             _best_effort_idempotency_abort(
                 core, user["username"], retry_route, idem_key, job_id)
             return handler._send(500, {"detail": "重试任务创建失败：" + str(exc)[:160]})
-
-        try:
-            ai_edit_store.create_job(new_id, user["username"], payload, cost)
-            video_domain.record_video_pending_asset(new_id, user["username"], payload)
-        except Exception as exc:
-            try:
-                _reject_and_cleanup(
-                    core, ai_edit_store, new_id, user["username"], cost,
-                    "重试任务元数据创建失败", exc)
-            except PaidJobCompensationError as cleanup_error:
-                print("[ai-edit] %s" % cleanup_error, flush=True)
-                return handler._send(503, {
-                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
-                    "code": "compensation_persistence_failed", "job_id": new_id})
-            _best_effort_idempotency_abort(
-                core, user["username"], retry_route, idem_key, new_id)
-            return handler._send(500, {
-                "detail": "重试任务创建失败，退款正在自动处理",
-                "job_id": new_id})
-
-        try:
-            queued = core.enqueue_job(new_id, "ai_edit", "ai_edit")
-        except Exception as exc:
-            try:
-                _reject_and_cleanup(
-                    core, ai_edit_store, new_id, user["username"], cost,
-                    "重试任务入队失败", exc)
-            except PaidJobCompensationError as cleanup_error:
-                print("[ai-edit] %s" % cleanup_error, flush=True)
-                return handler._send(503, {
-                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
-                    "code": "compensation_persistence_failed", "job_id": new_id})
-            _best_effort_idempotency_abort(
-                core, user["username"], retry_route, idem_key, new_id)
-            return handler._send(500, {
-                "detail": "重试任务入队失败，退款正在自动处理",
-                "job_id": new_id})
-        if not queued:
-            queue_error = "任务队列已满"
-            try:
-                _reject_and_cleanup(
-                    core, ai_edit_store, new_id, user["username"], cost,
-                    queue_error, queue_error)
-            except PaidJobCompensationError as cleanup_error:
-                print("[ai-edit] %s" % cleanup_error, flush=True)
-                return handler._send(503, {
-                    "detail": "任务补偿状态保存失败，请稍后重试或联系管理员",
-                    "code": "compensation_persistence_failed", "job_id": new_id})
-            _best_effort_idempotency_abort(
-                core, user["username"], retry_route, idem_key, new_id)
-            return handler._send(429, {
-                "detail": "任务队列已满，点数已释放",
-                "code": "queue_full", "retry_after_ms": 4000})
-
-        response = {"job_id": new_id, "cost": cost, "points_left": points_left,
-                    "billing_state": "HELD", "retried_from": job_id}
-        core._idempotency_complete(user["username"], retry_route, idem_key, response)
-        return handler._send(202, response)
-
 
 def handle_get(handler, path):
     path = _canonical_path(path)
@@ -515,7 +713,7 @@ def handle_get(handler, path):
             handler._send(404, {"detail": str(exc)})
         return True
 
-    match = re.fullmatch(r"/api/v1/edit-jobs/(\d+)(?:/(timeline|result|events))?", path)
+    match = re.fullmatch(r"/api/v1/edit-jobs/(-?\d+)(?:/(timeline|result|events))?", path)
     if match:
         _handle_job_read(handler, int(match.group(1)), match.group(2) or "")
         return True

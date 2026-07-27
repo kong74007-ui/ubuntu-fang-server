@@ -10,6 +10,7 @@
 3. 退点幂等：最多退一次
 4. 退点失败保持 refunded=2 待确认，scanner 用同一个键继续确认
 """
+import json
 import os
 import sqlite3
 import sys
@@ -197,6 +198,73 @@ class JobsStoreTests(unittest.TestCase):
         self.assertEqual(points_left, 90)
         self.assertEqual(deductions, [(
             "u", 10, "job:ai_edit submit:stable-submission-ref", "stable-deduct-key")])
+
+    def test_explicit_job_id_replays_the_matching_database_winner(self):
+        balance = {"points": 100}
+        transactions = {}
+
+        def deduct(username, amount, reason="", transaction_key=None):
+            if transaction_key not in transactions:
+                balance["points"] -= amount
+                transactions[transaction_key] = balance["points"]
+            return transactions[transaction_key]
+
+        first = jobs_store.create_paid_job(
+            self._jdb, deduct, lambda *_args, **_kwargs: True,
+            "ai_edit", "u", 10, {"source": 1}, "content",
+            submission_ref="stable-winner", deduct_transaction_key="stable-hold",
+            job_id=-9001,
+        )
+        second = jobs_store.create_paid_job(
+            self._jdb, deduct, lambda *_args, **_kwargs: True,
+            "ai_edit", "u", 10, {"source": 1}, "content",
+            submission_ref="stable-winner", deduct_transaction_key="stable-hold",
+            job_id=-9001,
+        )
+        replay_with_state = jobs_store.create_paid_job(
+            self._jdb, deduct, lambda *_args, **_kwargs: True,
+            "ai_edit", "u", 10, {"source": 1}, "content",
+            submission_ref="stable-winner", deduct_transaction_key="stable-hold",
+            job_id=-9001, return_created=True,
+        )
+
+        self.assertEqual(first, (-9001, 90))
+        self.assertEqual(second, first)
+        self.assertEqual(replay_with_state, (-9001, 90, False))
+        self.assertEqual(balance["points"], 90)
+        with closing(self._conn()) as c:
+            rows = c.execute("SELECT id,payload FROM jobs").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], -9001)
+        self.assertEqual(json.loads(rows[0]["payload"])["_submission_ref"], "stable-winner")
+
+    def test_explicit_job_id_conflict_does_not_charge_or_replace_the_winner(self):
+        balance = {"points": 100}
+        transactions = {}
+
+        def deduct(username, amount, reason="", transaction_key=None):
+            if transaction_key not in transactions:
+                balance["points"] -= amount
+                transactions[transaction_key] = balance["points"]
+            return transactions[transaction_key]
+
+        jobs_store.create_paid_job(
+            self._jdb, deduct, lambda *_args, **_kwargs: True,
+            "ai_edit", "u", 10, {"source": 1}, "content",
+            submission_ref="winner-a", deduct_transaction_key="hold-a", job_id=-9002,
+        )
+
+        with self.assertRaisesRegex(Exception, "explicit job_id conflict"):
+            jobs_store.create_paid_job(
+                self._jdb, deduct, lambda *_args, **_kwargs: True,
+                "ai_edit", "u", 10, {"source": 2}, "content",
+                submission_ref="winner-b", deduct_transaction_key="hold-b", job_id=-9002,
+            )
+
+        self.assertEqual(balance["points"], 90)
+        with closing(self._conn()) as c:
+            row = c.execute("SELECT payload FROM jobs WHERE id=-9002").fetchone()
+        self.assertEqual(json.loads(row["payload"])["_submission_ref"], "winner-a")
 
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):

@@ -29,10 +29,11 @@ def refund_transaction_key(job_id, username=""):
 
 
 class PaidJobInsertError(Exception):
-    def __init__(self, compensation, submission_ref):
+    def __init__(self, compensation, submission_ref, job_id=None):
         super().__init__("paid job insert failed")
         self.compensation = compensation
         self.submission_ref = submission_ref
+        self.job_id = job_id
 
 
 class PaidJobDeductError(Exception):
@@ -40,6 +41,10 @@ class PaidJobDeductError(Exception):
         super().__init__(detail)
         self.status = int(status or 500)
         self.detail = str(detail or "点数扣除失败")
+
+
+class PaidJobConflictError(Exception):
+    pass
 
 
 def public_dict(row, phase=None):
@@ -228,10 +233,186 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
         raise PaidJobInsertError(state, submission_ref) from error
 
 
+def _explicit_job_matches(row, kind, username, cost, payload, submission_ref):
+    if not row or row["kind"] != kind or row["username"] != username or int(row["cost"] or 0) != int(cost or 0):
+        return False
+    try:
+        stored_payload = json.loads(row["payload"] or "{}")
+    except Exception:
+        return False
+    stored_ref = stored_payload.pop("_submission_ref", None)
+    stored_payload.pop("_submission_state", None)
+    return stored_ref == submission_ref and stored_payload == payload
+
+
+def explicit_job_matches(row, kind, username, cost, payload, submission_ref):
+    """Return whether an explicit-id row is the winner for this submission."""
+    return _explicit_job_matches(row, kind, username, cost, payload, submission_ref)
+
+
+def _explicit_job_row(jdb, job_id):
+    with closing(jdb()) as c:
+        return c.execute(
+            "SELECT id,kind,username,cost,payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+
+def _paid_job_result(job_id, points_left, created, return_created):
+    if return_created:
+        return job_id, points_left, bool(created)
+    return job_id, points_left
+
+
+def explicit_job_state(jdb, job_id):
+    with closing(jdb()) as c:
+        row = c.execute("SELECT status,payload,updated_at FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except Exception:
+        payload = {}
+    return row["status"], payload.get("_submission_state"), int(row["updated_at"] or 0)
+
+
+def set_explicit_job_state(jdb, job_id, state, expected_states=()):
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT payload FROM jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
+        if not row:
+            c.commit()
+            return False
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        current = payload.get("_submission_state")
+        if expected_states and current not in set(expected_states):
+            c.commit()
+            return False
+        payload["_submission_state"] = state
+        c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='pending'",
+                  (json.dumps(payload, ensure_ascii=False), int(time.time()), job_id))
+        c.commit()
+        return True
+
+
+def reject_explicit_job_owner(jdb, job_id, expected_state, error):
+    """Atomically prove initialization ownership and publish compensation."""
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT payload FROM jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
+        if not row:
+            c.commit()
+            return False
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        if payload.get("_submission_state") != expected_state:
+            c.commit()
+            return False
+        cur = c.execute(
+            """UPDATE jobs SET status='error',error=?,updated_at=?,
+                       refunded=CASE WHEN COALESCE(cost,0)>0 AND COALESCE(refunded,0)=0 THEN 2 ELSE refunded END
+               WHERE id=? AND status='pending'""",
+            (str(error or "")[:300], int(time.time()), job_id))
+        c.commit()
+        return cur.rowcount == 1
+
+
+def _compensate_explicit_insert(jdb, refund, job_id, kind, username, cost, payload,
+                                submission_ref, error, owner):
+    """Persist compensation at the same PK before refunding an explicit job.
+
+    If persistence itself is unavailable, keep the original hold: replay can
+    then finish the paid job without turning a refunded transaction into free
+    work. A concurrent matching winner always takes precedence.
+    """
+    now = int(time.time())
+    try:
+        with closing(jdb()) as c:
+            c.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,error,created_at,updated_at,owner,refunded) "
+                "VALUES(?,?,?,?, 'error',?,?,?,?,?,2)",
+                (job_id, kind, username, int(cost or 0),
+                 json.dumps(payload, ensure_ascii=False),
+                 "Task creation failed; refund pending: %s" % str(error or "")[:180],
+                 now, now, owner))
+            c.commit()
+    except Exception:
+        try:
+            winner = _explicit_job_row(jdb, job_id)
+        except Exception:
+            return "untracked"
+        if _explicit_job_matches(
+                winner, kind, username, cost,
+                {key: value for key, value in payload.items() if key != "_submission_ref"},
+                submission_ref):
+            return "winner"
+        return "untracked"
+    confirmed = refund_once(
+        jdb, job_id, username, cost,
+        lambda u, c: refund(
+            u, c, "job:%s:insert_failed submit:%s" % (kind, submission_ref),
+            transaction_key=refund_transaction_key(job_id, username)))
+    return "refunded" if confirmed else "queued"
+
+
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
-                    submission_ref=None, deduct_transaction_key=None):
+                    submission_ref=None, deduct_transaction_key=None, job_id=None,
+                    return_created=False, submission_state=None):
+    if job_id is not None:
+        job_id = int(job_id)
+        submission_ref = str(submission_ref or "").strip()[:128]
+        deduct_transaction_key = str(deduct_transaction_key or "").strip()
+        if not submission_ref or not deduct_transaction_key:
+            raise ValueError("explicit job_id requires stable submission and deduct keys")
+        canonical_payload = dict(payload or {})
+        existing = _explicit_job_row(jdb, job_id)
+        if existing:
+            if not _explicit_job_matches(
+                    existing, kind, username, cost, canonical_payload, submission_ref):
+                raise PaidJobConflictError("explicit job_id conflict")
+            points_left = deduct(
+                username, int(cost or 0), "job:%s submit:%s" % (kind, submission_ref),
+                transaction_key=deduct_transaction_key)
+            return _paid_job_result(job_id, points_left, False, return_created)
+
+        stored_payload = dict(canonical_payload)
+        stored_payload["_submission_ref"] = submission_ref
+        if submission_state:
+            stored_payload["_submission_state"] = str(submission_state)
+        points_left = deduct(
+            username, int(cost or 0), "job:%s submit:%s" % (kind, submission_ref),
+            transaction_key=deduct_transaction_key)
+        now = int(time.time())
+        try:
+            with closing(jdb()) as c:
+                c.execute(
+                    "INSERT INTO jobs(id,kind,username,cost,payload,created_at,updated_at,owner) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (job_id, kind, username, int(cost or 0),
+                     json.dumps(stored_payload, ensure_ascii=False), now, now, owner))
+                c.commit()
+            return _paid_job_result(job_id, points_left, True, return_created)
+        except Exception as error:
+            try:
+                winner = _explicit_job_row(jdb, job_id)
+            except Exception:
+                winner = None
+            if _explicit_job_matches(
+                    winner, kind, username, cost, canonical_payload, submission_ref):
+                return _paid_job_result(job_id, points_left, False, return_created)
+            state = _compensate_explicit_insert(
+                jdb, refund, job_id, kind, username, int(cost or 0), stored_payload,
+                submission_ref, error, owner)
+            if state == "winner":
+                return _paid_job_result(job_id, points_left, False, return_created)
+            raise PaidJobInsertError(state, submission_ref, job_id=job_id) from error
+
     job_ids, points_left = create_paid_jobs(
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
         submission_ref=submission_ref,
         deduct_transaction_key=deduct_transaction_key)
-    return job_ids[0], points_left
+    return _paid_job_result(job_ids[0], points_left, True, return_created)
