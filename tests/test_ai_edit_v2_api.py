@@ -1,5 +1,6 @@
 import os
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -28,6 +29,7 @@ def valid_api_draft():
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 30_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "1",
             "kind": "video",
@@ -73,9 +75,10 @@ class RejectingPoints(FakePoints):
 
 
 class FakeHandler:
-    def __init__(self, body=None, token="token"):
+    def __init__(self, body=None, token="token", headers=None):
         self.body = body or {}
         self.token = token
+        self.headers = headers or {}
         self.responses = []
 
     def _send(self, status, payload):
@@ -91,6 +94,7 @@ class FakeHandler:
 
 class FakeCos:
     def __init__(self):
+        self.puts = []
         self.head = {
             "content_length": 12 * MB,
             "content_type": "video/mp4",
@@ -106,17 +110,30 @@ class FakeCos:
     def head_object(self, object_key):
         return dict(self.head)
 
+    def put_file(self, path, object_key, content_type, private=True):
+        self.puts.append((path, object_key, content_type, private))
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.temp_dir.name, "ai_edit_v2.db")
         self.env = patch.dict(
-            os.environ, {"AI_EDIT_V2_DB": self.db_path, "AI_EDIT_V2_ENABLED": "1"}
+            os.environ,
+            {
+                "AI_EDIT_V2_DB": self.db_path,
+                "AI_EDIT_V2_ENABLED": "1",
+                "AI_EDIT_V2_WEBHOOK_SECRET": "task9-test-secret",
+            },
         )
         self.env.start()
-        self.ready_patch = patch.object(api.feature, "runtime_ready", return_value=True)
+        self.ready_patch = patch.object(
+            api.feature.runtime, "production_dependencies",
+            return_value={"readiness_errors": lambda: []},
+        )
         self.ready_patch.start()
+        self.components_patch = patch.object(api.feature, "runtime_ready", return_value=True)
+        self.components_patch.start()
         store.init_db(self.db_path)
         with closing(store.open_store(self.db_path)) as conn:
             conn.execute(
@@ -152,12 +169,94 @@ class ApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.probe_patch.stop()
+        self.components_patch.stop()
         self.ready_patch.stop()
         self.points_patch.stop()
         self.uuid_patch.stop()
         self.cos_patch.stop()
         self.env.stop()
         self.temp_dir.cleanup()
+
+    def test_canonical_draft_preserves_platform_input_mode_and_original_text(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_materials SET source='platform_video',original_text=? WHERE id=1",
+                ("平台持久原文：品牌价格是29元",),
+            )
+        draft = valid_api_draft()
+        draft.update({
+            "creation_mode": "platform_template",
+            "input_mode": "platform_video",
+            "original_text": "客户端伪造原文",
+            "template_id": "business_diagnostic",
+            "template_version": "1.0",
+        })
+        canonical, _bindings = api.canonicalize_job_draft("alice", draft)
+        self.assertEqual(canonical["input_mode"], "platform_video")
+        self.assertEqual(canonical["original_text"], "平台持久原文：品牌价格是29元")
+
+    def test_platform_asset_is_owner_scoped_and_imports_authoritative_text_without_client_truth(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        source = os.path.join(self.temp_dir.name, "platform-video.mp4")
+        Path(source).write_bytes(b"authoritative-platform-video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                video_file TEXT,text TEXT,ratio TEXT,status TEXT,created_at INTEGER,
+                updated_at INTEGER)""")
+            conn.executemany(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (31, "source-job-31", "alice", "text", source,
+                     "authoritative script 29", "16:9", "done", 1, 2),
+                    (32, "source-job-32", "bob", "text", source,
+                     "other owner secret", "16:9", "done", 1, 2),
+                ],
+            )
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
+            self.assertEqual(status, 200)
+            self.assertEqual(listed["items"], [{
+                "id": 31, "reference_id": "31", "filename": "platform-video.mp4",
+                "ratio": "16:9", "status": "done",
+            }])
+            self.assertNotIn("original_text", listed["items"][0])
+            status, imported = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/31/import",
+                {"original_text": "forged client text", "source": "platform_video"},
+            )
+            self.assertEqual(status, 201)
+            material_id = imported["material"]["id"]
+            self.assertNotIn("original_text", imported["material"])
+            status, _forbidden = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/32/import", {}
+            )
+            self.assertEqual(status, 404)
+
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT source,platform_asset_id,original_text FROM edit_v2_materials WHERE id=?",
+                (material_id,),
+            ).fetchone()
+        self.assertEqual(tuple(row), ("platform_video", 31, "authoritative script 29"))
+
+        status, upload = self._dispatch("POST", "/api/v2/edit/uploads", {
+            "kind": "video", "purpose": "primary", "content_type": "video/mp4",
+            "filename": "spoof.mp4", "source": "platform_video",
+            "original_text": "forged platform script",
+        })
+        self.assertEqual(status, 201)
+        with closing(store.open_store(self.db_path)) as conn:
+            spoof = conn.execute(
+                "SELECT source,original_text FROM edit_v2_materials WHERE upload_id=?",
+                (upload["upload_id"],),
+            ).fetchone()
+        self.assertEqual(tuple(spoof), ("user_upload", None))
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)
@@ -185,6 +284,30 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 201)
         return payload
+
+    def _rendering_attempt(self, provider_task_id=None):
+        job = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "quote", "webhook-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174095",
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_jobs SET status='rendering' WHERE id=?", (job["id"],))
+            conn.commit()
+        attempt_id = store.record_stage_attempt(
+            job["id"], "rendering", 1, "submitted", 101,
+            provider_task_id=provider_task_id,
+            db_path=self.db_path,
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_stage_attempts SET provider_reference=? WHERE id=?",
+                ("stable-render-reference", attempt_id),
+            )
+            conn.commit()
+        client = api.shotstack.ShotstackClient(
+            job_id=job["id"], attempt_id=attempt_id, db_path=self.db_path
+        )
+        return job, attempt_id, client.callback_token("stable-render-reference")
 
     def test_prefix_requires_login(self):
         handler = FakeHandler()
@@ -216,6 +339,48 @@ class ApiTests(unittest.TestCase):
             )
             self.assertEqual(status, 503)
             self.assertEqual(payload["code"], "ai_edit_v2_disabled")
+
+    def test_missing_stable_dependency_rejects_every_write_but_keeps_reads_and_webhook(self):
+        missing = {
+            "dashscope": True, "openai_image": True, "elevenlabs": True,
+            "shotstack": True, "cos": False, "ffmpeg": True, "ffprobe": True,
+        }
+        job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")
+        with patch.object(api.feature.runtime, "production_dependencies", return_value={
+            "readiness_errors": lambda: ["AI_EDIT_V2_REPAIR_PROVIDER"]
+        }):
+            status, capability = self._dispatch("GET", "/api/v2/edit/capabilities")
+            self.assertEqual(status, 200)
+            self.assertFalse(capability["accepts_submissions"])
+            self.assertFalse(capability["stable_workflow"]["ready"])
+
+            for path in (
+                "/api/v2/edit/uploads",
+                "/api/v2/edit/uploads/123e4567-e89b-42d3-a456-426614174000/complete",
+                "/api/v2/edit/quote",
+                "/api/v2/edit/jobs",
+                f"/api/v2/edit/jobs/{job['id']}/retry",
+            ):
+                with self.subTest(path=path):
+                    write_status, payload = self._dispatch("POST", path, {})
+                    self.assertEqual(write_status, 503)
+                    self.assertEqual(payload["code"], "ai_edit_v2_not_ready")
+
+            self.assertEqual(self._dispatch("GET", "/api/v2/edit/templates")[0], 200)
+            self.assertEqual(self._dispatch("GET", "/api/v2/edit/materials")[0], 200)
+            self.assertEqual(
+                self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")[0], 200
+            )
+            body = {"id": "render-bound", "status": "done"}
+            headers = {"Content-Length": str(len(json.dumps(body).encode("utf-8")))}
+            handler = FakeHandler(body, headers=headers)
+            route = (
+                "/api/v2/edit/webhooks/shotstack"
+                f"?attempt_id={attempt_id}&token={token}"
+            )
+            with patch.object(api.shotstack.ShotstackClient, "reconcile", return_value=object()):
+                api.dispatch(handler, "POST", route, None)
+            self.assertEqual(handler.responses[0][0], 202)
 
     def test_quote_rejects_cross_account_material_before_precharge(self):
         with closing(store.open_store(self.db_path)) as conn:
@@ -333,7 +498,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn("detail", payload)
 
-    def test_capabilities_and_empty_templates_are_provider_neutral(self):
+    def test_capabilities_and_published_templates_are_provider_neutral(self):
         status, capabilities = self._dispatch(
             "GET", "/api/v2/edit/capabilities"
         )
@@ -343,7 +508,9 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(templates_status, 200)
-        self.assertEqual(templates, {"items": []})
+        self.assertGreaterEqual(len(templates["items"]), 1)
+        self.assertTrue(all(item["status"] == "published" for item in templates["items"]))
+        self.assertTrue(all(item["version"] for item in templates["items"]))
         self.assertEqual(capabilities["version"], "2.0")
         self.assertNotIn("provider", str(capabilities).lower())
 
@@ -357,6 +524,38 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(status, 201)
         self.assertGreater(payload["quote"]["max_points"], 0)
+
+    def test_missing_input_or_unpublished_template_is_rejected_before_precharge(self):
+        starting = api._points_client.balance
+        missing = valid_api_draft(); missing.pop("input_mode")
+        status, _payload = self._dispatch("POST", "/api/v2/edit/quote", {"draft": missing})
+        self.assertEqual(status, 400)
+
+        invalid = valid_api_draft()
+        invalid.update(creation_mode="platform_template", template_id="business_diagnostic",
+                       template_version="unpublished")
+        status, _payload = self._dispatch(
+            "POST", "/api/v2/edit/jobs",
+            {"draft": invalid, "quote_id": "never", "idempotency_key": "never-charge"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(api._points_client.balance, starting)
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
+
+    def test_stable_quote_route_exposes_range_and_maximum_hold(self):
+        status, payload = self._dispatch(
+            "POST", "/api/v2/edit/quote", {"draft": valid_api_draft()}
+        )
+
+        self.assertEqual(status, 201)
+        self.assertGreater(payload["quote"]["minimum_points"], 0)
+        self.assertGreaterEqual(
+            payload["quote"]["maximum_points"], payload["quote"]["minimum_points"]
+        )
+        self.assertEqual(
+            payload["quote"]["held_points"], payload["quote"]["maximum_points"]
+        )
 
     def test_confirmed_quote_precharges_and_creates_job(self):
         draft = valid_api_draft()
@@ -496,6 +695,169 @@ class ApiTests(unittest.TestCase):
         self.assertIn("remaining_seconds", payload["timing"])
         self.assertEqual(other_status, 404)
 
+    def test_job_response_is_provider_neutral_and_exposes_stable_progress(self):
+        job = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "quote", "progress-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174097",
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_jobs SET status='rendering',created_at=90,updated_at=100 WHERE id=?",
+                (job["id"],),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_billing(
+                       job_id,transaction_key,operation,amount,status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (job["id"], "hold-progress", "hold", 88, "held", 90, 90),
+            )
+            conn.commit()
+
+        with patch.object(api, "_now", return_value=110):
+            status, payload = self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["stage"], "rendering")
+        self.assertEqual(payload["elapsed_seconds"], 20)
+        self.assertIn("estimated_remaining_seconds", payload)
+        self.assertEqual(payload["degradations"], [])
+        self.assertEqual(payload["billing"]["held_points"], 88)
+        serialized = json.dumps(payload, ensure_ascii=False).lower()
+        for forbidden in (
+            "provider", "shotstack", "cos_key", "signed", "signature",
+            "traceback", "stack", "supplier",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_completed_job_returns_quality_settlement_and_short_lived_output_links(self):
+        job = store.create_job(
+            "alice", {"draft": valid_api_draft()}, "quote", "completed-request", 100,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174096",
+        )
+        quality = {
+            "passed": True,
+            "error_codes": [],
+            "failing_layers": [],
+            "repairable": False,
+            "terminal": True,
+        }
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET status='completed',output_cos_key=?,created_at=90,updated_at=120
+                   WHERE id=?""",
+                ("ai-edit-v2/0123456789abcdef/123e4567-e89b-42d3-a456-426614174096/delivery/final.mp4", job["id"]),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_billing(
+                       job_id,transaction_key,operation,amount,status,response_json,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (job["id"], "hold-completed", "hold", 88, "settled",
+                 json.dumps({"held_points": 88, "actual_points": 61, "refunded_points": 27}), 90, 120),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_delivery_intents(
+                       job_id,owner,idempotency_key,cos_key,source_size_bytes,source_sha256,
+                       quality_json,actual_cost,canonical_digest,status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (job["id"], "alice", "delivery-completed",
+                 "ai-edit-v2/0123456789abcdef/123e4567-e89b-42d3-a456-426614174096/delivery/final.mp4",
+                 100, "a" * 64, json.dumps(quality, sort_keys=True, separators=(",", ":")),
+                 61, "b" * 64, "completed", 110, 120),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_delivery_outbox(
+                       job_id,owner,payload_json,status,asset_id,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (job["id"], "alice", "{}", "delivered", 321, 110, 120),
+            )
+            conn.commit()
+
+        status, payload = self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["quality"]["status"], "passed")
+        self.assertEqual(payload["billing"]["actual_charge_points"], 61)
+        self.assertEqual(payload["billing"]["refunded_difference_points"], 27)
+        self.assertEqual(payload["output"]["asset_id"], 321)
+        self.assertTrue(payload["output"]["play_url"].startswith("https://download.example/"))
+        self.assertTrue(payload["output"]["download_url"].startswith("https://download.example/"))
+        self.assertEqual(payload["output"]["asset_url"], "assets.html?cat=video&asset=321")
+
+    def test_webhook_requires_authenticated_callback_instead_of_user_session(self):
+        handler = FakeHandler(
+            {"id": "render-123", "status": "done"},
+            headers={"Content-Length": "36"},
+        )
+
+        handled = api.dispatch(
+            handler,
+            "POST",
+            "/api/v2/edit/webhooks/shotstack?attempt_id=7&token=wrong",
+            None,
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(handler.responses[0][0], 401)
+
+    def test_authenticated_webhook_accepts_official_fields_and_only_queues_reconcile(self):
+        job, attempt_id, token = self._rendering_attempt()
+        body = json.loads((Path(__file__).parent / "fixtures" / "ai_edit_v2" /
+                           "provider_responses" / "shotstack_webhook_complete.json").read_text(
+                               encoding="utf-8"))
+        route = f"/api/v2/edit/webhooks/shotstack?attempt_id={attempt_id}&token={token}"
+        headers = {"Content-Length": str(len(json.dumps(body).encode("utf-8")))}
+
+        with patch.object(api.shotstack.ShotstackClient, "reconcile", side_effect=AssertionError("webhook must not GET")) as reconcile:
+            first_handler = FakeHandler(body, headers=headers)
+            second_handler = FakeHandler(body, headers=headers)
+            api.dispatch(first_handler, "POST", route, None)
+            api.dispatch(second_handler, "POST", route, None)
+
+        self.assertEqual(first_handler.responses, [(202, {"accepted": True, "duplicate": False})])
+        self.assertEqual(second_handler.responses, [(202, {"accepted": True, "duplicate": True})])
+        reconcile.assert_not_called()
+
+        from server import ai_edit_v2_worker as worker
+        from server.content_domains import ai_edit_v2_runtime as runtime
+        authoritative = json.loads((Path(__file__).parent / "fixtures" / "ai_edit_v2" /
+                                    "provider_responses" / "shotstack_render_success.json").read_text(
+                                        encoding="utf-8"))
+        calls = []
+
+        def request(method, url, _headers, _body, _timeout):
+            calls.append((method, url))
+            return authoritative
+
+        with patch.dict(os.environ, {"SHOTSTACK_API_KEY": "test-shotstack-key"}):
+            services = runtime.ProductionServices(self.db_path, shotstack_http=request)
+            self.assertEqual(worker.reconcile_provider_events(
+                "api-test-worker", {"db_path": self.db_path, "lease_seconds": 30},
+                {"services": services}, now=200,
+            ), 1)
+        self.assertEqual(calls, [(
+            "GET", "https://api.shotstack.io/edit/stage/render/render-123"
+        )])
+        with closing(store.open_store(self.db_path)) as conn:
+            queued = conn.execute(
+                "SELECT normalized_status FROM edit_v2_provider_events WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(queued["normalized_status"], "processed")
+
+    def test_webhook_rejects_oversize_malformed_and_mismatched_events(self):
+        _job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")
+        route = f"/api/v2/edit/webhooks/shotstack?attempt_id={attempt_id}&token={token}"
+        cases = [
+            (FakeHandler({"id": "render-bound", "status": "done"}, headers={"Content-Length": str(64 * 1024 + 1)}), 413),
+            (FakeHandler({"id": "render-bound", "status": {"nested": True}}, headers={"Content-Length": "50"}), 400),
+            (FakeHandler({"id": "render-other", "status": "done"}, headers={"Content-Length": "40"}), 401),
+        ]
+        for handler, expected_status in cases:
+            with self.subTest(expected_status=expected_status):
+                api.dispatch(handler, "POST", route, None)
+                self.assertEqual(handler.responses[0][0], expected_status)
+
     def test_retry_creates_an_idempotent_successor_without_reviving_old_job(self):
         old = store.create_job(
             "alice",
@@ -595,7 +957,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
 
-    def test_concurrent_identical_retries_return_one_successor_and_charge_once(self):
+    def test_concurrent_different_key_retries_return_one_successor_and_charge_once(self):
         old = store.create_job(
             "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
             uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
@@ -611,7 +973,6 @@ class ApiTests(unittest.TestCase):
             barrier.wait(timeout=5)
             return original_create_quote(*args, **kwargs)
 
-        body = {"idempotency_key": "same-retry"}
         with patch.object(api.billing, "create_quote", side_effect=synchronized_create_quote):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [
@@ -619,9 +980,9 @@ class ApiTests(unittest.TestCase):
                         self._dispatch,
                         "POST",
                         f"/api/v2/edit/jobs/{old['id']}/retry",
-                        body,
+                        {"idempotency_key": f"retry-client-{index}"},
                     )
-                    for _ in range(2)
+                    for index in range(2)
                 ]
                 responses = [future.result(timeout=10) for future in futures]
 
@@ -637,7 +998,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(api._points_client.transactions), 1)
         self.assertEqual(api._points_client.balance, 500 - charged)
 
-    def test_retry_replay_returns_existing_successor_after_material_is_deleted(self):
+    def test_retry_response_loss_with_new_client_key_replays_winner_after_material_is_deleted(self):
         old = store.create_job(
             "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
             uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
@@ -655,12 +1016,34 @@ class ApiTests(unittest.TestCase):
             conn.commit()
 
         replay_status, replay = self._dispatch(
-            "POST", f"/api/v2/edit/jobs/{old['id']}/retry", body
+            "POST", f"/api/v2/edit/jobs/{old['id']}/retry",
+            {"idempotency_key": "replacement-after-response-loss"},
         )
 
         self.assertEqual(first_status, 201)
         self.assertEqual(replay_status, 201)
         self.assertEqual(replay["job_id"], first["job_id"])
+
+    def test_terminal_job_response_reports_zero_remaining_time(self):
+        for index, terminal in enumerate((
+            "completed", "validation_failed", "transcription_failed", "director_failed",
+            "asset_failed", "render_failed", "quality_failed", "settlement_failed",
+            "storage_failed",
+        )):
+            with self.subTest(terminal=terminal):
+                job = store.create_job(
+                    "alice", {"draft": valid_api_draft()}, "quote",
+                    f"terminal-{terminal}", 100 + index,
+                )
+                with closing(store.open_store(self.db_path)) as conn:
+                    conn.execute(
+                        "UPDATE edit_v2_jobs SET status=?,created_at=100,updated_at=120 WHERE id=?",
+                        (terminal, job["id"]),
+                    )
+                status, payload = self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["estimated_remaining_seconds"], 0)
+                self.assertEqual(payload["timing"]["remaining_seconds"], 0)
 
     def test_retry_rejects_non_terminal_job(self):
         old = store.create_job(
@@ -731,6 +1114,26 @@ class CoreDispatchTests(unittest.TestCase):
             self.assertEqual(calls[-1], (http_method, handler.path, {"username": "alice"}))
 
         self.assertNotIn("ai_edit_v2", core.HANDLERS)
+
+    def test_core_preserves_webhook_query_for_independent_authentication(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        from content_domains import core
+
+        calls = []
+        handler = object.__new__(core.H)
+        handler.path = "/api/v2/edit/webhooks/shotstack?attempt_id=7&token=callback-token"
+        handler.headers = {}
+        with patch.object(core, "verify") as verify, patch.object(
+            core.ai_edit_v2_api,
+            "dispatch",
+            side_effect=lambda _handler, method, path, user: calls.append((method, path, user)) or True,
+        ):
+            handler.do_POST()
+
+        verify.assert_not_called()
+        self.assertEqual(calls, [("POST", handler.path, None)])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -13,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 11
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -70,6 +71,87 @@ def _connection(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migration_checkpoint(raw: Any, state: str, now: int, data: dict[str, Any]) -> str:
+    try:
+        checkpoints = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        checkpoints = []
+    if not isinstance(checkpoints, list):
+        checkpoints = []
+    checkpoints.append({
+        "version": len(checkpoints) + 1,
+        "state": state,
+        "at": int(now),
+        "data": data,
+    })
+    return json.dumps(
+        checkpoints, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _quarantine_duplicate_successors(conn: sqlite3.Connection, now: int) -> None:
+    groups = conn.execute(
+        """SELECT owner,predecessor_job_id FROM edit_v2_jobs
+           WHERE predecessor_job_id IS NOT NULL
+           GROUP BY owner,predecessor_job_id HAVING COUNT(*)>1"""
+    ).fetchall()
+    for group in groups:
+        rows = conn.execute(
+            """SELECT * FROM edit_v2_jobs
+               WHERE owner=? AND predecessor_job_id=?
+               ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END,
+                        created_at,id""",
+            (group["owner"], group["predecessor_job_id"]),
+        ).fetchall()
+        winner, losers = rows[0], rows[1:]
+        loser_ids = [row["id"] for row in losers]
+        winner_audit = _migration_checkpoint(
+            winner["checkpoint_json"], "migration_v9_successor_winner", now,
+            {
+                "predecessor_job_id": group["predecessor_job_id"],
+                "loser_job_ids": loser_ids,
+            },
+        )
+        conn.execute(
+            "UPDATE edit_v2_jobs SET checkpoint_json=? WHERE id=?",
+            (winner_audit, winner["id"]),
+        )
+        for loser in losers:
+            billing = conn.execute(
+                """SELECT status FROM edit_v2_billing
+                   WHERE job_id=? AND operation='hold'""",
+                (loser["id"],),
+            ).fetchone()
+            audit_data = {
+                "predecessor_job_id": group["predecessor_job_id"],
+                "winner_job_id": winner["id"],
+            }
+            if billing is not None:
+                audit_data["billing_status"] = billing["status"]
+                if billing["status"] not in {"refunded", "rejected"}:
+                    audit_data["billing_reconcile_required"] = billing["status"]
+            loser_audit = _migration_checkpoint(
+                loser["checkpoint_json"],
+                "migration_v9_duplicate_successor_quarantined",
+                now,
+                audit_data,
+            )
+            conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET predecessor_job_id=NULL,status='storage_failed',
+                       error_code='duplicate_successor_quarantined',
+                       checkpoint_json=?,lease_owner=NULL,lease_until=NULL,
+                       updated_at=MAX(updated_at,?)
+                   WHERE id=?""",
+                (loser_audit, int(now), loser["id"]),
+            )
+            conn.execute(
+                """UPDATE edit_v2_billing SET status='refund_pending',updated_at=?
+                   WHERE job_id=? AND operation='hold' AND status='held'""",
+                (int(now), loser["id"]),
+            )
+
+
 def init_db(db_path: str | None = None) -> None:
     path = _db_path(db_path)
     parent = os.path.dirname(os.path.abspath(path))
@@ -122,7 +204,17 @@ def init_db(db_path: str | None = None) -> None:
                 width INTEGER,
                 height INTEGER,
                 reference_analysis_json TEXT,
+                original_text TEXT,
+                platform_asset_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'ready',
+                generation_job_id TEXT,
+                generation_idempotency_key TEXT,
+                generation_request_digest TEXT,
+                generation_state TEXT,
+                generation_lease_owner TEXT,
+                generation_lease_until INTEGER,
+                generation_retry_at INTEGER,
+                generation_provider_request_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -144,6 +236,7 @@ def init_db(db_path: str | None = None) -> None:
                 attempt INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 provider_task_id TEXT,
+                provider_reference TEXT,
                 input_summary_json TEXT,
                 output_summary_json TEXT,
                 error_code TEXT,
@@ -158,6 +251,7 @@ def init_db(db_path: str | None = None) -> None:
                 provider TEXT NOT NULL,
                 capability TEXT NOT NULL,
                 provider_task_id TEXT NOT NULL,
+                reference TEXT,
                 status TEXT NOT NULL,
                 is_primary INTEGER NOT NULL DEFAULT 1,
                 is_fallback INTEGER NOT NULL DEFAULT 0,
@@ -175,7 +269,30 @@ def init_db(db_path: str | None = None) -> None:
                 provider_task_id TEXT NOT NULL,
                 normalized_status TEXT NOT NULL,
                 fingerprint TEXT NOT NULL UNIQUE,
-                received_at INTEGER NOT NULL
+                received_at INTEGER NOT NULL,
+                lease_owner TEXT,
+                lease_until INTEGER,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                retry_at INTEGER,
+                dead_letter_at INTEGER,
+                updated_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_provider_usage(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                operation_key TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                cost_units INTEGER,
+                cost_status TEXT NOT NULL,
+                effective_points INTEGER NOT NULL,
+                price_version TEXT NOT NULL,
+                audit_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(job_id, operation_key)
             );
 
             CREATE TABLE IF NOT EXISTS edit_v2_quotes(
@@ -214,10 +331,58 @@ def init_db(db_path: str | None = None) -> None:
                 UNIQUE(job_id, kind, version)
             );
 
+            CREATE TABLE IF NOT EXISTS edit_v2_pipeline_checkpoints(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL REFERENCES edit_v2_jobs(id) ON DELETE CASCADE,
+                stage TEXT NOT NULL,
+                input_fingerprint TEXT NOT NULL,
+                status TEXT NOT NULL,
+                output_json TEXT,
+                provider_task_id TEXT,
+                provider_reference TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(job_id, stage)
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_delivery_intents(
+                job_id TEXT PRIMARY KEY REFERENCES edit_v2_jobs(id) ON DELETE CASCADE,
+                owner TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                cos_key TEXT NOT NULL,
+                source_size_bytes INTEGER NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                etag TEXT,
+                quality_json TEXT NOT NULL,
+                actual_cost INTEGER NOT NULL,
+                canonical_digest TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_delivery_outbox(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE REFERENCES edit_v2_jobs(id) ON DELETE CASCADE,
+                owner TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                asset_id INTEGER,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                retry_at INTEGER,
+                dead_letter_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_edit_v2_jobs_claim
                 ON edit_v2_jobs(status, lease_until, created_at);
             CREATE INDEX IF NOT EXISTS idx_edit_v2_materials_owner
                 ON edit_v2_materials(owner, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_generated_idempotency
+                ON edit_v2_materials(owner, semantic_label)
+                WHERE source='gpt_image';
             CREATE INDEX IF NOT EXISTS idx_edit_v2_attempts_job
                 ON edit_v2_stage_attempts(job_id, stage, attempt);
             """
@@ -228,11 +393,165 @@ def init_db(db_path: str | None = None) -> None:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
             }
+            material_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_materials)")
+            }
+            if "original_text" not in material_columns:
+                conn.execute("ALTER TABLE edit_v2_materials ADD COLUMN original_text TEXT")
+            if "platform_asset_id" not in material_columns:
+                conn.execute("ALTER TABLE edit_v2_materials ADD COLUMN platform_asset_id INTEGER")
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_platform_asset
+                   ON edit_v2_materials(owner,platform_asset_id)
+                   WHERE source='platform_video' AND platform_asset_id IS NOT NULL"""
+            )
             if "predecessor_job_id" not in job_columns:
                 conn.execute(
                     """ALTER TABLE edit_v2_jobs
                        ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
                 )
+            _quarantine_duplicate_successors(conn, int(time.time()))
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_jobs_successor
+                   ON edit_v2_jobs(owner,predecessor_job_id)
+                   WHERE predecessor_job_id IS NOT NULL"""
+            )
+            material_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_materials)")
+            }
+            provider_job_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_provider_jobs)")
+            }
+            if "reference" not in provider_job_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_jobs ADD COLUMN reference TEXT"
+                )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_provider_reference
+                   ON edit_v2_provider_jobs(provider, reference)
+                   WHERE reference IS NOT NULL"""
+            )
+            attempt_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_stage_attempts)")
+            }
+            if "provider_reference" not in attempt_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_stage_attempts ADD COLUMN provider_reference TEXT"
+                )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_attempt_reference
+                   ON edit_v2_stage_attempts(provider_reference)
+                   WHERE provider_reference IS NOT NULL"""
+            )
+            provider_event_columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_provider_events)"
+                )
+            }
+            if "lease_owner" not in provider_event_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_events ADD COLUMN lease_owner TEXT"
+                )
+            if "lease_until" not in provider_event_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_events ADD COLUMN lease_until INTEGER"
+                )
+            for column, definition in {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "error_code": "TEXT",
+                "retry_at": "INTEGER",
+                "dead_letter_at": "INTEGER",
+                "updated_at": "INTEGER",
+            }.items():
+                if column not in provider_event_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_provider_events ADD COLUMN {column} {definition}"
+                    )
+            conn.execute(
+                "UPDATE edit_v2_provider_events SET updated_at=received_at WHERE updated_at IS NULL"
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_edit_v2_provider_events_claim
+                   ON edit_v2_provider_events(normalized_status,dead_letter_at,retry_at,lease_until,received_at,id)"""
+            )
+            generation_columns = {
+                "generation_job_id": "TEXT",
+                "generation_idempotency_key": "TEXT",
+                "generation_request_digest": "TEXT",
+                "generation_state": "TEXT",
+                "generation_lease_owner": "TEXT",
+                "generation_lease_until": "INTEGER",
+                "generation_retry_at": "INTEGER",
+                "generation_provider_request_id": "TEXT",
+            }
+            for column, column_type in generation_columns.items():
+                if column not in material_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_materials ADD COLUMN {column} {column_type}"
+                    )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_generated_request
+                   ON edit_v2_materials(
+                       owner,generation_job_id,generation_idempotency_key
+                   ) WHERE source='gpt_image'"""
+            )
+            conn.execute(
+                """UPDATE edit_v2_materials
+                   SET generation_state=CASE status
+                       WHEN 'ready' THEN 'ready'
+                       WHEN 'pending' THEN 'unknown_submission'
+                       WHEN 'failed' THEN 'terminal_failed'
+                       ELSE 'legacy_reconciliation_required'
+                   END
+                   WHERE source='gpt_image' AND generation_state IS NULL"""
+            )
+            intent_columns = {
+                row["name"] for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_delivery_intents)"
+                )
+            }
+            if "canonical_digest" not in intent_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_delivery_intents ADD COLUMN canonical_digest TEXT"
+                )
+            for intent in conn.execute(
+                """SELECT job_id,owner,idempotency_key,cos_key,source_size_bytes,
+                          source_sha256,actual_cost,quality_json
+                   FROM edit_v2_delivery_intents WHERE canonical_digest IS NULL"""
+            ).fetchall():
+                canonical = {
+                    key: intent[key] for key in (
+                        "job_id", "owner", "idempotency_key", "cos_key",
+                        "source_size_bytes", "source_sha256", "actual_cost", "quality_json",
+                    )
+                }
+                digest = hashlib.sha256(json.dumps(
+                    canonical, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False,
+                ).encode("utf-8")).hexdigest()
+                conn.execute(
+                    "UPDATE edit_v2_delivery_intents SET canonical_digest=? WHERE job_id=?",
+                    (digest, intent["job_id"]),
+                )
+            outbox_columns = {
+                row["name"] for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_delivery_outbox)"
+                )
+            }
+            for column, definition in {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "error_code": "TEXT",
+                "retry_at": "INTEGER",
+                "dead_letter_at": "INTEGER",
+            }.items():
+                if column not in outbox_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_delivery_outbox ADD COLUMN {column} {definition}"
+                    )
             conn.execute(
                 """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
                    VALUES(1,?,0)
@@ -373,6 +692,665 @@ def bind_job_materials(
             raise
 
 
+def _generation_label(job_id: str, idempotency_key: str) -> str:
+    digest = hashlib.sha256(f"{job_id}\0{idempotency_key}".encode("utf-8")).hexdigest()
+    return f"generation:{digest}"
+
+
+def find_generated_material(
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    *,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    label = _generation_label(job_id, idempotency_key)
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT * FROM edit_v2_materials
+               WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+            (owner, label),
+        ).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "job_id": row["generation_job_id"] or job_id}
+
+
+def _generated_scope(
+    owner: str, job_id: str, idempotency_key: str, cos_key: str
+) -> str:
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    expected_prefix = f"ai-edit-v2/{owner_hash}/{job_id}/generated/"
+    if not isinstance(cos_key, str) or not cos_key.startswith(expected_prefix):
+        raise ValueError("generated_material_job_scope_invalid")
+    return _generation_label(job_id, idempotency_key)
+
+
+def reserve_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    request_digest: str,
+    lease_owner: str,
+    lease_seconds: int,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    label = _generated_scope(owner, job_id, idempotency_key, cos_key)
+    if not isinstance(request_digest, str) or not request_digest:
+        raise ValueError("generated_request_digest_invalid")
+    if not isinstance(lease_owner, str) or not lease_owner:
+        raise ValueError("generated_lease_owner_invalid")
+    if int(lease_seconds) <= 0:
+        raise ValueError("generated_lease_seconds_invalid")
+    now = int(now)
+    lease_until = now + int(lease_seconds)
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = conn.execute(
+                "SELECT id FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
+            ).fetchone()
+            if job is None:
+                raise ValueError("generated_material_job_scope_invalid")
+            row = conn.execute(
+                """SELECT * FROM edit_v2_materials
+                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+                (owner, label),
+            ).fetchone()
+            claimed = row is None
+            if claimed:
+                cursor = conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           owner,kind,purpose,semantic_label,source,cos_key,status,
+                           generation_job_id,generation_idempotency_key,
+                           generation_request_digest,generation_state,
+                           generation_lease_owner,generation_lease_until,
+                           created_at,updated_at
+                       ) VALUES(?,'image','generated',?,'gpt_image',?,'pending',
+                                ?,?,?,'pre_submit',?,?,?,?)""",
+                    (
+                        owner,
+                        label,
+                        cos_key,
+                        job_id,
+                        idempotency_key,
+                        request_digest,
+                        lease_owner,
+                        lease_until,
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM edit_v2_materials WHERE id=?", (cursor.lastrowid,)
+                ).fetchone()
+                reason = "claimed"
+            else:
+                if row["cos_key"] != cos_key:
+                    raise ValueError("generated_material_idempotency_conflict")
+                state = row["generation_state"]
+                if row["status"] == "ready" or state == "ready":
+                    if (
+                        row["generation_request_digest"] is not None
+                        and row["generation_request_digest"] != request_digest
+                    ):
+                        raise ValueError("generated_request_conflict")
+                    reason = "ready"
+                elif row["status"] == "failed" or state == "terminal_failed":
+                    reason = "terminal_failed"
+                elif row["generation_request_digest"] is None:
+                    if state != "unknown_submission" or row["status"] != "pending":
+                        raise ValueError(
+                            "generated_legacy_material_requires_reconciliation"
+                        )
+                    changed = conn.execute(
+                        """UPDATE edit_v2_materials
+                           SET generation_job_id=?,generation_idempotency_key=?,
+                               generation_request_digest=?,
+                               generation_lease_owner=?,generation_lease_until=?,
+                               generation_retry_at=NULL,updated_at=?
+                           WHERE id=? AND status='pending'
+                             AND generation_state='unknown_submission'
+                             AND generation_request_digest IS NULL""",
+                        (
+                            job_id,
+                            idempotency_key,
+                            request_digest,
+                            lease_owner,
+                            lease_until,
+                            now,
+                            row["id"],
+                        ),
+                    ).rowcount
+                    claimed = changed == 1
+                    reason = "claimed" if claimed else "in_progress"
+                    row = conn.execute(
+                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                    ).fetchone()
+                elif row["generation_request_digest"] != request_digest:
+                    raise ValueError("generated_request_conflict")
+                elif (
+                    row["generation_lease_owner"] is not None
+                    and row["generation_lease_until"] is not None
+                    and int(row["generation_lease_until"]) > now
+                ):
+                    reason = "in_progress"
+                elif (
+                    row["generation_retry_at"] is not None
+                    and int(row["generation_retry_at"]) > now
+                ):
+                    reason = "retry_backoff"
+                elif state in {
+                    "pre_submit",
+                    "submitting",
+                    "unknown_submission",
+                    "retryable",
+                    "provider_confirmed",
+                }:
+                    changed = conn.execute(
+                        """UPDATE edit_v2_materials
+                           SET generation_lease_owner=?,generation_lease_until=?,
+                               generation_retry_at=NULL,
+                               generation_state=CASE
+                                   WHEN generation_state='submitting'
+                                   THEN 'unknown_submission'
+                                   ELSE generation_state
+                               END,
+                               updated_at=?
+                           WHERE id=? AND status='pending'
+                             AND generation_request_digest=?
+                             AND (generation_lease_until IS NULL
+                                  OR generation_lease_until<=?)
+                             AND (generation_retry_at IS NULL
+                                  OR generation_retry_at<=?)""",
+                        (
+                            lease_owner,
+                            lease_until,
+                            now,
+                            row["id"],
+                            request_digest,
+                            now,
+                            now,
+                        ),
+                    ).rowcount
+                    claimed = changed == 1
+                    reason = "claimed" if claimed else "in_progress"
+                    row = conn.execute(
+                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                    ).fetchone()
+                else:
+                    reason = "terminal_failed"
+            conn.commit()
+            return {
+                "claimed": claimed,
+                "reason": reason,
+                "material": {**dict(row), "job_id": row["generation_job_id"] or job_id},
+            }
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _update_generated_state(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    from_states: tuple[str, ...],
+    to_state: str,
+    now: int,
+    db_path: str | None,
+    release_lease: bool = False,
+    retry_at: int | None = None,
+    provider_request_id: str | None = None,
+) -> bool:
+    label = _generation_label(job_id, idempotency_key)
+    placeholders = ",".join("?" for _ in from_states)
+    lease_value = None if release_lease else lease_owner
+    lease_until_sql = "NULL" if release_lease else "generation_lease_until"
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                f"""UPDATE edit_v2_materials
+                    SET generation_state=?,generation_lease_owner=?,
+                        generation_lease_until={lease_until_sql},
+                        generation_retry_at=?,
+                        generation_provider_request_id=COALESCE(?,generation_provider_request_id),
+                        updated_at=?
+                    WHERE owner=? AND source='gpt_image' AND semantic_label=?
+                      AND status='pending' AND generation_lease_owner=?
+                      AND generation_state IN ({placeholders})""",
+                (
+                    to_state,
+                    lease_value,
+                    retry_at,
+                    provider_request_id,
+                    int(now),
+                    owner,
+                    label,
+                    lease_owner,
+                    *from_states,
+                ),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def mark_generated_material_submitting(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=(
+            "pre_submit",
+            "submitting",
+            "unknown_submission",
+            "retryable",
+            "provider_confirmed",
+        ),
+        to_state="submitting",
+        now=now,
+        db_path=db_path,
+    )
+
+
+def mark_generated_material_provider_confirmed(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    provider_request_id: str,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=("submitting",),
+        to_state="provider_confirmed",
+        provider_request_id=provider_request_id,
+        now=now,
+        db_path=db_path,
+    )
+
+
+def mark_generated_material_recoverable(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    state: str,
+    retry_at: int,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    allowed_from = {
+        "unknown_submission": ("submitting",),
+        "retryable": ("pre_submit", "submitting"),
+        "provider_confirmed": ("provider_confirmed",),
+    }
+    if state not in allowed_from:
+        raise ValueError("generated_recovery_state_invalid")
+    if int(retry_at) < int(now):
+        raise ValueError("generated_retry_at_invalid")
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=allowed_from[state],
+        to_state=state,
+        retry_at=int(retry_at),
+        release_lease=True,
+        now=now,
+        db_path=db_path,
+    )
+
+
+def complete_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    mime_type: str,
+    etag: str,
+    size_bytes: int,
+    width: int,
+    height: int,
+    lease_owner: str,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    label = _generated_scope(owner, job_id, idempotency_key, cos_key)
+    expected = {
+        "cos_key": cos_key,
+        "mime_type": mime_type,
+        "etag": etag,
+        "size_bytes": int(size_bytes),
+        "width": int(width),
+        "height": int(height),
+    }
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT * FROM edit_v2_materials
+                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+                (owner, label),
+            ).fetchone()
+            if row is None or row["status"] not in {"pending", "ready"}:
+                raise ValueError("generated_material_not_pending")
+            if row["status"] == "pending":
+                if (
+                    row["cos_key"] != cos_key
+                    or row["generation_state"] != "provider_confirmed"
+                    or row["generation_lease_owner"] != lease_owner
+                ):
+                    raise ValueError("generated_material_idempotency_conflict")
+                conn.execute(
+                    """UPDATE edit_v2_materials
+                       SET mime_type=?,etag=?,size_bytes=?,width=?,height=?,
+                           status='ready',generation_state='ready',
+                           generation_lease_owner=NULL,generation_lease_until=NULL,
+                           generation_retry_at=NULL,updated_at=?
+                       WHERE id=? AND status='pending'
+                         AND generation_state='provider_confirmed'
+                         AND generation_lease_owner=?""",
+                    (
+                        mime_type,
+                        etag,
+                        int(size_bytes),
+                        int(width),
+                        int(height),
+                        int(now),
+                        row["id"],
+                        lease_owner,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                ).fetchone()
+            if any(row[key] != value for key, value in expected.items()):
+                raise ValueError("generated_material_idempotency_conflict")
+            conn.commit()
+            return {**dict(row), "job_id": job_id}
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def fail_generated_material(
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    *,
+    lease_owner: str,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    label = _generation_label(job_id, idempotency_key)
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_materials
+               SET status='failed',generation_state='terminal_failed',
+                   generation_lease_owner=NULL,generation_lease_until=NULL,
+                   generation_retry_at=NULL,updated_at=?
+               WHERE owner=? AND source='gpt_image' AND semantic_label=?
+                 AND status='pending' AND generation_lease_owner=?
+                 AND generation_state IN ('pre_submit','submitting')""",
+            (int(now), owner, label, lease_owner),
+        ).rowcount
+        return changed == 1
+
+
+def create_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    mime_type: str,
+    etag: str,
+    size_bytes: int,
+    width: int,
+    height: int,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    reservation = reserve_generated_material(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        cos_key=cos_key,
+        request_digest=hashlib.sha256(
+            json.dumps(
+                {
+                    "cos_key": cos_key,
+                    "mime_type": mime_type,
+                    "etag": etag,
+                    "size_bytes": int(size_bytes),
+                    "width": int(width),
+                    "height": int(height),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        lease_owner="legacy-create",
+        lease_seconds=60,
+        now=now,
+        db_path=db_path,
+    )
+    material = reservation["material"]
+    if not reservation["claimed"] and material["status"] not in {"pending", "ready"}:
+        raise ValueError("generated_material_not_pending")
+    if material["status"] == "ready":
+        return complete_generated_material(
+            owner=owner,
+            job_id=job_id,
+            idempotency_key=idempotency_key,
+            cos_key=cos_key,
+            mime_type=mime_type,
+            etag=etag,
+            size_bytes=size_bytes,
+            width=width,
+            height=height,
+            lease_owner="legacy-create",
+            now=now,
+            db_path=db_path,
+        )
+    if not reservation["claimed"]:
+        raise ValueError("generated_material_not_pending")
+    mark_generated_material_submitting(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner="legacy-create",
+        now=now,
+        db_path=db_path,
+    )
+    mark_generated_material_provider_confirmed(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner="legacy-create",
+        provider_request_id="legacy-create",
+        now=now,
+        db_path=db_path,
+    )
+    return complete_generated_material(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        cos_key=cos_key,
+        mime_type=mime_type,
+        etag=etag,
+        size_bytes=size_bytes,
+        width=width,
+        height=height,
+        lease_owner="legacy-create",
+        now=now,
+        db_path=db_path,
+    )
+
+
+_RESOLUTION_RECORD_FIELDS = {
+    "slot_id",
+    "semantic_query",
+    "time_range",
+    "ratio",
+    "dimensions",
+    "source",
+    "asset_id",
+    "cos_key",
+    "required",
+    "selected_score",
+    "exclusion_code",
+}
+
+
+def save_material_resolution_records(
+    job_id: str,
+    records: list[dict[str, Any]],
+    now: int,
+    *,
+    status: str = "succeeded",
+    error_code: str | None = None,
+    attempt: int | None = None,
+    db_path: str | None = None,
+) -> int:
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) or set(record) != _RESOLUTION_RECORD_FIELDS
+        for record in records
+    ):
+        raise ValueError("unsafe_resolution_record")
+    serialized = json.dumps(
+        {"material_resolutions": records},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    lowered = serialized.lower()
+    if any(
+        marker in lowered
+        for marker in ('"url"', "provider_url", "signed_url", "://", "?signature=", "?sig=")
+    ):
+        raise ValueError("unsafe_resolution_record")
+    if status not in {"succeeded", "failed"}:
+        raise ValueError("material_resolution_status_invalid")
+    if (status == "failed") != bool(error_code):
+        raise ValueError("material_resolution_error_code_invalid")
+    if attempt is not None and (
+        not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1
+    ):
+        raise ValueError("material_resolution_attempt_invalid")
+    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    input_summary = json.dumps(
+        {"resolution_fingerprint": fingerprint}, separators=(",", ":")
+    )
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = None
+            if attempt is None:
+                latest = conn.execute(
+                    """SELECT * FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='resolving_assets'
+                       ORDER BY attempt DESC LIMIT 1""",
+                    (job_id,),
+                ).fetchone()
+                if latest is not None and latest["status"] == "succeeded":
+                    existing = latest
+                    attempt = int(latest["attempt"])
+                else:
+                    attempt = int(latest["attempt"]) + 1 if latest is not None else 1
+            else:
+                existing = conn.execute(
+                    """SELECT * FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='resolving_assets' AND attempt=?""",
+                    (job_id, attempt),
+                ).fetchone()
+            if existing is not None:
+                if existing["output_summary_json"] is None:
+                    existing_input = json.loads(existing["input_summary_json"] or "{}")
+                    existing_fingerprint = existing_input.get("resolution_fingerprint")
+                    if existing_fingerprint not in (None, fingerprint):
+                        raise ValueError("material_resolution_idempotency_conflict")
+                    conn.execute(
+                        """UPDATE edit_v2_stage_attempts
+                           SET status=?,input_summary_json=?,output_summary_json=?,
+                               finished_at=?,error_code=?
+                           WHERE id=?""",
+                        (
+                            status,
+                            input_summary,
+                            serialized,
+                            now,
+                            error_code,
+                            existing["id"],
+                        ),
+                    )
+                    conn.commit()
+                    return int(existing["id"])
+                existing_json = json.dumps(
+                    json.loads(existing["output_summary_json"] or "{}"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if (
+                    existing_json != serialized
+                    or existing["status"] != status
+                    or existing["error_code"] != error_code
+                ):
+                    raise ValueError("material_resolution_idempotency_conflict")
+                conn.commit()
+                return int(existing["id"])
+            cursor = conn.execute(
+                """INSERT INTO edit_v2_stage_attempts(
+                       job_id,stage,attempt,status,input_summary_json,
+                       output_summary_json,error_code,started_at,finished_at
+                   ) VALUES(?,'resolving_assets',?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    attempt,
+                    status,
+                    input_summary,
+                    serialized,
+                    error_code,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def claim_next_job(
     worker_id: str,
     lease_seconds: int,
@@ -411,6 +1389,318 @@ def claim_next_job(
         except Exception:
             conn.rollback()
             raise
+
+
+def claim_job(
+    job_id: str,
+    worker_id: str,
+    lease_seconds: int,
+    now: int,
+    *,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Claim one known job, including an expired lease after process restart."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET lease_owner=?,lease_until=?,updated_at=?
+                   WHERE id=? AND status NOT IN ({})
+                     AND (lease_until IS NULL OR lease_until<=? OR lease_owner=?)""".format(
+                    ",".join("?" for _ in TERMINAL_STATES)
+                ),
+                (
+                    worker_id,
+                    int(now) + int(lease_seconds),
+                    int(now),
+                    job_id,
+                    *TERMINAL_STATES,
+                    int(now),
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                return None
+            row = conn.execute(
+                "SELECT * FROM edit_v2_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            conn.commit()
+            return _row_dict(row)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def release_job_lease(
+    job_id: str, worker_id: str, *, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_jobs SET lease_owner=NULL,lease_until=NULL
+               WHERE id=? AND lease_owner=?""",
+            (job_id, worker_id),
+        ).rowcount
+    return changed == 1
+
+
+def lease_owned(
+    job_id: str, worker_id: str, now: int, *, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM edit_v2_jobs
+               WHERE id=? AND lease_owner=? AND lease_until>?""",
+            (job_id, worker_id, int(now)),
+        ).fetchone()
+    return row is not None
+
+
+def transition_leased(
+    job_id: str,
+    expected: str,
+    target: str,
+    checkpoint: dict[str, Any],
+    now: int,
+    *,
+    worker_id: str,
+    lease_seconds: int,
+    db_path: str | None = None,
+) -> bool:
+    """CAS a state while retaining ownership for an aggregated ``run_job``."""
+
+    allowed = expected not in TERMINAL_STATES and (
+        target in FAILURE_STATES or target in STATE_TRANSITIONS.get(expected, ())
+    )
+    if not allowed:
+        return False
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT status,checkpoint_json FROM edit_v2_jobs
+                   WHERE id=? AND lease_owner=? AND lease_until>?""",
+                (job_id, worker_id, int(now)),
+            ).fetchone()
+            if row is None or row["status"] != expected:
+                conn.rollback()
+                return False
+            checkpoints = json.loads(row["checkpoint_json"] or "[]")
+            checkpoints.append(
+                {
+                    "version": len(checkpoints) + 1,
+                    "state": target,
+                    "at": int(now),
+                    "data": checkpoint,
+                }
+            )
+            terminal = target in TERMINAL_STATES
+            changed = conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET status=?,checkpoint_json=?,updated_at=?,error_code=?,
+                       lease_owner=?,lease_until=?
+                   WHERE id=? AND status=? AND lease_owner=?""",
+                (
+                    target,
+                    json.dumps(checkpoints, ensure_ascii=False, separators=(",", ":")),
+                    int(now),
+                    checkpoint.get("error_code") if terminal else None,
+                    None if terminal else worker_id,
+                    None if terminal else int(now) + int(lease_seconds),
+                    job_id,
+                    expected,
+                    worker_id,
+                ),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def prepare_pipeline_checkpoint(
+    job_id: str,
+    stage: str,
+    input_fingerprint: str,
+    now: int,
+    *,
+    lease_owner: str | None = None,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    """Create or load one stable-stage checkpoint without discarding provider IDs."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if lease_owner and conn.execute(
+                """SELECT 1 FROM edit_v2_jobs
+                   WHERE id=? AND lease_owner=? AND lease_until>?""",
+                (job_id, lease_owner, int(now)),
+            ).fetchone() is None:
+                raise ValueError("job_lease_lost")
+            row = conn.execute(
+                """SELECT * FROM edit_v2_pipeline_checkpoints
+                   WHERE job_id=? AND stage=?""",
+                (job_id, stage),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """INSERT INTO edit_v2_pipeline_checkpoints(
+                           job_id,stage,input_fingerprint,status,updated_at
+                       ) VALUES(?,?,?,'running',?)""",
+                    (job_id, stage, input_fingerprint, int(now)),
+                )
+            elif row["input_fingerprint"] != input_fingerprint:
+                if row["provider_task_id"] or row["provider_reference"]:
+                    raise ValueError("pipeline_checkpoint_input_conflict")
+                conn.execute(
+                    """UPDATE edit_v2_pipeline_checkpoints
+                       SET input_fingerprint=?,status='running',output_json=NULL,
+                           attempt_count=0,updated_at=? WHERE id=?""",
+                    (input_fingerprint, int(now), row["id"]),
+                )
+            row = conn.execute(
+                """SELECT * FROM edit_v2_pipeline_checkpoints
+                   WHERE job_id=? AND stage=?""",
+                (job_id, stage),
+            ).fetchone()
+            conn.commit()
+            return dict(row)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def increment_pipeline_attempt(
+    checkpoint_id: int, now: int, *, lease_owner: str | None = None,
+    db_path: str | None = None
+) -> dict[str, Any]:
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
+        conn.execute(
+            """UPDATE edit_v2_pipeline_checkpoints
+               SET status='running',attempt_count=attempt_count+1,updated_at=?
+               WHERE id=?""",
+            (int(now), int(checkpoint_id)),
+        )
+        row = conn.execute(
+            "SELECT * FROM edit_v2_pipeline_checkpoints WHERE id=?",
+            (int(checkpoint_id),),
+        ).fetchone()
+        conn.commit()
+    if row is None:
+        raise ValueError("pipeline_checkpoint_missing")
+    return dict(row)
+
+
+def save_pipeline_provider_identity(
+    checkpoint_id: int,
+    *,
+    provider_task_id: str | None = None,
+    provider_reference: str | None = None,
+    lease_owner: str | None = None,
+    now: int,
+    db_path: str | None = None,
+) -> None:
+    if not provider_task_id and not provider_reference:
+        raise ValueError("pipeline_provider_identity_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT c.provider_task_id,c.provider_reference,c.job_id,
+                          j.lease_owner,j.lease_until
+                   FROM edit_v2_pipeline_checkpoints c
+                   JOIN edit_v2_jobs j ON j.id=c.job_id WHERE c.id=?""",
+                (int(checkpoint_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("pipeline_checkpoint_missing")
+            if lease_owner and (
+                row["lease_owner"] != lease_owner
+                or row["lease_until"] is None
+                or int(row["lease_until"]) <= int(now)
+            ):
+                raise ValueError("job_lease_lost")
+            if provider_task_id and row["provider_task_id"] not in {None, provider_task_id}:
+                raise ValueError("pipeline_provider_identity_conflict")
+            if provider_reference and row["provider_reference"] not in {None, provider_reference}:
+                raise ValueError("pipeline_provider_identity_conflict")
+            conn.execute(
+                """UPDATE edit_v2_pipeline_checkpoints
+                   SET provider_task_id=COALESCE(?,provider_task_id),
+                       provider_reference=COALESCE(?,provider_reference),updated_at=?
+                   WHERE id=?""",
+                (provider_task_id, provider_reference, int(now), int(checkpoint_id)),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def complete_pipeline_checkpoint(
+    checkpoint_id: int,
+    output: dict[str, Any],
+    now: int,
+    *,
+    lease_owner: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    serialized = json.dumps(
+        output, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
+        changed = conn.execute(
+            """UPDATE edit_v2_pipeline_checkpoints
+               SET status='completed',output_json=?,updated_at=? WHERE id=?""",
+            (serialized, int(now), int(checkpoint_id)),
+        ).rowcount
+        conn.commit()
+    if changed != 1:
+        raise ValueError("pipeline_checkpoint_missing")
+
+
+def invalidate_pipeline_checkpoint(
+    checkpoint_id: int, now: int, *, lease_owner: str | None = None,
+    db_path: str | None = None
+) -> None:
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
+        conn.execute(
+            """UPDATE edit_v2_pipeline_checkpoints
+               SET status='running',output_json=NULL,updated_at=? WHERE id=?""",
+            (int(now), int(checkpoint_id)),
+        )
+        conn.commit()
 
 
 def renew_lease(
@@ -465,12 +1755,14 @@ def transition(
             )
             changed = conn.execute(
                 """UPDATE edit_v2_jobs
-                   SET status=?,checkpoint_json=?,lease_owner=NULL,lease_until=NULL,updated_at=?
+                   SET status=?,checkpoint_json=?,lease_owner=NULL,lease_until=NULL,
+                       updated_at=?,error_code=?
                    WHERE id=? AND status=?""",
                 (
                     target,
                     json.dumps(checkpoints, ensure_ascii=False, separators=(",", ":")),
                     now,
+                    checkpoint.get("error_code") if target in FAILURE_STATES else None,
                     job_id,
                     expected,
                 ),
@@ -507,9 +1799,19 @@ def record_stage_attempt(
     input_summary: dict[str, Any] | None = None,
     output_summary: dict[str, Any] | None = None,
     error_code: str | None = None,
+    lease_owner: str | None = None,
     db_path: str | None = None,
 ) -> int:
     with _connection(db_path) as conn:
+        if lease_owner:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                """SELECT 1 FROM edit_v2_jobs
+                   WHERE id=? AND lease_owner=? AND lease_until>?""",
+                (job_id, lease_owner, int(started_at)),
+            ).fetchone() is None:
+                conn.rollback()
+                raise ValueError("job_lease_lost")
         cursor = conn.execute(
             """INSERT INTO edit_v2_stage_attempts(
                    job_id,stage,attempt,status,provider_task_id,input_summary_json,
@@ -528,6 +1830,8 @@ def record_stage_attempt(
                 finished_at,
             ),
         )
+        if lease_owner:
+            conn.commit()
         return int(cursor.lastrowid)
 
 
@@ -545,8 +1849,9 @@ def record_provider_event(
         try:
             conn.execute(
                 """INSERT INTO edit_v2_provider_events(
-                       job_id,provider,provider_task_id,normalized_status,fingerprint,received_at
-                   ) VALUES(?,?,?,?,?,?)""",
+                       job_id,provider,provider_task_id,normalized_status,fingerprint,
+                       received_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
                 (
                     job_id,
                     provider,
@@ -554,8 +1859,415 @@ def record_provider_event(
                     normalized_status,
                     fingerprint,
                     received_at,
+                    received_at,
                 ),
             )
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def claim_provider_event(
+    job_id: str,
+    provider: str,
+    provider_task_id: str,
+    fingerprint: str,
+    received_at: int,
+    *,
+    lease_owner: str,
+    lease_seconds: int,
+    now: int,
+    db_path: str | None = None,
+) -> str:
+    """Atomically classify a webhook fingerprint as claimed, pending, or processed."""
+
+    if not isinstance(lease_owner, str) or not lease_owner.strip():
+        raise ValueError("provider_event_lease_owner_invalid")
+    if isinstance(lease_seconds, bool) or int(lease_seconds) <= 0:
+        raise ValueError("provider_event_lease_invalid")
+    lease_until = int(now) + int(lease_seconds)
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT job_id,provider,provider_task_id,normalized_status,
+                          lease_until
+                   FROM edit_v2_provider_events
+                   WHERE fingerprint=?""",
+                (fingerprint,),
+            ).fetchone()
+            if row is not None:
+                if (
+                    row["job_id"] != job_id
+                    or row["provider"] != provider
+                    or row["provider_task_id"] != provider_task_id
+                ):
+                    raise ValueError("provider_event_identity_conflict")
+                status = str(row["normalized_status"])
+                if status not in {"pending", "processed"}:
+                    raise ValueError("provider_event_status_invalid")
+                if status == "pending" and (
+                    row["lease_until"] is None
+                    or int(row["lease_until"]) <= int(now)
+                ):
+                    changed = conn.execute(
+                        """UPDATE edit_v2_provider_events
+                           SET lease_owner=?,lease_until=?,received_at=?
+                           WHERE fingerprint=? AND normalized_status='pending'
+                             AND (lease_until IS NULL OR lease_until<=?)""",
+                        (
+                            lease_owner,
+                            lease_until,
+                            received_at,
+                            fingerprint,
+                            int(now),
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise ValueError("provider_event_lease_conflict")
+                    conn.commit()
+                    return "claimed"
+                conn.commit()
+                return status
+            conn.execute(
+                """INSERT INTO edit_v2_provider_events(
+                       job_id,provider,provider_task_id,normalized_status,fingerprint,
+                       received_at,lease_owner,lease_until,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    provider,
+                    provider_task_id,
+                    "pending",
+                    fingerprint,
+                    received_at,
+                    lease_owner,
+                    lease_until,
+                    received_at,
+                ),
+            )
+            conn.commit()
+            return "claimed"
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def mark_provider_event_processed(
+    fingerprint: str, *, lease_owner: str, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_provider_events
+               SET normalized_status='processed',lease_owner=NULL,lease_until=NULL
+               WHERE fingerprint=? AND lease_owner=?
+                 AND normalized_status='pending'""",
+            (fingerprint, lease_owner),
+        ).rowcount
+    return changed == 1
+
+
+def claim_next_provider_event(
+    lease_owner: str,
+    lease_seconds: int,
+    now: int,
+    *,
+    db_path: str | None = None,
+    provider_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Claim the oldest due webhook hint, reclaiming only expired leases."""
+
+    if not isinstance(lease_owner, str) or not lease_owner.strip():
+        raise ValueError("provider_event_lease_owner_invalid")
+    if isinstance(lease_seconds, bool) or int(lease_seconds) <= 0:
+        raise ValueError("provider_event_lease_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            filters = [
+                "normalized_status='pending'",
+                "dead_letter_at IS NULL",
+                "(retry_at IS NULL OR retry_at<=?)",
+                "(lease_until IS NULL OR lease_until<=?)",
+            ]
+            params: list[Any] = [int(now), int(now)]
+            if provider_task_id is not None:
+                filters.append("provider_task_id=?")
+                params.append(str(provider_task_id))
+            row = conn.execute(
+                f"""SELECT * FROM edit_v2_provider_events
+                    WHERE {' AND '.join(filters)}
+                    ORDER BY received_at,id LIMIT 1""",
+                params,
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            lease_until = int(now) + int(lease_seconds)
+            changed = conn.execute(
+                """UPDATE edit_v2_provider_events
+                   SET lease_owner=?,lease_until=?,updated_at=?
+                   WHERE id=? AND normalized_status='pending'
+                     AND dead_letter_at IS NULL
+                     AND (lease_until IS NULL OR lease_until<=?)""",
+                (lease_owner, lease_until, int(now), row["id"], int(now)),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM edit_v2_provider_events WHERE id=?", (row["id"],)
+            ).fetchone()
+            conn.commit()
+            return dict(claimed)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def fail_provider_event(
+    fingerprint: str,
+    *,
+    lease_owner: str,
+    error_code: str,
+    now: int,
+    max_attempts: int = 5,
+    db_path: str | None = None,
+) -> str:
+    """Release a failed hint for bounded retry or move it to dead letter."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT attempt_count FROM edit_v2_provider_events
+                   WHERE fingerprint=? AND lease_owner=? AND normalized_status='pending'""",
+                (fingerprint, lease_owner),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise ValueError("provider_event_lease_lost")
+            attempts = int(row["attempt_count"] or 0) + 1
+            code = str(error_code or "provider_event_reconcile_failed")[:160]
+            if attempts >= max(1, int(max_attempts)):
+                conn.execute(
+                    """UPDATE edit_v2_provider_events
+                       SET normalized_status='dead_letter',attempt_count=?,error_code=?,
+                           dead_letter_at=?,retry_at=NULL,lease_owner=NULL,lease_until=NULL,
+                           updated_at=? WHERE fingerprint=? AND lease_owner=?""",
+                    (attempts, code, int(now), int(now), fingerprint, lease_owner),
+                )
+                conn.commit()
+                return "dead_letter"
+            delay = min(300, 5 * (2 ** (attempts - 1)))
+            conn.execute(
+                """UPDATE edit_v2_provider_events
+                   SET attempt_count=?,error_code=?,retry_at=?,lease_owner=NULL,
+                       lease_until=NULL,updated_at=?
+                   WHERE fingerprint=? AND lease_owner=? AND normalized_status='pending'""",
+                (attempts, code, int(now) + delay, int(now), fingerprint, lease_owner),
+            )
+            conn.commit()
+            return "retry"
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+
+def release_pending_provider_event(
+    fingerprint: str, *, lease_owner: str, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """DELETE FROM edit_v2_provider_events
+               WHERE fingerprint=? AND lease_owner=?
+                 AND normalized_status='pending'""",
+            (fingerprint, lease_owner),
+        ).rowcount
+    return changed == 1
+
+
+def bind_provider_submission(
+    *,
+    attempt_id: int,
+    job_id: str,
+    provider: str,
+    capability: str,
+    provider_task_id: str,
+    reference: str,
+    status: str,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    """Atomically bind a remote task to its durable stage attempt and provider row."""
+
+    values = (job_id, provider, capability, provider_task_id, reference, status)
+    if not all(isinstance(value, str) and value.strip() for value in values):
+        raise ValueError("provider_submission_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            attempt = conn.execute(
+                """SELECT job_id,provider_task_id,provider_reference
+                   FROM edit_v2_stage_attempts WHERE id=?""",
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None or attempt["job_id"] != job_id:
+                raise ValueError("provider_submission_attempt_invalid")
+            if attempt["provider_task_id"] not in {None, provider_task_id}:
+                raise ValueError("provider_submission_conflict")
+            if attempt["provider_reference"] not in {None, reference}:
+                raise ValueError("provider_submission_conflict")
+            existing = conn.execute(
+                """SELECT * FROM edit_v2_provider_jobs
+                   WHERE provider=? AND (provider_task_id=? OR reference=?)""",
+                (provider, provider_task_id, reference),
+            ).fetchall()
+            if any(
+                row["job_id"] != job_id
+                or row["provider_task_id"] != provider_task_id
+                or row["reference"] != reference
+                for row in existing
+            ):
+                raise ValueError("provider_submission_conflict")
+            if existing:
+                conn.execute(
+                    """UPDATE edit_v2_provider_jobs
+                       SET status=CASE
+                               WHEN status IN ('succeeded','failed') THEN status
+                               ELSE ?
+                           END,
+                           updated_at=?
+                       WHERE provider=? AND provider_task_id=?""",
+                    (status, now, provider, provider_task_id),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO edit_v2_provider_jobs(
+                           job_id,provider,capability,provider_task_id,reference,status,
+                           is_primary,is_fallback,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,1,0,?,?)""",
+                    (
+                        job_id,
+                        provider,
+                        capability,
+                        provider_task_id,
+                        reference,
+                        status,
+                        now,
+                        now,
+                    ),
+                )
+            conn.execute(
+                """UPDATE edit_v2_stage_attempts
+                   SET provider_task_id=?,provider_reference=? WHERE id=?""",
+                (provider_task_id, reference, attempt_id),
+            )
+            row = conn.execute(
+                """SELECT * FROM edit_v2_provider_jobs
+                   WHERE provider=? AND provider_task_id=?""",
+                (provider, provider_task_id),
+            ).fetchone()
+            conn.commit()
+            return dict(row)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def find_provider_submission(
+    provider: str,
+    *,
+    provider_task_id: str | None = None,
+    reference: str | None = None,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    if bool(provider_task_id) == bool(reference):
+        raise ValueError("provider_submission_lookup_invalid")
+    column, value = (
+        ("provider_task_id", provider_task_id)
+        if provider_task_id
+        else ("reference", reference)
+    )
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT * FROM edit_v2_provider_jobs WHERE provider=? AND {column}=?",
+            (provider, value),
+        ).fetchone()
+    return _row_dict(row)
+
+
+def claim_provider_submission_reference(
+    *,
+    attempt_id: int,
+    job_id: str,
+    reference: str,
+    db_path: str | None = None,
+) -> bool:
+    """Reserve the idempotency reference before the first billable network call."""
+
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValueError("provider_submission_reference_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT job_id,provider_reference FROM edit_v2_stage_attempts
+                   WHERE id=?""",
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["job_id"] != job_id:
+                raise ValueError("provider_submission_attempt_invalid")
+            if row["provider_reference"] is not None:
+                if row["provider_reference"] != reference:
+                    raise ValueError("provider_submission_conflict")
+                conn.commit()
+                return False
+            changed = conn.execute(
+                """UPDATE edit_v2_stage_attempts SET provider_reference=?
+                   WHERE id=? AND provider_reference IS NULL""",
+                (reference, attempt_id),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def release_provider_submission_reference(
+    *,
+    attempt_id: int,
+    job_id: str,
+    reference: str,
+    db_path: str | None = None,
+) -> bool:
+    """CAS-release an unbound reference after a provider definitively rejects POST."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                """UPDATE edit_v2_stage_attempts SET provider_reference=NULL
+                   WHERE id=? AND job_id=? AND provider_reference=?
+                     AND provider_task_id IS NULL""",
+                (attempt_id, job_id, reference),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def find_stage_submission(
+    attempt_id: int, *, db_path: str | None = None
+) -> dict[str, Any] | None:
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT job_id,provider_task_id,provider_reference
+               FROM edit_v2_stage_attempts WHERE id=?""",
+            (attempt_id,),
+        ).fetchone()
+    return _row_dict(row)

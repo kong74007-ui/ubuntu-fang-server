@@ -1,0 +1,11 @@
+{
+  "name": "audio_only",
+  "owner": "audio-owner",
+  "creation_mode": "open_generation",
+  "aspect_ratio": "9:16",
+  "main_kind": "audio",
+  "source_type": "audio_only",
+  "original_text": null,
+  "duration_ms": 3000,
+  "actual_points": 22
+}

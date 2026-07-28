@@ -10,18 +10,25 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import closing
 from typing import Any
 
 try:
     from content_domains import ai_edit_v2_billing as billing
+    from content_domains import ai_edit_v2_delivery as delivery
+    from content_domains import ai_edit_v2_feature as feature
     from content_domains import ai_edit_v2_pipeline as pipeline
     from content_domains import ai_edit_v2_store as store
     from content_domains import ai_edit_v2_runtime as runtime
+    from content_domains import ai_edit_v2_shotstack as shotstack
 except ImportError:
     from .content_domains import ai_edit_v2_billing as billing
+    from .content_domains import ai_edit_v2_delivery as delivery
+    from .content_domains import ai_edit_v2_feature as feature
     from .content_domains import ai_edit_v2_pipeline as pipeline
     from .content_domains import ai_edit_v2_store as store
     from .content_domains import ai_edit_v2_runtime as runtime
+    from .content_domains import ai_edit_v2_shotstack as shotstack
 
 
 LOG = logging.getLogger("ai-edit-v2")
@@ -61,58 +68,131 @@ def _heartbeat(
 
 
 def _process_claimed(
-    job: dict[str, Any], worker_id: str, config: dict[str, Any], handlers: dict[str, pipeline.Handler]
-) -> pipeline.StageResult:
-    finished = threading.Event()
-    heartbeat = threading.Thread(
-        target=_heartbeat,
-        args=(job["id"], worker_id, config["lease_seconds"], finished, config["db_path"]),
-        daemon=True,
+    job: dict[str, Any], worker_id: str, config: dict[str, Any], dependencies: dict[str, Any]
+) -> dict[str, Any]:
+    bundle = dict(dependencies)
+    bundle.update(
+        {
+            "lease_owner": worker_id,
+            "lease_seconds": config["lease_seconds"],
+        }
     )
-    heartbeat.start()
-    try:
-        return pipeline.run_stage(
-            job["id"], job["status"], handlers=handlers,
-            db_path=config["db_path"], now=int(time.time()),
+    return pipeline.run_job(job["id"], bundle, db_path=config["db_path"])
+
+
+def reconcile_provider_events(
+    worker_id: str,
+    config: dict[str, Any],
+    dependencies: dict[str, Any],
+    *,
+    now: int | None = None,
+    max_batch: int = 100,
+) -> int:
+    """Consume durable webhook hints; one poison event cannot block later rows."""
+
+    current = int(time.time()) if now is None else int(now)
+    services = runtime.option(dependencies, "services")
+    processed = 0
+    for index in range(max(1, int(max_batch))):
+        owner = f"{worker_id}-webhook-{index}"
+        event = store.claim_next_provider_event(
+            owner, config["lease_seconds"], current, db_path=config["db_path"]
         )
-    finally:
-        finished.set()
-        heartbeat.join(timeout=2)
+        if event is None:
+            break
+        try:
+            if event["provider"] != "shotstack":
+                raise RuntimeError("provider_event_provider_unsupported")
+            with closing(store.open_store(config["db_path"])) as conn:
+                attempt = conn.execute(
+                    """SELECT id,provider_reference FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='rendering'
+                         AND (provider_task_id=? OR provider_task_id IS NULL)
+                       ORDER BY attempt DESC,id DESC LIMIT 1""",
+                    (event["job_id"], event["provider_task_id"]),
+                ).fetchone()
+            if attempt is None or not attempt["provider_reference"]:
+                raise RuntimeError("shotstack_webhook_attempt_missing")
+            client = shotstack.ShotstackClient(
+                job_id=event["job_id"], attempt_id=int(attempt["id"]),
+                db_path=config["db_path"],
+                http_request=getattr(services, "shotstack_http", None),
+            )
+            token = client.callback_token(attempt["provider_reference"])
+            shotstack.reconcile_claimed_webhook(
+                event, client, callback_attempt_id=int(attempt["id"]),
+                callback_token=token, lease_owner=owner,
+                db_path=config["db_path"],
+            )
+            processed += 1
+        except Exception as exc:
+            LOG.exception(
+                "[ai-edit-v2] provider webhook reconciliation failed fingerprint=%s",
+                event.get("fingerprint"),
+            )
+            try:
+                store.fail_provider_event(
+                    event["fingerprint"], lease_owner=owner,
+                    error_code=str(exc) or type(exc).__name__, now=current,
+                    max_attempts=int(os.environ.get(
+                        "AI_EDIT_V2_WEBHOOK_MAX_ATTEMPTS", "5"
+                    )), db_path=config["db_path"],
+                )
+            except Exception:
+                LOG.exception("[ai-edit-v2] provider webhook failure persistence failed")
+    return processed
 
 
 def run_worker(
     stop_event: threading.Event,
     *,
     config: dict[str, Any] | None = None,
-    handlers: dict[str, pipeline.Handler] | None = None,
+    handlers: dict[str, Any] | None = None,
 ) -> None:
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
-    if not config["enabled"]:
+    dependencies = handlers or runtime.production_dependencies(config["db_path"])
+    capability = feature.capability(dependencies)
+    accepts_submissions = bool(config["enabled"]) and bool(
+        capability.get("accepts_submissions")
+    )
+    worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
+
+    def reconcile_once() -> None:
+        reconcile_provider_events(worker_id, config, dependencies)
+        billing.reconcile_pending_precharges(
+            int(time.time()), db_path=config["db_path"]
+        )
+        pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+        services = runtime.option(dependencies, "services")
+        delivery.reconcile_pending_deliveries(
+            int(time.time()), db_path=config["db_path"],
+            lease_seconds=config["lease_seconds"],
+            cos_api=getattr(services, "cos", None),
+            asset_db_path=(runtime.option(dependencies, "asset_db_path")
+                           or delivery._asset_db_path()),
+            points_client=runtime.option(dependencies, "points_client", billing.points),
+        )
+
+    if not accepts_submissions:
         LOG.warning("[ai-edit-v2] submissions disabled; reconciliation-only mode")
         while not stop_event.is_set():
             try:
-                billing.reconcile_pending_precharges(
-                    int(time.time()), db_path=config["db_path"]
-                )
-                pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+                reconcile_once()
             except Exception:
-                LOG.exception("[ai-edit-v2] billing reconciliation failed")
+                LOG.exception("[ai-edit-v2] reconciliation failed")
             stop_event.wait(config["poll_seconds"])
         return
-    worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
+    runtime.assert_production_ready(dependencies)
     active: set[Future] = set()
     with ThreadPoolExecutor(
         max_workers=config["workers"], thread_name_prefix="ai-edit-v2"
     ) as executor:
         while not stop_event.is_set():
             try:
-                billing.reconcile_pending_precharges(
-                    int(time.time()), db_path=config["db_path"]
-                )
-                pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+                reconcile_once()
             except Exception:
-                LOG.exception("[ai-edit-v2] billing reconciliation failed")
+                LOG.exception("[ai-edit-v2] reconciliation failed")
             finished = {future for future in active if future.done()}
             for future in finished:
                 active.remove(future)
@@ -121,15 +201,16 @@ def run_worker(
                 except Exception:
                     LOG.exception("[ai-edit-v2] stage execution failed")
             while len(active) < config["workers"] and not stop_event.is_set():
+                claim_owner = f"{worker_id}-{uuid.uuid4().hex}"
                 job = store.claim_next_job(
-                    worker_id, config["lease_seconds"], int(time.time()),
+                    claim_owner, config["lease_seconds"], int(time.time()),
                     db_path=config["db_path"],
                 )
                 if job is None:
                     break
                 active.add(
                     executor.submit(
-                        _process_claimed, job, worker_id, config, handlers or STAGE_HANDLERS
+                        _process_claimed, job, claim_owner, config, dependencies
                     )
                 )
             stop_event.wait(config["poll_seconds"])

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import sqlite3
 import time
+import urllib.parse
 import uuid
 from contextlib import closing
 from typing import Any
@@ -17,7 +20,11 @@ from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_pipeline as pipeline
 from . import ai_edit_v2_media as media
 from . import ai_edit_v2_feature as feature
+from . import ai_edit_v2_shotstack as shotstack
+from . import ai_edit_v2_templates as templates
+from . import ai_edit_v2_platform_assets as platform_assets
 from . import points
+from .ai_edit_v2_providers.base import ProviderError, RetryableProviderError
 from .ai_edit_v2_schema import (
     ASPECT_RATIOS,
     CREATION_MODES,
@@ -34,8 +41,11 @@ from .ai_edit_v2_schema import (
 
 
 API_PREFIX = "/api/v2/edit/"
+_WEBHOOK_PATH = API_PREFIX + "webhooks/shotstack"
+_WEBHOOK_MAX_BYTES = 64 * 1024
 _UPLOAD_RE = re.compile(r"^/api/v2/edit/uploads/([0-9a-f-]{36})/complete$")
 _MATERIAL_RE = re.compile(r"^/api/v2/edit/materials/(\d+)$")
+_PLATFORM_IMPORT_RE = re.compile(r"^/api/v2/edit/platform-assets/(\d+)/import$")
 _JOB_RE = re.compile(r"^/api/v2/edit/jobs/([0-9a-f-]{36})$")
 _JOB_RETRY_RE = re.compile(r"^/api/v2/edit/jobs/([0-9a-f-]{36})/retry$")
 _CONTENT_TYPES = {
@@ -101,6 +111,70 @@ def _read_body(handler: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise ValueError("请求体必须是对象")
     return body
+
+
+def _quote_public(quote: dict[str, Any]) -> dict[str, Any]:
+    """Expose the stable price contract while retaining Phase A field aliases."""
+
+    minimum = int(quote["min_points"])
+    maximum = int(quote["max_points"])
+    return {
+        **quote,
+        "minimum_points": minimum,
+        "maximum_points": maximum,
+        "held_points": maximum,
+    }
+
+
+def _stored_quote_public(owner: str, quote_id: str) -> dict[str, Any]:
+    with closing(store.open_store(store._db_path())) as conn:
+        row = conn.execute(
+            "SELECT * FROM edit_v2_quotes WHERE id=? AND owner=?", (quote_id, owner)
+        ).fetchone()
+    if row is None:
+        raise ValueError("quote_not_found")
+    return _quote_public(
+        {
+            "id": row["id"],
+            "min_points": int(row["min_points"]),
+            "max_points": int(row["max_points"]),
+            "breakdown": json.loads(row["breakdown_json"]),
+            "price_version": row["price_version"],
+            "expires_at": int(row["expires_at"]),
+        }
+    )
+
+
+def _public_capability() -> dict[str, Any]:
+    state = feature.capability()
+    components = state.get("stable_components") or {}
+    stable_ready = bool(state.get("stable_runtime_ready"))
+    return {
+        "feature": "ai_edit_v2",
+        "enabled": bool(state.get("enabled")),
+        "runtime_ready": bool(state.get("runtime_ready")),
+        "accepts_submissions": bool(state.get("accepts_submissions")),
+        "phase": "stable_v1",
+        "reason": state.get("reason"),
+        "stable_workflow": {
+            "transcription": bool(components.get("dashscope")),
+            "content_direction": bool(components.get("dashscope")),
+            "generated_images": bool(components.get("openai_image")),
+            "optional_audio": bool(components.get("elevenlabs")),
+            "composition": bool(components.get("shotstack")),
+            "private_delivery": bool(components.get("cos")),
+            "ready": stable_ready,
+        },
+        "disabled_features": [
+            "advanced_motion_graphics",
+            "ai_video_generation",
+            "free_code_rendering",
+        ],
+        "version": EDIT_PLAN_VERSION,
+        "creation_modes": sorted(CREATION_MODES),
+        "aspect_ratios": sorted(ASPECT_RATIOS),
+        "material_window_limit": MAX_MATERIALS_PER_WINDOW,
+    }
 
 
 def _create_upload(handler: Any, owner: str) -> bool:
@@ -243,9 +317,33 @@ def _list_materials(handler: Any, owner: str) -> bool:
     return _send(handler, 200, {"items": [_material_public(row) for row in rows]})
 
 
+def _list_platform_assets(handler: Any, owner: str) -> bool:
+    try:
+        return _send(handler, 200, {"items": platform_assets.list_assets(owner)})
+    except (OSError, sqlite3.Error):
+        return _send(handler, 502, {"detail": "platform_asset_store_unavailable"})
+
+
+def _import_platform_asset(handler: Any, owner: str, asset_id: int) -> bool:
+    try:
+        material = platform_assets.import_asset(
+            owner, asset_id, cos_api=cos, probe_media=media.probe_media,
+            db_path=store._db_path(),
+        )
+        return _send(handler, 201, {"material": _material_public(material)})
+    except LookupError:
+        return _send(handler, 404, {"detail": "platform_asset_not_found"})
+    except ValueError as exc:
+        return _send(handler, 409, {"detail": str(exc)})
+    except Exception:
+        return _send(handler, 502, {"detail": "platform_asset_import_failed"})
+
+
 def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not isinstance(client_draft, dict):
         raise ValueError("draft must be an object")
+    if client_draft.get("input_mode") not in {"platform_video", "external_video", "audio_only"}:
+        raise ValueError("input_mode_required")
     groups = [
         ("primary", [client_draft.get("main_input")]),
         ("required", client_draft.get("required_materials") or []),
@@ -295,8 +393,21 @@ def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[di
         bindings.append({"material_id": material_id, "purpose": purpose})
     canonical = {
         key: client_draft.get(key)
-        for key in ("creation_mode", "brief", "language", "aspect_ratio", "target_duration_ms")
+        for key in (
+            "creation_mode", "brief", "language", "aspect_ratio", "target_duration_ms",
+            "input_mode",
+        )
     }
+    if canonical["creation_mode"] == "platform_template":
+        canonical["template_id"] = client_draft.get("template_id")
+        canonical["template_version"] = client_draft.get("template_version")
+    if canonical["input_mode"] == "platform_video":
+        primary_id = int(canonical_groups["primary"][0]["asset_id"])
+        primary_row = by_id[primary_id]
+        original_text = primary_row["original_text"]
+        if primary_row["source"] != "platform_video" or not isinstance(original_text, str) or not original_text.strip():
+            raise ValueError("platform_original_text_missing")
+        canonical["original_text"] = original_text
     canonical["main_input"] = canonical_groups["primary"][0]
     canonical["required_materials"] = canonical_groups["required"]
     canonical["reference_materials"] = canonical_groups["reference"]
@@ -358,9 +469,90 @@ def _validate_quote_request(handler: Any, owner: str) -> bool:
         body = _read_body(handler)
         draft, _bindings = canonicalize_job_draft(owner, body.get("draft"))
         quote = billing.create_quote(owner, draft, _now(), uuid_factory=_new_uuid)
-        return _send(handler, 201, {"quote": quote})
+        return _send(handler, 201, {"quote": _quote_public(quote)})
     except (TypeError, ValueError) as exc:
         return _send(handler, 400, {"detail": str(exc)})
+
+
+def _collect_degradations(checkpoints: Any) -> list[str]:
+    found: list[str] = []
+    allowed = {
+        "image_generation_degraded",
+        "music_generation_degraded",
+        "sfx_generation_degraded",
+    }
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "degradations" and isinstance(item, list):
+                    for code in item:
+                        if (
+                            isinstance(code, str)
+                            and code in allowed
+                            and code not in found
+                        ):
+                            found.append(code)
+                elif key == "material_resolution_status" and item in allowed:
+                    if item not in found:
+                        found.append(item)
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(checkpoints)
+    return found
+
+
+def _quality_public(intent: Any, checkpoints: Any, status: str) -> dict[str, Any]:
+    value: dict[str, Any] | None = None
+    if intent is not None:
+        try:
+            parsed = json.loads(intent["quality_json"])
+            value = parsed if isinstance(parsed, dict) else None
+        except (TypeError, ValueError):
+            value = None
+    if value is None:
+        def find_qc(item: Any) -> dict[str, Any] | None:
+            if isinstance(item, dict):
+                qc = item.get("qc")
+                if isinstance(qc, dict):
+                    return qc
+                for child in item.values():
+                    match = find_qc(child)
+                    if match is not None:
+                        return match
+            elif isinstance(item, list):
+                for child in item:
+                    match = find_qc(child)
+                    if match is not None:
+                        return match
+            return None
+
+        value = find_qc(checkpoints)
+    if value is None:
+        return {
+            "status": "pending" if status not in FAILURE_STATES else "failed",
+            "passed": False,
+            "summary": "等待质检" if status not in FAILURE_STATES else "未交付合格成片",
+            "failing_layers": [],
+        }
+    passed = value.get("passed") is True
+    public_layers = {
+        "probe", "decode_video", "decode_audio", "frames", "captions",
+        "materials", "transcript", "audio", "video", "assembly",
+    }
+    layers = [
+        item for item in value.get("failing_layers", []) if item in public_layers
+    ]
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "summary": "成片已通过质检" if passed else "成片未通过质检",
+        "failing_layers": layers,
+    }
 
 
 def _get_job(handler: Any, owner: str, job_id: str) -> bool:
@@ -368,33 +560,89 @@ def _get_job(handler: Any, owner: str, job_id: str) -> bool:
         row = conn.execute(
             "SELECT * FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
         ).fetchone()
-    if row is None:
-        return _send(handler, 404, {"detail": "任务不存在"})
-    with closing(store.open_store(store._db_path())) as conn:
+        if row is None:
+            return _send(handler, 404, {"detail": "任务不存在"})
         bill = conn.execute(
-            "SELECT status,amount FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+            "SELECT status,amount,response_json FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
             (job_id,),
         ).fetchone()
-    return _send(
-        handler,
-        200,
-        {
-            "job": {
-                "id": row["id"],
-                "status": row["status"],
-                "quote_id": row["quote_id"],
-                "output_available": bool(row["output_cos_key"]),
-                "error_code": row["error_code"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            },
-            "timing": pipeline.timing_status(job_id, _now(), db_path=store._db_path()),
-            "billing": {
-                "status": bill["status"] if bill else None,
-                "held_points": int(bill["amount"]) if bill else 0,
-            },
-        },
-    )
+        quote = conn.execute(
+            "SELECT min_points,max_points,expires_at FROM edit_v2_quotes WHERE id=? AND owner=?",
+            (row["quote_id"], owner),
+        ).fetchone()
+        intent = conn.execute(
+            "SELECT quality_json FROM edit_v2_delivery_intents WHERE job_id=? AND owner=?",
+            (job_id, owner),
+        ).fetchone()
+        outbox = conn.execute(
+            "SELECT asset_id,status FROM edit_v2_delivery_outbox WHERE job_id=? AND owner=?",
+            (job_id, owner),
+        ).fetchone()
+    try:
+        checkpoints = json.loads(row["checkpoint_json"] or "[]")
+    except (TypeError, ValueError):
+        checkpoints = []
+    now = _now()
+    timing = pipeline.timing_status(job_id, now, db_path=store._db_path())
+    terminal = row["status"] == "completed" or row["status"] in FAILURE_STATES
+    elapsed = max(0, (int(row["updated_at"]) if terminal else now) - int(row["created_at"]))
+    settlement: dict[str, Any] = {}
+    if bill and bill["response_json"]:
+        try:
+            parsed = json.loads(bill["response_json"])
+            settlement = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            settlement = {}
+    held = int(bill["amount"]) if bill else 0
+    actual = settlement.get("actual_points")
+    if bill and bill["status"] == "refunded":
+        actual = 0
+    refunded = settlement.get("refunded_points")
+    billing_public = {
+        "status": bill["status"] if bill else None,
+        "held_points": held,
+        "actual_charge_points": int(actual) if isinstance(actual, int) and not isinstance(actual, bool) else None,
+        "refunded_difference_points": int(refunded) if isinstance(refunded, int) and not isinstance(refunded, bool) else 0,
+    }
+    output = None
+    if row["status"] == "completed" and row["output_cos_key"] and outbox and outbox["asset_id"] is not None:
+        play_url = cos.presign_get(row["output_cos_key"], expires=300)
+        download_url = cos.presign_get(row["output_cos_key"], expires=300)
+        asset_id = int(outbox["asset_id"])
+        output = {
+            "play_url": play_url,
+            "download_url": download_url,
+            "expires_in": 300,
+            "asset_id": asset_id,
+            "asset_url": f"assets.html?cat=video&asset={asset_id}",
+        }
+    job_public = {
+        "id": row["id"],
+        "status": row["status"],
+        "stage": row["status"],
+        "predecessor_job_id": row["predecessor_job_id"],
+        "output_available": output is not None,
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+    }
+    payload = {
+        "job": job_public,
+        "stage": row["status"],
+        "elapsed_seconds": elapsed,
+        "estimated_remaining_seconds": int(timing["remaining_seconds"]),
+        "timing": timing,
+        "degradations": _collect_degradations(checkpoints),
+        "quality": _quality_public(intent, checkpoints, row["status"]),
+        "billing": billing_public,
+        "quote": {
+            "minimum_points": int(quote["min_points"]),
+            "maximum_points": int(quote["max_points"]),
+            "held_points": held,
+            "expires_at": int(quote["expires_at"]),
+        } if quote is not None else None,
+        "output": output,
+    }
+    return _send(handler, 200, payload)
 
 
 def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
@@ -403,7 +651,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         client_key = str(body.get("idempotency_key") or "").strip()
         if not client_key or len(client_key) > 160:
             raise ValueError("重试请求必须提供有效幂等键")
-        retry_key = f"retry:{job_id}:{client_key}"
+        retry_key = f"retry:{job_id}"
         with closing(store.open_store(store._db_path())) as conn:
             old = conn.execute(
                 "SELECT * FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
@@ -415,8 +663,8 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
             ).fetchall()
             existing_successor = conn.execute(
                 """SELECT * FROM edit_v2_jobs
-                   WHERE owner=? AND idempotency_key=? AND predecessor_job_id=?""",
-                (owner, retry_key, job_id),
+                   WHERE owner=? AND predecessor_job_id=?""",
+                (owner, job_id),
             ).fetchone()
             successor_bindings = (
                 conn.execute(
@@ -442,7 +690,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                 owner,
                 payload,
                 existing_successor["quote_id"],
-                retry_key,
+                existing_successor["idempotency_key"],
                 now,
                 points_client=_points_client,
                 uuid_factory=_new_uuid,
@@ -457,6 +705,8 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                     "job_id": successor["id"],
                     "predecessor_job_id": job_id,
                     "status": successor["status"],
+                    "quote": _stored_quote_public(owner, successor["quote_id"]),
+                    "held_points": result["held_points"],
                 },
             )
         payload = json.loads(old["payload_json"])
@@ -496,6 +746,8 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                 "job_id": successor["id"],
                 "predecessor_job_id": job_id,
                 "status": successor["status"],
+                "quote": _quote_public(quote),
+                "held_points": result["held_points"],
             },
         )
     except ValueError as exc:
@@ -519,6 +771,83 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         return _send(handler, exc.status if exc.status in {402, 403, 409} else 502, {"detail": exc.detail})
 
 
+def _header(handler: Any, name: str) -> str:
+    headers = getattr(handler, "headers", {}) or {}
+    try:
+        return str(headers.get(name) or headers.get(name.lower()) or "")
+    except Exception:
+        return ""
+
+
+def _shotstack_webhook(handler: Any, query: str) -> bool:
+    try:
+        declared = _header(handler, "Content-Length")
+        if not declared:
+            return _send(handler, 411, {"detail": "回调请求体长度缺失"})
+        size = int(declared)
+        if size < 2 or size > _WEBHOOK_MAX_BYTES:
+            return _send(handler, 413, {"detail": "回调请求体大小无效"})
+        params = urllib.parse.parse_qs(query, keep_blank_values=True, strict_parsing=True)
+        if set(params) != {"attempt_id", "token"} or any(len(values) != 1 for values in params.values()):
+            return _send(handler, 401, {"detail": "回调鉴权失败"})
+        try:
+            attempt_id = int(params["attempt_id"][0])
+        except (TypeError, ValueError):
+            attempt_id = 0
+        supplied_token = str(params["token"][0])
+        with closing(store.open_store(store._db_path())) as conn:
+            binding = conn.execute(
+                """SELECT a.job_id,a.provider_task_id,a.provider_reference,j.status
+                   FROM edit_v2_stage_attempts a
+                   JOIN edit_v2_jobs j ON j.id=a.job_id
+                   WHERE a.id=? AND a.stage='rendering' AND j.status='rendering'""",
+                (attempt_id,),
+            ).fetchone()
+        if binding is None or not binding["provider_reference"]:
+            hmac.compare_digest(supplied_token, "0" * 64)
+            return _send(handler, 401, {"detail": "回调鉴权失败"})
+        client = shotstack.ShotstackClient(
+            job_id=binding["job_id"], attempt_id=attempt_id, db_path=store._db_path()
+        )
+        expected_token = client.callback_token(binding["provider_reference"])
+        if not hmac.compare_digest(supplied_token, expected_token):
+            return _send(handler, 401, {"detail": "回调鉴权失败"})
+        event = _read_body(handler)
+        allowed_fields = {"id", "status", "type", "action", "owner", "url", "error", "completed"}
+        if not {"id", "status"}.issubset(event) or set(event) - allowed_fields:
+            raise ValueError("回调结构无效")
+        task_id = event.get("id")
+        status = event.get("status")
+        if (
+            not isinstance(task_id, str) or not 1 <= len(task_id) <= 200
+            or not isinstance(status, str) or not 1 <= len(status) <= 64
+        ):
+            raise ValueError("回调结构无效")
+        limits = {"type": 64, "action": 64, "owner": 200, "url": 2048,
+                  "error": 4096, "completed": 128}
+        for name, limit in limits.items():
+            value = event.get(name)
+            if value is not None and (not isinstance(value, str) or len(value) > limit):
+                raise ValueError("回调结构无效")
+        if binding["provider_task_id"] and binding["provider_task_id"] != task_id:
+            return _send(handler, 401, {"detail": "回调鉴权失败"})
+        duplicate = not shotstack.enqueue_webhook(
+            binding["job_id"],
+            event,
+            received_at=_now(),
+            db_path=store._db_path(),
+        )
+        return _send(handler, 202, {"accepted": True, "duplicate": duplicate})
+    except (TypeError, ValueError):
+        return _send(handler, 400, {"detail": "回调请求无效"})
+    except RetryableProviderError:
+        return _send(handler, 503, {"detail": "状态确认稍后重试"})
+    except ProviderError:
+        return _send(handler, 409, {"detail": "状态确认失败"})
+    except Exception:
+        return _send(handler, 502, {"detail": "状态确认失败"})
+
+
 def dispatch(
     handler: Any,
     method: str,
@@ -526,39 +855,37 @@ def dispatch(
     user: dict[str, Any] | None,
 ) -> bool:
     """Dispatch a V2 route and return False only when the prefix is unrelated."""
-    if not path.startswith(API_PREFIX):
+    parsed = urllib.parse.urlsplit(path)
+    route_path = parsed.path
+    if not route_path.startswith(API_PREFIX):
         return False
-    if path.startswith(API_PREFIX + "webhooks/"):
-        return _send(handler, 503, {"detail": "webhook capability disabled"})
+    if route_path == _WEBHOOK_PATH:
+        if method != "POST":
+            return _send(handler, 405, {"detail": "method not allowed"})
+        return _shotstack_webhook(handler, parsed.query)
+    path = route_path
     if not user or not _owner(user):
         return _send(handler, 401, {"detail": "未登录"})
     owner = _owner(user)
 
     if method == "GET" and path == API_PREFIX + "capabilities":
-        capability = feature.capability()
-        return _send(
-            handler,
-            200,
-            {
-                **capability,
-                "version": EDIT_PLAN_VERSION,
-                "creation_modes": sorted(CREATION_MODES),
-                "aspect_ratios": sorted(ASPECT_RATIOS),
-                "material_window_limit": MAX_MATERIALS_PER_WINDOW,
-            },
-        )
-    if method == "GET" and (path == API_PREFIX + "materials" or _MATERIAL_RE.fullmatch(path)):
-        pass
-    elif method == "GET" and _JOB_RE.fullmatch(path):
-        pass
-    else:
+        return _send(handler, 200, _public_capability())
+    if method != "GET":
         rejection = feature.rejection()
         if rejection is not None:
             return _send(handler, rejection[0], rejection[1])
     if method == "GET" and path == API_PREFIX + "templates":
-        return _send(handler, 200, {"items": []})
+        items = templates.list_published_templates()
+        return _send(handler, 200, {"items": [
+            {**item, "current_version": item["version"]} for item in items
+        ]})
     if method == "GET" and path == API_PREFIX + "materials":
         return _list_materials(handler, owner)
+    if method == "GET" and path == API_PREFIX + "platform-assets":
+        return _list_platform_assets(handler, owner)
+    platform_import = _PLATFORM_IMPORT_RE.fullmatch(path)
+    if method == "POST" and platform_import:
+        return _import_platform_asset(handler, owner, int(platform_import.group(1)))
     material_match = _MATERIAL_RE.fullmatch(path)
     if method == "GET" and material_match:
         return _get_material(handler, owner, int(material_match.group(1)))
@@ -569,7 +896,7 @@ def dispatch(
         return _complete_upload(handler, owner, upload_match.group(1))
     if method == "POST" and path == API_PREFIX + "jobs":
         return _validate_job_request(handler, owner)
-    if method == "POST" and path == API_PREFIX + "quotes":
+    if method == "POST" and path in {API_PREFIX + "quote", API_PREFIX + "quotes"}:
         return _validate_quote_request(handler, owner)
     job_match = _JOB_RE.fullmatch(path)
     if method == "GET" and job_match:

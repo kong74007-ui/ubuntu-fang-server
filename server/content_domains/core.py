@@ -1280,7 +1280,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         if p.startswith("/api/v2/edit/"):
-            return ai_edit_v2_api.dispatch(self, "POST", p, None if "/webhooks/" in p else verify(self._token()))
+            route = self.path if "/webhooks/" in p else p; return ai_edit_v2_api.dispatch(self, "POST", route, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
         handled, p = ai_edit_api.handle_post(self, p, points_domain, video_domain)
         if handled: return

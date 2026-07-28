@@ -39,6 +39,10 @@ class FakeCosClient:
         self.calls.append(("delete", kwargs))
         return {"status": 204}
 
+    def put_object(self, **kwargs):
+        self.calls.append(("put", kwargs))
+        return {"ETag": '"uploaded"'}
+
 
 class V2CosTests(unittest.TestCase):
     def setUp(self):
@@ -103,6 +107,24 @@ class V2CosTests(unittest.TestCase):
         self.assertEqual(result, destination)
         self.assertEqual(
             self.client.calls[-1][0], "download"
+        )
+
+    def test_put_bytes_forces_private_acl_and_scoped_key(self):
+        result = cos.put_bytes(b"image", VALID_KEY, "image/png")
+
+        self.assertEqual(result, {"ETag": '"uploaded"'})
+        self.assertEqual(
+            self.client.calls[-1],
+            (
+                "put",
+                {
+                    "Bucket": "private-bucket-123",
+                    "Key": "huangque/" + VALID_KEY,
+                    "Body": b"image",
+                    "ContentType": "image/png",
+                    "ACL": "private",
+                },
+            ),
         )
         deleted = cos.delete_object(VALID_KEY)
         self.assertEqual(deleted, {"status": 204})
