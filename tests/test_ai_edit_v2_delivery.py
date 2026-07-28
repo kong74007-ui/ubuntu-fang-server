@@ -303,6 +303,49 @@ class DeliveryTests(unittest.TestCase):
                 conn.execute(f"UPDATE edit_v2_delivery_intents SET {field}=? WHERE job_id=?",
                              (original[field], self.job_id))
 
+    def test_delayed_failure_from_expired_lease_cannot_mutate_new_owners_outbox(self):
+        fake_cos = FakeCos()
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", self.points), \
+             patch.object(delivery, "_dispatch_and_complete", side_effect=BaseException("crash")):
+            with self.assertRaises(BaseException):
+                delivery.deliver(self.job_id, self.video, PASS_REPORT, 42,
+                                 db_path=self.db, now_fn=lambda: 10)
+
+        def lose_lease_then_fail(*_args, **_kwargs):
+            with closing(store.open_store(self.db)) as conn:
+                conn.execute(
+                    "UPDATE edit_v2_jobs SET lease_until=11 WHERE id=? AND lease_owner='old-worker'",
+                    (self.job_id,),
+                )
+            claimed = store.claim_job(
+                self.job_id, "new-worker", 100, 11, db_path=self.db,
+            )
+            self.assertIsNotNone(claimed)
+            raise delivery.DeliveryError("delayed_old_owner_failure")
+
+        with patch.object(delivery, "resume_delivery", side_effect=lose_lease_then_fail):
+            self.assertEqual(delivery.reconcile_pending_deliveries(
+                11, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
+                worker_id="old-worker", lease_seconds=1,
+            ), 0)
+
+        with closing(store.open_store(self.db)) as conn:
+            outbox = conn.execute(
+                """SELECT status,attempt_count,error_code,retry_at,dead_letter_at
+                   FROM edit_v2_delivery_outbox WHERE job_id=?""",
+                (self.job_id,),
+            ).fetchone()
+            lease = conn.execute(
+                "SELECT lease_owner,lease_until FROM edit_v2_jobs WHERE id=?",
+                (self.job_id,),
+            ).fetchone()
+        self.assertEqual(dict(outbox), {
+            "status": "pending", "attempt_count": 0, "error_code": None,
+            "retry_at": None, "dead_letter_at": None,
+        })
+        self.assertEqual((lease["lease_owner"], lease["lease_until"]),
+                         ("new-worker", 111))
+
     def test_poison_outbox_does_not_starve_good_job_under_concurrent_reconcilers(self):
         second = str(uuid.uuid4())
         with closing(store.open_store(self.db)) as conn:

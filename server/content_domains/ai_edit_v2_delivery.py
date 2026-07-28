@@ -514,15 +514,19 @@ def _outbox_due(job_id: str, now: int, db_path: str | None) -> bool:
     )
 
 
-def _record_outbox_failure(job_id: str, exc: Exception, now: int,
+def _record_outbox_failure(job_id: str, exc: Exception, lease_owner: str, now: int,
                            db_path: str | None) -> None:
     code = getattr(exc, "code", None) or "delivery_reconcile_failed"
     with closing(store.open_store(store._db_path(db_path))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT attempt_count FROM edit_v2_delivery_outbox WHERE job_id=?",
-                (job_id,),
+                """SELECT o.attempt_count
+                   FROM edit_v2_delivery_outbox o
+                   JOIN edit_v2_jobs j ON j.id=o.job_id
+                   WHERE o.job_id=? AND o.status='pending'
+                     AND j.lease_owner=? AND j.lease_until>?""",
+                (job_id, lease_owner, now),
             ).fetchone()
             if row is not None:
                 attempts = int(row["attempt_count"] or 0) + 1
@@ -531,9 +535,15 @@ def _record_outbox_failure(job_id: str, exc: Exception, now: int,
                 conn.execute(
                     """UPDATE edit_v2_delivery_outbox
                        SET status=?,attempt_count=?,error_code=?,retry_at=?,dead_letter_at=?,updated_at=?
-                       WHERE job_id=? AND status='pending'""",
+                       WHERE job_id=? AND status='pending' AND attempt_count=?
+                         AND EXISTS (
+                             SELECT 1 FROM edit_v2_jobs j
+                             WHERE j.id=edit_v2_delivery_outbox.job_id
+                               AND j.lease_owner=? AND j.lease_until>?
+                         )""",
                     ("dead_letter" if dead_at is not None else "pending", attempts,
-                     str(code), retry_at, dead_at, now, job_id),
+                     str(code), retry_at, dead_at, now, job_id,
+                     attempts - 1, lease_owner, now),
                 )
             conn.commit()
         except Exception:
@@ -582,7 +592,7 @@ def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None 
                 completed += 1
         except Exception as exc:
             try:
-                _record_outbox_failure(row["id"], exc, now, db_path)
+                _record_outbox_failure(row["id"], exc, owner, now, db_path)
             except Exception:
                 pass
             try:

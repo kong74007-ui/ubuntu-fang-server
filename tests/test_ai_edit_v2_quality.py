@@ -128,6 +128,21 @@ class QualityTests(unittest.TestCase):
             "final_media_analyzer_audio",
         })
 
+    def test_non_callable_analyzer_with_all_capabilities_is_never_ready(self):
+        class NonCallableAnalyzer:
+            def capabilities(self): return dict(ANALYZER_CAPABILITIES)
+
+        runner = LocalQualityRunner(
+            lambda *_a, **_k: None,
+            analyzer=NonCallableAnalyzer(),
+            binary_finder=lambda name: name,
+        )
+        self.assertEqual(set(runner.readiness_errors()), {
+            "final_media_analyzer_captions_ocr", "final_media_analyzer_glyphs",
+            "final_media_analyzer_materials", "final_media_analyzer_transcript_facts",
+            "final_media_analyzer_audio",
+        })
+
     def test_nan_and_infinity_evidence_fail_closed(self):
         for invalid in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(invalid=invalid):

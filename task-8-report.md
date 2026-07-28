@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-release`. No Task 9 API work, fetch, push, deployment, restart, or real-provider call was performed.
+Implemented Task 8 and blocking review fixes through Round 4 only on `codex/ai-edit-v2-stable-release`. No Task 9 API work, push, deployment, restart, or real-provider call was performed.
 
 ## Round 1 fixes
 
@@ -29,12 +29,19 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 - Final-MP4 analyzer readiness now requires five explicit capabilities: caption OCR, glyph inspection, material coverage, transcript/fact comparison, and audio analysis. A bare callable, partial mapping, exception, or any value other than literal `True` is not ready.
 - Enabled and disabled/reconciliation-only workers use the same reconciliation cycle and pass the configured COS client, real asset database path, and points client into delivery recovery.
 
+## Round 4 fixes
+
+- Delivery outbox failure bookkeeping is lease-fenced. `_record_outbox_failure` receives the worker owner and current time, then updates retry/dead-letter state only when the same owner still holds an unexpired job lease and the outbox remains pending; the update also compares the prior attempt count inside the same `BEGIN IMMEDIATE` transaction.
+- Final-MP4 analyzer readiness now verifies that the analyzer itself is callable before consulting its capability map. A non-callable object reports all analyzer capabilities unavailable even if its `capabilities()` method returns literal `True` for every entry.
+
 ## Added adversarial coverage
 
 - `NaN` and `+/-Infinity` quality evidence fails closed.
 - Production bundle exposes all Task 8 dependencies and readiness rejects a missing repair provider.
 - A lost settlement response resumes from durable intent/HEAD and the same settlement transaction key.
 - A worker that loses its lease immediately after upload cannot settle, complete, or publish an asset.
+- A delayed failure from an expired lease cannot increment attempts or otherwise mutate the outbox after a new owner reclaims the job.
+- A non-callable analyzer with an all-true capability map remains fail-closed at readiness.
 - Completed delivery is visible in the real `video_assets` table and remains owner-safe/idempotent.
 - A lost repair response after saving provider task ID resumes through reconciliation without a duplicate submit.
 
@@ -45,6 +52,9 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 - Round 2 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **295 tests passed** in 28.774s.
 - Round 3 Task 8 + runtime/store/pipeline targeted suite: **106 tests passed** in 23.718s, including heartbeat timing and concurrent poison-outbox coverage.
 - Round 3 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **300 tests passed** in 29.817s.
+- Round 4 Task 8 targeted suite: **78 tests passed** in 2.994s.
+- Round 4 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **302 tests passed** in 28.451s.
+- Round 4 changed Python files passed `python -m py_compile`.
 - `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **287 tests passed** in 28.191s.
 - `git diff --check`: clean.
 

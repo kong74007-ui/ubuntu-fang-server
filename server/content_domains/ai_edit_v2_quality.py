@@ -94,7 +94,10 @@ class LocalQualityRunner:
 
     def readiness_errors(self) -> list[str]:
         errors = [name for name in ("ffprobe", "ffmpeg") if self.binary_finder(name) is None]
-        capabilities_fn = getattr(self.analyzer, "capabilities", None)
+        capabilities_fn = (
+            getattr(self.analyzer, "capabilities", None)
+            if callable(self.analyzer) else None
+        )
         try:
             capabilities = capabilities_fn() if callable(capabilities_fn) else {}
         except Exception:
