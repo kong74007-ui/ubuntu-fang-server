@@ -206,6 +206,7 @@ class DirectorTests(unittest.TestCase):
         secrets = (
             "plain-secret-123",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart123",
+            "eyJhbGciOiJIUzI1NiJ9.e30.signaturepart123",
             "AKIAIOSFODNN7EXAMPLE",
             "LTAI5tQexample12345678",
             "ghp_abcdefghijklmnopqrstuvwxyz123456",
@@ -214,6 +215,7 @@ class DirectorTests(unittest.TestCase):
         invalid = (
             '{"api_key" : "plain-secret-123", '
             '"jwt":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart123", '
+            '"short_jwt":"eyJhbGciOiJIUzI1NiJ9.e30.signaturepart123", '
             '"aws":"AKIAIOSFODNN7EXAMPLE", "aliyun":"LTAI5tQexample12345678", '
             '"github":"ghp_abcdefghijklmnopqrstuvwxyz123456", '
             '"slack":"xoxb-1234567890-abcdefghijklmnop", '
@@ -229,6 +231,19 @@ class DirectorTests(unittest.TestCase):
             with self.subTest(secret=secret):
                 self.assertNotIn(secret, repair_prompt)
         self.assertIn("ordinary short text", repair_prompt)
+
+    def test_repair_prompt_unclosed_credential_stops_before_ordinary_text(self):
+        secret = "plain-secret-123"
+        invalid = '{"api_key": "plain-secret-123 ordinary short text\nmore context'
+        client = FakeQwen([invalid, json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan, VALID_PLAN)
+        repair_prompt = client.calls[1][1]
+        self.assertNotIn(secret, repair_prompt)
+        self.assertIn("ordinary short text", repair_prompt)
+        self.assertIn("more context", repair_prompt)
 
     def test_director_stops_after_two_schema_repairs(self):
         client = FakeQwen(["{}", "{}", "{}", json.dumps(VALID_PLAN)])

@@ -54,12 +54,12 @@ _SENSITIVE_KEY_RE: Final = re.compile(
 _SENSITIVE_ASSIGNMENT_RE: Final = re.compile(
     r"(?i)[\"']?(?:api[_-]?key|access[_-]?(?:key|token)|token|secret|password|credential|"
     r"authorization|cookie)[\"']?\s*[:=]\s*(?:bearer\s+)?"
-    r"(?:[\"'][^\"'\r\n]{1,4096}[\"']?|[^\s,;}\]]+)"
+    r"[\"']?[a-z0-9._~+/=-]{4,}[\"']?"
 )
 _BEARER_RE: Final = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}")
 _SECRET_TOKEN_RE: Final = re.compile(
     r"(?i)\b(?:"
-    r"[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{8,}|"
+    r"eyJ[a-z0-9_-]*\.[a-z0-9_-]+\.[a-z0-9_-]+|"
     r"(?:AKIA|ASIA)[A-Z0-9]{16}|"
     r"LTAI[A-Z0-9]{12,30}|"
     r"(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,})|"

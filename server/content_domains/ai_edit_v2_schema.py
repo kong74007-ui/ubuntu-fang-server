@@ -32,8 +32,8 @@ MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
 FORBIDDEN_MODEL_VALUE_PATTERNS: Final = (
     re.compile(
         r"(?i)(?:https?|ftp|file|javascript|cos|s3)://|\bwww\.|"
-        r"(?<![\w@])(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)+"
-        r"(?:com|net|org|cn|io|ai|co|dev|app|cloud|example)(?:[:/]\S*)?|"
+        r"(?<![\w@-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"[a-z]{2,63}(?![a-z0-9-])(?::\d{1,5})?(?:/\S*)?|"
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
         r"(?::\d{1,5})?(?:/\S*)?"
     ),

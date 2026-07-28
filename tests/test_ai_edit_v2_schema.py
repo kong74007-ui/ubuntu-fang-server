@@ -374,6 +374,8 @@ class SchemaTests(unittest.TestCase):
             "COS路径：private-bucket/object",
             "JavaScript代码：const token = 1",
             "evil.example.com/payload",
+            "evil.example.xyz/payload",
+            "host.tech",
             "127.0.0.1:8080/private",
             "const x=1;",
             "import os",
@@ -392,7 +394,7 @@ class SchemaTests(unittest.TestCase):
         scene = {
             **valid_plan()["scenes"][0],
             "intent": "介绍产品数据库能力与业务价值",
-            "headline": "供应商：本地农户",
+            "headline": "供应商：本地农户。This is clear. Keep it concise.",
         }
         plan = valid_plan(scenes=[scene])
 
