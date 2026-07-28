@@ -47,11 +47,11 @@ def build_audio_plan(edit_plan: dict[str, Any], text_timeline: dict[str, Any]) -
             transition = str(scene.get("transition", ""))
             intent = str(scene.get("intent", "")) + " " + str(scene.get("headline", ""))
             if re.search(r"重点|强调|关键|important|emphasis", intent, re.IGNORECASE):
-                kind, prompt, cue_duration = "emphasis", "subtle emphasis accent", 220
+                kind, prompt, cue_duration = "emphasis", "subtle emphasis accent", 500
             elif transition in {"fade", "dissolve", "wipe"}:
-                kind, prompt, cue_duration = "semantic_turn", "soft semantic transition", 250
+                kind, prompt, cue_duration = "semantic_turn", "soft semantic transition", 500
             else:
-                kind, prompt, cue_duration = "camera_cut", "soft camera cut", 180
+                kind, prompt, cue_duration = "camera_cut", "soft camera cut", 500
             cues.append(
                 {
                     "kind": kind,
@@ -86,7 +86,8 @@ def build_audio_plan(edit_plan: dict[str, Any], text_timeline: dict[str, Any]) -
 
 def _protected_ranges(text_timeline: dict[str, Any]) -> list[dict[str, int]]:
     ranges: list[dict[str, int]] = []
-    for value in text_timeline.get("protected_ranges") or []:
+    verified_ranges = text_timeline.get("protected_ranges") or []
+    for value in verified_ranges:
         try:
             start_ms, end_ms = int(value["start_ms"]), int(value["end_ms"])
         except (KeyError, TypeError, ValueError):
@@ -94,7 +95,10 @@ def _protected_ranges(text_timeline: dict[str, Any]) -> list[dict[str, int]]:
         if 0 <= start_ms < end_ms:
             ranges.append({"start_ms": start_ms, "end_ms": end_ms})
     for word in text_timeline.get("words") or []:
-        if not _PROTECTED_TEXT.search(str(word.get("text", ""))):
+        # Upstream entity ranges are authoritative. If they are absent, protect all
+        # speech conservatively because an unknown proper noun may be a real brand or
+        # product; otherwise retain the number/price keyword safety net.
+        if verified_ranges and not _PROTECTED_TEXT.search(str(word.get("text", ""))):
             continue
         try:
             start_ms, end_ms = int(word["start_ms"]), int(word["end_ms"])
@@ -205,8 +209,12 @@ def _mix_filter(
         labels.append("[ducked]")
     for number, (input_index, cue) in enumerate(sfx_indices):
         delay = max(0, int(cue.get("at_ms", 0)))
+        duration_seconds = max(500, int(cue.get("duration_ms", 500))) / 1000
         label = f"sfx{number}"
-        filters.append(f"[{input_index}:a]adelay={delay}|{delay}[{label}]")
+        filters.append(
+            f"[{input_index}:a]atrim=duration={duration_seconds:g},"
+            f"asetpts=PTS-STARTPTS,adelay={delay}|{delay}[{label}]"
+        )
         labels.append(f"[{label}]")
     if len(labels) == 1:
         filters.append("[0:a]anull[premaster]")

@@ -1,9 +1,14 @@
 import hashlib
+import io
 import json
 import os
+import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.error
 import uuid
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -107,6 +112,23 @@ class ElevenLabsProviderTests(unittest.TestCase):
         self.assertTrue(transport.calls[0][1].endswith("/v1/sound-generation"))
         self.assertEqual(payload["model_id"], "eleven_text_to_sound_v2")
 
+    def test_music_and_sfx_enforce_provider_duration_bounds(self):
+        cases = (
+            ("music", 2_999), ("music", 600_001),
+            ("sfx", 499), ("sfx", 30_001),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            transport = RecordingTransport(failure=AssertionError("must reject locally"))
+            provider = self._provider(temp_dir, transport=transport)
+            for index, (capability, duration_ms) in enumerate(cases):
+                with self.subTest(capability=capability, duration_ms=duration_ms):
+                    method = getattr(provider, f"generate_{capability}")
+                    with self.assertRaisesRegex(ProviderError, "duration_invalid"):
+                        method("bounded prompt", duration_ms, f"bound-{index}")
+            self.assertEqual(transport.calls, [])
+
     def test_output_is_verified_in_private_cos_before_return(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
             os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
@@ -119,13 +141,36 @@ class ElevenLabsProviderTests(unittest.TestCase):
         self.assertEqual(result.provider, "elevenlabs")
         self.assertEqual(result.capability, "music")
         self.assertEqual(result.request_id, "eleven-request-1")
-        self.assertEqual(result.cost_units, 17)
+        self.assertEqual(result.cost_units, 0)
+        self.assertEqual(result.payload["song_id"], "song-private-1")
+        self.assertEqual(result.payload["cost"], {
+            "status": "unknown", "unit": "provider_units", "value": None,
+            "source": "provider_response_missing_cost",
+        })
         self.assertTrue(result.payload["cos_key"].startswith(
             "ai-edit-v2/" + hashlib.sha256(OWNER.encode()).hexdigest()[:16] + f"/{JOB_ID}/"
         ))
         self.assertEqual(cos.puts[0][2:], ("audio/mpeg", True))
         self.assertNotIn("content", result.payload)
         self.assertNotIn("url", json.dumps(result.payload).lower())
+
+    def test_sfx_uses_official_character_cost_header(self):
+        response = {
+            "content": b"ID3-sfx",
+            "content_type": "audio/mpeg",
+            "headers": {"request-id": "sfx-1", "character-cost": "23"},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            result = self._provider(
+                temp_dir, transport=RecordingTransport(response=response)
+            ).generate_sfx("page turn", 500, "sfx-cost")
+        self.assertEqual(result.cost_units, 23)
+        self.assertEqual(result.payload["cost"], {
+            "status": "reported", "unit": "characters", "value": 23,
+            "source": "character-cost",
+        })
 
     def test_completed_idempotency_replays_across_instances_without_resubmission(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
@@ -161,6 +206,56 @@ class ElevenLabsProviderTests(unittest.TestCase):
 
         self.assertEqual(len(uncertain.calls), 1)
         self.assertEqual(retry.calls, [])
+
+    def test_deterministic_http_4xx_is_terminal_not_unknown(self):
+        rejected = urllib.error.HTTPError(
+            "https://api.elevenlabs.io/v1/music", 400, "bad request", {},
+            io.BytesIO(b'{"detail":"invalid prompt"}'),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            first = RecordingTransport(failure=rejected)
+            with self.assertRaisesRegex(ProviderError, "request_rejected"):
+                self._provider(temp_dir, transport=first).generate_music(
+                    "invalid", 3_000, "rejected-key"
+                )
+            retry = RecordingTransport(failure=AssertionError("must not resubmit"))
+            with self.assertRaisesRegex(ProviderError, "request_rejected"):
+                self._provider(temp_dir, transport=retry).generate_music(
+                    "invalid", 3_000, "rejected-key"
+                )
+        self.assertEqual(len(first.calls), 1)
+        self.assertEqual(retry.calls, [])
+
+    def test_concurrent_initialization_handles_fresh_delete_and_wal_databases(self):
+        for journal_mode in (None, "DELETE", "WAL"):
+            with self.subTest(journal_mode=journal_mode), tempfile.TemporaryDirectory() as temp_dir:
+                db_path = os.path.join(temp_dir, "audio-idempotency.db")
+                if journal_mode is not None:
+                    with closing(sqlite3.connect(db_path)) as connection:
+                        connection.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()
+                barrier = threading.Barrier(16)
+                errors = []
+
+                def construct():
+                    try:
+                        barrier.wait(timeout=5)
+                        ElevenLabsProvider(
+                            owner=OWNER, job_id=JOB_ID, db_path=db_path,
+                            cos_api=FakeCos(), http_request=RecordingTransport(),
+                        )
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=construct) for _ in range(16)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+                self.assertEqual(errors, [])
+                with closing(sqlite3.connect(db_path)) as connection:
+                    self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
 
     def test_same_key_with_changed_request_is_rejected_before_transport(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(

@@ -62,6 +62,7 @@ class AudioPlanTests(unittest.TestCase):
         self.assertTrue(all(cue["kind"] in {
             "semantic_turn", "camera_cut", "emphasis"
         } for cue in plan["sfx"]))
+        self.assertTrue(all(cue["duration_ms"] >= 500 for cue in plan["sfx"]))
         self.assertTrue(all(
             right["at_ms"] - left["at_ms"] >= 300
             for left, right in zip(plan["sfx"], plan["sfx"][1:])
@@ -78,6 +79,14 @@ class AudioPlanTests(unittest.TestCase):
         timeline = {
             "duration_ms": 8_000,
             "words": [{"text": "只要29元", "start_ms": 5_900, "end_ms": 6_200}],
+        }
+        plan = build_audio_plan(EDIT_PLAN, timeline)
+        self.assertFalse(any(cue["at_ms"] == 6_000 for cue in plan["sfx"]))
+
+    def test_real_brand_name_is_conservatively_protected_without_entity_annotations(self):
+        timeline = {
+            "duration_ms": 8_000,
+            "words": [{"text": "星巴克", "start_ms": 5_900, "end_ms": 6_200}],
         }
         plan = build_audio_plan(EDIT_PLAN, timeline)
         self.assertFalse(any(cue["at_ms"] == 6_000 for cue in plan["sfx"]))
@@ -177,7 +186,7 @@ class MixAudioTests(unittest.TestCase):
 
             result = mix_audio(
                 "video.mp4", voice, "bgm.mp3",
-                [{"path": "hit.mp3", "at_ms": 1_000}], output, runner,
+                [{"path": "hit.mp3", "at_ms": 1_000, "duration_ms": 500}], output, runner,
             )
 
             self.assertEqual(result, output)
@@ -191,6 +200,7 @@ class MixAudioTests(unittest.TestCase):
             self.assertIn("sidechaincompress", first_filter)
             self.assertIn("loudnorm=I=-16", first_filter)
             self.assertIn("print_format=json", first_filter)
+            self.assertIn("atrim=duration=0.5", first_filter)
             self.assertIn("measured_I=-18.2", second_filter)
             self.assertIn("TP=-1.5", second_filter)
 

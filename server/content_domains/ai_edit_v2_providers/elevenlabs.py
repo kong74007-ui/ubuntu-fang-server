@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
@@ -68,7 +69,7 @@ class ElevenLabsProvider:
     ) -> ProviderResult:
         payload = {
             "prompt": self._clean_prompt(prompt),
-            "music_length_ms": self._duration(duration_ms),
+            "music_length_ms": self._duration(duration_ms, 3_000, 600_000),
             "model_id": _MUSIC_MODEL,
             "force_instrumental": True,
         }
@@ -77,7 +78,7 @@ class ElevenLabsProvider:
     def generate_sfx(
         self, prompt: str, duration_ms: int, idempotency_key: str
     ) -> ProviderResult:
-        duration = self._duration(duration_ms)
+        duration = self._duration(duration_ms, 500, 30_000)
         payload = {
             "text": self._clean_prompt(prompt),
             "duration_seconds": duration / 1000,
@@ -92,8 +93,12 @@ class ElevenLabsProvider:
         return prompt.strip()
 
     @staticmethod
-    def _duration(duration_ms: int) -> int:
-        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms <= 0:
+    def _duration(duration_ms: int, minimum: int, maximum: int) -> int:
+        if (
+            isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, int)
+            or not minimum <= duration_ms <= maximum
+        ):
             raise ProviderError("elevenlabs_duration_invalid")
         return duration_ms
 
@@ -134,6 +139,13 @@ class ElevenLabsProvider:
                 canonical_body,
                 self.timeout_seconds,
             )
+        except urllib.error.HTTPError as exc:
+            if 400 <= int(exc.code) < 500:
+                error_code = "elevenlabs_request_rejected"
+            else:
+                error_code = "elevenlabs_http_error"
+            self._mark_terminal(idempotency_key, error_code)
+            raise ProviderError(error_code) from exc
         except Exception as exc:
             # At this boundary we cannot prove whether the paid request crossed the
             # wire. Persist uncertainty and require reconciliation/manual recovery.
@@ -155,9 +167,36 @@ class ElevenLabsProvider:
             request_id = response_headers.get("request-id") or response_headers.get(
                 "x-request-id", ""
             )
-            cost_units = self._safe_nonnegative_int(
-                response_headers.get("x-usage-units", "0")
-            )
+            provider_payload: dict[str, Any] = {}
+            if capability == "sfx":
+                character_cost = self._safe_nonnegative_int(
+                    response_headers.get("character-cost")
+                )
+                if character_cost is None:
+                    cost_units = 0
+                    provider_payload["cost"] = {
+                        "status": "unknown",
+                        "unit": "characters",
+                        "value": None,
+                        "source": "provider_response_missing_character_cost",
+                    }
+                else:
+                    cost_units = character_cost
+                    provider_payload["cost"] = {
+                        "status": "reported",
+                        "unit": "characters",
+                        "value": character_cost,
+                        "source": "character-cost",
+                    }
+            else:
+                cost_units = 0
+                provider_payload["song_id"] = response_headers.get("song-id", "")
+                provider_payload["cost"] = {
+                    "status": "unknown",
+                    "unit": "provider_units",
+                    "value": None,
+                    "source": "provider_response_missing_cost",
+                }
             extension = ".wav" if "wav" in content_type else ".mp3"
             owner_scope = hashlib.sha256(self.owner.encode("utf-8")).hexdigest()[:16]
             key_scope = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
@@ -181,6 +220,7 @@ class ElevenLabsProvider:
                     "content_type": content_type,
                     "size_bytes": len(content),
                     "etag": str(metadata.get("etag", "")).strip('"'),
+                    **provider_payload,
                 },
                 cost_units=cost_units,
                 elapsed_ms=elapsed_ms,
@@ -195,16 +235,18 @@ class ElevenLabsProvider:
             raise ProviderError("elevenlabs_output_persistence_failed") from exc
 
     @staticmethod
-    def _safe_nonnegative_int(value: str) -> int:
+    def _safe_nonnegative_int(value: str | None) -> int | None:
         try:
-            return max(0, int(value))
+            parsed = int(value) if value is not None else -1
         except (TypeError, ValueError):
-            return 0
+            return None
+        return parsed if parsed >= 0 else None
 
     def _connect(self) -> sqlite3.Connection:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.db_path, timeout=30)
+        connection = sqlite3.connect(self.db_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=10000")
         return connection
 
     @contextmanager
@@ -217,21 +259,37 @@ class ElevenLabsProvider:
             connection.close()
 
     def _initialize_store(self) -> None:
-        with self._connection() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS edit_v2_audio_submissions(
-                       owner TEXT NOT NULL,
-                       job_id TEXT NOT NULL,
-                       idempotency_key TEXT NOT NULL,
-                       request_digest TEXT NOT NULL,
-                       capability TEXT NOT NULL,
-                       state TEXT NOT NULL,
-                       result_json TEXT,
-                       error_code TEXT,
-                       PRIMARY KEY(owner,job_id,idempotency_key)
-                   )"""
-            )
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                with self._connection() as connection:
+                    mode = str(
+                        connection.execute("PRAGMA journal_mode").fetchone()[0]
+                    ).lower()
+                    if mode != "wal":
+                        mode = str(
+                            connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                        ).lower()
+                    if mode != "wal":
+                        raise sqlite3.OperationalError("failed to enable WAL journal mode")
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS edit_v2_audio_submissions(
+                               owner TEXT NOT NULL,
+                               job_id TEXT NOT NULL,
+                               idempotency_key TEXT NOT NULL,
+                               request_digest TEXT NOT NULL,
+                               capability TEXT NOT NULL,
+                               state TEXT NOT NULL,
+                               result_json TEXT,
+                               error_code TEXT,
+                               PRIMARY KEY(owner,job_id,idempotency_key)
+                           )"""
+                    )
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.025)
 
     def _reserve(
         self, idempotency_key: str, request_digest: str, capability: str
