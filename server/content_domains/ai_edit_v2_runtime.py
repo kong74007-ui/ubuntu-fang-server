@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -108,45 +109,56 @@ def option(dependencies: Any, name: str, default: Any = None) -> Any:
 def extract_artifacts(value: Any) -> list[dict[str, Any]]:
     """Extract artifact records at any nested ``artifact(s)`` boundary."""
 
-    found: list[dict[str, Any]] = []
-
-    def visit(item: Any, artifact_context: bool = False) -> None:
-        if isinstance(item, dict):
-            if artifact_context and "cos_key" in item:
-                found.append(item)
-            for key, child in item.items():
-                visit(child, artifact_context or key in {"artifact", "artifacts"})
-        elif isinstance(item, (list, tuple)):
-            for child in item:
-                visit(child, artifact_context)
-
-    visit(value)
+    _valid, found = _scan_artifact_boundaries(value)
     return found
 
 
-def _artifact_boundaries_valid(value: Any) -> bool:
-    if isinstance(value, dict):
+def _scan_artifact_boundaries(value: Any) -> tuple[bool, list[dict[str, Any]]]:
+    found: list[dict[str, Any]] = []
+    if type(value) is dict:
         for key, child in value.items():
             if key == "artifact":
-                if not isinstance(child, dict) or "cos_key" not in child: return False
+                if type(child) is not dict:
+                    return False, found
+                found.append(child)
             elif key == "artifacts":
-                if not isinstance(child, list) or not all(isinstance(item, dict) and "cos_key" in item for item in child): return False
-            if not _artifact_boundaries_valid(child): return False
-    elif isinstance(value, list):
-        return all(_artifact_boundaries_valid(item) for item in value)
-    return True
+                if type(child) is not list or not all(type(item) is dict for item in child):
+                    return False, found
+                found.extend(child)
+            valid, nested = _scan_artifact_boundaries(child)
+            if not valid:
+                return False, found
+            found.extend(nested)
+    elif type(value) is list:
+        for child in value:
+            valid, nested = _scan_artifact_boundaries(child)
+            if not valid:
+                return False, found
+            found.extend(nested)
+    return True, found
+
+
+def _json_value_valid(value: Any) -> bool:
+    """Accept only values whose type and value survive checkpoint JSON unchanged."""
+    if type(value) is dict:
+        return all(type(key) is str and _json_value_valid(child) for key, child in value.items())
+    if type(value) is list:
+        return all(_json_value_valid(child) for child in value)
+    if value is None or type(value) in {str, int, bool}:
+        return True
+    return type(value) is float and math.isfinite(value)
 
 
 def validate_stage_output(
     stage: str, output: Any, verifier: Callable[[str, dict[str, Any]], bool] | None
 ) -> tuple[bool, str | None]:
-    if not isinstance(output, dict):
+    if type(output) is not dict or not _json_value_valid(output):
         return False, "stage_output_invalid"
     if not _semantic_output_valid(stage, output):
         return False, "stage_output_schema_invalid"
-    if not _artifact_boundaries_valid(output):
+    boundaries_valid, artifacts = _scan_artifact_boundaries(output)
+    if not boundaries_valid:
         return False, "stage_artifact_metadata_invalid"
-    artifacts = extract_artifacts(output)
     if stage in ARTIFACT_REQUIRED_STAGES and not artifacts:
         return False, "stage_artifact_missing"
     for artifact in artifacts:
@@ -170,40 +182,188 @@ def _int(value: Any, *, positive: bool = False) -> bool:
 
 
 def _timeline(value: Any) -> bool:
+    if not isinstance(value, dict) or not _int(value.get("duration_ms"), positive=True):
+        return False
+    duration_ms = value["duration_ms"]
     return (
-        isinstance(value, dict)
-        and isinstance(value.get("text"), str) and bool(value["text"])
-        and _timed_items(value.get("words")) and _timed_items(value.get("sentences"))
+        isinstance(value.get("text"), str) and bool(value["text"])
+        and _timed_items(value.get("words"), duration_ms)
+        and _timed_items(value.get("sentences"), duration_ms)
         and value.get("alignment_status") == "aligned"
-        and _int(value.get("duration_ms"), positive=True)
     )
 
 
-def _timed_items(value: Any) -> bool:
+def _timed_items(value: Any, duration_ms: int) -> bool:
     if not isinstance(value, list) or not value: return False
-    previous = -1
+    previous_start = previous_end = -1
     for item in value:
         if (not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"]
                 or not _int(item.get("start_ms")) or not _int(item.get("end_ms"), positive=True)
-                or item["end_ms"] < item["start_ms"] or item["start_ms"] < previous):
+                or item["start_ms"] >= item["end_ms"] or item["end_ms"] > duration_ms
+                or item["start_ms"] < previous_start or item["end_ms"] < previous_end):
             return False
-        previous = item["start_ms"]
+        previous_start, previous_end = item["start_ms"], item["end_ms"]
     return True
+
+
+def _normalized_media(value: Any) -> bool:
+    return (isinstance(value, dict) and isinstance(value.get("cos_key"), str)
+            and bool(value["cos_key"]) and value.get("media_type") in {"video", "audio"}
+            and isinstance(value.get("metadata"), dict)
+            and _int(value["metadata"].get("duration_ms"), positive=True))
+
+
+def _material(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    allowed = {
+        "asset_id", "cos_key", "kind", "width", "height", "content_type",
+        "mime_type", "size_bytes", "etag", "source", "required",
+    }
+    asset_id = value.get("asset_id")
+    if (set(value) - allowed
+            or not ((isinstance(asset_id, str) and bool(asset_id)) or _int(asset_id, positive=True))
+            or not isinstance(value.get("cos_key"), str) or not value["cos_key"]
+            or value.get("kind") not in {"video", "image", "audio"}):
+        return False
+    if value.get("source") not in {
+        "current_upload", "user_history", "platform_public", "gpt_image"
+    } or not isinstance(value.get("required"), bool):
+        return False
+    for field in ("width", "height", "size_bytes"):
+        if field in value and not _int(value[field], positive=True):
+            return False
+    for field in ("content_type", "mime_type", "etag"):
+        if field in value and (not isinstance(value[field], str) or not value[field]):
+            return False
+    return True
+
+
+def _resolved_plan(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        from .ai_edit_v2_schema import EDIT_PLAN_FIELDS, validate_edit_plan
+        plan = {field: value[field] for field in EDIT_PLAN_FIELDS}
+        validate_edit_plan(plan)
+    except (KeyError, TypeError, ValueError):
+        return False
+    required = set(EDIT_PLAN_FIELDS) | {
+        "materials", "material_resolution_status", "text_timeline", "primary_video"
+    }
+    allowed = required | {"mastered_audio"}
+    if set(value) - allowed or not required.issubset(value):
+        return False
+    materials = value.get("materials")
+    if not isinstance(materials, dict) or not all(
+        isinstance(slot_id, str) and bool(slot_id) and _material(material)
+        for slot_id, material in materials.items()
+    ):
+        return False
+    slots = {
+        slot_id
+        for scene in value["scenes"]
+        for slot_id in scene["material_slots"]
+    }
+    if set(materials) != slots:
+        return False
+    if value.get("material_resolution_status") not in {
+        "resolved", "image_generation_degraded"
+    }:
+        return False
+    if not _timeline(value.get("text_timeline")) or not _normalized_media(value.get("primary_video")):
+        return False
+    if "mastered_audio" in value:
+        mastered = value["mastered_audio"]
+        if (not isinstance(mastered, dict) or mastered.get("source") != "mix_audio"
+                or not isinstance(mastered.get("cos_key"), str) or not mastered["cos_key"]
+                or not isinstance(mastered.get("etag"), str) or not mastered["etag"]
+                or not _int(mastered.get("size_bytes"), positive=True)):
+            return False
+    return True
+
+
+def _degradations(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, str) and bool(item) for item in value
+    )
+
+
+def _audio_request(value: Any, kind: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if kind == "bgm":
+        return (set(value) == {"prompt", "duration_ms", "force_instrumental", "duck_under_speech"}
+                and isinstance(value.get("prompt"), str) and bool(value["prompt"])
+                and _int(value.get("duration_ms"), positive=True)
+                and value.get("force_instrumental") is True
+                and value.get("duck_under_speech") is True)
+    return (set(value) == {"kind", "prompt", "at_ms", "duration_ms", "required"}
+            and value.get("kind") in {"camera_cut", "semantic_turn", "emphasis"}
+            and isinstance(value.get("prompt"), str) and bool(value["prompt"])
+            and _int(value.get("at_ms")) and _int(value.get("duration_ms"), positive=True)
+            and isinstance(value.get("required"), bool))
+
+
+def _audio_plan(value: Any) -> bool:
+    return (isinstance(value, dict) and set(value) == {"bgm", "sfx", "degradations"}
+            and (value["bgm"] is None or _audio_request(value["bgm"], "bgm"))
+            and isinstance(value["sfx"], list)
+            and all(_audio_request(item, "sfx") for item in value["sfx"])
+            and _degradations(value["degradations"]))
+
+
+def _generated_audio_item(value: Any, kind: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    request_fields = (
+        {"prompt", "duration_ms", "force_instrumental", "duck_under_speech"}
+        if kind == "bgm" else {"kind", "prompt", "at_ms", "duration_ms", "required"}
+    )
+    asset_fields = {"cos_key", "content_type", "size_bytes", "etag"}
+    optional_fields = {"song_id", "cost"}
+    if not request_fields | asset_fields <= set(value) or set(value) - request_fields - asset_fields - optional_fields:
+        return False
+    request = {field: value[field] for field in request_fields}
+    if not _audio_request(request, kind):
+        return False
+    if (not isinstance(value.get("cos_key"), str) or not value["cos_key"]
+            or not isinstance(value.get("content_type"), str)
+            or not value["content_type"].startswith("audio/")
+            or not _int(value.get("size_bytes"), positive=True)
+            or not isinstance(value.get("etag"), str) or not value["etag"]):
+        return False
+    if "song_id" in value and not isinstance(value["song_id"], str):
+        return False
+    if "cost" in value:
+        cost = value["cost"]
+        if (not isinstance(cost, dict) or set(cost) != {"status", "unit", "value", "source"}
+                or cost.get("status") not in {"reported", "unknown"}
+                or not isinstance(cost.get("unit"), str) or not cost["unit"]
+                or not (cost.get("value") is None or _int(cost["value"]))
+                or not isinstance(cost.get("source"), str) or not cost["source"]):
+            return False
+    return True
+
+
+def _generated_audio(value: Any) -> bool:
+    return (isinstance(value, dict) and set(value) == {"bgm", "sfx", "degradations"}
+            and (value["bgm"] is None or _generated_audio_item(value["bgm"], "bgm"))
+            and isinstance(value["sfx"], list)
+            and all(_generated_audio_item(item, "sfx") for item in value["sfx"])
+            and _degradations(value["degradations"]))
 
 
 def _semantic_output_valid(stage: str, output: dict[str, Any]) -> bool:
     """Fail closed at checkpoint boundaries; artifacts alone are never stage output."""
     if stage == "normalizing":
-        value = output.get("normalized_media")
-        return (isinstance(value, dict) and isinstance(value.get("cos_key"), str)
-                and bool(value["cos_key"]) and value.get("media_type") in {"video", "audio"}
-                and isinstance(value.get("metadata"), dict)
-                and _int(value["metadata"].get("duration_ms"), positive=True))
+        return _normalized_media(output.get("normalized_media"))
     if stage == "transcribing":
         value = output.get("asr_result")
         return (isinstance(value, dict) and isinstance(value.get("provider_task_id"), str)
                 and bool(value["provider_task_id"]) and _int(value.get("duration_ms"), positive=True)
-                and _timed_items(value.get("words")) and _timed_items(value.get("sentences")))
+                and _timed_items(value.get("words"), value["duration_ms"])
+                and _timed_items(value.get("sentences"), value["duration_ms"]))
     if stage == "aligning":
         return _timeline(output.get("text_timeline"))
     if stage == "directing":
@@ -215,19 +375,11 @@ def _semantic_output_valid(stage: str, output: dict[str, Any]) -> bool:
             return True
         except (TypeError, ValueError): return False
     if stage == "resolving_materials":
-        value = output.get("resolved_plan")
-        return (isinstance(value, dict) and isinstance(value.get("materials"), dict)
-                and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("cos_key"), str) for k,v in value["materials"].items())
-                and isinstance(value.get("scenes"), list) and bool(value["scenes"])
-                and all(isinstance(x, dict) and _int(x.get("start_ms")) and _int(x.get("end_ms"), positive=True) for x in value["scenes"])
-                and _int(value.get("duration_ms"), positive=True))
+        return _resolved_plan(output.get("resolved_plan"))
     if stage == "generating_media":
-        audio, generated = output.get("audio_plan"), output.get("generated_audio")
-        return (isinstance(output.get("resolved_plan"), dict)
-                and isinstance(audio, dict) and set(("bgm","sfx","degradations")).issubset(audio)
-                and isinstance(audio["sfx"], list) and isinstance(audio["degradations"], list)
-                and isinstance(generated, dict) and set(("bgm","sfx","degradations")).issubset(generated)
-                and isinstance(generated["sfx"], list) and isinstance(generated["degradations"], list))
+        return (_resolved_plan(output.get("resolved_plan"))
+                and _audio_plan(output.get("audio_plan"))
+                and _generated_audio(output.get("generated_audio")))
     if stage == "rendering":
         return (isinstance(output.get("provider_task_id"), str) and bool(output["provider_task_id"])
                 and output.get("provider_status") == "succeeded"

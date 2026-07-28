@@ -1,5 +1,13 @@
 # Task 7 实施报告
 
+## Fix Round 4
+
+- 八阶段 checkpoint 继续 fail closed：ASR 与 alignment 的 words/sentences 现在必须 `start_ms < end_ms <= duration_ms`，且 start/end 均保持单调；`resolved_plan` 先提取导演字段复用 `validate_edit_plan`，再严格验证 scene 连续正时长、material slot 全覆盖、材料 `cos_key/kind/source/required`、text timeline、primary media 与可选 mastered audio。
+- `generating_media` 对 `audio_plan` 和 `generated_audio` 使用明确的递归 schema，逐项验证 BGM、SFX、生成资产、cost 与 degradation；`resolved_plan={}`、`bgm={}`、`sfx=[{}]`、`degradations=[{}]` 均拒绝。
+- checkpoint 输出只允许 plain `dict`、plain `list` 与有限 JSON scalar；tuple、dict/list 子类、自定义容器、非有限浮点全部在持久化前拒绝。artifact boundary 扫描与 JSON 持久化统一只沿 plain dict/list 遍历，任意嵌套畸形 `artifact`/`artifacts` fail closed。
+- TDD RED：3 个语义测试产生 14 个预期失败子用例；JSON/container 测试产生 4 个预期失败子用例。GREEN：Task 7 定向 78/78；全量 AI Edit V2 270/270；`py_compile` 与 `git diff --check` 退出 0。
+- 保持 Round 3 的真实 polling、mix/mastered audio、target duration fallback 与 HTTPS 门禁不变。未执行 Task 8、部署、重启或真实供应商调用。
+
 ## Fix Round 3
 
 - ASR and Shotstack polling now use real clocks, bounded sleeps, deadline checks, and a lease/active guard on every poll.

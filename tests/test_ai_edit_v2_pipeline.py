@@ -38,6 +38,23 @@ def draft():
         "reference_materials": [],
     }
 
+def _stable_resolved_plan(duration_ms, timeline):
+    plan = copy.deepcopy(VALID_PLAN)
+    plan["duration_ms"] = duration_ms
+    plan["target_duration_ms"] = duration_ms
+    plan["scenes"][0]["end_ms"] = duration_ms
+    plan.update({
+        "materials": {},
+        "material_resolution_status": "resolved",
+        "text_timeline": copy.deepcopy(timeline),
+        "primary_video": {
+            "cos_key": "private/source.mp4",
+            "media_type": "video",
+            "metadata": {"duration_ms": duration_ms},
+        },
+    })
+    return plan
+
 
 class FakePoints:
     def __init__(self):
@@ -620,13 +637,14 @@ class StableRunJobTests(PipelineTests):
                 item = {"text": "ok", "start_ms": 0, "end_ms": 1000}
                 timeline = {"text": "ok", "words": [item], "sentences": [item],
                             "alignment_status": "aligned", "duration_ms": 1000}
+                resolved_plan = _stable_resolved_plan(1000, timeline)
                 outputs = {
                     "normalizing": {"normalized_media": {"cos_key": "private/source.mp4", "media_type": "video", "metadata": {"duration_ms": 1000}}, "artifact": artifact},
                     "transcribing": {"asr_result": {"provider_task_id": "asr-1", "duration_ms": 1000, "words": [item], "sentences": [item]}},
                     "aligning": {"text_timeline": timeline},
                     "directing": {"edit_plan": copy.deepcopy(VALID_PLAN)},
-                    "resolving_materials": {"resolved_plan": {"duration_ms": 1000, "scenes": [{"start_ms": 0, "end_ms": 1000}], "materials": {}}},
-                    "generating_media": {"resolved_plan": {}, "audio_plan": {"bgm": None, "sfx": [], "degradations": []}, "generated_audio": {"bgm": None, "sfx": [], "degradations": []}},
+                    "resolving_materials": {"resolved_plan": copy.deepcopy(resolved_plan)},
+                    "generating_media": {"resolved_plan": copy.deepcopy(resolved_plan), "audio_plan": {"bgm": None, "sfx": [], "degradations": []}, "generated_audio": {"bgm": None, "sfx": [], "degradations": []}},
                     "rendering": {"provider_task_id": "shotstack-1", "provider_status": "succeeded", "render_url": "https://render.test/final.mp4"},
                     "postprocessing": {"artifact": artifact, "output_available": True},
                 }
