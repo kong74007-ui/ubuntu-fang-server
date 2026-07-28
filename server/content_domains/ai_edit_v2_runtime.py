@@ -551,12 +551,44 @@ class ProductionServices:
     def repair_layer(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if self.repair_handler is None:
             raise RuntimeError("repair_provider_not_configured")
-        return self.repair_handler(job, context)
+        result = self.repair_handler(job, context)
+        self._record_repair_usage(job, context, result)
+        return result
 
     def repair_reconciler(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if self.repair_reconciler_handler is None:
             raise RuntimeError("repair_provider_not_configured")
-        return self.repair_reconciler_handler(job, context)
+        result = self.repair_reconciler_handler(job, context)
+        self._record_repair_usage(job, context, result)
+        return result
+
+    def _record_repair_usage(
+        self, job: dict[str, Any], context: dict[str, Any], result: Any
+    ) -> None:
+        """Freeze one repair charge across submit, restart, and reconcile replay."""
+
+        idempotency_key = str(context.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            raise RuntimeError("repair_idempotency_key_missing")
+        if isinstance(result, dict):
+            provider = str(result.get("provider") or "repair").strip() or "repair"
+            request_id = str(
+                result.get("request_id") or result.get("provider_task_id")
+                or context.get("provider_task_id") or idempotency_key
+            ).strip()
+            cost_units = result.get("cost_units")
+        else:
+            provider = str(getattr(result, "provider", None) or "repair").strip()
+            request_id = str(
+                getattr(result, "request_id", None)
+                or context.get("provider_task_id") or idempotency_key
+            ).strip()
+            cost_units = getattr(result, "cost_units", None)
+        operation_key = f"repair:{idempotency_key}"
+        self._record_usage(
+            str(job["id"]), operation_key, provider, "repair", request_id,
+            cost_units if isinstance(cost_units, int) and not isinstance(cost_units, bool) else None,
+        )
 
     def _draft(self, stage_input: dict[str, Any]) -> dict[str, Any]:
         payload = stage_input.get("payload") or {}

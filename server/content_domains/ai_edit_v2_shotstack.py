@@ -596,6 +596,32 @@ def reconcile_webhook(
     return result
 
 
+def reconcile_claimed_webhook(
+    event_row: dict[str, Any],
+    client: ShotstackClient,
+    *,
+    callback_attempt_id: int,
+    callback_token: str,
+    lease_owner: str,
+    db_path: str | None = None,
+) -> ProviderResult:
+    """Authoritatively reconcile a webhook row already leased by the worker."""
+
+    if not isinstance(event_row, dict):
+        raise ProviderError("shotstack_webhook_invalid")
+    task_id = event_row.get("provider_task_id")
+    fingerprint = event_row.get("fingerprint")
+    if not isinstance(task_id, str) or not task_id or not isinstance(fingerprint, str):
+        raise ProviderError("shotstack_webhook_invalid")
+    client.bind_callback_task(callback_attempt_id, callback_token, task_id)
+    result = client.reconcile(provider_task_id=task_id)
+    if not store.mark_provider_event_processed(
+        fingerprint, lease_owner=lease_owner, db_path=db_path
+    ):
+        raise ProviderError("shotstack_webhook_state_conflict")
+    return result
+
+
 def enqueue_webhook(
     job_id: str,
     event: dict[str, Any],

@@ -744,6 +744,7 @@ def _quality_and_delivery(
             else (_ for _ in ()).throw(PipelineError("job_lease_lost"))
         )
         context = {
+            "attempt_id": attempt_id,
             "failing_layers": tuple(qc.get("failing_layers") or []),
             "error_codes": tuple(qc.get("error_codes") or qc.get("issues") or []),
             "deadline_at": deadline_at,

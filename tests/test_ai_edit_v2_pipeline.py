@@ -467,11 +467,13 @@ class PipelineTests(unittest.TestCase):
              worker.billing, "reconcile_pending_precharges",
              side_effect=finish_after_reconciliation,
         ) as pending, \
+             patch.object(worker, "reconcile_provider_events") as provider_events, \
              patch.object(worker.pipeline, "reconcile_terminal_refunds") as refunds, \
              patch.object(worker.store, "claim_next_job") as claim:
             worker.run_worker(stop_event, config=config)
 
         pending.assert_called_once()
+        provider_events.assert_called_once()
         refunds.assert_called_once()
         claim.assert_not_called()
 
@@ -562,6 +564,61 @@ class PipelineTests(unittest.TestCase):
         self.assertIs(captured[0]["cos_api"], fake_cos)
         self.assertEqual(captured[0]["asset_db_path"], self.assets_path)
         self.assertIs(captured[0]["points_client"], fake_points)
+
+    def test_shared_webhook_queue_gets_authoritative_status_then_marks_duplicate_processed(self):
+        from server import ai_edit_v2_worker as worker
+        from server.content_domains import ai_edit_v2_shotstack as shotstack
+
+        job = self._precharged_job("job-webhook-queue")
+        self._set_state(job["id"], "rendering", [])
+        attempt_id = store.record_stage_attempt(
+            job["id"], "rendering", 1, "submitted", 110,
+            provider_task_id="render-async-1", db_path=self.db_path,
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_stage_attempts SET provider_reference=? WHERE id=?",
+                ("job-webhook-queue:render:1", attempt_id),
+            )
+        calls = []
+
+        def request(method, url, _headers, _body, _timeout):
+            calls.append((method, url))
+            return {"success": True, "message": "OK", "response": {
+                "id": "render-async-1", "status": "done",
+                "url": "https://cdn.example.invalid/render-async-1.mp4",
+            }}
+
+        event = {"id": "render-async-1", "status": "done"}
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_WEBHOOK_SECRET": "worker-webhook-secret",
+            "SHOTSTACK_API_KEY": "test-shotstack-key",
+        }):
+            self.assertTrue(shotstack.enqueue_webhook(
+                job["id"], event, received_at=120, db_path=self.db_path
+            ))
+            services = runtime.ProductionServices(self.db_path, shotstack_http=request)
+            processed = worker.reconcile_provider_events(
+                "shared-worker", {"db_path": self.db_path, "lease_seconds": 30},
+                {"services": services}, now=121,
+            )
+            self.assertEqual(processed, 1)
+            self.assertFalse(shotstack.enqueue_webhook(
+                job["id"], event, received_at=122, db_path=self.db_path
+            ))
+            self.assertEqual(worker.reconcile_provider_events(
+                "shared-worker", {"db_path": self.db_path, "lease_seconds": 30},
+                {"services": services}, now=123,
+            ), 0)
+
+        self.assertEqual(calls, [
+            ("GET", "https://api.shotstack.io/edit/stage/render/render-async-1")
+        ])
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT normalized_status,attempt_count FROM edit_v2_provider_events"
+            ).fetchone()
+        self.assertEqual((row["normalized_status"], row["attempt_count"]), ("processed", 0))
 
     def test_terminal_failure_refund_is_reconciled_after_lost_response(self):
         lost_points = LoseFirstRefundResponse()

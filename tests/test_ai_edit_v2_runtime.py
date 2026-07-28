@@ -102,10 +102,64 @@ class RuntimeTests(unittest.TestCase):
                 "job-cost", "image:one", "openai", "image_generation", "replay-request", None
             )
             self.assertEqual(restarted.actual_cost(job, {}), 4)
+            class Points:
+                def __init__(self):
+                    self.refunds = []
+                def refund_points(self, owner, amount, reason="", transaction_key=None):
+                    self.refunds.append((owner, amount, transaction_key))
+                    return 500 + amount
+            points = Points()
+            settlement = billing.settle_success(
+                job["id"], restarted.actual_cost(job, {}), 10,
+                points_client=points, db_path=db_path,
+            )
+            self.assertEqual(settlement["refunded_points"], 46)
+            self.assertEqual(points.refunds[0][1], 46)
             with closing(store.open_store(db_path)) as conn:
                 self.assertEqual(conn.execute(
                     "SELECT COUNT(*) FROM edit_v2_provider_usage WHERE job_id='job-cost'"
                 ).fetchone()[0], 1)
+
+    def test_repair_usage_is_recorded_once_across_unknown_restart_and_reconcile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            store.init_db(db_path)
+            draft = {"creation_mode": "natural_brief", "brief": "x", "language": "zh-CN",
+                     "aspect_ratio": "16:9", "target_duration_ms": 1000,
+                     "input_mode": "external_video",
+                     "main_input": {"asset_id": "m", "kind": "video", "size_bytes": 1,
+                                    "duration_ms": 1000},
+                     "required_materials": [], "reference_materials": []}
+            quote = billing.create_quote("alice", draft, 1, db_path=db_path)
+            job = store.create_job("alice", {"draft": draft}, quote["id"], "repair-cost", 2,
+                                   uuid_factory=lambda: "job-repair-cost", db_path=db_path)
+            with closing(store.open_store(db_path)) as conn:
+                conn.execute("""INSERT INTO edit_v2_billing(
+                    job_id,transaction_key,operation,amount,status,created_at,updated_at
+                ) VALUES('job-repair-cost','hold-repair','hold',50,'held',2,2)""")
+
+            context = {"idempotency_key": "ai-edit-v2:job-repair-cost:repair:1",
+                       "attempt_id": 7, "provider_task_id": "repair-task-1"}
+            confirmed = {"provider": "repairco", "provider_task_id": "repair-task-1",
+                         "request_id": "repair-request-1", "cost_units": 3,
+                         "output_path": "repaired.mp4"}
+            runtime.ProductionServices(
+                db_path, repair_handler=lambda *_args: confirmed,
+                repair_reconciler=lambda *_args: confirmed,
+            ).repair_layer(job, context)
+            restarted = runtime.ProductionServices(
+                db_path, repair_handler=lambda *_args: confirmed,
+                repair_reconciler=lambda *_args: confirmed,
+            )
+            restarted.repair_reconciler(job, context)
+
+            self.assertEqual(restarted.actual_cost(job, {}), 4)
+            with closing(store.open_store(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT capability,request_id,effective_points FROM edit_v2_provider_usage WHERE job_id=?",
+                    (job["id"],),
+                ).fetchall()
+            self.assertEqual([tuple(row) for row in rows], [("repair", "repair-request-1", 4)])
     def test_each_stage_schema_rejects_missing_field_and_wrong_type(self):
         artifact = {"cos_key": "k", "etag": "e", "size_bytes": 1}
         item = {"text": "x", "start_ms": 0, "end_ms": 1}

@@ -20,6 +20,7 @@ EXPECTED_TABLES = {
     "edit_v2_stage_attempts",
     "edit_v2_provider_jobs",
     "edit_v2_provider_events",
+    "edit_v2_provider_usage",
     "edit_v2_quotes",
     "edit_v2_billing",
     "edit_v2_render_artifacts",
@@ -245,7 +246,9 @@ class StoreTests(unittest.TestCase):
 
         self.assertIn("lease_owner", columns)
         self.assertIn("lease_until", columns)
-        self.assertEqual(version, 9)
+        for column in ("attempt_count", "error_code", "retry_at", "dead_letter_at"):
+            self.assertIn(column, columns)
+        self.assertEqual(version, store.SCHEMA_VERSION)
 
     def test_provider_event_mutations_require_a_lease_owner(self):
         claim_parameters = inspect.signature(
@@ -284,7 +287,7 @@ class StoreTests(unittest.TestCase):
                 for row in conn.execute("PRAGMA index_info(idx_edit_v2_jobs_successor)")
             ]
         self.assertIn("predecessor_job_id", columns)
-        self.assertEqual(version, 9)
+        self.assertEqual(version, store.SCHEMA_VERSION)
         self.assertTrue(indexes["idx_edit_v2_jobs_successor"])
         self.assertEqual(successor_index, ["owner", "predecessor_job_id"])
 
@@ -355,7 +358,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(bills["refunded-loser"][0], "refunded")
         self.assertEqual(bills["rejected-loser"][0], "rejected")
         self.assertEqual(bills["winner-a"][0], "settled")
-        self.assertEqual(version, 9)
+        self.assertEqual(version, store.SCHEMA_VERSION)
 
     def test_v8_duplicate_migration_is_concurrency_safe(self):
         path = os.path.join(self.temp_dir.name, "duplicate-v8-concurrent.db")
@@ -424,7 +427,7 @@ class StoreTests(unittest.TestCase):
                         "SELECT version FROM edit_v2_schema_meta WHERE id=1"
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
-                self.assertEqual(version, 9)
+                self.assertEqual(version, store.SCHEMA_VERSION)
 
     def test_v2_generated_rows_upgrade_with_safe_ready_pending_and_failed_semantics(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v2-materials.db")
@@ -763,6 +766,46 @@ class StoreTests(unittest.TestCase):
                 fingerprint, lease_owner="owner-b", db_path=self.db_path
             )
         )
+
+    def test_shared_provider_event_queue_reclaims_crash_and_deadletters_without_starvation(self):
+        job = self._create_job()
+        for task, fingerprint, received_at in (
+            ("render-poison", "fingerprint-poison", 400),
+            ("render-good", "fingerprint-good", 401),
+        ):
+            store.record_provider_event(
+                job["id"], "shotstack", task, "pending", fingerprint, received_at,
+                db_path=self.db_path,
+            )
+
+        crashed = store.claim_next_provider_event(
+            "crashed-owner", 30, 410, db_path=self.db_path
+        )
+        self.assertEqual(crashed["fingerprint"], "fingerprint-poison")
+        self.assertIsNone(store.claim_next_provider_event(
+            "other-owner", 30, 439, db_path=self.db_path,
+            provider_task_id="render-poison",
+        ))
+        reclaimed = store.claim_next_provider_event(
+            "other-owner", 30, 440, db_path=self.db_path,
+            provider_task_id="render-poison",
+        )
+        self.assertEqual(reclaimed["fingerprint"], "fingerprint-poison")
+        self.assertEqual(store.fail_provider_event(
+            "fingerprint-poison", lease_owner="other-owner", error_code="boom",
+            now=440, max_attempts=1, db_path=self.db_path,
+        ), "dead_letter")
+
+        good = store.claim_next_provider_event(
+            "good-owner", 30, 440, db_path=self.db_path
+        )
+        self.assertEqual(good["fingerprint"], "fingerprint-good")
+        self.assertTrue(store.mark_provider_event_processed(
+            "fingerprint-good", lease_owner="good-owner", db_path=self.db_path
+        ))
+        self.assertIsNone(store.claim_next_provider_event(
+            "next-owner", 30, 500, db_path=self.db_path
+        ))
 
     def test_generated_material_does_not_require_a_user_upload_id(self):
         with closing(store.open_store(self.db_path)) as conn:

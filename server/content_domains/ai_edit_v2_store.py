@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -205,6 +205,7 @@ def init_db(db_path: str | None = None) -> None:
                 height INTEGER,
                 reference_analysis_json TEXT,
                 original_text TEXT,
+                platform_asset_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'ready',
                 generation_job_id TEXT,
                 generation_idempotency_key TEXT,
@@ -270,7 +271,12 @@ def init_db(db_path: str | None = None) -> None:
                 fingerprint TEXT NOT NULL UNIQUE,
                 received_at INTEGER NOT NULL,
                 lease_owner TEXT,
-                lease_until INTEGER
+                lease_until INTEGER,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                retry_at INTEGER,
+                dead_letter_at INTEGER,
+                updated_at INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS edit_v2_provider_usage(
@@ -392,6 +398,13 @@ def init_db(db_path: str | None = None) -> None:
             }
             if "original_text" not in material_columns:
                 conn.execute("ALTER TABLE edit_v2_materials ADD COLUMN original_text TEXT")
+            if "platform_asset_id" not in material_columns:
+                conn.execute("ALTER TABLE edit_v2_materials ADD COLUMN platform_asset_id INTEGER")
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_platform_asset
+                   ON edit_v2_materials(owner,platform_asset_id)
+                   WHERE source='platform_video' AND platform_asset_id IS NOT NULL"""
+            )
             if "predecessor_job_id" not in job_columns:
                 conn.execute(
                     """ALTER TABLE edit_v2_jobs
@@ -447,6 +460,24 @@ def init_db(db_path: str | None = None) -> None:
                 conn.execute(
                     "ALTER TABLE edit_v2_provider_events ADD COLUMN lease_until INTEGER"
                 )
+            for column, definition in {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "error_code": "TEXT",
+                "retry_at": "INTEGER",
+                "dead_letter_at": "INTEGER",
+                "updated_at": "INTEGER",
+            }.items():
+                if column not in provider_event_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_provider_events ADD COLUMN {column} {definition}"
+                    )
+            conn.execute(
+                "UPDATE edit_v2_provider_events SET updated_at=received_at WHERE updated_at IS NULL"
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_edit_v2_provider_events_claim
+                   ON edit_v2_provider_events(normalized_status,dead_letter_at,retry_at,lease_until,received_at,id)"""
+            )
             generation_columns = {
                 "generation_job_id": "TEXT",
                 "generation_idempotency_key": "TEXT",
@@ -1818,14 +1849,16 @@ def record_provider_event(
         try:
             conn.execute(
                 """INSERT INTO edit_v2_provider_events(
-                       job_id,provider,provider_task_id,normalized_status,fingerprint,received_at
-                   ) VALUES(?,?,?,?,?,?)""",
+                       job_id,provider,provider_task_id,normalized_status,fingerprint,
+                       received_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
                 (
                     job_id,
                     provider,
                     provider_task_id,
                     normalized_status,
                     fingerprint,
+                    received_at,
                     received_at,
                 ),
             )
@@ -1899,8 +1932,8 @@ def claim_provider_event(
             conn.execute(
                 """INSERT INTO edit_v2_provider_events(
                        job_id,provider,provider_task_id,normalized_status,fingerprint,
-                       received_at,lease_owner,lease_until
-                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                       received_at,lease_owner,lease_until,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     job_id,
                     provider,
@@ -1910,6 +1943,7 @@ def claim_provider_event(
                     received_at,
                     lease_owner,
                     lease_until,
+                    received_at,
                 ),
             )
             conn.commit()
@@ -1931,6 +1965,114 @@ def mark_provider_event_processed(
             (fingerprint, lease_owner),
         ).rowcount
     return changed == 1
+
+
+def claim_next_provider_event(
+    lease_owner: str,
+    lease_seconds: int,
+    now: int,
+    *,
+    db_path: str | None = None,
+    provider_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Claim the oldest due webhook hint, reclaiming only expired leases."""
+
+    if not isinstance(lease_owner, str) or not lease_owner.strip():
+        raise ValueError("provider_event_lease_owner_invalid")
+    if isinstance(lease_seconds, bool) or int(lease_seconds) <= 0:
+        raise ValueError("provider_event_lease_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            filters = [
+                "normalized_status='pending'",
+                "dead_letter_at IS NULL",
+                "(retry_at IS NULL OR retry_at<=?)",
+                "(lease_until IS NULL OR lease_until<=?)",
+            ]
+            params: list[Any] = [int(now), int(now)]
+            if provider_task_id is not None:
+                filters.append("provider_task_id=?")
+                params.append(str(provider_task_id))
+            row = conn.execute(
+                f"""SELECT * FROM edit_v2_provider_events
+                    WHERE {' AND '.join(filters)}
+                    ORDER BY received_at,id LIMIT 1""",
+                params,
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            lease_until = int(now) + int(lease_seconds)
+            changed = conn.execute(
+                """UPDATE edit_v2_provider_events
+                   SET lease_owner=?,lease_until=?,updated_at=?
+                   WHERE id=? AND normalized_status='pending'
+                     AND dead_letter_at IS NULL
+                     AND (lease_until IS NULL OR lease_until<=?)""",
+                (lease_owner, lease_until, int(now), row["id"], int(now)),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                return None
+            claimed = conn.execute(
+                "SELECT * FROM edit_v2_provider_events WHERE id=?", (row["id"],)
+            ).fetchone()
+            conn.commit()
+            return dict(claimed)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def fail_provider_event(
+    fingerprint: str,
+    *,
+    lease_owner: str,
+    error_code: str,
+    now: int,
+    max_attempts: int = 5,
+    db_path: str | None = None,
+) -> str:
+    """Release a failed hint for bounded retry or move it to dead letter."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT attempt_count FROM edit_v2_provider_events
+                   WHERE fingerprint=? AND lease_owner=? AND normalized_status='pending'""",
+                (fingerprint, lease_owner),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                raise ValueError("provider_event_lease_lost")
+            attempts = int(row["attempt_count"] or 0) + 1
+            code = str(error_code or "provider_event_reconcile_failed")[:160]
+            if attempts >= max(1, int(max_attempts)):
+                conn.execute(
+                    """UPDATE edit_v2_provider_events
+                       SET normalized_status='dead_letter',attempt_count=?,error_code=?,
+                           dead_letter_at=?,retry_at=NULL,lease_owner=NULL,lease_until=NULL,
+                           updated_at=? WHERE fingerprint=? AND lease_owner=?""",
+                    (attempts, code, int(now), int(now), fingerprint, lease_owner),
+                )
+                conn.commit()
+                return "dead_letter"
+            delay = min(300, 5 * (2 ** (attempts - 1)))
+            conn.execute(
+                """UPDATE edit_v2_provider_events
+                   SET attempt_count=?,error_code=?,retry_at=?,lease_owner=NULL,
+                       lease_until=NULL,updated_at=?
+                   WHERE fingerprint=? AND lease_owner=? AND normalized_status='pending'""",
+                (attempts, code, int(now) + delay, int(now), fingerprint, lease_owner),
+            )
+            conn.commit()
+            return "retry"
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
 
 def release_pending_provider_event(

@@ -59,6 +59,10 @@ test('page implements draft quote confirmation upload retry and job polling', ()
   }
   assert.match(page, /template_id/);
   assert.match(page, /template_version/);
+  assert.match(page, /function loadPlatformAssets\(/);
+  assert.match(page, /\/api\/v2\/edit\/platform-assets/);
+  assert.match(page, /data-platform-reference/);
+  assert.doesNotMatch(page, /original_text/);
   assert.match(page, /data\.degradations/);
   assert.match(page, /data\.quality/);
   assert.match(page, /actual_charge_points/);

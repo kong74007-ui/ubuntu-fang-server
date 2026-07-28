@@ -1,5 +1,6 @@
 import os
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -82,6 +83,7 @@ class FakeHandler:
 
 class FakeCos:
     def __init__(self):
+        self.puts = []
         self.head = {
             "content_length": 12 * MB,
             "content_type": "video/mp4",
@@ -96,6 +98,9 @@ class FakeCos:
 
     def head_object(self, object_key):
         return dict(self.head)
+
+    def put_file(self, path, object_key, content_type, private=True):
+        self.puts.append((path, object_key, content_type, private))
 
 
 class ApiTests(unittest.TestCase):
@@ -178,6 +183,69 @@ class ApiTests(unittest.TestCase):
         canonical, _bindings = api.canonicalize_job_draft("alice", draft)
         self.assertEqual(canonical["input_mode"], "platform_video")
         self.assertEqual(canonical["original_text"], "平台持久原文：品牌价格是29元")
+
+    def test_platform_asset_is_owner_scoped_and_imports_authoritative_text_without_client_truth(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        source = os.path.join(self.temp_dir.name, "platform-video.mp4")
+        Path(source).write_bytes(b"authoritative-platform-video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                video_file TEXT,text TEXT,ratio TEXT,status TEXT,created_at INTEGER,
+                updated_at INTEGER)""")
+            conn.executemany(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (31, "source-job-31", "alice", "text", source,
+                     "authoritative script 29", "16:9", "done", 1, 2),
+                    (32, "source-job-32", "bob", "text", source,
+                     "other owner secret", "16:9", "done", 1, 2),
+                ],
+            )
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
+            self.assertEqual(status, 200)
+            self.assertEqual(listed["items"], [{
+                "id": 31, "reference_id": "31", "filename": "platform-video.mp4",
+                "ratio": "16:9", "status": "done",
+            }])
+            self.assertNotIn("original_text", listed["items"][0])
+            status, imported = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/31/import",
+                {"original_text": "forged client text", "source": "platform_video"},
+            )
+            self.assertEqual(status, 201)
+            material_id = imported["material"]["id"]
+            self.assertNotIn("original_text", imported["material"])
+            status, _forbidden = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/32/import", {}
+            )
+            self.assertEqual(status, 404)
+
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT source,platform_asset_id,original_text FROM edit_v2_materials WHERE id=?",
+                (material_id,),
+            ).fetchone()
+        self.assertEqual(tuple(row), ("platform_video", 31, "authoritative script 29"))
+
+        status, upload = self._dispatch("POST", "/api/v2/edit/uploads", {
+            "kind": "video", "purpose": "primary", "content_type": "video/mp4",
+            "filename": "spoof.mp4", "source": "platform_video",
+            "original_text": "forged platform script",
+        })
+        self.assertEqual(status, 201)
+        with closing(store.open_store(self.db_path)) as conn:
+            spoof = conn.execute(
+                "SELECT source,original_text FROM edit_v2_materials WHERE upload_id=?",
+                (upload["upload_id"],),
+            ).fetchone()
+        self.assertEqual(tuple(spoof), ("user_upload", None))
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)
@@ -700,7 +768,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(handler.responses[0][0], 401)
 
     def test_authenticated_webhook_accepts_official_fields_and_only_queues_reconcile(self):
-        _job, attempt_id, token = self._rendering_attempt()
+        job, attempt_id, token = self._rendering_attempt()
         body = json.loads((Path(__file__).parent / "fixtures" / "ai_edit_v2" /
                            "provider_responses" / "shotstack_webhook_complete.json").read_text(
                                encoding="utf-8"))
@@ -716,6 +784,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(first_handler.responses, [(202, {"accepted": True, "duplicate": False})])
         self.assertEqual(second_handler.responses, [(202, {"accepted": True, "duplicate": True})])
         reconcile.assert_not_called()
+
+        from server import ai_edit_v2_worker as worker
+        from server.content_domains import ai_edit_v2_runtime as runtime
+        authoritative = json.loads((Path(__file__).parent / "fixtures" / "ai_edit_v2" /
+                                    "provider_responses" / "shotstack_render_success.json").read_text(
+                                        encoding="utf-8"))
+        calls = []
+
+        def request(method, url, _headers, _body, _timeout):
+            calls.append((method, url))
+            return authoritative
+
+        with patch.dict(os.environ, {"SHOTSTACK_API_KEY": "test-shotstack-key"}):
+            services = runtime.ProductionServices(self.db_path, shotstack_http=request)
+            self.assertEqual(worker.reconcile_provider_events(
+                "api-test-worker", {"db_path": self.db_path, "lease_seconds": 30},
+                {"services": services}, now=200,
+            ), 1)
+        self.assertEqual(calls, [(
+            "GET", "https://api.shotstack.io/edit/stage/render/render-123"
+        )])
+        with closing(store.open_store(self.db_path)) as conn:
+            queued = conn.execute(
+                "SELECT normalized_status FROM edit_v2_provider_events WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(queued["normalized_status"], "processed")
 
     def test_webhook_rejects_oversize_malformed_and_mismatched_events(self):
         _job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")

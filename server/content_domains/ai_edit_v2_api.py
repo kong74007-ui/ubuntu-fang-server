@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import time
 import urllib.parse
 import uuid
@@ -21,6 +22,7 @@ from . import ai_edit_v2_media as media
 from . import ai_edit_v2_feature as feature
 from . import ai_edit_v2_shotstack as shotstack
 from . import ai_edit_v2_templates as templates
+from . import ai_edit_v2_platform_assets as platform_assets
 from . import points
 from .ai_edit_v2_providers.base import ProviderError, RetryableProviderError
 from .ai_edit_v2_schema import (
@@ -43,6 +45,7 @@ _WEBHOOK_PATH = API_PREFIX + "webhooks/shotstack"
 _WEBHOOK_MAX_BYTES = 64 * 1024
 _UPLOAD_RE = re.compile(r"^/api/v2/edit/uploads/([0-9a-f-]{36})/complete$")
 _MATERIAL_RE = re.compile(r"^/api/v2/edit/materials/(\d+)$")
+_PLATFORM_IMPORT_RE = re.compile(r"^/api/v2/edit/platform-assets/(\d+)/import$")
 _JOB_RE = re.compile(r"^/api/v2/edit/jobs/([0-9a-f-]{36})$")
 _JOB_RETRY_RE = re.compile(r"^/api/v2/edit/jobs/([0-9a-f-]{36})/retry$")
 _CONTENT_TYPES = {
@@ -312,6 +315,28 @@ def _list_materials(handler: Any, owner: str) -> bool:
             (owner,),
         ).fetchall()
     return _send(handler, 200, {"items": [_material_public(row) for row in rows]})
+
+
+def _list_platform_assets(handler: Any, owner: str) -> bool:
+    try:
+        return _send(handler, 200, {"items": platform_assets.list_assets(owner)})
+    except (OSError, sqlite3.Error):
+        return _send(handler, 502, {"detail": "platform_asset_store_unavailable"})
+
+
+def _import_platform_asset(handler: Any, owner: str, asset_id: int) -> bool:
+    try:
+        material = platform_assets.import_asset(
+            owner, asset_id, cos_api=cos, probe_media=media.probe_media,
+            db_path=store._db_path(),
+        )
+        return _send(handler, 201, {"material": _material_public(material)})
+    except LookupError:
+        return _send(handler, 404, {"detail": "platform_asset_not_found"})
+    except ValueError as exc:
+        return _send(handler, 409, {"detail": str(exc)})
+    except Exception:
+        return _send(handler, 502, {"detail": "platform_asset_import_failed"})
 
 
 def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -856,6 +881,11 @@ def dispatch(
         ]})
     if method == "GET" and path == API_PREFIX + "materials":
         return _list_materials(handler, owner)
+    if method == "GET" and path == API_PREFIX + "platform-assets":
+        return _list_platform_assets(handler, owner)
+    platform_import = _PLATFORM_IMPORT_RE.fullmatch(path)
+    if method == "POST" and platform_import:
+        return _import_platform_asset(handler, owner, int(platform_import.group(1)))
     material_match = _MATERIAL_RE.fullmatch(path)
     if method == "GET" and material_match:
         return _get_material(handler, owner, int(material_match.group(1)))

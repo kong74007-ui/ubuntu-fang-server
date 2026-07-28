@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import closing
 from typing import Any
 
 try:
@@ -19,6 +20,7 @@ try:
     from content_domains import ai_edit_v2_pipeline as pipeline
     from content_domains import ai_edit_v2_store as store
     from content_domains import ai_edit_v2_runtime as runtime
+    from content_domains import ai_edit_v2_shotstack as shotstack
 except ImportError:
     from .content_domains import ai_edit_v2_billing as billing
     from .content_domains import ai_edit_v2_delivery as delivery
@@ -26,6 +28,7 @@ except ImportError:
     from .content_domains import ai_edit_v2_pipeline as pipeline
     from .content_domains import ai_edit_v2_store as store
     from .content_domains import ai_edit_v2_runtime as runtime
+    from .content_domains import ai_edit_v2_shotstack as shotstack
 
 
 LOG = logging.getLogger("ai-edit-v2")
@@ -77,6 +80,69 @@ def _process_claimed(
     return pipeline.run_job(job["id"], bundle, db_path=config["db_path"])
 
 
+def reconcile_provider_events(
+    worker_id: str,
+    config: dict[str, Any],
+    dependencies: dict[str, Any],
+    *,
+    now: int | None = None,
+    max_batch: int = 100,
+) -> int:
+    """Consume durable webhook hints; one poison event cannot block later rows."""
+
+    current = int(time.time()) if now is None else int(now)
+    services = runtime.option(dependencies, "services")
+    processed = 0
+    for index in range(max(1, int(max_batch))):
+        owner = f"{worker_id}-webhook-{index}"
+        event = store.claim_next_provider_event(
+            owner, config["lease_seconds"], current, db_path=config["db_path"]
+        )
+        if event is None:
+            break
+        try:
+            if event["provider"] != "shotstack":
+                raise RuntimeError("provider_event_provider_unsupported")
+            with closing(store.open_store(config["db_path"])) as conn:
+                attempt = conn.execute(
+                    """SELECT id,provider_reference FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='rendering'
+                         AND (provider_task_id=? OR provider_task_id IS NULL)
+                       ORDER BY attempt DESC,id DESC LIMIT 1""",
+                    (event["job_id"], event["provider_task_id"]),
+                ).fetchone()
+            if attempt is None or not attempt["provider_reference"]:
+                raise RuntimeError("shotstack_webhook_attempt_missing")
+            client = shotstack.ShotstackClient(
+                job_id=event["job_id"], attempt_id=int(attempt["id"]),
+                db_path=config["db_path"],
+                http_request=getattr(services, "shotstack_http", None),
+            )
+            token = client.callback_token(attempt["provider_reference"])
+            shotstack.reconcile_claimed_webhook(
+                event, client, callback_attempt_id=int(attempt["id"]),
+                callback_token=token, lease_owner=owner,
+                db_path=config["db_path"],
+            )
+            processed += 1
+        except Exception as exc:
+            LOG.exception(
+                "[ai-edit-v2] provider webhook reconciliation failed fingerprint=%s",
+                event.get("fingerprint"),
+            )
+            try:
+                store.fail_provider_event(
+                    event["fingerprint"], lease_owner=owner,
+                    error_code=str(exc) or type(exc).__name__, now=current,
+                    max_attempts=int(os.environ.get(
+                        "AI_EDIT_V2_WEBHOOK_MAX_ATTEMPTS", "5"
+                    )), db_path=config["db_path"],
+                )
+            except Exception:
+                LOG.exception("[ai-edit-v2] provider webhook failure persistence failed")
+    return processed
+
+
 def run_worker(
     stop_event: threading.Event,
     *,
@@ -90,8 +156,10 @@ def run_worker(
     accepts_submissions = bool(config["enabled"]) and bool(
         capability.get("accepts_submissions")
     )
+    worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
 
     def reconcile_once() -> None:
+        reconcile_provider_events(worker_id, config, dependencies)
         billing.reconcile_pending_precharges(
             int(time.time()), db_path=config["db_path"]
         )
@@ -115,7 +183,6 @@ def run_worker(
                 LOG.exception("[ai-edit-v2] reconciliation failed")
             stop_event.wait(config["poll_seconds"])
         return
-    worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
     runtime.assert_production_ready(dependencies)
     active: set[Future] = set()
     with ThreadPoolExecutor(
