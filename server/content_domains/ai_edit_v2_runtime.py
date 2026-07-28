@@ -445,7 +445,8 @@ class ProductionServices:
                  elevenlabs_http: Callable[..., Any] | None = None,
                  downloader: Callable[[str], bytes] | None = None,
                  repair_handler: Callable[..., Any] | None = None,
-                 repair_reconciler: Callable[..., Any] | None = None) -> None:
+                 repair_reconciler: Callable[..., Any] | None = None,
+                 quality_analyzer: Callable[..., Any] | None = None) -> None:
         from . import ai_edit_v2_cos
         self.db_path = db_path
         self.cos = cos_api or ai_edit_v2_cos
@@ -458,7 +459,7 @@ class ProductionServices:
         self.repair_handler = repair_handler
         self.repair_reconciler_handler = repair_reconciler
         from .ai_edit_v2_quality import LocalQualityRunner
-        self.quality_runner = LocalQualityRunner(runner)
+        self.quality_runner = LocalQualityRunner(runner, analyzer=quality_analyzer)
 
     def readiness_errors(self) -> list[str]:
         errors = []

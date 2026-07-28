@@ -41,9 +41,12 @@ class EvidenceRunner:
 class QualityTests(unittest.TestCase):
     def test_local_runner_uses_only_real_ffprobe_and_ffmpeg_commands(self):
         evidence = passing_evidence()
-        plan = {**PLAN, "quality_analysis": {
-            key: evidence[key] for key in ("captions", "materials", "transcript", "audio")
-        }}
+        plan = {**PLAN, "quality_analysis": {"captions": {"safe_area": False}}}
+        analyzed = []
+
+        def analyzer(check, *, path, expected):
+            analyzed.append((check, path, expected))
+            return evidence[check]
         calls = []
 
         class Result:
@@ -68,7 +71,11 @@ class QualityTests(unittest.TestCase):
                 return Result(stderr=b"")
             self.fail(f"unexpected executable: {command[0]}")
 
-        report = inspect_output("final.mp4", plan, LocalQualityRunner(process_runner))
+        report = inspect_output(
+            "final.mp4", plan,
+            LocalQualityRunner(process_runner, analyzer=analyzer,
+                               binary_finder=lambda _name: "fake-binary"),
+        )
 
         self.assertTrue(report.passed, report.error_codes)
         self.assertTrue(any(isinstance(command, list) and command[0] == "ffprobe" for command in calls))
@@ -76,6 +83,21 @@ class QualityTests(unittest.TestCase):
             isinstance(command, list) and command[0] == "ffmpeg" for command in calls
         ), 3)
         self.assertFalse(any(command[0] == "ai-edit-v2-quality-inspect" for command in calls))
+        self.assertEqual([item[0] for item in analyzed], ["captions", "materials", "transcript", "audio"])
+        self.assertEqual(analyzed[0][1], "final.mp4")
+
+    def test_local_runner_readiness_requires_binaries_and_final_media_analyzer(self):
+        runner = LocalQualityRunner(lambda *_a, **_k: None,
+                                    binary_finder=lambda name: None if name == "ffprobe" else name)
+        self.assertEqual(set(runner.readiness_errors()), {"ffprobe", "final_media_analyzer"})
+
+        class UnavailableAnalyzer:
+            def __call__(self, *_a, **_k): return {}
+            def available(self): return False
+
+        runner = LocalQualityRunner(lambda *_a, **_k: None, analyzer=UnavailableAnalyzer(),
+                                    binary_finder=lambda name: name)
+        self.assertEqual(runner.readiness_errors(), ["final_media_analyzer"])
 
     def test_nan_and_infinity_evidence_fail_closed(self):
         for invalid in (float("nan"), float("inf"), float("-inf")):

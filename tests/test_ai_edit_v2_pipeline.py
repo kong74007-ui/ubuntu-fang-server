@@ -462,6 +462,27 @@ class PipelineTests(unittest.TestCase):
         refunds.assert_called_once()
         claim.assert_not_called()
 
+    def test_enabled_worker_periodically_reconciles_pending_delivery_outbox(self):
+        from server import ai_edit_v2_worker as worker
+
+        config = {"enabled": True, "workers": 1, "lease_seconds": 30,
+                  "poll_seconds": 0.01, "normal_timeout_seconds": 2700,
+                  "repair_timeout_seconds": 900, "db_path": self.db_path}
+        stop_event = threading.Event()
+
+        def reconciled(*_args, **_kwargs):
+            stop_event.set()
+            return 0
+
+        dependencies = {"readiness_errors": lambda: [], "services": None}
+        with patch.object(worker.billing, "reconcile_pending_precharges"), \
+             patch.object(worker.pipeline, "reconcile_terminal_refunds"), \
+             patch.object(worker.delivery, "reconcile_pending_deliveries", side_effect=reconciled) as delivery_reconcile, \
+             patch.object(worker.store, "claim_next_job") as claim:
+            worker.run_worker(stop_event, config=config, handlers=dependencies)
+        delivery_reconcile.assert_called_once()
+        claim.assert_not_called()
+
     def test_terminal_failure_refund_is_reconciled_after_lost_response(self):
         lost_points = LoseFirstRefundResponse()
         self.points = lost_points
@@ -665,6 +686,10 @@ class StableRunJobTests(PipelineTests):
         self.assertEqual(len(submitted), 1)
         self.assertEqual(reconciled, ["repair-provider-1"])
 
+    def test_repair_deadline_is_capped_at_900_seconds_when_env_is_1800(self):
+        with patch.dict(os.environ, {"AI_EDIT_V2_REPAIR_BUDGET_SECONDS": "1800"}):
+            self.assertEqual(pipeline._repair_budget(), 900)
+
     def test_real_worker_and_concrete_production_services_reach_quality_check(self):
         from server import ai_edit_v2_worker as worker
 
@@ -692,7 +717,7 @@ class StableRunJobTests(PipelineTests):
         plan["duration_ms"] = plan["target_duration_ms"] = 3000
         plan["scenes"][0]["end_ms"] = 3000
         plan["audio_plan"].update({"music_policy": "duck_under_speech", "sfx_policy": "semantic_only"})
-        calls = {"openai": 0, "elevenlabs": 0}
+        calls = {"openai": 0, "elevenlabs": 0, "quality": []}
         def openai_http(*_args): calls["openai"] += 1; return {"id": "img-1", "data": [{"url": "https://image.test/x.png"}], "usage": {"total_tokens": 1}}
         def openai_download(*_args): return {"content": png_bytes(), "content_type": "image/png"}
         def eleven_http(*_args): calls["elevenlabs"] += 1; return {"content": b"ID3-audio", "content_type": "audio/mpeg", "headers": {"request-id": "audio-1", "character-cost": "1", "song-id": "song-1"}}
@@ -717,6 +742,16 @@ class StableRunJobTests(PipelineTests):
             if command[-1] not in {"NUL", "-"}: Path(command[-1]).write_bytes(b"mastered-audio")
             loudness = b'{"input_i":"-20","input_tp":"-2","input_lra":"5","input_thresh":"-30","target_offset":"0"}'
             return type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": loudness})()
+        def quality_analyzer(check, *, path, expected):
+            calls["quality"].append((check, Path(path).name))
+            if check == "materials":
+                return {"covered_asset_ids": expected["required_asset_ids"]}
+            return {
+                "captions": {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+                "transcript": {"source_matches": True, "facts_match": True},
+                "audio": {"silence_ratio": 0.0, "true_peak_dbfs": -1.0,
+                          "dialogue_to_bgm_db": 8.0, "dialogue_to_sfx_db": 8.0},
+            }[check]
         fake_cos = FakeCos()
         services = runtime.ProductionServices(self.db_path, cos_api=fake_cos, runner=runner,
                                               dashscope_http=dashscope_http, shotstack_http=shotstack_http,
@@ -724,7 +759,8 @@ class StableRunJobTests(PipelineTests):
                                               elevenlabs_http=eleven_http,
                                               downloader=lambda _url: b"rendered-mp4",
                                               repair_handler=lambda *_args: {},
-                                              repair_reconciler=lambda *_args: {})
+                                              repair_reconciler=lambda *_args: {},
+                                              quality_analyzer=quality_analyzer)
         dependencies = runtime.production_dependencies(self.db_path, services=services)
         dependencies["points_client"] = self.points
         current_time = int(time.time())
@@ -734,10 +770,12 @@ class StableRunJobTests(PipelineTests):
         with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
             runtime.assert_production_ready(dependencies)
             result = worker._process_claimed(claimed, "integration-lease", config, dependencies)
-        self.assertEqual(result["state"], "quality_failed", result)
-        self.assertEqual(result["error_code"], "inspection_incomplete")
+        self.assertEqual(result["state"], "completed", (result, calls))
         self.assertIn(b"rendered-mp4", fake_cos.objects.values())
-        self.assertEqual(calls, {"openai": 1, "elevenlabs": 1})
+        self.assertEqual(calls["openai"], 1)
+        self.assertEqual(calls["elevenlabs"], 1)
+        self.assertEqual([item[0] for item in calls["quality"]],
+                         ["captions", "materials", "transcript", "audio"])
 
     def _dependencies(self, calls, *, render_started=None, render_release=None):
         def handler(name):

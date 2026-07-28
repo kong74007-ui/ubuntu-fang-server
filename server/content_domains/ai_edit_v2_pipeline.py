@@ -70,7 +70,7 @@ def _repair_budget() -> int:
     value = os.environ.get("AI_EDIT_V2_REPAIR_TIMEOUT_SECONDS") or os.environ.get(
         "AI_EDIT_V2_REPAIR_BUDGET_SECONDS", "900"
     )
-    return max(0, int(value))
+    return max(0, min(900, int(value)))
 
 
 def _load_job(job_id: str, db_path: str | None = None) -> dict[str, Any]:
@@ -805,10 +805,12 @@ def _quality_and_delivery(
         raise PipelineError("quality_report_missing")
     cost = actual_cost(job, outputs) if callable(actual_cost) else int(actual_cost)
     try:
+        services = runtime.option(dependencies, "services")
         return delivery.deliver(
             job["id"], output_path, report, cost, db_path=db_path,
             worker_id=worker_id, lease_seconds=lease_seconds, now_fn=now_fn,
             asset_db_path=runtime.option(dependencies, "asset_db_path"),
+            cos_api=getattr(services, "cos", None), points_client=points_client,
         )
     except delivery.DeliveryError as exc:
         current = _load_job(job["id"], db_path)
@@ -867,6 +869,17 @@ def run_job(
             now = int(now_fn())
             job = _load_job(job_id, db_path)
             state = str(job["status"])
+            if state == "settling":
+                from . import ai_edit_v2_delivery as delivery
+                services = runtime.option(dependencies, "services")
+                result = delivery.resume_delivery(
+                    job_id, db_path=db_path, worker_id=worker_id,
+                    lease_seconds=lease_seconds, now_fn=now_fn,
+                    cos_api=getattr(services, "cos", None),
+                    asset_db_path=runtime.option(dependencies, "asset_db_path"),
+                    points_client=points_client,
+                )
+                return result
             if state in {"quality_check", "repairing"}:
                 result = _quality_and_delivery(
                     job, dependencies, worker_id=worker_id,

@@ -14,6 +14,14 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 - Settlement atomically creates the cross-database outbox. The dispatcher idempotently writes an owner-safe real `video_assets` row, then atomically marks the outbox delivered and the V2 job completed. The internal render record uses `delivery_internal` and is not exposed as a user asset.
 - Repair has a durable stage attempt, stable idempotency key, provider task ID, fixed absolute 900-second deadline, lease assertions, saved result, and restart reconciliation. A saved provider identity always invokes `repair_reconciler`, never resubmission.
 
+## Round 2 fixes
+
+- `settling` jobs resume directly from the canonical durable delivery intent. The resume path strictly reconstructs and validates the passed `QualityReport`, reconciles the deterministic COS object with HEAD, reuses the settlement key, and drains the durable asset outbox.
+- The enabled worker periodically claims and reconciles expired/unleased pending deliveries before claiming ordinary work. Tests cover crashes after the external settlement response, after the V2 settlement/outbox transaction, before the asset write, and after the asset write but before V2 finalization.
+- Production quality no longer reads `resolved_plan.quality_analysis`. `LocalQualityRunner` requires a final-MP4 analyzer interface for OCR/safe-area/glyph, material coverage, transcript/fact, and track-level audio evidence. Missing FFprobe, FFmpeg, or analyzer availability is a readiness error, so the production worker fails before claiming a job.
+- Repair time is `min(configured_seconds, 900)` and the same absolute deadline covers submission/reconciliation, repair, and reinspection.
+- Existing `video_assets` rows are reusable only when job ID, owner, mode, private video key, ratio, and status all match. Any mismatch raises `asset_idempotency_conflict`; coverage uses the production-compatible `job_id INTEGER UNIQUE` schema.
+
 ## Added adversarial coverage
 
 - `NaN` and `+/-Infinity` quality evidence fails closed.
@@ -26,6 +34,8 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 ## Verification
 
 - Task 8 + runtime/store/pipeline targeted suite: 93 tests, with one expectation updated for the new fail-closed production quality boundary; rerun of the corrected case and runtime/store suite passed.
+- Round 2 Task 8 + runtime/store/pipeline targeted suite: **101 tests passed** in 24.979s, including heartbeat timing tests.
+- Round 2 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **295 tests passed** in 28.774s.
 - `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **287 tests passed** in 28.191s.
 - `git diff --check`: clean.
 

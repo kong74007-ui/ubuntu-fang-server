@@ -14,11 +14,13 @@ from typing import Any
 
 try:
     from content_domains import ai_edit_v2_billing as billing
+    from content_domains import ai_edit_v2_delivery as delivery
     from content_domains import ai_edit_v2_pipeline as pipeline
     from content_domains import ai_edit_v2_store as store
     from content_domains import ai_edit_v2_runtime as runtime
 except ImportError:
     from .content_domains import ai_edit_v2_billing as billing
+    from .content_domains import ai_edit_v2_delivery as delivery
     from .content_domains import ai_edit_v2_pipeline as pipeline
     from .content_domains import ai_edit_v2_store as store
     from .content_domains import ai_edit_v2_runtime as runtime
@@ -106,8 +108,16 @@ def run_worker(
                     int(time.time()), db_path=config["db_path"]
                 )
                 pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+                services = runtime.option(dependencies, "services")
+                delivery.reconcile_pending_deliveries(
+                    int(time.time()), db_path=config["db_path"],
+                    lease_seconds=config["lease_seconds"],
+                    cos_api=getattr(services, "cos", None),
+                    asset_db_path=runtime.option(dependencies, "asset_db_path"),
+                    points_client=runtime.option(dependencies, "points_client"),
+                )
             except Exception:
-                LOG.exception("[ai-edit-v2] billing reconciliation failed")
+                LOG.exception("[ai-edit-v2] reconciliation failed")
             finished = {future for future in active if future.done()}
             for future in finished:
                 active.remove(future)

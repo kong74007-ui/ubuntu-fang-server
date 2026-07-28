@@ -71,26 +71,46 @@ def _finite(value: Any, *, minimum: float | None = None,
     return number
 
 
-def _plan_analysis(plan: dict[str, Any], check: str) -> dict[str, Any]:
-    analysis = plan.get("quality_analysis")
-    value = analysis.get(check) if isinstance(analysis, dict) else None
-    if not isinstance(value, dict):
-        raise RuntimeError(f"{check} evidence missing")
-    # Round-trip with strict JSON so injected NaN/Infinity cannot be accepted.
-    return _json_object(json.dumps(value, allow_nan=False, ensure_ascii=False))
-
-
 class LocalQualityRunner:
     """Collect technical evidence with ffprobe/ffmpeg and semantic evidence from
     the frozen render plan.  No shell or imaginary helper executable is used.
     """
 
-    def __init__(self, process_runner: Callable[..., Any] = subprocess.run) -> None:
+    def __init__(self, process_runner: Callable[..., Any] = subprocess.run, *,
+                 analyzer: Callable[..., Any] | None = None,
+                 binary_finder: Callable[[str], str | None] = shutil.which) -> None:
         self.process_runner = process_runner
+        self.analyzer = analyzer
+        self.binary_finder = binary_finder
+
+    def readiness_errors(self) -> list[str]:
+        errors = [name for name in ("ffprobe", "ffmpeg") if self.binary_finder(name) is None]
+        available = getattr(self.analyzer, "available", None)
+        if self.analyzer is None or (callable(available) and not available()):
+            errors.append("final_media_analyzer")
+        return errors
 
     @staticmethod
-    def readiness_errors() -> list[str]:
-        return [name for name in ("ffprobe", "ffmpeg") if shutil.which(name) is None]
+    def _expected(plan: dict[str, Any], check: str) -> dict[str, Any]:
+        if check == "captions":
+            return {"caption_plan": plan.get("caption_plan"),
+                    "text_timeline": plan.get("text_timeline")}
+        if check == "materials":
+            return {"required_asset_ids": sorted(_required_ids(plan)),
+                    "materials": plan.get("materials")}
+        if check == "transcript":
+            return {"text_timeline": plan.get("text_timeline")}
+        if check == "audio":
+            return {"audio_plan": plan.get("audio_plan")}
+        raise ValueError("semantic quality check unsupported")
+
+    def _analyze(self, check: str, path: str, plan: dict[str, Any]) -> dict[str, Any]:
+        if self.analyzer is None:
+            raise RuntimeError("final media analyzer unavailable")
+        value = self.analyzer(check, path=path, expected=self._expected(plan, check))
+        if not isinstance(value, dict):
+            raise ValueError("final media analysis invalid")
+        return value
 
     def _run(self, command: list[str], timeout: int) -> Any:
         return self.process_runner(
@@ -166,9 +186,9 @@ class LocalQualityRunner:
             ], 600)
             if int(getattr(result, "returncode", 1)) != 0:
                 raise RuntimeError("audio inspection failed")
-            return _plan_analysis(resolved_plan, "audio")
+            return self._analyze("audio", path, resolved_plan)
         if check in {"captions", "materials", "transcript"}:
-            return _plan_analysis(resolved_plan, check)
+            return self._analyze(check, path, resolved_plan)
         raise ValueError("quality check unsupported")
 
 

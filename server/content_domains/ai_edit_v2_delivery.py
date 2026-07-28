@@ -8,6 +8,7 @@ import math
 import os
 import sqlite3
 import time
+import uuid
 from contextlib import closing
 from typing import Any, Callable
 
@@ -26,6 +27,31 @@ class DeliveryError(RuntimeError):
 def _strict_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False)
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _quality_report_from_intent(intent: dict[str, Any]) -> QualityReport:
+    try:
+        value = json.loads(intent["quality_json"], parse_constant=_reject_constant)
+        if not isinstance(value, dict) or set(value) != {
+            "passed", "error_codes", "failing_layers", "repairable", "terminal"
+        }:
+            raise ValueError("quality report shape invalid")
+        if value["passed"] is not True or value["repairable"] is not False or value["terminal"] is not False:
+            raise ValueError("quality report is not a durable pass")
+        if not isinstance(value["error_codes"], list) or value["error_codes"]:
+            raise ValueError("quality errors invalid")
+        if not isinstance(value["failing_layers"], list) or value["failing_layers"]:
+            raise ValueError("quality layers invalid")
+        report = QualityReport(True, (), (), False, False)
+        if _strict_json(report.as_dict()) != intent["quality_json"]:
+            raise ValueError("quality report not canonical")
+        return report
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DeliveryError("delivery_quality_report_invalid") from exc
 
 
 def _load(job_id: str, db_path: str | None) -> dict[str, Any]:
@@ -62,7 +88,8 @@ def _result(job_id: str, db_path: str | None) -> dict[str, Any]:
 
 
 def _fail(job_id: str, code: str, now: int, db_path: str | None,
-          worker_id: str | None = None, lease_seconds: int = 180) -> None:
+          worker_id: str | None = None, lease_seconds: int = 180,
+          points_client: Any = None) -> None:
     job = _load(job_id, db_path)
     if job["status"] == "storage_failed":
         raise DeliveryError("storage_failed")
@@ -77,7 +104,7 @@ def _fail(job_id: str, code: str, now: int, db_path: str | None,
     )
     if not changed:
         raise DeliveryError("delivery_state_conflict")
-    billing.refund_failure(job_id, now, points_client=billing.points, db_path=db_path)
+    billing.refund_failure(job_id, now, points_client=points_client or billing.points, db_path=db_path)
 
 
 def _file_identity(path: str) -> tuple[int, str]:
@@ -174,10 +201,18 @@ def _write_user_asset(payload: dict[str, Any], asset_db_path: str | None) -> int
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT id,username FROM video_assets WHERE job_id=?", (payload["job_id"],)).fetchone()
+        row = conn.execute(
+            """SELECT id,job_id,username,mode,video_file,ratio,status
+               FROM video_assets WHERE job_id=?""", (payload["job_id"],)
+        ).fetchone()
         if row is not None:
-            if row["username"] != payload["username"]:
-                raise DeliveryError("asset_owner_conflict")
+            expected = {
+                "job_id": payload["job_id"], "username": payload["username"],
+                "mode": "ai_edit_v2", "video_file": payload["video_file"],
+                "ratio": payload["ratio"], "status": "done",
+            }
+            if any(str(row[key]) != str(value) for key, value in expected.items()):
+                raise DeliveryError("asset_idempotency_conflict")
             conn.commit()
             return int(row["id"])
         cursor = conn.execute(
@@ -200,7 +235,7 @@ def _write_user_asset(payload: dict[str, Any], asset_db_path: str | None) -> int
 
 def _settle_and_enqueue(job: dict[str, Any], intent: dict[str, Any], now: int,
                         db_path: str | None, worker_id: str | None,
-                        now_fn: Callable[[], int]) -> dict[str, Any]:
+                        now_fn: Callable[[], int], points_client: Any) -> dict[str, Any]:
     try:
         payload = json.loads(job.get("payload_json") or "{}")
     except (TypeError, ValueError):
@@ -239,7 +274,7 @@ def _settle_and_enqueue(job: dict[str, Any], intent: dict[str, Any], now: int,
         )
 
     return billing.settle_success(
-        job["id"], int(intent["actual_cost"]), now, points_client=billing.points,
+        job["id"], int(intent["actual_cost"]), now, points_client=points_client,
         db_path=db_path, finalize=finalize,
     )
 
@@ -300,13 +335,15 @@ def _dispatch_and_complete(job_id: str, now: int, db_path: str | None,
 def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: int,
             db_path: str | None = None, *, worker_id: str | None = None,
             lease_seconds: int = 180, now_fn: Callable[[], int] | None = None,
-            cos_api: Any = None, asset_db_path: str | None = None) -> dict[str, Any]:
+            cos_api: Any = None, asset_db_path: str | None = None,
+            points_client: Any = None) -> dict[str, Any]:
     """Persist intent before upload; reconcile HEAD/settlement/outbox on replay."""
     if not isinstance(report, QualityReport) or not report.passed:
         raise DeliveryError("quality_not_passed")
     if isinstance(actual_cost, bool) or not isinstance(actual_cost, int) or actual_cost < 0:
         raise DeliveryError("actual_cost_invalid")
     clock = now_fn or (lambda: int(time.time()))
+    points_api = points_client or billing.points
     now = int(clock())
     job = _load(job_id, db_path)
     if job["status"] == "completed":
@@ -332,10 +369,10 @@ def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: i
     except DeliveryError as exc:
         if exc.code == "delivery_lease_lost":
             raise
-        _fail(job_id, "storage_verification_failed", int(clock()), db_path, worker_id, lease_seconds)
+        _fail(job_id, "storage_verification_failed", int(clock()), db_path, worker_id, lease_seconds, points_api)
         raise
     except Exception as exc:
-        _fail(job_id, "storage_upload_failed", int(clock()), db_path, worker_id, lease_seconds)
+        _fail(job_id, "storage_upload_failed", int(clock()), db_path, worker_id, lease_seconds, points_api)
         raise DeliveryError("storage_upload_failed") from exc
 
     now = int(clock())
@@ -355,7 +392,7 @@ def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: i
             raise DeliveryError("delivery_state_conflict")
     try:
         _assert_lease(job_id, worker_id, int(clock()), db_path)
-        _settle_and_enqueue(_load(job_id, db_path), intent, int(clock()), db_path, worker_id, clock)
+        _settle_and_enqueue(_load(job_id, db_path), intent, int(clock()), db_path, worker_id, clock, points_api)
     except billing.BillingError as exc:
         if exc.code == "billing_operation_in_progress":
             deadline = time.monotonic() + 5
@@ -376,3 +413,61 @@ def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: i
         raise
     _dispatch_and_complete(job_id, int(clock()), db_path, asset_db_path, worker_id, clock)
     return _result(job_id, db_path)
+
+
+def resume_delivery(job_id: str, *, db_path: str | None = None,
+                    worker_id: str | None = None, lease_seconds: int = 180,
+                    now_fn: Callable[[], int] | None = None, cos_api: Any = None,
+                    asset_db_path: str | None = None,
+                    points_client: Any = None) -> dict[str, Any]:
+    """Resume settling solely from the persisted, canonical delivery intent."""
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        row = conn.execute(
+            "SELECT * FROM edit_v2_delivery_intents WHERE job_id=?", (job_id,)
+        ).fetchone()
+    if row is None:
+        raise DeliveryError("delivery_intent_missing")
+    intent = dict(row)
+    report = _quality_report_from_intent(intent)
+    return deliver(
+        job_id, "", report, int(intent["actual_cost"]), db_path=db_path,
+        worker_id=worker_id, lease_seconds=lease_seconds, now_fn=now_fn,
+        cos_api=cos_api, asset_db_path=asset_db_path, points_client=points_client,
+    )
+
+
+def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None = None,
+                                 lease_seconds: int = 180, cos_api: Any = None,
+                                 asset_db_path: str | None = None,
+                                 worker_id: str | None = None,
+                                 points_client: Any = None) -> int:
+    """Claim and resume every expired/unleased settling job with a durable intent."""
+    now = int(time.time()) if now is None else int(now)
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        rows = conn.execute(
+            """SELECT j.id FROM edit_v2_jobs j
+               JOIN edit_v2_delivery_intents d ON d.job_id=j.id
+               WHERE j.status='settling' AND (j.lease_until IS NULL OR j.lease_until<=?)
+               ORDER BY j.created_at,j.id""", (now,),
+        ).fetchall()
+    completed = 0
+    for row in rows:
+        owner = worker_id or f"delivery-reconcile:{uuid.uuid4().hex}"
+        claimed = store.claim_job(
+            row["id"], owner, lease_seconds, now, db_path=db_path,
+        )
+        if claimed is None:
+            continue
+        try:
+            result = resume_delivery(
+                row["id"], db_path=db_path, worker_id=owner,
+                lease_seconds=lease_seconds, now_fn=lambda: now,
+                cos_api=cos_api, asset_db_path=asset_db_path,
+                points_client=points_client,
+            )
+            if result.get("state") == "completed":
+                completed += 1
+        except Exception:
+            store.release_job_lease(row["id"], owner, db_path=db_path)
+            raise
+    return completed
