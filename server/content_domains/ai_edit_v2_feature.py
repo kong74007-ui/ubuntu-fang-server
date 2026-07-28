@@ -20,7 +20,11 @@ def runtime_ready() -> bool:
 
 
 def _configured(*names: str) -> bool:
-    return all(os.environ.get(name, "").strip() for name in names)
+    return all(
+        (value := os.environ.get(name, "").strip())
+        and not value.lower().startswith("replace-with-")
+        for name in names
+    )
 
 
 def _stable_components() -> dict[str, bool]:
