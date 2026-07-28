@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import socket
 import sqlite3
 import tempfile
 import threading
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 from server.content_domains.ai_edit_v2_providers.base import (
     ProviderError,
+    RetryableProviderError,
     UnknownSubmissionError,
 )
 from server.content_domains.ai_edit_v2_providers.elevenlabs import ElevenLabsProvider
@@ -224,6 +226,69 @@ class ElevenLabsProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(ProviderError, "request_rejected"):
                 self._provider(temp_dir, transport=retry).generate_music(
                     "invalid", 3_000, "rejected-key"
+                )
+        self.assertEqual(len(first.calls), 1)
+        self.assertEqual(retry.calls, [])
+
+    def test_http_5xx_releases_same_key_for_retry(self):
+        unavailable = urllib.error.HTTPError(
+            "https://api.elevenlabs.io/v1/music", 503, "unavailable", {},
+            io.BytesIO(b'{"detail":"try later"}'),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            first = RecordingTransport(failure=unavailable)
+            with self.assertRaises(ProviderError) as caught:
+                self._provider(temp_dir, transport=first).generate_music(
+                    "calm", 3_000, "http-500-key"
+                )
+            self.assertIsInstance(caught.exception, RetryableProviderError)
+            self.assertRegex(str(caught.exception), "http_retryable")
+            second = RecordingTransport()
+            result = self._provider(temp_dir, transport=second).generate_music(
+                "calm", 3_000, "http-500-key"
+            )
+        self.assertEqual(result.request_id, "eleven-request-1")
+        self.assertEqual(len(first.calls), 1)
+        self.assertEqual(len(second.calls), 1)
+
+    def test_dns_and_preconnect_refusal_release_same_key_for_retry(self):
+        failures = (
+            urllib.error.URLError(socket.gaierror(-2, "name not known")),
+            urllib.error.URLError(ConnectionRefusedError("connection refused")),
+        )
+        for index, failure in enumerate(failures):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+                os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+            ):
+                first = RecordingTransport(failure=failure)
+                with self.assertRaises(ProviderError) as caught:
+                    self._provider(temp_dir, transport=first).generate_music(
+                        "calm", 3_000, f"preconnect-{index}"
+                    )
+                self.assertIsInstance(caught.exception, RetryableProviderError)
+                self.assertRegex(str(caught.exception), "transport_retryable")
+                second = RecordingTransport()
+                result = self._provider(temp_dir, transport=second).generate_music(
+                    "calm", 3_000, f"preconnect-{index}"
+                )
+                self.assertEqual(result.request_id, "eleven-request-1")
+                self.assertEqual(len(second.calls), 1)
+
+    def test_response_lost_after_possible_submit_remains_frozen_unknown(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            first = RecordingTransport(failure=ConnectionResetError("response lost"))
+            with self.assertRaises(UnknownSubmissionError):
+                self._provider(temp_dir, transport=first).generate_music(
+                    "calm", 3_000, "response-lost-key"
+                )
+            retry = RecordingTransport(failure=AssertionError("must stay frozen"))
+            with self.assertRaises(UnknownSubmissionError):
+                self._provider(temp_dir, transport=retry).generate_music(
+                    "calm", 3_000, "response-lost-key"
                 )
         self.assertEqual(len(first.calls), 1)
         self.assertEqual(retry.calls, [])

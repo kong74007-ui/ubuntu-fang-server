@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import sqlite3
 import time
 import urllib.error
@@ -19,7 +20,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .. import ai_edit_v2_cos
-from .base import ProviderError, ProviderResult, UnknownSubmissionError
+from .base import (
+    ProviderError,
+    ProviderResult,
+    RetryableProviderError,
+    UnknownSubmissionError,
+)
 
 
 _MUSIC_MODEL = "music_v2"
@@ -142,11 +148,21 @@ class ElevenLabsProvider:
         except urllib.error.HTTPError as exc:
             if 400 <= int(exc.code) < 500:
                 error_code = "elevenlabs_request_rejected"
+                self._mark_terminal(idempotency_key, error_code)
+                raise ProviderError(error_code) from exc
+            if 500 <= int(exc.code) < 600:
+                error_code = "elevenlabs_http_retryable"
+                self._mark_retryable(idempotency_key, error_code)
+                raise RetryableProviderError(error_code) from exc
             else:
                 error_code = "elevenlabs_http_error"
             self._mark_terminal(idempotency_key, error_code)
             raise ProviderError(error_code) from exc
         except Exception as exc:
+            if self._definitely_not_submitted(exc):
+                error_code = "elevenlabs_transport_retryable"
+                self._mark_retryable(idempotency_key, error_code)
+                raise RetryableProviderError(error_code) from exc
             # At this boundary we cannot prove whether the paid request crossed the
             # wire. Persist uncertainty and require reconciliation/manual recovery.
             self._mark_unknown(idempotency_key)
@@ -242,6 +258,26 @@ class ElevenLabsProvider:
             return None
         return parsed if parsed >= 0 else None
 
+    @staticmethod
+    def _definitely_not_submitted(exc: BaseException) -> bool:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        if isinstance(reason, (socket.gaierror, ConnectionRefusedError)):
+            return True
+        if isinstance(reason, OSError):
+            if getattr(reason, "winerror", None) in {10061, 11001}:
+                return True
+            safe_errnos = {
+                value
+                for value in (
+                    getattr(socket, "EAI_AGAIN", None),
+                    getattr(socket, "EAI_NONAME", None),
+                )
+                if value is not None
+            }
+            if getattr(reason, "errno", None) in safe_errnos:
+                return True
+        return False
+
     def _connect(self) -> sqlite3.Connection:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.db_path, timeout=10)
@@ -321,6 +357,18 @@ class ElevenLabsProvider:
             if row["state"] == "completed":
                 value = json.loads(row["result_json"])
                 return ProviderResult(**value)
+            if row["state"] == "retryable":
+                changed = connection.execute(
+                    """UPDATE edit_v2_audio_submissions
+                       SET state='submitting',error_code=NULL
+                       WHERE owner=? AND job_id=? AND idempotency_key=?
+                         AND state='retryable'""",
+                    (self.owner, self.job_id, idempotency_key),
+                ).rowcount
+                if changed != 1:
+                    raise UnknownSubmissionError("elevenlabs_submission_unknown")
+                connection.commit()
+                return None
             if row["state"] == "terminal_failed":
                 raise ProviderError(row["error_code"] or "elevenlabs_terminal_failure")
             raise UnknownSubmissionError("elevenlabs_submission_unknown")
@@ -332,6 +380,14 @@ class ElevenLabsProvider:
                        error_code='elevenlabs_submission_unknown'
                    WHERE owner=? AND job_id=? AND idempotency_key=? AND state='submitting'""",
                 (self.owner, self.job_id, idempotency_key),
+            )
+
+    def _mark_retryable(self, idempotency_key: str, error_code: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """UPDATE edit_v2_audio_submissions SET state='retryable',error_code=?
+                   WHERE owner=? AND job_id=? AND idempotency_key=? AND state='submitting'""",
+                (error_code, self.owner, self.job_id, idempotency_key),
             )
 
     def _mark_terminal(self, idempotency_key: str, error_code: str) -> None:
