@@ -62,6 +62,7 @@ class FakeRepositories:
         self.by_source = by_source or {}
         self.required = list(required or [])
         self.records = None
+        self.persisted = []
 
     def owner_for_job(self, job_id):
         if job_id != JOB:
@@ -75,8 +76,18 @@ class FakeRepositories:
     def required_materials(self, job_id):
         return copy.deepcopy(self.required)
 
-    def save_resolution_records(self, job_id, records):
+    def save_resolution_records(
+        self, job_id, records, *, status="succeeded", error_code=None
+    ):
         self.records = copy.deepcopy(records)
+        self.persisted.append(
+            {
+                "job_id": job_id,
+                "records": copy.deepcopy(records),
+                "status": status,
+                "error_code": error_code,
+            }
+        )
 
     def assert_safe_slot(self, slot):
         self_test = unittest.TestCase()
@@ -147,6 +158,10 @@ class MaterialResolverTests(unittest.TestCase):
                               image_provider=FakeImageProvider())
 
         self.assertEqual(caught.exception.code, "required_material_unused")
+        self.assertEqual(repos.persisted[-1]["status"], "failed")
+        self.assertEqual(
+            repos.persisted[-1]["error_code"], "required_material_unused"
+        )
 
     def test_rejects_bad_candidates_before_selecting_highest_qualified_score(self):
         bad = [
@@ -205,6 +220,37 @@ class MaterialResolverTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "required_material_unavailable")
         self.assertEqual(image.calls, [])
 
+    def test_invalid_non_required_real_product_candidate_does_not_block_generation(self):
+        invalid_candidates = (
+            candidate(
+                "foreign-product",
+                "user_history",
+                owner="user-b",
+                is_real_product=True,
+            ),
+            candidate(
+                "blurred-product",
+                "current_upload",
+                blurred=True,
+                is_real_product=True,
+            ),
+        )
+
+        for invalid in invalid_candidates:
+            with self.subTest(asset_id=invalid["asset_id"]):
+                source = "user_history" if invalid["asset_id"] == "foreign-product" else "current_upload"
+                image = FakeImageProvider()
+                resolved = resolve_materials(
+                    JOB,
+                    PLAN,
+                    FakeRepositories({source: [invalid]}),
+                    image,
+                )
+                self.assertEqual(
+                    resolved["materials"]["slot_product_1"]["source"], "gpt_image"
+                )
+                self.assertEqual(len(image.calls), 1)
+
     def test_non_required_generation_failure_is_an_explicit_degradation(self):
         repos = FakeRepositories()
 
@@ -223,6 +269,10 @@ class MaterialResolverTests(unittest.TestCase):
             resolve_materials(JOB, PLAN, repos, FakeImageProvider(RuntimeError("down")))
 
         self.assertEqual(caught.exception.code, "required_material_unavailable")
+        self.assertEqual(repos.persisted[-1]["status"], "failed")
+        self.assertEqual(
+            repos.persisted[-1]["error_code"], "required_material_unavailable"
+        )
 
     def test_invalid_required_material_cannot_be_hidden_by_optional_fallback(self):
         required = candidate("must-use", "current_upload", required=True, blurred=True)

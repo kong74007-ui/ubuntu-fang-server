@@ -401,6 +401,143 @@ def find_generated_material(
     return {**dict(row), "job_id": job_id}
 
 
+def _generated_scope(
+    owner: str, job_id: str, idempotency_key: str, cos_key: str
+) -> str:
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    expected_prefix = f"ai-edit-v2/{owner_hash}/{job_id}/generated/"
+    if not isinstance(cos_key, str) or not cos_key.startswith(expected_prefix):
+        raise ValueError("generated_material_job_scope_invalid")
+    return _generation_label(job_id, idempotency_key)
+
+
+def reserve_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    label = _generated_scope(owner, job_id, idempotency_key, cos_key)
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = conn.execute(
+                "SELECT id FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
+            ).fetchone()
+            if job is None:
+                raise ValueError("generated_material_job_scope_invalid")
+            row = conn.execute(
+                """SELECT * FROM edit_v2_materials
+                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+                (owner, label),
+            ).fetchone()
+            claimed = row is None
+            if claimed:
+                cursor = conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           owner,kind,purpose,semantic_label,source,cos_key,status,
+                           created_at,updated_at
+                       ) VALUES(?,'image','generated',?,'gpt_image',?,'pending',?,?)""",
+                    (owner, label, cos_key, int(now), int(now)),
+                )
+                row = conn.execute(
+                    "SELECT * FROM edit_v2_materials WHERE id=?", (cursor.lastrowid,)
+                ).fetchone()
+            conn.commit()
+            return {
+                "claimed": claimed,
+                "material": {**dict(row), "job_id": job_id},
+            }
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def complete_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    mime_type: str,
+    etag: str,
+    size_bytes: int,
+    width: int,
+    height: int,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    label = _generated_scope(owner, job_id, idempotency_key, cos_key)
+    expected = {
+        "cos_key": cos_key,
+        "mime_type": mime_type,
+        "etag": etag,
+        "size_bytes": int(size_bytes),
+        "width": int(width),
+        "height": int(height),
+    }
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT * FROM edit_v2_materials
+                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+                (owner, label),
+            ).fetchone()
+            if row is None or row["status"] not in {"pending", "ready"}:
+                raise ValueError("generated_material_not_pending")
+            if row["status"] == "pending":
+                if row["cos_key"] != cos_key:
+                    raise ValueError("generated_material_idempotency_conflict")
+                conn.execute(
+                    """UPDATE edit_v2_materials
+                       SET mime_type=?,etag=?,size_bytes=?,width=?,height=?,
+                           status='ready',updated_at=?
+                       WHERE id=? AND status='pending'""",
+                    (
+                        mime_type,
+                        etag,
+                        int(size_bytes),
+                        int(width),
+                        int(height),
+                        int(now),
+                        row["id"],
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                ).fetchone()
+            if any(row[key] != value for key, value in expected.items()):
+                raise ValueError("generated_material_idempotency_conflict")
+            conn.commit()
+            return {**dict(row), "job_id": job_id}
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def fail_generated_material(
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    *,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    label = _generation_label(job_id, idempotency_key)
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_materials SET status='failed',updated_at=?
+               WHERE owner=? AND source='gpt_image' AND semantic_label=?
+                 AND status='pending'""",
+            (int(now), owner, label),
+        ).rowcount
+        return changed == 1
+
+
 def create_generated_material(
     *,
     owner: str,
@@ -415,59 +552,30 @@ def create_generated_material(
     now: int,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
-    expected_prefix = f"ai-edit-v2/{owner_hash}/{job_id}/generated/"
-    if not isinstance(cos_key, str) or not cos_key.startswith(expected_prefix):
-        raise ValueError("generated_material_job_scope_invalid")
-    label = _generation_label(job_id, idempotency_key)
-    with _connection(db_path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            job = conn.execute(
-                "SELECT id FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
-            ).fetchone()
-            if job is None:
-                raise ValueError("generated_material_job_scope_invalid")
-            conn.execute(
-                """INSERT OR IGNORE INTO edit_v2_materials(
-                       owner,kind,purpose,semantic_label,source,cos_key,mime_type,
-                       etag,size_bytes,width,height,status,created_at,updated_at
-                   ) VALUES(?, 'image','generated',?,'gpt_image',?,?,?,?,?,?,'ready',?,?)""",
-                (
-                    owner,
-                    label,
-                    cos_key,
-                    mime_type,
-                    etag,
-                    int(size_bytes),
-                    int(width),
-                    int(height),
-                    int(now),
-                    int(now),
-                ),
-            )
-            row = conn.execute(
-                """SELECT * FROM edit_v2_materials
-                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
-                (owner, label),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("generated_material_create_failed")
-            expected = {
-                "cos_key": cos_key,
-                "mime_type": mime_type,
-                "etag": etag,
-                "size_bytes": int(size_bytes),
-                "width": int(width),
-                "height": int(height),
-            }
-            if any(row[key] != value for key, value in expected.items()):
-                raise ValueError("generated_material_idempotency_conflict")
-            conn.commit()
-            return {**dict(row), "job_id": job_id}
-        except Exception:
-            conn.rollback()
-            raise
+    reservation = reserve_generated_material(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        cos_key=cos_key,
+        now=now,
+        db_path=db_path,
+    )
+    material = reservation["material"]
+    if not reservation["claimed"] and material["status"] not in {"pending", "ready"}:
+        raise ValueError("generated_material_not_pending")
+    return complete_generated_material(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        cos_key=cos_key,
+        mime_type=mime_type,
+        etag=etag,
+        size_bytes=size_bytes,
+        width=width,
+        height=height,
+        now=now,
+        db_path=db_path,
+    )
 
 
 _RESOLUTION_RECORD_FIELDS = {
@@ -490,6 +598,9 @@ def save_material_resolution_records(
     records: list[dict[str, Any]],
     now: int,
     *,
+    status: str = "succeeded",
+    error_code: str | None = None,
+    attempt: int | None = None,
     db_path: str | None = None,
 ) -> int:
     if not isinstance(records, list) or any(
@@ -509,21 +620,59 @@ def save_material_resolution_records(
         for marker in ('"url"', "provider_url", "signed_url", "://", "?signature=", "?sig=")
     ):
         raise ValueError("unsafe_resolution_record")
+    if status not in {"succeeded", "failed"}:
+        raise ValueError("material_resolution_status_invalid")
+    if (status == "failed") != bool(error_code):
+        raise ValueError("material_resolution_error_code_invalid")
+    if attempt is not None and (
+        not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1
+    ):
+        raise ValueError("material_resolution_attempt_invalid")
+    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    input_summary = json.dumps(
+        {"resolution_fingerprint": fingerprint}, separators=(",", ":")
+    )
     with _connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = conn.execute(
-                """SELECT id,status,output_summary_json FROM edit_v2_stage_attempts
-                   WHERE job_id=? AND stage='resolving_assets' AND attempt=1""",
-                (job_id,),
-            ).fetchone()
+            existing = None
+            if attempt is None:
+                latest = conn.execute(
+                    """SELECT * FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='resolving_assets'
+                       ORDER BY attempt DESC LIMIT 1""",
+                    (job_id,),
+                ).fetchone()
+                if latest is not None and latest["status"] == "succeeded":
+                    existing = latest
+                    attempt = int(latest["attempt"])
+                else:
+                    attempt = int(latest["attempt"]) + 1 if latest is not None else 1
+            else:
+                existing = conn.execute(
+                    """SELECT * FROM edit_v2_stage_attempts
+                       WHERE job_id=? AND stage='resolving_assets' AND attempt=?""",
+                    (job_id, attempt),
+                ).fetchone()
             if existing is not None:
                 if existing["output_summary_json"] is None:
+                    existing_input = json.loads(existing["input_summary_json"] or "{}")
+                    existing_fingerprint = existing_input.get("resolution_fingerprint")
+                    if existing_fingerprint not in (None, fingerprint):
+                        raise ValueError("material_resolution_idempotency_conflict")
                     conn.execute(
                         """UPDATE edit_v2_stage_attempts
-                           SET status='succeeded',output_summary_json=?,finished_at=?,error_code=NULL
+                           SET status=?,input_summary_json=?,output_summary_json=?,
+                               finished_at=?,error_code=?
                            WHERE id=?""",
-                        (serialized, now, existing["id"]),
+                        (
+                            status,
+                            input_summary,
+                            serialized,
+                            now,
+                            error_code,
+                            existing["id"],
+                        ),
                     )
                     conn.commit()
                     return int(existing["id"])
@@ -533,15 +682,29 @@ def save_material_resolution_records(
                     sort_keys=True,
                     separators=(",", ":"),
                 )
-                if existing_json != serialized:
+                if (
+                    existing_json != serialized
+                    or existing["status"] != status
+                    or existing["error_code"] != error_code
+                ):
                     raise ValueError("material_resolution_idempotency_conflict")
                 conn.commit()
                 return int(existing["id"])
             cursor = conn.execute(
                 """INSERT INTO edit_v2_stage_attempts(
-                       job_id,stage,attempt,status,output_summary_json,started_at,finished_at
-                   ) VALUES(?,'resolving_assets',1,'succeeded',?,?,?)""",
-                (job_id, serialized, now, now),
+                       job_id,stage,attempt,status,input_summary_json,
+                       output_summary_json,error_code,started_at,finished_at
+                   ) VALUES(?,'resolving_assets',?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    attempt,
+                    status,
+                    input_summary,
+                    serialized,
+                    error_code,
+                    now,
+                    now,
+                ),
             )
             conn.commit()
             return int(cursor.lastrowid)

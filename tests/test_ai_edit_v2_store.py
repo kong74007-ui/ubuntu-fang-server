@@ -357,6 +357,86 @@ class StoreTests(unittest.TestCase):
                 db_path=self.db_path,
             )
 
+    def test_generated_material_reservation_has_one_winner_and_terminal_states_do_not_reverse(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "reserved-image",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "now": 100,
+            "db_path": self.db_path,
+        }
+
+        winner = store.reserve_generated_material(**fields)
+        loser = store.reserve_generated_material(**{**fields, "now": 101})
+
+        self.assertTrue(winner["claimed"])
+        self.assertFalse(loser["claimed"])
+        self.assertEqual(loser["material"]["status"], "pending")
+
+        ready = store.complete_generated_material(
+            owner="user-a",
+            job_id=job["id"],
+            idempotency_key="reserved-image",
+            cos_key=fields["cos_key"],
+            mime_type="image/png",
+            etag="etag-1",
+            size_bytes=8,
+            width=1536,
+            height=1024,
+            now=102,
+            db_path=self.db_path,
+        )
+        self.assertEqual(ready["status"], "ready")
+        self.assertFalse(
+            store.fail_generated_material(
+                "user-a",
+                job["id"],
+                "reserved-image",
+                now=103,
+                db_path=self.db_path,
+            )
+        )
+        replay = store.reserve_generated_material(**{**fields, "now": 104})
+        self.assertFalse(replay["claimed"])
+        self.assertEqual(replay["material"]["status"], "ready")
+
+    def test_failed_generated_material_reservation_cannot_return_to_pending_or_ready(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "failed-image",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "now": 100,
+            "db_path": self.db_path,
+        }
+        self.assertTrue(store.reserve_generated_material(**fields)["claimed"])
+        self.assertTrue(
+            store.fail_generated_material(
+                "user-a", job["id"], "failed-image", now=101, db_path=self.db_path
+            )
+        )
+
+        replay = store.reserve_generated_material(**{**fields, "now": 102})
+        self.assertFalse(replay["claimed"])
+        self.assertEqual(replay["material"]["status"], "failed")
+        with self.assertRaisesRegex(ValueError, "generated_material_not_pending"):
+            store.complete_generated_material(
+                owner="user-a",
+                job_id=job["id"],
+                idempotency_key="failed-image",
+                cos_key=fields["cos_key"],
+                mime_type="image/png",
+                etag="etag-1",
+                size_bytes=8,
+                width=1536,
+                height=1024,
+                now=103,
+                db_path=self.db_path,
+            )
+
     def test_material_resolution_records_are_idempotent_and_reject_urls(self):
         job = self._create_job()
         records = [
@@ -429,7 +509,7 @@ class StoreTests(unittest.TestCase):
         ]
 
         saved_id = store.save_material_resolution_records(
-            job["id"], records, now=100, db_path=self.db_path
+            job["id"], records, now=100, attempt=1, db_path=self.db_path
         )
 
         row = self._row("edit_v2_stage_attempts", attempt_id)
@@ -440,6 +520,51 @@ class StoreTests(unittest.TestCase):
             json.loads(row["output_summary_json"]),
             {"material_resolutions": records},
         )
+
+    def test_failed_material_resolution_is_recorded_and_retry_uses_next_attempt(self):
+        job = self._create_job()
+        failed_records = [
+            {
+                "slot_id": "slot_1",
+                "semantic_query": "product",
+                "time_range": {"start_ms": 0, "end_ms": 100},
+                "ratio": "16:9",
+                "dimensions": {"width": 1920, "height": 1080},
+                "source": "current_upload",
+                "asset_id": "required-1",
+                "cos_key": None,
+                "required": True,
+                "selected_score": None,
+                "exclusion_code": "blurred",
+            }
+        ]
+        succeeded_records = [
+            {**failed_records[0], "cos_key": "ai-edit-v2/safe/product.png", "exclusion_code": None}
+        ]
+
+        failed_id = store.save_material_resolution_records(
+            job["id"],
+            failed_records,
+            now=100,
+            status="failed",
+            error_code="required_material_unavailable",
+            db_path=self.db_path,
+        )
+        succeeded_id = store.save_material_resolution_records(
+            job["id"],
+            succeeded_records,
+            now=110,
+            status="succeeded",
+            db_path=self.db_path,
+        )
+
+        failed = self._row("edit_v2_stage_attempts", failed_id)
+        succeeded = self._row("edit_v2_stage_attempts", succeeded_id)
+        self.assertNotEqual(failed_id, succeeded_id)
+        self.assertEqual((failed["attempt"], failed["status"]), (1, "failed"))
+        self.assertEqual(failed["error_code"], "required_material_unavailable")
+        self.assertEqual((succeeded["attempt"], succeeded["status"]), (2, "succeeded"))
+        self.assertIsNone(succeeded["error_code"])
     def test_terminal_transition_clears_style_analysis_but_keeps_cos_and_audit(self):
         job = self._create_job()
         with closing(store.open_store(self.db_path)) as conn:

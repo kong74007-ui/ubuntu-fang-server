@@ -67,16 +67,13 @@ def resolve_materials(
         qualified_by_source: dict[str, list[dict[str, Any]]] = {}
         invalid_required_ids: set[str] = set()
         qualified_required_ids: set[str] = set()
-        real_product_present = False
+        protected_real_product_present = False
         seen_assets: set[str] = set()
         for source in SOURCE_PRIORITY:
             qualified: list[dict[str, Any]] = []
             for candidate in source_candidates[source]:
                 asset_id = str(candidate.get("asset_id") or "")
                 required = bool(candidate.get("required")) or asset_id in required_ids
-                real_product_present = real_product_present or bool(
-                    candidate.get("is_real_product")
-                )
                 exclusion = _exclusion_code(
                     candidate,
                     source=source,
@@ -96,6 +93,8 @@ def resolve_materials(
                 )
                 if exclusion is None:
                     qualified.append({**candidate, "required": required})
+                    if required and candidate.get("is_real_product"):
+                        protected_real_product_present = True
                     if required:
                         qualified_required_ids.add(asset_id)
                 elif required:
@@ -103,7 +102,13 @@ def resolve_materials(
             qualified_by_source[source] = qualified
 
         if invalid_required_ids - qualified_required_ids:
-            _persist(repositories, job_id, records)
+            _persist(
+                repositories,
+                job_id,
+                records,
+                status="failed",
+                error_code="required_material_unavailable",
+            )
             raise MaterialResolutionError("required_material_unavailable")
         chosen = _choose_candidate(qualified_by_source, used_required)
         if chosen is not None:
@@ -120,8 +125,14 @@ def resolve_materials(
             continue
 
         slot_required = bool(required_ids - used_required)
-        if slot_required or real_product_present:
-            _persist(repositories, job_id, records)
+        if slot_required or protected_real_product_present:
+            _persist(
+                repositories,
+                job_id,
+                records,
+                status="failed",
+                error_code="required_material_unavailable",
+            )
             raise MaterialResolutionError("required_material_unavailable")
 
         generation_slot = {**slot, "required": False}
@@ -130,8 +141,14 @@ def resolve_materials(
                 generation_slot, f"{job_id}:material:{slot['id']}"
             )
             payload = _generated_payload(generated, owner=owner, job_id=job_id)
-        except MaterialResolutionError:
-            _persist(repositories, job_id, records)
+        except MaterialResolutionError as exc:
+            _persist(
+                repositories,
+                job_id,
+                records,
+                status="failed",
+                error_code=exc.code,
+            )
             raise
         except Exception:
             degraded = True
@@ -157,9 +174,16 @@ def resolve_materials(
         }
 
     unused = required_ids - used_required
-    _persist(repositories, job_id, records)
     if unused:
+        _persist(
+            repositories,
+            job_id,
+            records,
+            status="failed",
+            error_code="required_material_unused",
+        )
         raise MaterialResolutionError("required_material_unused")
+    _persist(repositories, job_id, records, status="succeeded")
 
     result = copy.deepcopy(plan)
     result["materials"] = resolved
@@ -388,9 +412,20 @@ def _safe_asset(candidate: dict[str, Any]) -> dict[str, Any]:
     return {key: copy.deepcopy(value) for key, value in candidate.items() if key in _SAFE_ASSET_FIELDS}
 
 
-def _persist(repositories: Any, job_id: str, records: list[dict[str, Any]]) -> None:
+def _persist(
+    repositories: Any,
+    job_id: str,
+    records: list[dict[str, Any]],
+    *,
+    status: str,
+    error_code: str | None = None,
+) -> None:
     safe_records = copy.deepcopy(records)
     if hasattr(repositories, "save_resolution_records"):
-        repositories.save_resolution_records(job_id, safe_records)
+        repositories.save_resolution_records(
+            job_id, safe_records, status=status, error_code=error_code
+        )
     elif isinstance(repositories, dict) and callable(repositories.get("save_resolution_records")):
-        repositories["save_resolution_records"](job_id, safe_records)
+        repositories["save_resolution_records"](
+            job_id, safe_records, status=status, error_code=error_code
+        )
