@@ -1,0 +1,11 @@
+{
+  "name": "external_video",
+  "owner": "external-owner",
+  "creation_mode": "natural_brief",
+  "aspect_ratio": "16:9",
+  "main_kind": "video",
+  "source_type": "external_video",
+  "original_text": null,
+  "duration_ms": 3000,
+  "actual_points": 18
+}

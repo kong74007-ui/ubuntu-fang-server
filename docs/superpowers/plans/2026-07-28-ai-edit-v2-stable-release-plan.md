@@ -608,7 +608,7 @@ git commit -m "feat(ai-edit-v2): expose stable editing workflow"
 - Produces: `python scripts/ai_edit_v2_provider_smoke.py --provider <name>` with exit code only and redacted request IDs.
 - Produces: three fake-provider E2E fixtures ending in a verified asset.
 
-- [ ] **Step 1: Write failing E2E tests**
+- [x] **Step 1: Write failing E2E tests**
 
 ```python
 def test_platform_video_e2e(): assert_run_fixture("platform_video", expected="completed")
@@ -616,17 +616,17 @@ def test_external_video_e2e(): assert_run_fixture("external_video", expected="co
 def test_audio_only_e2e(): assert_run_fixture("audio_only", expected="completed")
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `python -m unittest tests.test_ai_edit_v2_e2e -v`
 
 Expected: FAIL because fixtures and fake dependency bundle are not complete.
 
-- [ ] **Step 3: Implement fake-provider E2E and smoke CLI**
+- [x] **Step 3: Implement fake-provider E2E and smoke CLI**
 
 The fake suite must exercise quote, hold, job creation, normalization, transcript, director, materials, generated image, BGM, SFX, Shotstack, quality, COS, settlement and asset delivery. The smoke CLI supports `dashscope-asr`, `dashscope-qwen`, `openai-image`, `elevenlabs-music`, `elevenlabs-sfx`, `shotstack` and `cos`; it must redact headers and never print response bodies containing signed URLs.
 
-- [ ] **Step 4: Run targeted and full automated suites**
+- [x] **Step 4: Run targeted and full automated suites**
 
 Run: `python -m unittest tests.test_ai_edit_v2_e2e -v`
 
@@ -636,7 +636,7 @@ Run: `node --test tests/test_ai_edit_v2_ui.js`
 
 Expected: all PASS.
 
-- [ ] **Step 5: Run repository regressions and secret scan**
+- [x] **Step 5: Run repository regressions and secret scan**
 
 Run the repository's documented backend and frontend test commands, then:
 
@@ -647,12 +647,23 @@ git grep -nE 'sk_[A-Za-z0-9_-]{20,}|xi-api-key:[[:space:]]*[^$]' -- ':!docs/supe
 
 Expected: tests PASS; secret scan prints no credential.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/ai_edit_v2_provider_smoke.py tests/test_ai_edit_v2_e2e.py tests/fixtures/ai_edit_v2/e2e docs/superpowers/plans/2026-07-28-ai-edit-v2-stable-release-plan.md
 git commit -m "test(ai-edit-v2): cover stable provider pipeline"
 ```
+
+Task 10 evidence (2026-07-29): RED was observed with three missing E2E
+fixtures and the missing smoke module. The final targeted suite passed 8/8,
+the full AI Edit V2 Python suite passed 336/336, and the V2 UI suite passed
+6/6. Repository static validation, cache-stamp validation, Python compilation
+and `git diff --check` passed. The Windows repository-wide run passed 1330 of
+1346 tests; its 1 failure and 15 errors are pre-existing platform-only cases
+(Windows file locking/default encoding, POSIX `/tmp` expectations and missing
+Bash), outside Task 10. CI secret validation passed; the plan's narrow grep
+matched only nine pre-existing test-fixture files and no Task 10 file. No real
+provider call, push, deployment, service restart or Task 11 action was run.
 
 ### Task 11: PR Review and Test-Environment Deployment
 
