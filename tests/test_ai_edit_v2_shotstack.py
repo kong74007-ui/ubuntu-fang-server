@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -441,6 +442,51 @@ class ShotstackClientTests(unittest.TestCase):
                 "SELECT normalized_status FROM edit_v2_provider_events"
             ).fetchall()
         self.assertEqual(statuses, [("processed",)])
+
+    def test_webhook_reclaims_expired_lease_left_by_crashed_process(self):
+        calls = []
+
+        def request(method, url, headers, body, timeout):
+            calls.append(method)
+            return {"success": True, "message": "OK", "response": {
+                "id": "render-123", "status": "done",
+                "url": "https://cdn.example.invalid/render.mp4",
+            }}
+
+        client = self._client(request)
+        store.bind_provider_submission(
+            attempt_id=self.attempt_id, job_id=self.job["id"], provider="shotstack",
+            capability="render", provider_task_id="render-123", reference="job:render:1",
+            status="pending", now=199, db_path=self.db_path,
+        )
+        event = {"id": "render-123", "status": "done"}
+        canonical = json.dumps(
+            event, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        store.claim_provider_event(
+            self.job["id"], "shotstack", "render-123", fingerprint, 200,
+            lease_owner="crashed-owner", lease_seconds=30, now=200,
+            db_path=self.db_path,
+        )
+
+        result = reconcile_webhook(
+            self.job["id"], event, client,
+            callback_attempt_id=self.attempt_id,
+            callback_token=client.callback_token("job:render:1"),
+            received_at=230,
+            db_path=self.db_path,
+        )
+
+        self.assertEqual(result.payload["status"], "succeeded")
+        self.assertEqual(calls, ["GET"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            event_row = conn.execute(
+                """SELECT normalized_status,lease_owner,lease_until
+                   FROM edit_v2_provider_events WHERE fingerprint=?""",
+                (fingerprint,),
+            ).fetchone()
+        self.assertEqual(event_row, ("processed", None, None))
 
     def test_pending_duplicate_webhook_is_retryable_and_recovers_after_first_get_fails(self):
         first_get_entered = threading.Event()

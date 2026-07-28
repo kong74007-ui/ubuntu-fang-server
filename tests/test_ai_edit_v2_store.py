@@ -1,4 +1,5 @@
 import json
+import inspect
 import os
 import sqlite3
 import tempfile
@@ -159,6 +160,39 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(actual, EXPECTED_TABLES)
 
+    def test_provider_event_schema_has_persistent_lease_fields(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_provider_events)"
+                )
+            }
+            version = conn.execute(
+                "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+            ).fetchone()["version"]
+
+        self.assertIn("lease_owner", columns)
+        self.assertIn("lease_until", columns)
+        self.assertEqual(version, 5)
+
+    def test_provider_event_mutations_require_a_lease_owner(self):
+        claim_parameters = inspect.signature(
+            store.claim_provider_event
+        ).parameters
+        complete_parameters = inspect.signature(
+            store.mark_provider_event_processed
+        ).parameters
+        release_parameters = inspect.signature(
+            store.release_pending_provider_event
+        ).parameters
+
+        self.assertIn("lease_owner", claim_parameters)
+        self.assertIn("lease_seconds", claim_parameters)
+        self.assertIn("now", claim_parameters)
+        self.assertIn("lease_owner", complete_parameters)
+        self.assertIn("lease_owner", release_parameters)
+
     def test_init_db_migrates_existing_jobs_to_explicit_predecessor_links(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v1.db")
         self._create_v1_jobs_table(legacy_path)
@@ -171,7 +205,7 @@ class StoreTests(unittest.TestCase):
                 "SELECT version FROM edit_v2_schema_meta WHERE id=1"
             ).fetchone()["version"]
         self.assertIn("predecessor_job_id", columns)
-        self.assertEqual(version, 4)
+        self.assertEqual(version, 5)
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
         for scenario in ("new", "delete_v1", "wal_v1"):
@@ -205,7 +239,7 @@ class StoreTests(unittest.TestCase):
                         "SELECT version FROM edit_v2_schema_meta WHERE id=1"
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
-                self.assertEqual(version, 4)
+                self.assertEqual(version, 5)
 
     def test_v2_generated_rows_upgrade_with_safe_ready_pending_and_failed_semantics(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v2-materials.db")
@@ -443,6 +477,105 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(
             store.record_provider_event(
                 job["id"], "shotstack", "render-1", "completed", "fingerprint-1", 401
+            )
+        )
+
+    def test_crashed_provider_event_owner_keeps_lease_until_expiry(self):
+        job = self._create_job()
+
+        first = store.claim_provider_event(
+            job["id"], "shotstack", "render-1", "fingerprint-crash", 400,
+            lease_owner="owner-a", lease_seconds=30, now=400,
+            db_path=self.db_path,
+        )
+        blocked = store.claim_provider_event(
+            job["id"], "shotstack", "render-1", "fingerprint-crash", 401,
+            lease_owner="owner-b", lease_seconds=30, now=429,
+            db_path=self.db_path,
+        )
+
+        self.assertEqual(first, "claimed")
+        self.assertEqual(blocked, "pending")
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                """SELECT lease_owner,lease_until FROM edit_v2_provider_events
+                   WHERE fingerprint='fingerprint-crash'"""
+            ).fetchone()
+        self.assertEqual((row["lease_owner"], row["lease_until"]), ("owner-a", 430))
+
+    def test_expired_pending_provider_event_is_atomically_reclaimed(self):
+        job = self._create_job()
+        store.claim_provider_event(
+            job["id"], "shotstack", "render-1", "fingerprint-reclaim", 400,
+            lease_owner="owner-a", lease_seconds=30, now=400,
+            db_path=self.db_path,
+        )
+
+        reclaimed = store.claim_provider_event(
+            job["id"], "shotstack", "render-1", "fingerprint-reclaim", 430,
+            lease_owner="owner-b", lease_seconds=45, now=430,
+            db_path=self.db_path,
+        )
+
+        self.assertEqual(reclaimed, "claimed")
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                """SELECT lease_owner,lease_until,received_at
+                   FROM edit_v2_provider_events
+                   WHERE fingerprint='fingerprint-reclaim'"""
+            ).fetchone()
+        self.assertEqual(
+            (row["lease_owner"], row["lease_until"], row["received_at"]),
+            ("owner-b", 475, 430),
+        )
+
+    def test_stale_provider_event_owner_cannot_release_reclaimed_lease(self):
+        job = self._create_job()
+        fingerprint = "fingerprint-stale-release"
+        store.claim_provider_event(
+            job["id"], "shotstack", "render-1", fingerprint, 400,
+            lease_owner="owner-a", lease_seconds=30, now=400,
+            db_path=self.db_path,
+        )
+        store.claim_provider_event(
+            job["id"], "shotstack", "render-1", fingerprint, 430,
+            lease_owner="owner-b", lease_seconds=30, now=430,
+            db_path=self.db_path,
+        )
+
+        self.assertFalse(
+            store.release_pending_provider_event(
+                fingerprint, lease_owner="owner-a", db_path=self.db_path
+            )
+        )
+        self.assertTrue(
+            store.mark_provider_event_processed(
+                fingerprint, lease_owner="owner-b", db_path=self.db_path
+            )
+        )
+
+    def test_stale_provider_event_owner_cannot_complete_reclaimed_lease(self):
+        job = self._create_job()
+        fingerprint = "fingerprint-stale-complete"
+        store.claim_provider_event(
+            job["id"], "shotstack", "render-1", fingerprint, 400,
+            lease_owner="owner-a", lease_seconds=30, now=400,
+            db_path=self.db_path,
+        )
+        store.claim_provider_event(
+            job["id"], "shotstack", "render-1", fingerprint, 430,
+            lease_owner="owner-b", lease_seconds=30, now=430,
+            db_path=self.db_path,
+        )
+
+        self.assertFalse(
+            store.mark_provider_event_processed(
+                fingerprint, lease_owner="owner-a", db_path=self.db_path
+            )
+        )
+        self.assertTrue(
+            store.release_pending_provider_event(
+                fingerprint, lease_owner="owner-b", db_path=self.db_path
             )
         )
 

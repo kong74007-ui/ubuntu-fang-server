@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import socket
 import time
 import urllib.error
@@ -28,6 +29,7 @@ from .ai_edit_v2_schema import (
 
 
 _DEFAULT_API_BASE = "https://api.shotstack.io/edit/stage"
+_WEBHOOK_LEASE_SECONDS = 60
 
 
 class RenderGraphError(RuntimeError):
@@ -563,12 +565,16 @@ def reconcile_webhook(
         raise ProviderError("shotstack_webhook_invalid")
     canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    lease_owner = secrets.token_urlsafe(32)
     claim = store.claim_provider_event(
         job_id,
         "shotstack",
         task_id,
         fingerprint,
         received_at,
+        lease_owner=lease_owner,
+        lease_seconds=_WEBHOOK_LEASE_SECONDS,
+        now=received_at,
         db_path=db_path,
     )
     if claim == "processed":
@@ -579,8 +585,12 @@ def reconcile_webhook(
         client.bind_callback_task(callback_attempt_id, callback_token, task_id)
         result = client.reconcile(provider_task_id=task_id)
     except ProviderError:
-        store.release_pending_provider_event(fingerprint, db_path=db_path)
+        store.release_pending_provider_event(
+            fingerprint, lease_owner=lease_owner, db_path=db_path
+        )
         raise
-    if not store.mark_provider_event_processed(fingerprint, db_path=db_path):
+    if not store.mark_provider_event_processed(
+        fingerprint, lease_owner=lease_owner, db_path=db_path
+    ):
         raise ProviderError("shotstack_webhook_state_conflict")
     return result

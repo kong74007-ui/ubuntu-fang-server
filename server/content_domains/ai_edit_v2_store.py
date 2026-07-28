@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -186,7 +186,9 @@ def init_db(db_path: str | None = None) -> None:
                 provider_task_id TEXT NOT NULL,
                 normalized_status TEXT NOT NULL,
                 fingerprint TEXT NOT NULL UNIQUE,
-                received_at INTEGER NOT NULL
+                received_at INTEGER NOT NULL,
+                lease_owner TEXT,
+                lease_until INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS edit_v2_quotes(
@@ -277,6 +279,20 @@ def init_db(db_path: str | None = None) -> None:
                    ON edit_v2_stage_attempts(provider_reference)
                    WHERE provider_reference IS NOT NULL"""
             )
+            provider_event_columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_provider_events)"
+                )
+            }
+            if "lease_owner" not in provider_event_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_events ADD COLUMN lease_owner TEXT"
+                )
+            if "lease_until" not in provider_event_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_events ADD COLUMN lease_until INTEGER"
+                )
             generation_columns = {
                 "generation_job_id": "TEXT",
                 "generation_idempotency_key": "TEXT",
@@ -1302,28 +1318,66 @@ def claim_provider_event(
     fingerprint: str,
     received_at: int,
     *,
+    lease_owner: str,
+    lease_seconds: int,
+    now: int,
     db_path: str | None = None,
 ) -> str:
     """Atomically classify a webhook fingerprint as claimed, pending, or processed."""
 
+    if not isinstance(lease_owner, str) or not lease_owner.strip():
+        raise ValueError("provider_event_lease_owner_invalid")
+    if isinstance(lease_seconds, bool) or int(lease_seconds) <= 0:
+        raise ValueError("provider_event_lease_invalid")
+    lease_until = int(now) + int(lease_seconds)
     with _connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                """SELECT normalized_status FROM edit_v2_provider_events
+                """SELECT job_id,provider,provider_task_id,normalized_status,
+                          lease_until
+                   FROM edit_v2_provider_events
                    WHERE fingerprint=?""",
                 (fingerprint,),
             ).fetchone()
             if row is not None:
+                if (
+                    row["job_id"] != job_id
+                    or row["provider"] != provider
+                    or row["provider_task_id"] != provider_task_id
+                ):
+                    raise ValueError("provider_event_identity_conflict")
                 status = str(row["normalized_status"])
                 if status not in {"pending", "processed"}:
                     raise ValueError("provider_event_status_invalid")
+                if status == "pending" and (
+                    row["lease_until"] is None
+                    or int(row["lease_until"]) <= int(now)
+                ):
+                    changed = conn.execute(
+                        """UPDATE edit_v2_provider_events
+                           SET lease_owner=?,lease_until=?,received_at=?
+                           WHERE fingerprint=? AND normalized_status='pending'
+                             AND (lease_until IS NULL OR lease_until<=?)""",
+                        (
+                            lease_owner,
+                            lease_until,
+                            received_at,
+                            fingerprint,
+                            int(now),
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise ValueError("provider_event_lease_conflict")
+                    conn.commit()
+                    return "claimed"
                 conn.commit()
                 return status
             conn.execute(
                 """INSERT INTO edit_v2_provider_events(
-                       job_id,provider,provider_task_id,normalized_status,fingerprint,received_at
-                   ) VALUES(?,?,?,?,?,?)""",
+                       job_id,provider,provider_task_id,normalized_status,fingerprint,
+                       received_at,lease_owner,lease_until
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
                 (
                     job_id,
                     provider,
@@ -1331,6 +1385,8 @@ def claim_provider_event(
                     "pending",
                     fingerprint,
                     received_at,
+                    lease_owner,
+                    lease_until,
                 ),
             )
             conn.commit()
@@ -1341,25 +1397,28 @@ def claim_provider_event(
 
 
 def mark_provider_event_processed(
-    fingerprint: str, *, db_path: str | None = None
+    fingerprint: str, *, lease_owner: str, db_path: str | None = None
 ) -> bool:
     with _connection(db_path) as conn:
         changed = conn.execute(
-            """UPDATE edit_v2_provider_events SET normalized_status='processed'
-               WHERE fingerprint=? AND normalized_status='pending'""",
-            (fingerprint,),
+            """UPDATE edit_v2_provider_events
+               SET normalized_status='processed',lease_owner=NULL,lease_until=NULL
+               WHERE fingerprint=? AND lease_owner=?
+                 AND normalized_status='pending'""",
+            (fingerprint, lease_owner),
         ).rowcount
     return changed == 1
 
 
 def release_pending_provider_event(
-    fingerprint: str, *, db_path: str | None = None
+    fingerprint: str, *, lease_owner: str, db_path: str | None = None
 ) -> bool:
     with _connection(db_path) as conn:
         changed = conn.execute(
             """DELETE FROM edit_v2_provider_events
-               WHERE fingerprint=? AND normalized_status='pending'""",
-            (fingerprint,),
+               WHERE fingerprint=? AND lease_owner=?
+                 AND normalized_status='pending'""",
+            (fingerprint, lease_owner),
         ).rowcount
     return changed == 1
 
