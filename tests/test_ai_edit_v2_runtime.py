@@ -1,10 +1,15 @@
 import unittest
 import copy
+import os
 import tempfile
 import threading
+from contextlib import closing
+from pathlib import Path
 from unittest.mock import patch
 
 from server.content_domains import ai_edit_v2_runtime as runtime
+from server.content_domains import ai_edit_v2_billing as billing
+from server.content_domains import ai_edit_v2_store as store
 from tests.test_ai_edit_v2_director import VALID_PLAN
 
 
@@ -40,6 +45,67 @@ def _resolved_plan(duration_ms=1800):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_audio_only_always_masters_original_voice_when_optional_audio_is_none_or_degraded(self):
+        class Cos:
+            def __init__(self): self.objects = {}
+            def download_file(self, _key, path): Path(path).write_bytes(b"voice")
+            def put_file(self, path, key, _content_type, private=True): self.objects[key] = Path(path).read_bytes()
+            def head_object(self, key): return {"content_length": len(self.objects[key]), "etag": "master-etag"}
+
+        plan = _resolved_plan()
+        plan["primary_media"] = {"cos_key": "private/voice.m4a", "media_type": "audio",
+                                 "metadata": {"duration_ms": 1800}}
+        plan.pop("primary_video")
+        for degradations in ([], ["music_generation_degraded", "sfx_generation_degraded"]):
+            cos = Cos()
+            service = runtime.ProductionServices("unused.db", cos_api=cos)
+            generated = {"bgm": None, "sfx": [], "degradations": degradations}
+            def fake_mix(_video, _voice, _bgm, _sfx, output, _runner):
+                Path(output).write_bytes(b"master")
+                return output
+            with patch("server.content_domains.ai_edit_v2_audio.build_audio_plan",
+                       return_value={"bgm": None, "sfx": [], "degradations": []}), \
+                 patch("server.content_domains.ai_edit_v2_audio.generate_audio_assets",
+                       return_value=copy.deepcopy(generated)), \
+                 patch("server.content_domains.ai_edit_v2_audio.mix_audio", side_effect=fake_mix), \
+                 patch("server.content_domains.ai_edit_v2_providers.elevenlabs.ElevenLabsProvider",
+                       return_value=object()):
+                output = service.generating_media(
+                    {"id": "job-audio", "owner": "alice"}, {},
+                    {"previous": {"resolved_plan": copy.deepcopy(plan)}},
+                )
+            self.assertEqual(output["resolved_plan"]["mastered_audio"]["source"], "mix_audio")
+            self.assertEqual(output["generated_audio"]["degradations"], degradations)
+
+    def test_provider_usage_survives_service_restart_and_replay_without_double_cost(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            store.init_db(db_path)
+            draft = {"creation_mode": "natural_brief", "brief": "x", "language": "zh-CN",
+                     "aspect_ratio": "16:9", "target_duration_ms": 1000,
+                     "input_mode": "external_video",
+                     "main_input": {"asset_id": "m", "kind": "video", "size_bytes": 1,
+                                    "duration_ms": 1000},
+                     "required_materials": [], "reference_materials": []}
+            quote = billing.create_quote("alice", draft, 1, db_path=db_path)
+            job = store.create_job("alice", {"draft": draft}, quote["id"], "cost-once", 2,
+                                   uuid_factory=lambda: "job-cost", db_path=db_path)
+            with closing(store.open_store(db_path)) as conn:
+                conn.execute("""INSERT INTO edit_v2_billing(
+                    job_id,transaction_key,operation,amount,status,created_at,updated_at
+                ) VALUES('job-cost','hold-cost','hold',50,'held',2,2)""")
+            runtime.ProductionServices(db_path)._record_usage(
+                "job-cost", "image:one", "openai", "image_generation", "request-one", None
+            )
+            restarted = runtime.ProductionServices(db_path)
+            restarted._record_usage(
+                "job-cost", "image:one", "openai", "image_generation", "replay-request", None
+            )
+            self.assertEqual(restarted.actual_cost(job, {}), 4)
+            with closing(store.open_store(db_path)) as conn:
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM edit_v2_provider_usage WHERE job_id='job-cost'"
+                ).fetchone()[0], 1)
     def test_each_stage_schema_rejects_missing_field_and_wrong_type(self):
         artifact = {"cos_key": "k", "etag": "e", "size_bytes": 1}
         item = {"text": "x", "start_ms": 0, "end_ms": 1}

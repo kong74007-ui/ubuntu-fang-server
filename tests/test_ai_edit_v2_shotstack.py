@@ -20,6 +20,7 @@ from server.content_domains.ai_edit_v2_providers.base import (
 from server.content_domains.ai_edit_v2_shotstack import (
     RenderGraphError,
     ShotstackClient,
+    _compile_shotstack_edit,
     build_render_graph,
     reconcile_webhook,
 )
@@ -68,6 +69,20 @@ def _components(graph, kind):
 
 
 class RenderGraphTests(unittest.TestCase):
+    def test_audio_only_never_compiles_source_audio_as_a_video_clip(self):
+        plan = {
+            **RESOLVED_PLAN,
+            "primary_video": {"cos_key": "private/voice.m4a", "media_type": "audio"},
+        }
+        signed = {**SIGNED_ASSETS, "private/voice.m4a": "https://cos.example.invalid/voice.m4a"}
+
+        graph = build_render_graph(plan, signed, FONT_URL)
+        edit = _compile_shotstack_edit(graph, "https://callback.example.invalid")
+
+        asset_types = [track["clips"][0]["asset"]["type"] for track in edit["timeline"]["tracks"]]
+        self.assertNotIn("video", asset_types)
+        self.assertIn("image", asset_types)
+        self.assertIn("audio", asset_types)
     def test_render_graph_uses_exact_aligned_caption_timestamps_and_noto_font(self):
         graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
 

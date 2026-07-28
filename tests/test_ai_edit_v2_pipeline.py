@@ -33,6 +33,7 @@ def draft():
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 60_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "main",
             "kind": "video",

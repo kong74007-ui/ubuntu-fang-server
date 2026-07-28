@@ -15,6 +15,7 @@ class TemplateError(RuntimeError):
 _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
     {
         "id": "business_diagnostic",
+        "name": "商业诊断",
         "version": "1.0",
         "status": "published",
         "component_family": "editorial_business",
@@ -36,6 +37,7 @@ _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
     },
     {
         "id": "modern_documentary",
+        "name": "现代纪实",
         "version": "1.0",
         "status": "published",
         "component_family": "documentary_modern",

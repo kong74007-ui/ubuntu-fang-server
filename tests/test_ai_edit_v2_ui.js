@@ -53,6 +53,12 @@ test('page implements draft quote confirmation upload retry and job polling', ()
   assert.match(page, /sessionStorage\.getItem\(retryStorageKey\)/);
   assert.match(page, /sessionStorage\.removeItem\(retryStorageKey\)/);
   assert.match(page, /billing_pending/);
+  assert.match(page, /id="inputMode"/);
+  for (const mode of ['platform_video', 'external_video', 'audio_only']) {
+    assert.match(page, new RegExp(`value="${mode}"`));
+  }
+  assert.match(page, /template_id/);
+  assert.match(page, /template_version/);
   assert.match(page, /data\.degradations/);
   assert.match(page, /data\.quality/);
   assert.match(page, /actual_charge_points/);

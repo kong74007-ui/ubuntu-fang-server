@@ -6,6 +6,16 @@ from server.content_domains import ai_edit_v2_feature as feature
 
 
 class FeatureCapabilityTests(unittest.TestCase):
+    def test_capability_uses_constructed_production_dependency_readiness(self):
+        with patch.dict(os.environ, {"AI_EDIT_V2_ENABLED": "1"}, clear=False), \
+             patch.object(feature.runtime, "production_dependencies", return_value={
+                 "readiness_errors": lambda: ["AI_EDIT_V2_REPAIR_PROVIDER"]
+             }):
+            state = feature.capability()
+
+        self.assertFalse(state["accepts_submissions"])
+        self.assertFalse(state["stable_runtime_ready"])
+        self.assertEqual(state["readiness_errors"], ["AI_EDIT_V2_REPAIR_PROVIDER"])
     @staticmethod
     def _configured_environment():
         return {
@@ -36,7 +46,9 @@ class FeatureCapabilityTests(unittest.TestCase):
         configured = self._configured_environment()
         with patch.dict(os.environ, configured, clear=True), patch.object(
             feature, "runtime_ready", return_value=True
-        ), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
+        ), patch.object(feature.runtime, "production_dependencies", return_value={
+            "readiness_errors": lambda: []
+        }), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
             value = feature.capability()
 
         self.assertTrue(value["renderers"]["shotstack"])

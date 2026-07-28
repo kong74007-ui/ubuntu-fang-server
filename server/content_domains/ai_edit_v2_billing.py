@@ -35,6 +35,15 @@ _DEFAULT_PRICE_CONFIG = {
         "platform_template": 4,
         "open_generation": 10,
     },
+    "provider_fallback_points": {
+        "asr": 3,
+        "director": 3,
+        "image_generation": 4,
+        "music": 3,
+        "sfx": 1,
+        "render": 5,
+        "repair": 4,
+    },
 }
 
 
@@ -64,9 +73,15 @@ def default_price_config() -> dict[str, Any]:
 
 
 def _validate_price_config(config: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(config, dict) or set(config) != set(_DEFAULT_PRICE_CONFIG):
+    if not isinstance(config, dict):
         raise BillingError("price_config_invalid")
-    clean = json.loads(_canonical(config))
+    normalized = json.loads(_canonical(config))
+    legacy_keys = set(_DEFAULT_PRICE_CONFIG) - {"provider_fallback_points"}
+    if set(normalized) == legacy_keys:
+        normalized["provider_fallback_points"] = _DEFAULT_PRICE_CONFIG["provider_fallback_points"]
+    if set(normalized) != set(_DEFAULT_PRICE_CONFIG):
+        raise BillingError("price_config_invalid")
+    clean = normalized
     positive = (
         "base_points", "duration_block_ms", "duration_points_per_block",
         "required_material_points", "reference_pair_points",
@@ -82,7 +97,79 @@ def _validate_price_config(config: dict[str, Any]) -> dict[str, Any]:
             raise BillingError("price_config_invalid")
         if any(not isinstance(value, int) or value < 0 for value in values.values()):
             raise BillingError("price_config_invalid")
+    fallback = clean["provider_fallback_points"]
+    if set(fallback) != {"asr", "director", "image_generation", "music", "sfx", "render", "repair"}:
+        raise BillingError("price_config_invalid")
+    if any(not isinstance(value, int) or value < 0 for value in fallback.values()):
+        raise BillingError("price_config_invalid")
     return clean
+
+
+def _price_config_for_version(version: str, *, pricing_db_path: str | None = None) -> dict[str, Any]:
+    if version == PRICE_VERSION:
+        return default_price_config()
+    with closing(_open_pricing(pricing_db_path)) as conn:
+        row = conn.execute(
+            "SELECT config_json FROM ai_edit_v2_price_versions WHERE version=? AND status='published'",
+            (version,),
+        ).fetchone()
+    if row is None:
+        raise BillingError("price_version_not_found")
+    return _validate_price_config(json.loads(row["config_json"]))
+
+
+def record_provider_usage(
+    job_id: str, operation_key: str, provider: str, capability: str,
+    request_id: str, *, cost_units: int | None, price_version: str,
+    db_path: str | None = None, pricing_db_path: str | None = None,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Persist one confirmed billable operation; replay returns the frozen row."""
+    config = _price_config_for_version(price_version, pricing_db_path=pricing_db_path)
+    reported = cost_units if isinstance(cost_units, int) and not isinstance(cost_units, bool) and cost_units > 0 else None
+    # Provider units are not points. Until a published version carries an audited
+    # conversion, both missing and opaque units use its explicit per-operation fallback.
+    effective = int(config["provider_fallback_points"][capability])
+    status = "reported_fallback" if reported is not None else "fallback"
+    audit = {
+        "rule": "frozen_provider_fallback",
+        "reported_cost_units": reported,
+        "fallback_points": effective,
+    }
+    created_at = int(now if now is not None else __import__("time").time())
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO edit_v2_provider_usage(
+                   job_id,operation_key,provider,capability,request_id,cost_units,
+                   cost_status,effective_points,price_version,audit_json,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, operation_key, provider, capability, request_id, reported,
+             status, effective, price_version, _canonical(audit), created_at),
+        )
+        row = conn.execute(
+            "SELECT * FROM edit_v2_provider_usage WHERE job_id=? AND operation_key=?",
+            (job_id, operation_key),
+        ).fetchone()
+    if row is None or row["provider"] != provider or row["capability"] != capability or row["price_version"] != price_version:
+        raise BillingError("provider_usage_conflict")
+    return {
+        "job_id": row["job_id"], "operation_key": row["operation_key"],
+        "provider": row["provider"], "capability": row["capability"],
+        "request_id": row["request_id"], "cost_units": row["cost_units"],
+        "cost_status": row["cost_status"], "effective_points": int(row["effective_points"]),
+        "price_version": row["price_version"], "audit": json.loads(row["audit_json"]),
+    }
+
+
+def aggregate_provider_cost(job_id: str, *, held_points: int, db_path: str | None = None) -> int:
+    if isinstance(held_points, bool) or not isinstance(held_points, int) or held_points < 0:
+        raise BillingError("held_points_invalid")
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(effective_points),0) AS total FROM edit_v2_provider_usage WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    return min(held_points, int(row["total"]))
 
 
 def _pricing_db_path(path: str | None = None) -> str:

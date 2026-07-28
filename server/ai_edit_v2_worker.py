@@ -86,7 +86,7 @@ def run_worker(
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
     dependencies = handlers or runtime.production_dependencies(config["db_path"])
-    capability = feature.capability()
+    capability = feature.capability(dependencies)
     accepts_submissions = bool(config["enabled"]) and bool(
         capability.get("accepts_submissions")
     )

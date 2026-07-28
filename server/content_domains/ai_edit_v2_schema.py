@@ -256,11 +256,18 @@ def validate_job_draft(draft: dict[str, Any]) -> dict[str, Any]:
     _require(draft.get("aspect_ratio") in ASPECT_RATIOS, "画面比例不受支持")
     _require(draft.get("language") == "zh-CN", "第一阶段只支持中文")
     input_mode = draft.get("input_mode")
-    if input_mode is not None:
-        _require(input_mode in {"platform_video", "external_video", "external_audio"},
-                 "input_mode unsupported")
+    _require(input_mode in {"platform_video", "external_video", "audio_only"},
+             "input_mode unsupported")
     if input_mode == "platform_video":
         _nonempty_string(draft.get("original_text"), "original_text")
+    if draft.get("creation_mode") == "platform_template":
+        _nonempty_string(draft.get("template_id"), "template_id")
+        _nonempty_string(draft.get("template_version"), "template_version")
+        from .ai_edit_v2_templates import get_published_template
+        try:
+            get_published_template(draft["template_id"], draft["template_version"])
+        except Exception as exc:
+            raise ValueError("template_not_published") from exc
     target_duration_ms = draft.get("target_duration_ms")
     if target_duration_ms is not None:
         _positive_int(target_duration_ms, "目标时长")
@@ -282,8 +289,8 @@ def validate_job_draft(draft: dict[str, Any]) -> dict[str, Any]:
         draft.get("main_input"), purpose="primary", is_main=True
     )
     main_kind = draft["main_input"].get("kind")
-    if input_mode == "external_audio":
-        _require(main_kind == "audio", "external_audio requires audio input")
+    if input_mode == "audio_only":
+        _require(main_kind == "audio", "audio_only requires audio input")
     elif input_mode in {"platform_video", "external_video"}:
         _require(main_kind == "video", "video input_mode requires video input")
     total_bytes += sum(

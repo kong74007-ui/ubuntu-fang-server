@@ -1,0 +1,10 @@
+{
+  "type": "edit",
+  "action": "render",
+  "id": "render-123",
+  "owner": "shotstack",
+  "status": "done",
+  "url": "https://ignored.invalid/out.mp4",
+  "error": null,
+  "completed": "2026-07-29T00:00:00Z"
+}

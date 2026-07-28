@@ -59,7 +59,7 @@ def build_render_graph(
         components: list[dict[str, Any]] = []
 
         primary = resolved_plan.get("primary_video")
-        if primary:
+        if primary and primary.get("media_type") != "audio":
             components.append(
                 _asset_component(
                     "broll_video", primary, signed_assets, 0, duration_ms
@@ -594,3 +594,22 @@ def reconcile_webhook(
     ):
         raise ProviderError("shotstack_webhook_state_conflict")
     return result
+
+
+def enqueue_webhook(
+    job_id: str,
+    event: dict[str, Any],
+    *,
+    received_at: int,
+    db_path: str | None = None,
+) -> bool:
+    """Persist a provider hint for asynchronous authoritative reconciliation."""
+    task_id = event.get("id") if isinstance(event, dict) else None
+    if not isinstance(task_id, str) or not task_id:
+        raise ProviderError("shotstack_webhook_invalid")
+    canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return store.record_provider_event(
+        job_id, "shotstack", task_id, "pending", fingerprint, received_at,
+        db_path=db_path,
+    )

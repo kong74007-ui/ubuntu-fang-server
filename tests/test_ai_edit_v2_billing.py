@@ -26,6 +26,7 @@ def draft(**overrides):
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 60_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "main",
             "kind": "video",
@@ -136,6 +137,29 @@ class BillingTests(unittest.TestCase):
     def tearDown(self):
         self.env.stop()
         self.temp_dir.cleanup()
+
+    def test_durable_provider_usage_aggregates_once_and_unknown_uses_frozen_fallback(self):
+        quote = billing.create_quote("alice", draft(), 100, db_path=self.db_path)
+        first = billing.record_provider_usage(
+            "job-cost", "op:image:1", "openai", "image_generation", "req-1",
+            cost_units=None, price_version=quote["price_version"], db_path=self.db_path,
+        )
+        replay = billing.record_provider_usage(
+            "job-cost", "op:image:1", "openai", "image_generation", "req-1",
+            cost_units=None, price_version=quote["price_version"], db_path=self.db_path,
+        )
+
+        self.assertEqual(first, replay)
+        self.assertEqual(first["cost_status"], "fallback")
+        self.assertGreater(first["effective_points"], 0)
+        self.assertEqual(
+            billing.aggregate_provider_cost("job-cost", held_points=99, db_path=self.db_path),
+            first["effective_points"],
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM edit_v2_provider_usage WHERE job_id='job-cost'"
+            ).fetchone()[0], 1)
 
     def _prepare_pending_migration_race(self):
         with closing(store.open_store(self.db_path)) as conn:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 from contextlib import closing
 from typing import Any, Callable
 
@@ -249,9 +251,9 @@ def _resolved_plan(value: Any) -> bool:
     except (KeyError, TypeError, ValueError):
         return False
     required = set(EDIT_PLAN_FIELDS) | {
-        "materials", "material_resolution_status", "text_timeline", "primary_video"
+        "materials", "material_resolution_status", "text_timeline"
     }
-    allowed = required | {"mastered_audio"}
+    allowed = required | {"primary_media", "primary_video", "mastered_audio"}
     if set(value) - allowed or not required.issubset(value):
         return False
     materials = value.get("materials")
@@ -271,7 +273,8 @@ def _resolved_plan(value: Any) -> bool:
         "resolved", "image_generation_degraded"
     }:
         return False
-    if not _timeline(value.get("text_timeline")) or not _normalized_media(value.get("primary_video")):
+    primary = value.get("primary_media") or value.get("primary_video")
+    if not _timeline(value.get("text_timeline")) or not _normalized_media(primary):
         return False
     if "mastered_audio" in value:
         mastered = value["mastered_audio"]
@@ -456,26 +459,41 @@ class ProductionServices:
         self.openai_http, self.openai_downloader = openai_http, openai_downloader
         self.elevenlabs_http = elevenlabs_http
         self.downloader = downloader or self._download
-        self.repair_handler = repair_handler
-        self.repair_reconciler_handler = repair_reconciler
+        self.repair_handler = repair_handler or _load_production_injection(
+            "AI_EDIT_V2_REPAIR_HANDLER_FACTORY", db_path
+        )
+        self.repair_reconciler_handler = repair_reconciler or _load_production_injection(
+            "AI_EDIT_V2_REPAIR_RECONCILER_FACTORY", db_path
+        )
         from .ai_edit_v2_quality import LocalQualityRunner
+        quality_analyzer = quality_analyzer or _load_production_injection(
+            "AI_EDIT_V2_QUALITY_ANALYZER_FACTORY", db_path
+        )
         self.quality_runner = LocalQualityRunner(runner, analyzer=quality_analyzer)
 
     def readiness_errors(self) -> list[str]:
         errors = []
-        if self.dashscope_http is None and not os.environ.get("DASHSCOPE_API_KEY"):
+        configured = lambda name: bool(
+            (value := str(os.environ.get(name) or "").strip())
+            and not value.lower().startswith("replace-with-")
+        )
+        if self.dashscope_http is None and not configured("DASHSCOPE_API_KEY"):
             errors.append("DASHSCOPE_API_KEY")
-        if self.shotstack_http is None and not os.environ.get("SHOTSTACK_API_KEY"):
+        if self.shotstack_http is None and not configured("SHOTSTACK_API_KEY"):
             errors.append("SHOTSTACK_API_KEY")
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not configured("OPENAI_API_KEY"):
             errors.append("OPENAI_API_KEY")
         if os.environ.get("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED") != "1":
             errors.append("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED")
-        if not os.environ.get("ELEVENLABS_API_KEY"):
+        if not configured("ELEVENLABS_API_KEY"):
             errors.append("ELEVENLABS_API_KEY")
-        if not os.environ.get("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL"):
+        callback = str(os.environ.get("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL") or "").strip()
+        parsed = urllib.parse.urlsplit(callback)
+        if (not callback or "replace-with-" in callback.lower() or parsed.scheme != "https"
+                or not parsed.hostname or parsed.username is not None or parsed.password is not None
+                or parsed.fragment):
             errors.append("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL")
-        if not os.environ.get("AI_EDIT_V2_WEBHOOK_SECRET"):
+        if not configured("AI_EDIT_V2_WEBHOOK_SECRET"):
             errors.append("AI_EDIT_V2_WEBHOOK_SECRET")
         enabled = getattr(self.cos, "enabled", None)
         if callable(enabled) and not enabled():
@@ -500,9 +518,7 @@ class ProductionServices:
         return path
 
     def actual_cost(self, job: dict[str, Any], _outputs: dict[str, Any]) -> int:
-        # The durable hold is the authoritative upper bound. Provider-specific
-        # costs can reduce this later, but an unavailable estimate must never
-        # undercharge or synthesize a floating-point value.
+        from . import ai_edit_v2_billing as billing
         from . import ai_edit_v2_store as store
         with closing(store.open_store(self.db_path)) as conn:
             row = conn.execute(
@@ -511,7 +527,26 @@ class ProductionServices:
             ).fetchone()
         if row is None:
             raise RuntimeError("billing_not_found")
-        return int(row["amount"])
+        return billing.aggregate_provider_cost(
+            job["id"], held_points=int(row["amount"]), db_path=self.db_path
+        )
+
+    def _record_usage(self, job_id: str, operation_key: str, provider: str,
+                      capability: str, request_id: str, cost_units: int | None) -> None:
+        from . import ai_edit_v2_billing as billing
+        from . import ai_edit_v2_store as store
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                """SELECT q.price_version FROM edit_v2_jobs j
+                   JOIN edit_v2_quotes q ON q.id=j.quote_id WHERE j.id=?""",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("quote_not_found")
+        billing.record_provider_usage(
+            job_id, operation_key, provider, capability, request_id,
+            cost_units=cost_units, price_version=row["price_version"], db_path=self.db_path,
+        )
 
     def repair_layer(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if self.repair_handler is None:
@@ -564,13 +599,15 @@ class ProductionServices:
         result = transcribe(signed, client, context["deadline_at"], provider_task_id=context.get("provider_task_id"),
                             reference=media["cos_key"], save_provider_task_id=context["save_provider_task_id"],
                             now_fn=time.time, sleep_fn=time.sleep, poll_guard=context["assert_active"])
+        self._record_usage(_job["id"], f"asr:{result['provider_task_id']}", "dashscope", "asr",
+                           result["provider_task_id"], None)
         return {"normalized_media": media, "asr_result": result}
 
     def aligning(self, _job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
         from .ai_edit_v2_alignment import build_text_timeline
         previous, draft = stage_input["previous"], self._draft(stage_input)
         if previous["normalized_media"]["media_type"] == "audio":
-            source_type = "external_audio"
+            source_type = "audio_only"
         elif draft.get("input_mode") == "platform_video" or (
             draft.get("input_mode") is None
             and draft.get("creation_mode") == "platform_template"
@@ -596,6 +633,8 @@ class ProductionServices:
         else:
             director_context["style_text"] = draft.get("style_text") or draft.get("brief") or "clean editorial"
         plan = generate_edit_plan(director_context, client)
+        self._record_usage(_job["id"], f"director:{_context['attempt_id']}", "dashscope",
+                           "director", str(_context["attempt_id"]), None)
         return {"normalized_media": previous["normalized_media"], "text_timeline": previous["text_timeline"], "edit_plan": plan}
 
     def resolving_materials(self, job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
@@ -605,8 +644,22 @@ class ProductionServices:
         provider = OpenAIImageProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos,
                                        db_path=self.db_path, worker_id=str(context["attempt_id"]),
                                        http_request=self.openai_http, downloader=self.openai_downloader)
-        plan = resolve_materials(job["id"], previous["edit_plan"], _MaterialRepositories(self.db_path, job["owner"]), provider)
-        plan.update({"text_timeline": previous["text_timeline"], "primary_video": previous["normalized_media"]})
+        edit_plan = previous["edit_plan"]
+        primary_media = previous["normalized_media"]
+        if primary_media["media_type"] == "audio" and not any(
+            scene.get("material_slots") for scene in edit_plan.get("scenes") or []
+        ):
+            edit_plan = json.loads(json.dumps(edit_plan))
+            edit_plan["scenes"][0]["material_slots"] = ["slot_audio_visual"]
+        plan = resolve_materials(job["id"], edit_plan, _MaterialRepositories(self.db_path, job["owner"]), provider)
+        plan.update({"text_timeline": previous["text_timeline"], "primary_media": primary_media})
+        if primary_media["media_type"] == "video":
+            plan["primary_video"] = primary_media
+        for material in plan["materials"].values():
+            if material.get("source") == "gpt_image":
+                request_id = str(material.get("asset_id") or material["cos_key"])
+                self._record_usage(job["id"], f"image:{request_id}", "openai",
+                                   "image_generation", request_id, None)
         return {"resolved_plan": plan}
 
     def generating_media(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
@@ -618,36 +671,46 @@ class ProductionServices:
                                       http_request=self.elevenlabs_http)
         generated = generate_audio_assets(job["id"], audio_plan, provider)
         for item in ([generated.get("bgm")] if generated.get("bgm") else []) + list(generated.get("sfx") or []):
+            provider_result = item.get("provider_result")
+            if provider_result is not None:
+                capability = str(provider_result.capability)
+                self._record_usage(
+                    job["id"], f"{capability}:{provider_result.request_id}",
+                    str(provider_result.provider), capability, str(provider_result.request_id),
+                    provider_result.cost_units if provider_result.cost_units > 0 else None,
+                )
             item.pop("provider_result", None)
         artifacts: list[dict[str, Any]] = []
-        if generated.get("bgm") or generated.get("sfx"):
-            owner_hash = hashlib.sha256(str(job["owner"]).encode()).hexdigest()[:16]
-            master_key = f"ai-edit-v2/{owner_hash}/{job['id']}/audio/master.m4a"
-            with tempfile.TemporaryDirectory(prefix="ai-edit-v2-audio-") as directory:
-                voice = os.path.join(directory, "voice.mp4")
-                self.cos.download_file(plan["primary_video"]["cos_key"], voice)
-                bgm_path = None
-                if generated.get("bgm"):
-                    bgm_path = os.path.join(directory, "bgm.mp3")
-                    self.cos.download_file(generated["bgm"]["cos_key"], bgm_path)
-                sfx = []
-                for index, cue in enumerate(generated.get("sfx") or []):
-                    path = os.path.join(directory, f"sfx-{index}.mp3")
-                    self.cos.download_file(cue["cos_key"], path)
-                    sfx.append({**cue, "path": path})
-                output = os.path.join(directory, "master.m4a")
-                mix_audio(voice, voice, bgm_path, sfx, output, self.runner)
-                self.cos.put_file(output, master_key, "audio/mp4", private=True)
-            master = {"source": "mix_audio", "cos_key": master_key, **self._artifact(master_key)}
-            plan = dict(plan); plan["mastered_audio"] = master
-            artifacts.append(self._artifact(master_key))
+        owner_hash = hashlib.sha256(str(job["owner"]).encode()).hexdigest()[:16]
+        master_key = f"ai-edit-v2/{owner_hash}/{job['id']}/audio/master.m4a"
+        with tempfile.TemporaryDirectory(prefix="ai-edit-v2-audio-") as directory:
+            voice = os.path.join(directory, "voice-input")
+            primary_media = plan.get("primary_media") or plan.get("primary_video")
+            self.cos.download_file(primary_media["cos_key"], voice)
+            bgm_path = None
+            if generated.get("bgm"):
+                bgm_path = os.path.join(directory, "bgm.mp3")
+                self.cos.download_file(generated["bgm"]["cos_key"], bgm_path)
+            sfx = []
+            for index, cue in enumerate(generated.get("sfx") or []):
+                path = os.path.join(directory, f"sfx-{index}.mp3")
+                self.cos.download_file(cue["cos_key"], path)
+                sfx.append({**cue, "path": path})
+            output = os.path.join(directory, "master.m4a")
+            mix_audio(voice, voice, bgm_path, sfx, output, self.runner)
+            self.cos.put_file(output, master_key, "audio/mp4", private=True)
+        master = {"source": "mix_audio", "cos_key": master_key, **self._artifact(master_key)}
+        plan = dict(plan); plan["mastered_audio"] = master
+        artifacts.append(self._artifact(master_key))
         return {"resolved_plan": plan, "audio_plan": audio_plan, "generated_audio": generated, "artifacts": artifacts}
 
     def rendering(self, job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
         from .ai_edit_v2_schema import BUNDLED_NOTO_SANS_SC_URL
         from .ai_edit_v2_shotstack import ShotstackClient, build_render_graph
         plan = stage_input["previous"]["resolved_plan"]
-        keys = [plan["primary_video"]["cos_key"]] + [v["cos_key"] for v in plan["materials"].values()]
+        keys = [v["cos_key"] for v in plan["materials"].values()]
+        if plan.get("primary_video"):
+            keys.append(plan["primary_video"]["cos_key"])
         if plan.get("mastered_audio"):
             keys.append(plan["mastered_audio"]["cos_key"])
         graph = build_render_graph(plan, {key: self.cos.presign_get(key) for key in keys}, BUNDLED_NOTO_SANS_SC_URL)
@@ -664,6 +727,8 @@ class ProductionServices:
                 raise RuntimeError("render_timeout")
             time.sleep(min(1.0, max(0.0, context["deadline_at"] - time.time())))
             result = client.reconcile(provider_task_id=task_id)
+        self._record_usage(job["id"], f"render:{task_id}", "shotstack", "render",
+                           str(result.request_id), result.cost_units if result.cost_units > 0 else None)
         return {"provider_task_id": task_id, "provider_status": result.payload["status"], "render_url": result.payload["output_url"]}
 
     def postprocessing(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
@@ -714,9 +779,33 @@ def production_dependencies(db_path: str, *, services: Any = None) -> dict[str, 
     }
 
 
-def assert_production_ready(dependencies: Any) -> None:
+def _load_production_injection(name: str, db_path: str) -> Any:
+    target = str(os.environ.get(name) or "").strip()
+    if not target:
+        return None
+    module_name, separator, attribute = target.partition(":")
+    if not separator or not module_name or not attribute:
+        raise RuntimeError(f"{name}_invalid")
+    factory = getattr(importlib.import_module(module_name), attribute, None)
+    if not callable(factory):
+        raise RuntimeError(f"{name}_invalid")
+    value = factory(db_path=db_path)
+    if not callable(value):
+        raise RuntimeError(f"{name}_invalid")
+    return value
+
+
+def production_readiness(dependencies: Any) -> list[str]:
     checker = option(dependencies, "readiness_errors")
-    errors = checker() if callable(checker) else ["production_services"]
+    try:
+        errors = checker() if callable(checker) else ["production_services"]
+    except Exception:
+        errors = ["production_services"]
+    return sorted({str(error) for error in errors if error})
+
+
+def assert_production_ready(dependencies: Any) -> None:
+    errors = production_readiness(dependencies)
     if errors:
         raise RuntimeError("ai_edit_v2_not_ready:" + ",".join(sorted(errors)))
 

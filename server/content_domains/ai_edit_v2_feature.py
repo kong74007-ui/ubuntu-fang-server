@@ -63,11 +63,26 @@ def _stable_components() -> dict[str, bool]:
     }
 
 
-def capability() -> dict[str, Any]:
+def capability(dependencies: Any = None) -> dict[str, Any]:
     enabled = _enabled()
-    ready = runtime_ready()
-    stable_components = _stable_components()
-    stable_runtime_ready = ready and all(stable_components.values())
+    try:
+        dependencies = dependencies or runtime.production_dependencies(
+            os.environ.get("AI_EDIT_V2_DB", "")
+        )
+        readiness_errors = runtime.production_readiness(dependencies)
+    except Exception:
+        readiness_errors = ["production_services"]
+    stable_components = {
+        "dashscope": not any("DASHSCOPE" in item for item in readiness_errors),
+        "openai_image": not any("OPENAI" in item for item in readiness_errors),
+        "elevenlabs": not any("ELEVENLABS" in item for item in readiness_errors),
+        "shotstack": not any("SHOTSTACK" in item or "WEBHOOK" in item for item in readiness_errors),
+        "cos": not any("COS" in item for item in readiness_errors),
+        "ffmpeg": not any("FFMPEG" in item for item in readiness_errors),
+        "ffprobe": not any("FFPROBE" in item for item in readiness_errors),
+    }
+    ready = not readiness_errors
+    stable_runtime_ready = ready
     accepts = enabled and stable_runtime_ready
     reason = None if accepts else ("disabled" if not enabled else "pipeline_not_ready")
     return {
@@ -79,6 +94,7 @@ def capability() -> dict[str, Any]:
         "reason": reason,
         "stable_components": stable_components,
         "stable_runtime_ready": stable_runtime_ready,
+        "readiness_errors": readiness_errors,
         "renderers": {
             "shotstack": accepts and stable_runtime_ready,
             "remotion": False,

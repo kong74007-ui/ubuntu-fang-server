@@ -20,6 +20,7 @@ from . import ai_edit_v2_pipeline as pipeline
 from . import ai_edit_v2_media as media
 from . import ai_edit_v2_feature as feature
 from . import ai_edit_v2_shotstack as shotstack
+from . import ai_edit_v2_templates as templates
 from . import points
 from .ai_edit_v2_providers.base import ProviderError, RetryableProviderError
 from .ai_edit_v2_schema import (
@@ -316,6 +317,8 @@ def _list_materials(handler: Any, owner: str) -> bool:
 def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not isinstance(client_draft, dict):
         raise ValueError("draft must be an object")
+    if client_draft.get("input_mode") not in {"platform_video", "external_video", "audio_only"}:
+        raise ValueError("input_mode_required")
     groups = [
         ("primary", [client_draft.get("main_input")]),
         ("required", client_draft.get("required_materials") or []),
@@ -370,8 +373,16 @@ def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[di
             "input_mode",
         )
     }
-    if client_draft.get("original_text") is not None:
-        canonical["original_text"] = client_draft["original_text"]
+    if canonical["creation_mode"] == "platform_template":
+        canonical["template_id"] = client_draft.get("template_id")
+        canonical["template_version"] = client_draft.get("template_version")
+    if canonical["input_mode"] == "platform_video":
+        primary_id = int(canonical_groups["primary"][0]["asset_id"])
+        primary_row = by_id[primary_id]
+        original_text = primary_row["original_text"]
+        if primary_row["source"] != "platform_video" or not isinstance(original_text, str) or not original_text.strip():
+            raise ValueError("platform_original_text_missing")
+        canonical["original_text"] = original_text
     canonical["main_input"] = canonical_groups["primary"][0]
     canonical["required_materials"] = canonical_groups["required"]
     canonical["reference_materials"] = canonical_groups["reference"]
@@ -777,7 +788,8 @@ def _shotstack_webhook(handler: Any, query: str) -> bool:
         if not hmac.compare_digest(supplied_token, expected_token):
             return _send(handler, 401, {"detail": "回调鉴权失败"})
         event = _read_body(handler)
-        if set(event) != {"id", "status"}:
+        allowed_fields = {"id", "status", "type", "action", "owner", "url", "error", "completed"}
+        if not {"id", "status"}.issubset(event) or set(event) - allowed_fields:
             raise ValueError("回调结构无效")
         task_id = event.get("id")
         status = event.get("status")
@@ -786,18 +798,21 @@ def _shotstack_webhook(handler: Any, query: str) -> bool:
             or not isinstance(status, str) or not 1 <= len(status) <= 64
         ):
             raise ValueError("回调结构无效")
+        limits = {"type": 64, "action": 64, "owner": 200, "url": 2048,
+                  "error": 4096, "completed": 128}
+        for name, limit in limits.items():
+            value = event.get(name)
+            if value is not None and (not isinstance(value, str) or len(value) > limit):
+                raise ValueError("回调结构无效")
         if binding["provider_task_id"] and binding["provider_task_id"] != task_id:
             return _send(handler, 401, {"detail": "回调鉴权失败"})
-        result = shotstack.reconcile_webhook(
+        duplicate = not shotstack.enqueue_webhook(
             binding["job_id"],
             event,
-            client,
-            callback_attempt_id=attempt_id,
-            callback_token=supplied_token,
             received_at=_now(),
             db_path=store._db_path(),
         )
-        return _send(handler, 202, {"accepted": True, "duplicate": result is None})
+        return _send(handler, 202, {"accepted": True, "duplicate": duplicate})
     except (TypeError, ValueError):
         return _send(handler, 400, {"detail": "回调请求无效"})
     except RetryableProviderError:
@@ -835,7 +850,10 @@ def dispatch(
         if rejection is not None:
             return _send(handler, rejection[0], rejection[1])
     if method == "GET" and path == API_PREFIX + "templates":
-        return _send(handler, 200, {"items": []})
+        items = templates.list_published_templates()
+        return _send(handler, 200, {"items": [
+            {**item, "current_version": item["version"]} for item in items
+        ]})
     if method == "GET" and path == API_PREFIX + "materials":
         return _list_materials(handler, owner)
     material_match = _MATERIAL_RE.fullmatch(path)

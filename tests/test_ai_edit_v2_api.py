@@ -111,21 +111,12 @@ class ApiTests(unittest.TestCase):
             },
         )
         self.env.start()
-        self.ready_patch = patch.object(api.feature, "runtime_ready", return_value=True)
-        self.ready_patch.start()
-        self.components_patch = patch.object(
-            api.feature,
-            "_stable_components",
-            return_value={
-                "dashscope": True,
-                "openai_image": True,
-                "elevenlabs": True,
-                "shotstack": True,
-                "cos": True,
-                "ffmpeg": True,
-                "ffprobe": True,
-            },
+        self.ready_patch = patch.object(
+            api.feature.runtime, "production_dependencies",
+            return_value={"readiness_errors": lambda: []},
         )
+        self.ready_patch.start()
+        self.components_patch = patch.object(api.feature, "runtime_ready", return_value=True)
         self.components_patch.start()
         store.init_db(self.db_path)
         with closing(store.open_store(self.db_path)) as conn:
@@ -171,15 +162,22 @@ class ApiTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_canonical_draft_preserves_platform_input_mode_and_original_text(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_materials SET source='platform_video',original_text=? WHERE id=1",
+                ("平台持久原文：品牌价格是29元",),
+            )
         draft = valid_api_draft()
         draft.update({
             "creation_mode": "platform_template",
             "input_mode": "platform_video",
-            "original_text": "品牌价格是29元",
+            "original_text": "客户端伪造原文",
+            "template_id": "business_diagnostic",
+            "template_version": "1.0",
         })
         canonical, _bindings = api.canonicalize_job_draft("alice", draft)
         self.assertEqual(canonical["input_mode"], "platform_video")
-        self.assertEqual(canonical["original_text"], "品牌价格是29元")
+        self.assertEqual(canonical["original_text"], "平台持久原文：品牌价格是29元")
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)
@@ -269,7 +267,9 @@ class ApiTests(unittest.TestCase):
             "shotstack": True, "cos": False, "ffmpeg": True, "ffprobe": True,
         }
         job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")
-        with patch.object(api.feature, "_stable_components", return_value=missing):
+        with patch.object(api.feature.runtime, "production_dependencies", return_value={
+            "readiness_errors": lambda: ["AI_EDIT_V2_REPAIR_PROVIDER"]
+        }):
             status, capability = self._dispatch("GET", "/api/v2/edit/capabilities")
             self.assertEqual(status, 200)
             self.assertFalse(capability["accepts_submissions"])
@@ -419,7 +419,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn("detail", payload)
 
-    def test_capabilities_and_empty_templates_are_provider_neutral(self):
+    def test_capabilities_and_published_templates_are_provider_neutral(self):
         status, capabilities = self._dispatch(
             "GET", "/api/v2/edit/capabilities"
         )
@@ -429,7 +429,9 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(templates_status, 200)
-        self.assertEqual(templates, {"items": []})
+        self.assertGreaterEqual(len(templates["items"]), 1)
+        self.assertTrue(all(item["status"] == "published" for item in templates["items"]))
+        self.assertTrue(all(item["version"] for item in templates["items"]))
         self.assertEqual(capabilities["version"], "2.0")
         self.assertNotIn("provider", str(capabilities).lower())
 
@@ -443,6 +445,24 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(status, 201)
         self.assertGreater(payload["quote"]["max_points"], 0)
+
+    def test_missing_input_or_unpublished_template_is_rejected_before_precharge(self):
+        starting = api._points_client.balance
+        missing = valid_api_draft(); missing.pop("input_mode")
+        status, _payload = self._dispatch("POST", "/api/v2/edit/quote", {"draft": missing})
+        self.assertEqual(status, 400)
+
+        invalid = valid_api_draft()
+        invalid.update(creation_mode="platform_template", template_id="business_diagnostic",
+                       template_version="unpublished")
+        status, _payload = self._dispatch(
+            "POST", "/api/v2/edit/jobs",
+            {"draft": invalid, "quote_id": "never", "idempotency_key": "never-charge"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(api._points_client.balance, starting)
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
 
     def test_stable_quote_route_exposes_range_and_maximum_hold(self):
         status, payload = self._dispatch(
@@ -679,13 +699,15 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(handler.responses[0][0], 401)
 
-    def test_authenticated_webhook_deduplicates_and_only_wakes_authoritative_reconcile(self):
+    def test_authenticated_webhook_accepts_official_fields_and_only_queues_reconcile(self):
         _job, attempt_id, token = self._rendering_attempt()
-        body = {"id": "render-123", "status": "done"}
+        body = json.loads((Path(__file__).parent / "fixtures" / "ai_edit_v2" /
+                           "provider_responses" / "shotstack_webhook_complete.json").read_text(
+                               encoding="utf-8"))
         route = f"/api/v2/edit/webhooks/shotstack?attempt_id={attempt_id}&token={token}"
         headers = {"Content-Length": str(len(json.dumps(body).encode("utf-8")))}
 
-        with patch.object(api.shotstack.ShotstackClient, "reconcile", return_value=object()) as reconcile:
+        with patch.object(api.shotstack.ShotstackClient, "reconcile", side_effect=AssertionError("webhook must not GET")) as reconcile:
             first_handler = FakeHandler(body, headers=headers)
             second_handler = FakeHandler(body, headers=headers)
             api.dispatch(first_handler, "POST", route, None)
@@ -693,7 +715,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(first_handler.responses, [(202, {"accepted": True, "duplicate": False})])
         self.assertEqual(second_handler.responses, [(202, {"accepted": True, "duplicate": True})])
-        self.assertEqual(reconcile.call_count, 1)
+        reconcile.assert_not_called()
 
     def test_webhook_rejects_oversize_malformed_and_mismatched_events(self):
         _job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")

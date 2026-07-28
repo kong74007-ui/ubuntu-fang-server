@@ -13,6 +13,7 @@ def valid_draft(**overrides):
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 40_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "main-video",
             "kind": "video",
@@ -60,6 +61,18 @@ def valid_plan(**overrides):
 
 
 class SchemaTests(unittest.TestCase):
+    def test_audio_only_is_the_explicit_audio_input_mode(self):
+        value = valid_draft()
+        value["input_mode"] = "audio_only"
+        value["main_input"]["kind"] = "audio"
+        value["main_input"]["size_bytes"] = 50 * MB
+        self.assertIs(schema.validate_job_draft(value), value)
+
+    def test_template_mode_requires_published_identity_before_quote(self):
+        value = valid_draft()
+        value["creation_mode"] = "platform_template"
+        with self.assertRaisesRegex(ValueError, "template"):
+            schema.validate_job_draft(value)
     def test_rejects_more_than_ten_required_materials(self):
         draft = valid_draft(
             required_materials=[
@@ -107,6 +120,8 @@ class SchemaTests(unittest.TestCase):
                     draft = valid_draft(
                         creation_mode=creation_mode,
                         aspect_ratio=aspect_ratio,
+                        **({"template_id": "business_diagnostic", "template_version": "1.0"}
+                           if creation_mode == "platform_template" else {}),
                         required_materials=[
                             {
                                 "asset_id": "required-video",

@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -204,6 +204,7 @@ def init_db(db_path: str | None = None) -> None:
                 width INTEGER,
                 height INTEGER,
                 reference_analysis_json TEXT,
+                original_text TEXT,
                 status TEXT NOT NULL DEFAULT 'ready',
                 generation_job_id TEXT,
                 generation_idempotency_key TEXT,
@@ -270,6 +271,22 @@ def init_db(db_path: str | None = None) -> None:
                 received_at INTEGER NOT NULL,
                 lease_owner TEXT,
                 lease_until INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_provider_usage(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                operation_key TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                cost_units INTEGER,
+                cost_status TEXT NOT NULL,
+                effective_points INTEGER NOT NULL,
+                price_version TEXT NOT NULL,
+                audit_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(job_id, operation_key)
             );
 
             CREATE TABLE IF NOT EXISTS edit_v2_quotes(
@@ -370,6 +387,11 @@ def init_db(db_path: str | None = None) -> None:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(edit_v2_jobs)")
             }
+            material_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(edit_v2_materials)")
+            }
+            if "original_text" not in material_columns:
+                conn.execute("ALTER TABLE edit_v2_materials ADD COLUMN original_text TEXT")
             if "predecessor_job_id" not in job_columns:
                 conn.execute(
                     """ALTER TABLE edit_v2_jobs

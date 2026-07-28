@@ -366,7 +366,7 @@ def build_text_timeline(source_type: str, original_text: str | None, asr_result:
             "coverage": aligned["coverage"],
         }
 
-    if source_type in {"external_video", "external_audio"}:
+    if source_type in {"external_video", "external_audio", "audio_only"}:
         _validate_external_timeline(words, sentences)
         canonical_text = _canonical_external_text(words, sentences)
         raw_text = asr_result.get("raw_text", canonical_text)
