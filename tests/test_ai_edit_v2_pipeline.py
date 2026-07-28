@@ -21,6 +21,7 @@ from server.content_domains import ai_edit_v2_delivery as delivery
 from tests.test_ai_edit_v2_delivery import FakeCos as DeliveryCos
 from tests.test_ai_edit_v2_quality import EvidenceRunner, passing_evidence
 from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
+from server.content_domains.ai_edit_v2_schema import TERMINAL_STATES
 from tests.test_ai_edit_v2_director import VALID_PLAN
 from tests.test_ai_edit_v2_openai_image import png_bytes
 
@@ -204,6 +205,17 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(failed.next_state, "quality_failed")
         self.assertEqual(failed.error_code, "repair_budget_exceeded")
         self.assertEqual(self.points.balance, 1_000)
+
+    def test_every_terminal_state_has_zero_remaining_budget(self):
+        for terminal in sorted(TERMINAL_STATES):
+            with self.subTest(terminal=terminal):
+                job = self._precharged_job(job_id=f"job-{terminal}")
+                self._set_state(
+                    job["id"], terminal,
+                    [{"version": 1, "state": "normalizing", "at": 100, "data": {}}],
+                )
+                timing = pipeline.timing_status(job["id"], 5000, db_path=self.db_path)
+                self.assertEqual(timing["remaining_seconds"], 0)
 
     def test_recovery_passes_existing_provider_task_id_without_new_attempt(self):
         job = self._precharged_job()

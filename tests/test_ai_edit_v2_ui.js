@@ -49,12 +49,16 @@ test('page implements draft quote confirmation upload retry and job polling', ()
   assert.match(page, /setInterval\(pollJob/);
   assert.match(page, /state\.jobRequestKey/);
   assert.match(page, /sessionStorage/);
+  assert.match(page, /sessionStorage\.setItem\(retryStorageKey,key\).*await api/s);
+  assert.match(page, /sessionStorage\.getItem\(retryStorageKey\)/);
+  assert.match(page, /sessionStorage\.removeItem\(retryStorageKey\)/);
   assert.match(page, /billing_pending/);
   assert.match(page, /data\.degradations/);
   assert.match(page, /data\.quality/);
   assert.match(page, /actual_charge_points/);
   assert.match(page, /refunded_difference_points/);
   assert.match(page, /data\.output\.asset_url/);
+  assert.match(page, /estimated_remaining_seconds===0/);
   assert.match(page, /HQTasks\.upsert/);
 });
 

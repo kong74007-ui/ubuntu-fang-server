@@ -66,9 +66,9 @@ def _stable_components() -> dict[str, bool]:
 def capability() -> dict[str, Any]:
     enabled = _enabled()
     ready = runtime_ready()
-    accepts = enabled and ready
     stable_components = _stable_components()
     stable_runtime_ready = ready and all(stable_components.values())
+    accepts = enabled and stable_runtime_ready
     reason = None if accepts else ("disabled" if not enabled else "pipeline_not_ready")
     return {
         "feature": "ai_edit_v2",

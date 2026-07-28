@@ -177,7 +177,7 @@ class StoreTests(unittest.TestCase):
 
         self.assertIn("lease_owner", columns)
         self.assertIn("lease_until", columns)
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
 
     def test_provider_event_mutations_require_a_lease_owner(self):
         claim_parameters = inspect.signature(
@@ -207,8 +207,36 @@ class StoreTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT version FROM edit_v2_schema_meta WHERE id=1"
             ).fetchone()["version"]
+            indexes = {
+                row["name"]: bool(row["unique"])
+                for row in conn.execute("PRAGMA index_list(edit_v2_jobs)")
+            }
+            successor_index = [
+                row["name"]
+                for row in conn.execute("PRAGMA index_info(idx_edit_v2_jobs_successor)")
+            ]
         self.assertIn("predecessor_job_id", columns)
-        self.assertEqual(version, 8)
+        self.assertEqual(version, 9)
+        self.assertTrue(indexes["idx_edit_v2_jobs_successor"])
+        self.assertEqual(successor_index, ["owner", "predecessor_job_id"])
+
+    def test_owner_predecessor_has_only_one_successor(self):
+        predecessor = store.create_job(
+            "alice", {"draft": {}}, "quote-old", "request-old", 1,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174090",
+        )
+        store.create_job(
+            "alice", {"draft": {}}, "quote-one", "retry-one", 2,
+            predecessor_job_id=predecessor["id"],
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174091",
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            store.create_job(
+                "alice", {"draft": {}}, "quote-two", "retry-two", 3,
+                predecessor_job_id=predecessor["id"],
+                uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174092",
+            )
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
         for scenario in ("new", "delete_v1", "wal_v1"):
@@ -242,7 +270,7 @@ class StoreTests(unittest.TestCase):
                         "SELECT version FROM edit_v2_schema_meta WHERE id=1"
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
-                self.assertEqual(version, 8)
+                self.assertEqual(version, 9)
 
     def test_v2_generated_rows_upgrade_with_safe_ready_pending_and_failed_semantics(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v2-materials.db")

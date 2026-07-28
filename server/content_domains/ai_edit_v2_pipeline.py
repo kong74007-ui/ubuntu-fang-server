@@ -115,6 +115,8 @@ def timing_status(job_id: str, now: int | None = None, *, db_path: str | None = 
             remaining = max(0, processing_start + _normal_budget() + _repair_budget() - end)
         else:
             remaining = max(0, processing_start + _normal_budget() - end)
+    if terminal:
+        remaining = 0
     return {
         "queue_seconds": queue_seconds,
         "processing_seconds": processing_seconds,

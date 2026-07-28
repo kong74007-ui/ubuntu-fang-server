@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -294,6 +294,11 @@ def init_db(db_path: str | None = None) -> None:
                     """ALTER TABLE edit_v2_jobs
                        ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
                 )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_jobs_successor
+                   ON edit_v2_jobs(owner,predecessor_job_id)
+                   WHERE predecessor_job_id IS NOT NULL"""
+            )
             material_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(edit_v2_materials)")

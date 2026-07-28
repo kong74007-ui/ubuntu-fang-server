@@ -40,6 +40,21 @@ class FeatureCapabilityTests(unittest.TestCase):
             value = feature.capability()
 
         self.assertTrue(value["renderers"]["shotstack"])
+        self.assertTrue(value["stable_runtime_ready"])
+        self.assertTrue(value["accepts_submissions"])
+
+    def test_missing_quality_runtime_dependency_rejects_submissions(self):
+        with patch.dict(os.environ, self._configured_environment(), clear=True), patch.object(
+            feature, "runtime_ready", return_value=False
+        ), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
+            value = feature.capability()
+            rejection = feature.rejection()
+
+        self.assertFalse(value["stable_runtime_ready"])
+        self.assertFalse(value["accepts_submissions"])
+        self.assertEqual(rejection, (
+            503, {"code": "ai_edit_v2_not_ready", "detail": "ai_edit_v2_not_ready"}
+        ))
 
     def test_example_placeholders_leave_shotstack_disabled(self):
         example = {
@@ -86,6 +101,7 @@ class FeatureCapabilityTests(unittest.TestCase):
                 ), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
                     value = feature.capability()
                 self.assertFalse(value["renderers"]["shotstack"])
+                self.assertFalse(value["accepts_submissions"])
 
         for unavailable_tool in ("ffmpeg", "ffprobe"):
             with self.subTest(unavailable_tool=unavailable_tool), patch.dict(
@@ -99,6 +115,7 @@ class FeatureCapabilityTests(unittest.TestCase):
             ):
                 value = feature.capability()
             self.assertFalse(value["renderers"]["shotstack"])
+            self.assertFalse(value["accepts_submissions"])
 
     def test_shotstack_callback_must_be_https(self):
         for invalid_url in (
@@ -114,6 +131,7 @@ class FeatureCapabilityTests(unittest.TestCase):
                 ), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
                     value = feature.capability()
                 self.assertFalse(value["renderers"]["shotstack"])
+                self.assertFalse(value["accepts_submissions"])
 
 
 if __name__ == "__main__":

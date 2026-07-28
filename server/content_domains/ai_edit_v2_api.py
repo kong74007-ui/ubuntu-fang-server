@@ -610,7 +610,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
         client_key = str(body.get("idempotency_key") or "").strip()
         if not client_key or len(client_key) > 160:
             raise ValueError("重试请求必须提供有效幂等键")
-        retry_key = f"retry:{job_id}:{client_key}"
+        retry_key = f"retry:{job_id}"
         with closing(store.open_store(store._db_path())) as conn:
             old = conn.execute(
                 "SELECT * FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
@@ -622,8 +622,8 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
             ).fetchall()
             existing_successor = conn.execute(
                 """SELECT * FROM edit_v2_jobs
-                   WHERE owner=? AND idempotency_key=? AND predecessor_job_id=?""",
-                (owner, retry_key, job_id),
+                   WHERE owner=? AND predecessor_job_id=?""",
+                (owner, job_id),
             ).fetchone()
             successor_bindings = (
                 conn.execute(
@@ -649,7 +649,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
                 owner,
                 payload,
                 existing_successor["quote_id"],
-                retry_key,
+                existing_successor["idempotency_key"],
                 now,
                 points_client=_points_client,
                 uuid_factory=_new_uuid,
@@ -825,11 +825,7 @@ def dispatch(
 
     if method == "GET" and path == API_PREFIX + "capabilities":
         return _send(handler, 200, _public_capability())
-    if method == "GET" and (path == API_PREFIX + "materials" or _MATERIAL_RE.fullmatch(path)):
-        pass
-    elif method == "GET" and _JOB_RE.fullmatch(path):
-        pass
-    else:
+    if method != "GET":
         rejection = feature.rejection()
         if rejection is not None:
             return _send(handler, rejection[0], rejection[1])

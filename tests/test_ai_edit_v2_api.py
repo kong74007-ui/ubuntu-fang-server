@@ -112,6 +112,20 @@ class ApiTests(unittest.TestCase):
         self.env.start()
         self.ready_patch = patch.object(api.feature, "runtime_ready", return_value=True)
         self.ready_patch.start()
+        self.components_patch = patch.object(
+            api.feature,
+            "_stable_components",
+            return_value={
+                "dashscope": True,
+                "openai_image": True,
+                "elevenlabs": True,
+                "shotstack": True,
+                "cos": True,
+                "ffmpeg": True,
+                "ffprobe": True,
+            },
+        )
+        self.components_patch.start()
         store.init_db(self.db_path)
         with closing(store.open_store(self.db_path)) as conn:
             conn.execute(
@@ -147,6 +161,7 @@ class ApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.probe_patch.stop()
+        self.components_patch.stop()
         self.ready_patch.stop()
         self.points_patch.stop()
         self.uuid_patch.stop()
@@ -235,6 +250,46 @@ class ApiTests(unittest.TestCase):
             )
             self.assertEqual(status, 503)
             self.assertEqual(payload["code"], "ai_edit_v2_disabled")
+
+    def test_missing_stable_dependency_rejects_every_write_but_keeps_reads_and_webhook(self):
+        missing = {
+            "dashscope": True, "openai_image": True, "elevenlabs": True,
+            "shotstack": True, "cos": False, "ffmpeg": True, "ffprobe": True,
+        }
+        job, attempt_id, token = self._rendering_attempt(provider_task_id="render-bound")
+        with patch.object(api.feature, "_stable_components", return_value=missing):
+            status, capability = self._dispatch("GET", "/api/v2/edit/capabilities")
+            self.assertEqual(status, 200)
+            self.assertFalse(capability["accepts_submissions"])
+            self.assertFalse(capability["stable_workflow"]["ready"])
+
+            for path in (
+                "/api/v2/edit/uploads",
+                "/api/v2/edit/uploads/123e4567-e89b-42d3-a456-426614174000/complete",
+                "/api/v2/edit/quote",
+                "/api/v2/edit/jobs",
+                f"/api/v2/edit/jobs/{job['id']}/retry",
+            ):
+                with self.subTest(path=path):
+                    write_status, payload = self._dispatch("POST", path, {})
+                    self.assertEqual(write_status, 503)
+                    self.assertEqual(payload["code"], "ai_edit_v2_not_ready")
+
+            self.assertEqual(self._dispatch("GET", "/api/v2/edit/templates")[0], 200)
+            self.assertEqual(self._dispatch("GET", "/api/v2/edit/materials")[0], 200)
+            self.assertEqual(
+                self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")[0], 200
+            )
+            body = {"id": "render-bound", "status": "done"}
+            headers = {"Content-Length": str(len(json.dumps(body).encode("utf-8")))}
+            handler = FakeHandler(body, headers=headers)
+            route = (
+                "/api/v2/edit/webhooks/shotstack"
+                f"?attempt_id={attempt_id}&token={token}"
+            )
+            with patch.object(api.shotstack.ShotstackClient, "reconcile", return_value=object()):
+                api.dispatch(handler, "POST", route, None)
+            self.assertEqual(handler.responses[0][0], 202)
 
     def test_quote_rejects_cross_account_material_before_precharge(self):
         with closing(store.open_store(self.db_path)) as conn:
@@ -716,7 +771,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_jobs").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_billing").fetchone()[0], 0)
 
-    def test_concurrent_identical_retries_return_one_successor_and_charge_once(self):
+    def test_concurrent_different_key_retries_return_one_successor_and_charge_once(self):
         old = store.create_job(
             "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
             uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
@@ -732,7 +787,6 @@ class ApiTests(unittest.TestCase):
             barrier.wait(timeout=5)
             return original_create_quote(*args, **kwargs)
 
-        body = {"idempotency_key": "same-retry"}
         with patch.object(api.billing, "create_quote", side_effect=synchronized_create_quote):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [
@@ -740,9 +794,9 @@ class ApiTests(unittest.TestCase):
                         self._dispatch,
                         "POST",
                         f"/api/v2/edit/jobs/{old['id']}/retry",
-                        body,
+                        {"idempotency_key": f"retry-client-{index}"},
                     )
-                    for _ in range(2)
+                    for index in range(2)
                 ]
                 responses = [future.result(timeout=10) for future in futures]
 
@@ -758,7 +812,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(api._points_client.transactions), 1)
         self.assertEqual(api._points_client.balance, 500 - charged)
 
-    def test_retry_replay_returns_existing_successor_after_material_is_deleted(self):
+    def test_retry_response_loss_with_new_client_key_replays_winner_after_material_is_deleted(self):
         old = store.create_job(
             "alice", {"draft": valid_api_draft()}, "old-quote", "old-request", 100,
             uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174099",
@@ -776,12 +830,34 @@ class ApiTests(unittest.TestCase):
             conn.commit()
 
         replay_status, replay = self._dispatch(
-            "POST", f"/api/v2/edit/jobs/{old['id']}/retry", body
+            "POST", f"/api/v2/edit/jobs/{old['id']}/retry",
+            {"idempotency_key": "replacement-after-response-loss"},
         )
 
         self.assertEqual(first_status, 201)
         self.assertEqual(replay_status, 201)
         self.assertEqual(replay["job_id"], first["job_id"])
+
+    def test_terminal_job_response_reports_zero_remaining_time(self):
+        for index, terminal in enumerate((
+            "completed", "validation_failed", "transcription_failed", "director_failed",
+            "asset_failed", "render_failed", "quality_failed", "settlement_failed",
+            "storage_failed",
+        )):
+            with self.subTest(terminal=terminal):
+                job = store.create_job(
+                    "alice", {"draft": valid_api_draft()}, "quote",
+                    f"terminal-{terminal}", 100 + index,
+                )
+                with closing(store.open_store(self.db_path)) as conn:
+                    conn.execute(
+                        "UPDATE edit_v2_jobs SET status=?,created_at=100,updated_at=120 WHERE id=?",
+                        (terminal, job["id"]),
+                    )
+                status, payload = self._dispatch("GET", f"/api/v2/edit/jobs/{job['id']}")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["estimated_remaining_seconds"], 0)
+                self.assertEqual(payload["timing"]["remaining_seconds"], 0)
 
     def test_retry_rejects_non_terminal_job(self):
         old = store.create_job(
