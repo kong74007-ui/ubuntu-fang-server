@@ -105,6 +105,26 @@ class SelectiveUnknownDeductPoints(FakePoints):
             raise points.AuthPointsError(502, "provider result unknown")
         return super().deduct_points(username, amount, reason, transaction_key)
 
+
+class MigrateOnDeductPoints(FakePoints):
+    def __init__(self, trigger_key, migrate, balance=500):
+        super().__init__(balance)
+        self.trigger_key = trigger_key
+        self.migrate = migrate
+        self.migrated = False
+        self.lock = threading.Lock()
+
+    def deduct_points(self, username, amount, reason="", transaction_key=None):
+        with self.lock:
+            result = super().deduct_points(
+                username, amount, reason, transaction_key
+            )
+            if transaction_key == self.trigger_key and not self.migrated:
+                self.migrated = True
+                self.migrate()
+            return result
+
+
 class BillingTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -116,6 +136,33 @@ class BillingTests(unittest.TestCase):
     def tearDown(self):
         self.env.stop()
         self.temp_dir.cleanup()
+
+    def _prepare_pending_migration_race(self):
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("DROP INDEX idx_edit_v2_jobs_successor")
+            conn.execute("UPDATE edit_v2_schema_meta SET version=8 WHERE id=1")
+            for job_id, predecessor, status, created_at in (
+                ("predecessor", None, "render_failed", 0),
+                ("winner", "predecessor", "completed", 1),
+                ("pending-loser", "predecessor", "precharging", 2),
+                ("good-second", None, "precharging", 3),
+            ):
+                conn.execute(
+                    """INSERT INTO edit_v2_jobs(
+                           id,owner,idempotency_key,quote_id,predecessor_job_id,
+                           status,payload_json,checkpoint_json,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,'{}','[]',?,?)""",
+                    (job_id, "alice", f"key-{job_id}", f"quote-{job_id}",
+                     predecessor, status, created_at, created_at),
+                )
+            for job_id in ("pending-loser", "good-second"):
+                conn.execute(
+                    """INSERT INTO edit_v2_billing(
+                           job_id,transaction_key,operation,amount,status,
+                           created_at,updated_at
+                       ) VALUES(?,?,'hold',40,'pending',1,1)""",
+                    (job_id, f"ai-edit-v2:{job_id}:hold"),
+                )
 
     def test_quote_contains_dynamic_range_breakdown_version_and_expiry(self):
         quote = billing.create_quote(
@@ -494,6 +541,111 @@ class BillingTests(unittest.TestCase):
             now=3, db_path=self.db_path, points_client=fake_points
         ), 1)
         self.assertEqual(fake_points.balance, 500)
+
+    def test_migration_during_pending_deduct_refunds_loser_and_processes_good_second(self):
+        self._prepare_pending_migration_race()
+        fake_points = MigrateOnDeductPoints(
+            "ai-edit-v2:pending-loser:hold",
+            lambda: store.init_db(self.db_path),
+        )
+
+        recovered = billing.reconcile_pending_precharges(
+            2, db_path=self.db_path, points_client=fake_points
+        )
+
+        self.assertEqual(recovered, 2)
+        with closing(store.open_store(self.db_path)) as conn:
+            jobs = dict(conn.execute(
+                "SELECT id,status FROM edit_v2_jobs WHERE id IN (?,?)",
+                ("pending-loser", "good-second"),
+            ).fetchall())
+            bills = dict(conn.execute(
+                "SELECT job_id,status FROM edit_v2_billing ORDER BY id"
+            ).fetchall())
+        self.assertEqual(jobs, {
+            "pending-loser": "storage_failed",
+            "good-second": "queued",
+        })
+        self.assertEqual(bills, {
+            "pending-loser": "refund_pending",
+            "good-second": "held",
+        })
+        self.assertEqual(
+            billing.reconcile_pending_precharges(
+                3, db_path=self.db_path, points_client=fake_points
+            ),
+            0,
+        )
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=4, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        self.assertEqual(fake_points.balance, 460)
+
+    def test_concurrent_repeated_pending_reconcile_does_not_double_charge_or_miss_refund(self):
+        self._prepare_pending_migration_race()
+        fake_points = MigrateOnDeductPoints(
+            "ai-edit-v2:pending-loser:hold",
+            lambda: store.init_db(self.db_path),
+        )
+        barrier = threading.Barrier(2)
+
+        def reconcile():
+            barrier.wait(timeout=5)
+            return billing.reconcile_pending_precharges(
+                2, db_path=self.db_path, points_client=fake_points
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(reconcile) for _ in range(2)]
+            recovered = [future.result(timeout=15) for future in futures]
+
+        self.assertEqual(sum(recovered), 2)
+        self.assertEqual(billing.reconcile_pending_precharges(
+            3, db_path=self.db_path, points_client=fake_points
+        ), 0)
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=4, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=5, db_path=self.db_path, points_client=fake_points
+        ), 0)
+        self.assertEqual(fake_points.balance, 460)
+        self.assertEqual(set(fake_points.transactions), {
+            "ai-edit-v2:pending-loser:hold",
+            "ai-edit-v2:good-second:hold",
+            "ai-edit-v2:pending-loser:failure-refund",
+        })
+
+    def test_queue_state_race_is_isolated_and_good_second_still_queues(self):
+        self._prepare_pending_migration_race()
+        fake_points = FakePoints()
+        original_queue = billing._queue_held_job
+
+        def migrate_before_queue(job_id, now, db_path=None):
+            if job_id == "pending-loser":
+                store.init_db(self.db_path)
+            return original_queue(job_id, now, db_path)
+
+        with patch.object(
+            billing, "_queue_held_job", side_effect=migrate_before_queue
+        ):
+            recovered = billing.reconcile_pending_precharges(
+                2, db_path=self.db_path, points_client=fake_points
+            )
+
+        self.assertEqual(recovered, 1)
+        with closing(store.open_store(self.db_path)) as conn:
+            jobs = dict(conn.execute(
+                "SELECT id,status FROM edit_v2_jobs WHERE id IN (?,?)",
+                ("pending-loser", "good-second"),
+            ).fetchall())
+            bills = dict(conn.execute(
+                "SELECT job_id,status FROM edit_v2_billing ORDER BY id"
+            ).fetchall())
+        self.assertEqual(jobs["pending-loser"], "storage_failed")
+        self.assertEqual(jobs["good-second"], "queued")
+        self.assertEqual(bills["pending-loser"], "refund_pending")
+        self.assertEqual(bills["good-second"], "held")
 
     def test_definitive_precharge_rejection_is_terminal_and_never_reconciled(self):
         quote = billing.create_quote(

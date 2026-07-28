@@ -40,6 +40,22 @@ push, deployment, service restart, or real-provider request was performed.
   two-thread migration, stable winner selection, audit records, and refund
   reconciliation.
 
+## Fix Round 4
+
+- Pending precharge reconciliation no longer trusts the job status captured
+  before the external points call. After a successful idempotent deduction it
+  starts `BEGIN IMMEDIATE`, re-reads the current job status and isolation marker,
+  and atomically advances the existing hold operation from `pending` directly to
+  `refund_pending` for terminal/quarantined jobs or to `held` for queueable jobs.
+- Concurrent reconcilers use the conditional billing update row count so only
+  the transaction that advances a pending row queues or counts it. Per-row local
+  state races are isolated and cannot prevent a later pending row from running.
+- Real v8-to-v9 migration interleavings cover migration during the provider
+  deduction and after the local billing transaction but before queueing. The
+  quarantined loser is refunded with the original idempotent operation keys,
+  the good second row queues, and concurrent/repeated passes neither double
+  deduct nor miss the loser refund.
+
 ## API
 
 - Added the stable singular `POST /api/v2/edit/quote` route while retaining the
@@ -96,6 +112,11 @@ push, deployment, service restart, or real-provider request was performed.
   workers raised before reconciliation, and a real duplicate v8 database failed
   the unique-index migration. A standalone `refund_pending` record was also not
   consumed by terminal refund reconciliation.
+- Round 4 RED reproduced the pending-precharge race with a real v8 duplicate
+  fixture: migration committed `storage_failed` inside `deduct_points`, then the
+  stale cached `precharging` status called `_queue_held_job`, raised
+  `job_queue_state_conflict`, left the loser held, and blocked the good second
+  row. The concurrent variant failed at the same boundary before the fix.
 
 ## Verification
 
@@ -116,6 +137,13 @@ push, deployment, service restart, or real-provider request was performed.
   passed. Remaining unrelated host-specific failures are 15 `ship` test errors
   because Bash is unavailable (`WinError 2`) and one pre-existing POSIX/Windows
   path-separator assertion in `test_motion_audio`.
+- Round 4 billing/store/worker/runtime targets passed 113 tests (20 billing,
+  35 store, 48 pipeline/worker, and 10 runtime).
+- Round 4 full AI Edit V2 discovery passed all 328 tests. Its first run hit the
+  pre-existing heartbeat timing flake once; that exact test then passed 10/10
+  isolated repetitions before the clean full rerun.
+- Round 4 changed Python files passed `python -m py_compile`; `git diff --check`
+  was clean.
 
 ## Boundary notes
 

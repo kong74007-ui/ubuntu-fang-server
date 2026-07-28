@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from . import ai_edit_v2_store as store
 from . import points
-from .ai_edit_v2_schema import FAILURE_STATES, validate_job_draft
+from .ai_edit_v2_schema import TERMINAL_STATES, validate_job_draft
 
 
 PRICE_VERSION = "ai-edit-v2-price-v1"
@@ -384,7 +384,7 @@ def reconcile_pending_precharges(
 ) -> int:
     with closing(store.open_store(store._db_path(db_path))) as conn:
         rows = conn.execute(
-            """SELECT b.*,j.owner,j.status AS job_status FROM edit_v2_billing b
+            """SELECT b.*,j.owner FROM edit_v2_billing b
                JOIN edit_v2_jobs j ON j.id=b.job_id
                WHERE b.operation='hold' AND b.status='pending'"""
         ).fetchall()
@@ -402,21 +402,40 @@ def reconcile_pending_precharges(
                 continue
             _reject_precharge(row, exc, now, db_path)
             continue
-        with closing(store.open_store(store._db_path(db_path))) as conn:
-            conn.execute(
-                """UPDATE edit_v2_billing SET status='held',response_json=?,updated_at=?
-                   WHERE id=? AND status='pending'""",
-                (_canonical({"points_after": points_after}), now, row["id"]),
-            )
-        if row["job_status"] in FAILURE_STATES:
+        try:
             with closing(store.open_store(store._db_path(db_path))) as conn:
-                conn.execute(
-                    """UPDATE edit_v2_billing SET status='refund_pending',updated_at=?
-                       WHERE id=? AND status='held'""",
-                    (now, row["id"]),
-                )
-        else:
-            _queue_held_job(row["job_id"], now, db_path)
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    job = conn.execute(
+                        "SELECT status,error_code FROM edit_v2_jobs WHERE id=?",
+                        (row["job_id"],),
+                    ).fetchone()
+                    if job is None:
+                        raise BillingError("job_not_found")
+                    must_refund = (
+                        job["status"] in TERMINAL_STATES
+                        or job["error_code"] == "duplicate_successor_quarantined"
+                    )
+                    target = "refund_pending" if must_refund else "held"
+                    changed = conn.execute(
+                        """UPDATE edit_v2_billing
+                           SET status=?,response_json=?,updated_at=?
+                           WHERE id=? AND status='pending'""",
+                        (target, _canonical({"points_after": points_after}),
+                         now, row["id"]),
+                    ).rowcount
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            if not changed:
+                continue
+            if target == "held":
+                _queue_held_job(row["job_id"], now, db_path)
+        except Exception:
+            # Local row races must not prevent other durable pending holds from
+            # replaying. Provider idempotency makes this row safe to retry.
+            continue
         recovered += 1
     return recovered
 
