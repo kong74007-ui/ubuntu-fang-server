@@ -161,6 +161,60 @@ def _save_provider_task_id(
         raise PipelineError("provider_task_id_conflict")
 
 
+def _submission_intent(attempt: Any) -> dict[str, Any] | None:
+    try:
+        summary = json.loads(attempt["input_summary_json"] or "{}")
+        intent = summary.get("submission_intent")
+    except (TypeError, ValueError, KeyError):
+        raise PipelineError("submission_intent_invalid")
+    if intent is None:
+        return None
+    if not isinstance(intent, dict):
+        raise PipelineError("submission_intent_invalid")
+    return intent
+
+
+def _update_submission_intent(
+    attempt_id: int,
+    provider: str,
+    capability: str,
+    reference: str,
+    status: str,
+    db_path: str | None = None,
+) -> None:
+    if (
+        not isinstance(provider, str) or not provider
+        or not isinstance(capability, str) or not capability
+        or not isinstance(reference, str) or not reference
+        or status not in {"pending", "unknown"}
+    ):
+        raise PipelineError("submission_intent_invalid")
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        row = conn.execute(
+            "SELECT input_summary_json FROM edit_v2_stage_attempts WHERE id=?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise PipelineError("submission_intent_invalid")
+        try:
+            summary = json.loads(row["input_summary_json"] or "{}")
+        except (TypeError, ValueError):
+            raise PipelineError("submission_intent_invalid")
+        if not isinstance(summary, dict):
+            raise PipelineError("submission_intent_invalid")
+        existing = summary.get("submission_intent")
+        identity = {"provider": provider, "capability": capability, "reference": reference}
+        if existing is not None and (
+            not isinstance(existing, dict)
+            or {key: existing.get(key) for key in identity} != identity
+        ):
+            raise PipelineError("submission_intent_conflict")
+        summary["submission_intent"] = {**identity, "status": status}
+        conn.execute(
+            "UPDATE edit_v2_stage_attempts SET input_summary_json=? WHERE id=?",
+            (json.dumps(summary, ensure_ascii=False), attempt_id),
+        )
+
+
 def _repairable(job_id: str, checkpoints: list[dict[str, Any]], db_path: str | None = None) -> bool:
     qc = None
     for item in reversed(checkpoints):
@@ -269,13 +323,22 @@ def run_stage(
             job_id, expected_state, attempt_no, "running", now, db_path=db_path
         )
         provider_task_id = None
+        submission_intent = None
     else:
         attempt_id = int(attempt["id"])
         provider_task_id = attempt["provider_task_id"]
+        submission_intent = _submission_intent(attempt)
     context = {
         "provider_task_id": provider_task_id,
         "save_provider_task_id": lambda value: _save_provider_task_id(
             attempt_id, value, db_path
+        ),
+        "submission_intent": submission_intent,
+        "save_submission_intent": lambda provider, capability, reference: _update_submission_intent(
+            attempt_id, provider, capability, reference, "pending", db_path
+        ),
+        "mark_submission_unknown": lambda reference: _update_submission_intent(
+            attempt_id, "dashscope", "asr", reference, "unknown", db_path
         ),
         "checkpoint": _checkpoints(job),
         "deadline_at": (

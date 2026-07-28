@@ -1,5 +1,6 @@
 import json
 import os
+import urllib.error
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -77,6 +78,27 @@ class DashScopeClientTests(unittest.TestCase):
             client = DashScopeClient(http_request=timeout_request)
             with self.assertRaises(UnknownSubmissionError):
                 client.submit_asr("https://media.example.invalid/source.mp4", "job-17")
+
+    def test_submit_network_or_server_failure_is_unknown_not_retryable(self):
+        failures = (
+            urllib.error.URLError("connection reset after send"),
+            urllib.error.HTTPError(
+                "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+                502,
+                "bad gateway after accept",
+                {},
+                None,
+            ),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), patch.dict(
+                os.environ, {"DASHSCOPE_API_KEY": "test-dashscope-key"}, clear=False
+            ):
+                client = DashScopeClient(
+                    http_request=lambda method, url, headers, body, timeout: (_ for _ in ()).throw(failure)
+                )
+                with self.assertRaises(UnknownSubmissionError):
+                    client.submit_asr("https://media.example.invalid/source.mp4", "job-17")
 
 
 if __name__ == "__main__":

@@ -199,6 +199,69 @@ class PipelineTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_restart_recovery_exposes_saved_unknown_submission_intent_without_resubmitting(self):
+        job = self._precharged_job()
+        self._set_state(
+            job["id"], "transcribing",
+            [{"version": 1, "state": "normalizing", "at": 100, "data": {}}],
+        )
+        store.record_stage_attempt(
+            job["id"], "transcribing", 1, "waiting", 120,
+            input_summary={
+                "submission_intent": {
+                    "provider": "dashscope", "capability": "asr",
+                    "reference": "job-1:transcribing:1", "status": "unknown",
+                }
+            },
+            db_path=self.db_path,
+        )
+        submitted = []
+
+        def resume(_job, context):
+            self.assertEqual(context["submission_intent"], {
+                "provider": "dashscope", "capability": "asr",
+                "reference": "job-1:transcribing:1", "status": "unknown",
+            })
+            self.assertIsNone(context["provider_task_id"])
+            return pipeline.StageResult("transcription_failed", {"submitted": submitted})
+
+        result = pipeline.run_stage(
+            job["id"], "transcribing", handlers={"transcribing": resume},
+            now=130, db_path=self.db_path, points_client=self.points,
+        )
+
+        self.assertEqual(result.next_state, "transcription_failed")
+        self.assertEqual(submitted, [])
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.checkpoint, {"submitted": []})
+
+    def test_submission_intent_is_durable_before_a_transcription_submit(self):
+        job = self._precharged_job()
+        self._set_state(
+            job["id"], "transcribing",
+            [{"version": 1, "state": "normalizing", "at": 100, "data": {}}],
+        )
+
+        def submit(_job, context):
+            context["save_submission_intent"]("dashscope", "asr", "job-1:transcribing:1")
+            return pipeline.StageResult("aligning_transcript", {"transcript": "ready"})
+
+        result = pipeline.run_stage(
+            job["id"], "transcribing", handlers={"transcribing": submit},
+            now=130, db_path=self.db_path, points_client=self.points,
+        )
+
+        self.assertEqual(result.next_state, "aligning_transcript")
+        with closing(store.open_store(self.db_path)) as conn:
+            saved = conn.execute(
+                "SELECT input_summary_json FROM edit_v2_stage_attempts WHERE job_id=? AND stage='transcribing'",
+                (job["id"],),
+            ).fetchone()["input_summary_json"]
+        self.assertEqual(json.loads(saved), {"submission_intent": {
+            "provider": "dashscope", "capability": "asr",
+            "reference": "job-1:transcribing:1", "status": "pending",
+        }})
+
     def test_worker_and_service_are_isolated_disabled_by_default_and_graceful(self):
         from server import ai_edit_v2_worker as worker
 

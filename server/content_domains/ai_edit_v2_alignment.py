@@ -252,12 +252,13 @@ def align_platform_text(original: str, asr_words: list[dict[str, Any]]) -> dict[
 
 
 def validate_punctuation_only(original: str, candidate: str) -> str:
-    def factual_characters(value: str) -> str:
-        return "".join(char for char in value if not _ignored(char))
-
-    if factual_characters(original) != factual_characters(candidate):
+    if _factual_characters(original) != _factual_characters(candidate):
         raise ValueError("外部转录修复不得改变正文")
     return candidate
+
+
+def _factual_characters(value: str) -> str:
+    return "".join(char for char in value if not _ignored(char))
 
 
 def _validate_external_timeline(words: list[Any], sentences: list[Any]) -> None:
@@ -280,6 +281,69 @@ def _validate_external_timeline(words: list[Any], sentences: list[Any]) -> None:
             previous_start, previous_end = start_ms, end_ms
 
 
+def _rebuild_platform_sentences(
+    original: str, aligned_words: list[dict[str, Any]], asr_sentences: list[Any]
+) -> list[dict[str, Any]]:
+    """Use ASR sentence times as cut points, never as a text source."""
+
+    boundaries: list[int] = []
+    previous_end = -1
+    for sentence in asr_sentences:
+        if not isinstance(sentence, dict):
+            continue
+        start_ms = sentence.get("start_ms")
+        end_ms = sentence.get("end_ms")
+        if (
+            not isinstance(start_ms, int) or isinstance(start_ms, bool)
+            or not isinstance(end_ms, int) or isinstance(end_ms, bool)
+            or start_ms < 0 or end_ms < start_ms or end_ms < previous_end
+        ):
+            continue
+        boundaries.append(end_ms)
+        previous_end = end_ms
+    if not boundaries:
+        return [{
+            "text": original,
+            "start_ms": aligned_words[0]["start_ms"],
+            "end_ms": aligned_words[-1]["end_ms"],
+        }]
+
+    rebuilt: list[dict[str, Any]] = []
+    cursor = 0
+    for boundary_index, boundary_end in enumerate(boundaries):
+        start = cursor
+        if boundary_index == len(boundaries) - 1:
+            cursor = len(aligned_words)
+        else:
+            while cursor < len(aligned_words) and aligned_words[cursor]["end_ms"] <= boundary_end:
+                cursor += 1
+        if cursor > start:
+            group = aligned_words[start:cursor]
+            rebuilt.append({
+                "text": "".join(word["text"] for word in group),
+                "start_ms": group[0]["start_ms"],
+                "end_ms": group[-1]["end_ms"],
+            })
+    if cursor < len(aligned_words):
+        group = aligned_words[cursor:]
+        rebuilt.append({
+            "text": "".join(word["text"] for word in group),
+            "start_ms": group[0]["start_ms"],
+            "end_ms": group[-1]["end_ms"],
+        })
+    return rebuilt
+
+
+def _canonical_external_text(words: list[dict[str, Any]], sentences: list[dict[str, Any]]) -> str:
+    canonical = "".join(sentence["text"] for sentence in sentences)
+    recognized_words = "".join(word["text"] for word in words)
+    try:
+        validate_punctuation_only(recognized_words, canonical)
+    except ValueError as exc:
+        raise AlignmentError("asr_timeline_invalid") from exc
+    return canonical
+
+
 def build_text_timeline(source_type: str, original_text: str | None, asr_result: Any) -> dict[str, Any]:
     """Select the sole allowed text source while retaining ASR timing."""
 
@@ -298,22 +362,20 @@ def build_text_timeline(source_type: str, original_text: str | None, asr_result:
             "source_type": source_type,
             "text": original_text,
             "words": aligned["aligned_words"],
-            "sentences": sentences,
+            "sentences": _rebuild_platform_sentences(original_text, aligned["aligned_words"], sentences),
             "coverage": aligned["coverage"],
         }
 
     if source_type in {"external_video", "external_audio"}:
         _validate_external_timeline(words, sentences)
-        raw_text = asr_result.get("raw_text")
-        if not isinstance(raw_text, str) or not raw_text:
-            raw_text = "".join(
-                item.get("text", "") for item in sentences if isinstance(item, dict)
-            )
-        cleaned_text = asr_result.get("cleaned_text", raw_text)
+        canonical_text = _canonical_external_text(words, sentences)
+        raw_text = asr_result.get("raw_text", canonical_text)
+        cleaned_text = asr_result.get("cleaned_text", canonical_text)
         if not isinstance(raw_text, str) or not raw_text or not isinstance(cleaned_text, str) or not cleaned_text:
             raise AlignmentError("external_text_invalid")
         try:
-            text = validate_punctuation_only(raw_text, cleaned_text)
+            validate_punctuation_only(canonical_text, raw_text)
+            text = validate_punctuation_only(canonical_text, cleaned_text)
         except ValueError as exc:
             raise AlignmentError("external_text_changed") from exc
         return {

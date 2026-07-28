@@ -78,14 +78,29 @@ def transcribe(
     provider_task_id: str | None = None,
     reference: str | None = None,
     save_provider_task_id: Callable[[str], None] | None = None,
+    submission_intent: dict[str, Any] | None = None,
+    save_submission_intent: Callable[[str], None] | None = None,
+    mark_submission_unknown: Callable[[str], None] | None = None,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     task_id = provider_task_id
     if not task_id:
+        submission_reference = reference or cos_key
+        if submission_intent is not None:
+            if submission_intent.get("reference") != submission_reference:
+                raise AsrError("asr_submission_intent_invalid")
+            raise UnknownSubmissionError("asr_submission_reconciliation_required")
         try:
             if hasattr(client, "submit_asr"):
-                submitted = client.submit_asr(cos_key, reference or cos_key)
+                if save_submission_intent is not None:
+                    save_submission_intent(submission_reference)
+                try:
+                    submitted = client.submit_asr(cos_key, submission_reference)
+                except UnknownSubmissionError:
+                    if mark_submission_unknown is not None:
+                        mark_submission_unknown(submission_reference)
+                    raise
                 if not isinstance(submitted, ProviderResult):
                     raise AsrError("asr_submit_failed")
                 task_id = submitted.payload.get("provider_task_id")

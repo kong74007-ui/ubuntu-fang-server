@@ -55,7 +55,7 @@ class DashScopeClient:
                 }),
                 body,
             )
-        except (TimeoutError, socket.timeout) as exc:
+        except (TimeoutError, socket.timeout, RetryableProviderError) as exc:
             raise UnknownSubmissionError("dashscope_asr_submission_unknown") from exc
 
         request_id, output = self._output(response)
