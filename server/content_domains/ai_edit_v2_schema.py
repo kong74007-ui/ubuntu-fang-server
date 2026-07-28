@@ -27,6 +27,16 @@ CAPTION_STYLES: Final = frozenset({"clean", "word_highlight", "karaoke"})
 SPEECH_POLICIES: Final = frozenset({"preserve_source"})
 MUSIC_POLICIES: Final = frozenset({"none", "duck_under_speech"})
 SFX_POLICIES: Final = frozenset({"none", "semantic_only"})
+STABLE_RENDER_COMPONENTS: Final = frozenset(
+    {
+        "basic_caption",
+        "basic_card",
+        "broll_image",
+        "broll_video",
+        "standard_transition",
+        "audio_bed",
+    }
+)
 MAX_MODEL_STRING_LENGTH: Final = 500
 MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
 _HOST_LABEL_PATTERN: Final = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -425,3 +435,62 @@ def validate_edit_plan(plan: dict[str, Any]) -> dict[str, Any]:
     _validate_audio_plan(plan.get("audio_plan"))
     _reject_forbidden_plan_values(plan)
     return plan
+
+
+def validate_render_graph(graph: dict[str, Any]) -> dict[str, Any]:
+    """Validate the audited stable-render boundary before provider submission."""
+
+    _require(isinstance(graph, dict), "render_graph必须是对象")
+    _require(
+        set(graph) == {"version", "aspect_ratio", "duration_ms", "components", "output"},
+        "render_graph只允许稳定字段",
+    )
+    _require(graph.get("version") == "1.0", "render_graph版本不受支持")
+    _require(graph.get("aspect_ratio") in ASPECT_RATIOS, "render_graph比例不受支持")
+    duration_ms = _positive_int(graph.get("duration_ms"), "render_graph时长")
+    components = graph.get("components")
+    _require(isinstance(components, list) and bool(components), "render_graph组件不能为空")
+    allowed_fields = {
+        "basic_caption": {"type", "text", "start", "length", "font_url"},
+        "basic_card": {"type", "text", "start", "length"},
+        "broll_image": {"type", "src", "start", "length"},
+        "broll_video": {"type", "src", "start", "length"},
+        "standard_transition": {"type", "name", "start", "length"},
+        "audio_bed": {"type", "src", "start", "length"},
+    }
+    for index, component in enumerate(components):
+        path = f"render_graph.components[{index}]"
+        _require(isinstance(component, dict), f"{path}必须是对象")
+        kind = component.get("type")
+        _require(kind in STABLE_RENDER_COMPONENTS, f"{path}.type不受支持")
+        _require(set(component) == allowed_fields[kind], f"{path}字段不受支持")
+        start = component.get("start")
+        length = component.get("length")
+        _require(
+            isinstance(start, (int, float)) and not isinstance(start, bool) and start >= 0,
+            f"{path}.start无效",
+        )
+        _require(
+            isinstance(length, (int, float)) and not isinstance(length, bool) and length > 0,
+            f"{path}.length无效",
+        )
+        _require((start + length) * 1000 <= duration_ms + 1, f"{path}超出时长")
+        if kind in {"basic_caption", "basic_card"}:
+            _nonempty_string(component.get("text"), f"{path}.text")
+        if kind in {"broll_image", "broll_video", "audio_bed"}:
+            src = _nonempty_string(component.get("src"), f"{path}.src")
+            _require(src.startswith(("http://", "https://")), f"{path}.src必须是短期地址")
+        if kind == "basic_caption":
+            font_url = _nonempty_string(component.get("font_url"), f"{path}.font_url")
+            _require(
+                font_url.startswith(("http://", "https://")) and "noto" in font_url.lower(),
+                f"{path}.font_url必须使用Noto Sans SC",
+            )
+        if kind == "standard_transition":
+            _require(component.get("name") in SCENE_TRANSITIONS, f"{path}.name不受支持")
+    output = graph.get("output")
+    _require(
+        output == {"format": "mp4", "resolution": "1080p", "video_codec": "h264", "audio_codec": "aac"},
+        "render_graph输出规格不受支持",
+    )
+    return graph

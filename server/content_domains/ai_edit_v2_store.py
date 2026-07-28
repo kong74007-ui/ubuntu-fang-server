@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -153,6 +153,7 @@ def init_db(db_path: str | None = None) -> None:
                 attempt INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 provider_task_id TEXT,
+                provider_reference TEXT,
                 input_summary_json TEXT,
                 output_summary_json TEXT,
                 error_code TEXT,
@@ -167,6 +168,7 @@ def init_db(db_path: str | None = None) -> None:
                 provider TEXT NOT NULL,
                 capability TEXT NOT NULL,
                 provider_task_id TEXT NOT NULL,
+                reference TEXT,
                 status TEXT NOT NULL,
                 is_primary INTEGER NOT NULL DEFAULT 1,
                 is_fallback INTEGER NOT NULL DEFAULT 0,
@@ -249,6 +251,32 @@ def init_db(db_path: str | None = None) -> None:
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(edit_v2_materials)")
             }
+            provider_job_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_provider_jobs)")
+            }
+            if "reference" not in provider_job_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_provider_jobs ADD COLUMN reference TEXT"
+                )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_provider_reference
+                   ON edit_v2_provider_jobs(provider, reference)
+                   WHERE reference IS NOT NULL"""
+            )
+            attempt_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_stage_attempts)")
+            }
+            if "provider_reference" not in attempt_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_stage_attempts ADD COLUMN provider_reference TEXT"
+                )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_attempt_reference
+                   ON edit_v2_stage_attempts(provider_reference)
+                   WHERE provider_reference IS NOT NULL"""
+            )
             generation_columns = {
                 "generation_job_id": "TEXT",
                 "generation_idempotency_key": "TEXT",
@@ -1265,3 +1293,163 @@ def record_provider_event(
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def bind_provider_submission(
+    *,
+    attempt_id: int,
+    job_id: str,
+    provider: str,
+    capability: str,
+    provider_task_id: str,
+    reference: str,
+    status: str,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    """Atomically bind a remote task to its durable stage attempt and provider row."""
+
+    values = (job_id, provider, capability, provider_task_id, reference, status)
+    if not all(isinstance(value, str) and value.strip() for value in values):
+        raise ValueError("provider_submission_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            attempt = conn.execute(
+                """SELECT job_id,provider_task_id,provider_reference
+                   FROM edit_v2_stage_attempts WHERE id=?""",
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None or attempt["job_id"] != job_id:
+                raise ValueError("provider_submission_attempt_invalid")
+            if attempt["provider_task_id"] not in {None, provider_task_id}:
+                raise ValueError("provider_submission_conflict")
+            if attempt["provider_reference"] not in {None, reference}:
+                raise ValueError("provider_submission_conflict")
+            existing = conn.execute(
+                """SELECT * FROM edit_v2_provider_jobs
+                   WHERE provider=? AND (provider_task_id=? OR reference=?)""",
+                (provider, provider_task_id, reference),
+            ).fetchall()
+            if any(
+                row["job_id"] != job_id
+                or row["provider_task_id"] != provider_task_id
+                or row["reference"] != reference
+                for row in existing
+            ):
+                raise ValueError("provider_submission_conflict")
+            if existing:
+                conn.execute(
+                    """UPDATE edit_v2_provider_jobs
+                       SET status=CASE
+                               WHEN status IN ('succeeded','failed') THEN status
+                               ELSE ?
+                           END,
+                           updated_at=?
+                       WHERE provider=? AND provider_task_id=?""",
+                    (status, now, provider, provider_task_id),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO edit_v2_provider_jobs(
+                           job_id,provider,capability,provider_task_id,reference,status,
+                           is_primary,is_fallback,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,1,0,?,?)""",
+                    (
+                        job_id,
+                        provider,
+                        capability,
+                        provider_task_id,
+                        reference,
+                        status,
+                        now,
+                        now,
+                    ),
+                )
+            conn.execute(
+                """UPDATE edit_v2_stage_attempts
+                   SET provider_task_id=?,provider_reference=? WHERE id=?""",
+                (provider_task_id, reference, attempt_id),
+            )
+            row = conn.execute(
+                """SELECT * FROM edit_v2_provider_jobs
+                   WHERE provider=? AND provider_task_id=?""",
+                (provider, provider_task_id),
+            ).fetchone()
+            conn.commit()
+            return dict(row)
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def find_provider_submission(
+    provider: str,
+    *,
+    provider_task_id: str | None = None,
+    reference: str | None = None,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    if bool(provider_task_id) == bool(reference):
+        raise ValueError("provider_submission_lookup_invalid")
+    column, value = (
+        ("provider_task_id", provider_task_id)
+        if provider_task_id
+        else ("reference", reference)
+    )
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT * FROM edit_v2_provider_jobs WHERE provider=? AND {column}=?",
+            (provider, value),
+        ).fetchone()
+    return _row_dict(row)
+
+
+def claim_provider_submission_reference(
+    *,
+    attempt_id: int,
+    job_id: str,
+    reference: str,
+    db_path: str | None = None,
+) -> bool:
+    """Reserve the idempotency reference before the first billable network call."""
+
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValueError("provider_submission_reference_invalid")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT job_id,provider_reference FROM edit_v2_stage_attempts
+                   WHERE id=?""",
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["job_id"] != job_id:
+                raise ValueError("provider_submission_attempt_invalid")
+            if row["provider_reference"] is not None:
+                if row["provider_reference"] != reference:
+                    raise ValueError("provider_submission_conflict")
+                conn.commit()
+                return False
+            changed = conn.execute(
+                """UPDATE edit_v2_stage_attempts SET provider_reference=?
+                   WHERE id=? AND provider_reference IS NULL""",
+                (reference, attempt_id),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def find_stage_submission(
+    attempt_id: int, *, db_path: str | None = None
+) -> dict[str, Any] | None:
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT job_id,provider_task_id,provider_reference
+               FROM edit_v2_stage_attempts WHERE id=?""",
+            (attempt_id,),
+        ).fetchone()
+    return _row_dict(row)
