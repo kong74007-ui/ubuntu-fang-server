@@ -1,5 +1,13 @@
 # Task 7 实施报告
 
+## Fix Round 2
+
+- `production_dependencies()` now constructs `ProductionServices` with eight concrete stage methods. The enabled worker calls `assert_production_ready()` before the first job claim, so missing provider, callback, webhook, or private COS configuration fails startup explicitly.
+- The concrete path composes the existing Task 2-6 media/FFprobe, private COS, DashScope ASR/Qwen, alignment, material resolver/OpenAI image adapter, audio planner/ElevenLabs adapter, Shotstack, and final COS persistence boundaries. No Task 8 quality implementation was added.
+- Every stable stage has a fail-closed semantic output schema before recursive artifact validation. Tests cover a missing field and wrong type for all eight stages, garbage transcription, and artifact-only normalization.
+- The integration test invokes the real worker `_process_claimed` and real `run_job`, with concrete stages and real adapter classes. Only external HTTP, COS, download, and process transports are faked; the job reaches `quality_checking` and final bytes are verified in private COS.
+- Final verification: targeted runtime/pipeline suite passed; full `test_ai_edit_v2*.py` discovery passed (exit 0). No deploy, restart, live provider call, Task 8 work, or Task 11 acceptance-gate change.
+
 ## Fix Round 1
 
 - 生产 worker 已从旧的逐阶段 `run_stage` 切换到 `run_job`，每次 claim 使用唯一 lease token，并装配 `runtime.production_dependencies()`；bundle 显式提供 Task 2-6 的 DashScope、OpenAI image、ElevenLabs、Shotstack adapter 类型、各阶段 handler/reconciler 和私有 COS verifier。功能开关关闭时仍只做账务 reconcile、不 claim 新任务。

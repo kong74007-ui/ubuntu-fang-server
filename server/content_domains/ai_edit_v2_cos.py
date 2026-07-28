@@ -93,6 +93,15 @@ def put_bytes(content: bytes, rel_key: str, content_type: str, private: bool = T
     )
 
 
+def put_file(source, rel_key: str, content_type: str, private: bool = True):
+    """Upload a normalized local file through the same private COS boundary."""
+    if private is not True:
+        raise ValueError("AI Edit V2 COS objects must be private")
+    with open(os.fspath(source), "rb") as handle:
+        content = handle.read()
+    return put_bytes(content, rel_key, content_type, private=True)
+
+
 def delete_object(rel_key: str):
     _require_enabled()
     return _client().delete_object(Bucket=_BUCKET, Key=_object_key(rel_key))

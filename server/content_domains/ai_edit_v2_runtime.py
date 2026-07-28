@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import subprocess
+import urllib.request
+from contextlib import closing
 from typing import Any, Callable
 
 
@@ -41,9 +47,7 @@ STAGE_TO_NEXT_STATE = {
 PROVIDER_STAGES = frozenset(
     {"transcribing", "directing", "resolving_materials", "generating_media", "rendering"}
 )
-ARTIFACT_REQUIRED_STAGES = frozenset(
-    {"normalizing", "resolving_materials", "generating_media", "rendering", "postprocessing"}
-)
+ARTIFACT_REQUIRED_STAGES = frozenset({"normalizing", "postprocessing"})
 
 # Phase A workers may still inject state-specific handlers.  Task 7's run_job consumes
 # the explicit dependency bundle and leaves this backwards-compatible registry intact.
@@ -123,6 +127,8 @@ def validate_stage_output(
 ) -> tuple[bool, str | None]:
     if not isinstance(output, dict):
         return False, "stage_output_invalid"
+    if not _semantic_output_valid(stage, output):
+        return False, "stage_output_schema_invalid"
     artifacts = extract_artifacts(output)
     if stage in ARTIFACT_REQUIRED_STAGES and not artifacts:
         return False, "stage_artifact_missing"
@@ -142,64 +148,268 @@ def validate_stage_output(
     return True, None
 
 
-def production_dependencies(db_path: str, *, services: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Create the production Task 2-6 adapter bundle consumed by ``run_job``.
+def _int(value: Any, *, positive: bool = False) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and (value > 0 if positive else value >= 0)
 
-    Service hooks carry environment-specific file/COS repository operations, while
-    provider defaults are the real stable adapter classes.
-    """
 
-    from . import ai_edit_v2_cos as cos_api
-    from .ai_edit_v2_providers.dashscope import DashScopeClient
-    from .ai_edit_v2_providers.elevenlabs import ElevenLabsProvider
-    from .ai_edit_v2_providers.openai_image import OpenAIImageProvider
-    from .ai_edit_v2_shotstack import ShotstackClient
+def _timeline(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("text"), str) and bool(value["text"])
+        and isinstance(value.get("words"), list) and bool(value["words"])
+        and isinstance(value.get("sentences"), list) and bool(value["sentences"])
+        and value.get("alignment_status") == "aligned"
+        and _int(value.get("duration_ms"), positive=True)
+    )
 
-    services = dict(services or {})
-    adapter_types = {
-        "dashscope": DashScopeClient,
-        "openai_image": OpenAIImageProvider,
-        "elevenlabs": ElevenLabsProvider,
-        "shotstack": ShotstackClient,
-    }
+
+def _semantic_output_valid(stage: str, output: dict[str, Any]) -> bool:
+    """Fail closed at checkpoint boundaries; artifacts alone are never stage output."""
+    if stage == "normalizing":
+        value = output.get("normalized_media")
+        return (isinstance(value, dict) and isinstance(value.get("cos_key"), str)
+                and bool(value["cos_key"]) and value.get("media_type") in {"video", "audio"}
+                and isinstance(value.get("metadata"), dict)
+                and _int(value["metadata"].get("duration_ms"), positive=True))
+    if stage == "transcribing":
+        value = output.get("asr_result")
+        return (isinstance(value, dict) and isinstance(value.get("provider_task_id"), str)
+                and bool(value["provider_task_id"]) and _int(value.get("duration_ms"), positive=True)
+                and isinstance(value.get("words"), list) and bool(value["words"])
+                and isinstance(value.get("sentences"), list) and bool(value["sentences"]))
+    if stage == "aligning":
+        return _timeline(output.get("text_timeline"))
+    if stage == "directing":
+        value = output.get("edit_plan")
+        return (isinstance(value, dict) and value.get("version") == "2.0"
+                and isinstance(value.get("scenes"), list) and bool(value["scenes"])
+                and _int(value.get("duration_ms"), positive=True))
+    if stage == "resolving_materials":
+        value = output.get("resolved_plan")
+        return (isinstance(value, dict) and isinstance(value.get("materials"), dict)
+                and isinstance(value.get("scenes"), list) and bool(value["scenes"])
+                and _int(value.get("duration_ms"), positive=True))
+    if stage == "generating_media":
+        return (isinstance(output.get("resolved_plan"), dict)
+                and isinstance(output.get("audio_plan"), dict)
+                and isinstance(output.get("generated_audio"), dict))
+    if stage == "rendering":
+        return (isinstance(output.get("provider_task_id"), str) and bool(output["provider_task_id"])
+                and output.get("provider_status") == "succeeded"
+                and isinstance(output.get("render_url"), str)
+                and output["render_url"].startswith("https://"))
+    if stage == "postprocessing":
+        return isinstance(output.get("artifact"), dict) and output.get("output_available") is True
+    return False
+
+
+class _MaterialRepositories:
+    """Concrete repository boundary used by Task 4's resolver."""
+    def __init__(self, db_path: str, owner: str) -> None:
+        from . import ai_edit_v2_store as store
+        self.db_path = db_path
+        self.store = store
+        self.owner = owner
+        self.records: list[dict[str, Any]] = []
+
+    def owner_for_job(self, _job_id: str) -> str:
+        return self.owner
+
+    def _rows(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        with closing(self.store.open_store(self.db_path)) as conn:
+            if job_id:
+                rows = conn.execute("""SELECT m.*,jm.job_id,jm.purpose AS bound_purpose
+                    FROM edit_v2_materials m JOIN edit_v2_job_materials jm ON jm.material_id=m.id
+                    WHERE jm.job_id=? AND m.owner=? AND m.status='ready'""", (job_id, self.owner)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM edit_v2_materials WHERE owner=? AND status='ready'", (self.owner,)).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _asset(row: dict[str, Any], *, required: bool = False) -> dict[str, Any]:
+        return {"asset_id": str(row["id"]), "cos_key": row["cos_key"], "kind": row["kind"],
+                "width": row.get("width"), "height": row.get("height"), "size_bytes": row.get("size_bytes"),
+                "etag": row.get("etag"), "owner": row["owner"], "job_id": row.get("job_id"),
+                "required": required, "relevant": True, "score": 1.0}
+
+    def required_materials(self, job_id: str) -> list[dict[str, Any]]:
+        return [self._asset(row, required=True) for row in self._rows(job_id)
+                if row.get("bound_purpose") == "required_material"]
+
+    def search(self, source: str, job_id: str, _slot: dict[str, Any]) -> list[dict[str, Any]]:
+        if source == "current_upload":
+            return [self._asset(row) for row in self._rows(job_id) if row.get("bound_purpose") != "main_input"]
+        if source == "user_history":
+            return [self._asset(row) for row in self._rows() if row.get("source") != "platform_public"]
+        if source == "platform_public":
+            return []
+        return []
+
+    def save_resolution_records(self, _job_id: str, records: list[dict[str, Any]], **_kw: Any) -> None:
+        self.records = records
+
+
+class ProductionServices:
+    """Eight concrete production stages composed from the audited Task 2-6 APIs."""
+    def __init__(self, db_path: str, *, cos_api: Any = None, runner: Callable[..., Any] = subprocess.run,
+                 dashscope_http: Callable[..., Any] | None = None,
+                 shotstack_http: Callable[..., Any] | None = None,
+                 downloader: Callable[[str], bytes] | None = None) -> None:
+        from . import ai_edit_v2_cos
+        self.db_path = db_path
+        self.cos = cos_api or ai_edit_v2_cos
+        self.runner = runner
+        self.dashscope_http = dashscope_http
+        self.shotstack_http = shotstack_http
+        self.downloader = downloader or self._download
+
+    def readiness_errors(self) -> list[str]:
+        errors = []
+        if self.dashscope_http is None and not os.environ.get("DASHSCOPE_API_KEY"):
+            errors.append("DASHSCOPE_API_KEY")
+        if self.shotstack_http is None and not os.environ.get("SHOTSTACK_API_KEY"):
+            errors.append("SHOTSTACK_API_KEY")
+        if not os.environ.get("OPENAI_API_KEY"):
+            errors.append("OPENAI_API_KEY")
+        if os.environ.get("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED") != "1":
+            errors.append("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED")
+        if not os.environ.get("ELEVENLABS_API_KEY"):
+            errors.append("ELEVENLABS_API_KEY")
+        if not os.environ.get("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL"):
+            errors.append("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL")
+        if not os.environ.get("AI_EDIT_V2_WEBHOOK_SECRET"):
+            errors.append("AI_EDIT_V2_WEBHOOK_SECRET")
+        enabled = getattr(self.cos, "enabled", None)
+        if callable(enabled) and not enabled():
+            errors.append("AI_EDIT_V2_COS")
+        return errors
+
+    def _draft(self, stage_input: dict[str, Any]) -> dict[str, Any]:
+        payload = stage_input.get("payload") or {}
+        return payload.get("draft") or payload
+
+    def _artifact(self, cos_key: str) -> dict[str, Any]:
+        head = self.cos.head_object(cos_key)
+        return {"cos_key": cos_key, "etag": str(head["etag"]).strip('"'),
+                "size_bytes": int(head["content_length"])}
+
+    def normalizing(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_media import prepare_cos_media
+        draft = self._draft(stage_input)
+        source = draft.get("main_input") or {}
+        cos_key = source.get("cos_key")
+        if not cos_key:
+            from . import ai_edit_v2_store as store
+            with closing(store.open_store(self.db_path)) as conn:
+                row = conn.execute("""SELECT m.cos_key,m.kind FROM edit_v2_materials m
+                    JOIN edit_v2_job_materials jm ON jm.material_id=m.id
+                    WHERE jm.job_id=? AND jm.purpose='main_input' AND m.status='ready'""", (job["id"],)).fetchone()
+            if row is not None:
+                cos_key, source = row["cos_key"], {**source, "kind": row["kind"]}
+        if not isinstance(cos_key, str) or not cos_key:
+            raise RuntimeError("main_input_cos_key_missing")
+        media_type = "audio" if source.get("kind") == "audio" else "video"
+        owner_hash = hashlib.sha256(str(job["owner"]).encode()).hexdigest()[:16]
+        suffix = "m4a" if media_type == "audio" else "mp4"
+        target = f"ai-edit-v2/{owner_hash}/{job['id']}/normalized/main.{suffix}"
+        value = prepare_cos_media(cos_key, target, media_type, cos_api=self.cos, runner=self.runner)
+        value["media_type"] = media_type
+        return {"normalized_media": value, "artifact": self._artifact(value["cos_key"])}
+
+    def transcribing(self, _job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_asr import transcribe
+        from .ai_edit_v2_providers.dashscope import DashScopeClient
+        media = stage_input["previous"]["normalized_media"]
+        client = DashScopeClient(http_request=self.dashscope_http) if self.dashscope_http else DashScopeClient()
+        signed = self.cos.presign_get(media["cos_key"])
+        result = transcribe(signed, client, context["deadline_at"], provider_task_id=context.get("provider_task_id"),
+                            reference=media["cos_key"], save_provider_task_id=context["save_provider_task_id"],
+                            now_fn=lambda: 0, sleep_fn=lambda _n: None)
+        return {"normalized_media": media, "asr_result": result}
+
+    def aligning(self, _job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_alignment import build_text_timeline
+        previous, draft = stage_input["previous"], self._draft(stage_input)
+        source_type = "external_audio" if previous["normalized_media"]["media_type"] == "audio" else "external_video"
+        timeline = build_text_timeline(source_type, draft.get("original_text"), previous["asr_result"])
+        timeline.update({"alignment_status": "aligned", "duration_ms": previous["asr_result"]["duration_ms"]})
+        return {"normalized_media": previous["normalized_media"], "text_timeline": timeline}
+
+    def directing(self, _job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_director import generate_edit_plan
+        from .ai_edit_v2_providers.dashscope import DashScopeClient
+        previous, draft = stage_input["previous"], self._draft(stage_input)
+        client = DashScopeClient(http_request=self.dashscope_http) if self.dashscope_http else DashScopeClient()
+        director_context = {"creation_mode": draft["creation_mode"], "text_timeline": previous["text_timeline"],
+                            "aspect_ratio": draft["aspect_ratio"], "target_duration_ms": draft["target_duration_ms"]}
+        if draft["creation_mode"] == "platform_template":
+            director_context.update({"template_id": draft["template_id"], "template_version": draft["template_version"]})
+        else:
+            director_context["style_text"] = draft.get("style_text") or draft.get("brief") or "clean editorial"
+        plan = generate_edit_plan(director_context, client)
+        return {"normalized_media": previous["normalized_media"], "text_timeline": previous["text_timeline"], "edit_plan": plan}
+
+    def resolving_materials(self, job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_materials import resolve_materials
+        from .ai_edit_v2_providers.openai_image import OpenAIImageProvider
+        previous = stage_input["previous"]
+        provider = OpenAIImageProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos,
+                                       db_path=self.db_path, worker_id=str(context["attempt_id"]))
+        plan = resolve_materials(job["id"], previous["edit_plan"], _MaterialRepositories(self.db_path, job["owner"]), provider)
+        plan.update({"text_timeline": previous["text_timeline"], "primary_video": previous["normalized_media"]})
+        return {"resolved_plan": plan}
+
+    def generating_media(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_audio import build_audio_plan, generate_audio_assets
+        from .ai_edit_v2_providers.elevenlabs import ElevenLabsProvider
+        plan = stage_input["previous"]["resolved_plan"]
+        audio_plan = build_audio_plan(plan, plan["text_timeline"])
+        provider = ElevenLabsProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos, db_path=self.db_path)
+        generated = generate_audio_assets(job["id"], audio_plan, provider)
+        return {"resolved_plan": plan, "audio_plan": audio_plan, "generated_audio": generated}
+
+    def rendering(self, job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        from .ai_edit_v2_schema import BUNDLED_NOTO_SANS_SC_URL
+        from .ai_edit_v2_shotstack import ShotstackClient, build_render_graph
+        plan = stage_input["previous"]["resolved_plan"]
+        keys = [plan["primary_video"]["cos_key"]] + [v["cos_key"] for v in plan["materials"].values()]
+        graph = build_render_graph(plan, {key: self.cos.presign_get(key) for key in keys}, BUNDLED_NOTO_SANS_SC_URL)
+        client = ShotstackClient(job_id=job["id"], attempt_id=context["attempt_id"], db_path=self.db_path,
+                                 http_request=self.shotstack_http) if self.shotstack_http else ShotstackClient(job_id=job["id"], attempt_id=context["attempt_id"], db_path=self.db_path)
+        saved = context.get("provider_task_id")
+        result = client.reconcile(provider_task_id=saved) if saved else client.submit(graph, f"{job['id']}:render")
+        task_id = result.payload["provider_task_id"]
+        if not saved:
+            context["save_provider_task_id"](task_id)
+        while result.payload["status"] == "pending":
+            result = client.reconcile(provider_task_id=task_id)
+        return {"provider_task_id": task_id, "provider_status": result.payload["status"], "render_url": result.payload["output_url"]}
+
+    def postprocessing(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
+        owner_hash = hashlib.sha256(str(job["owner"]).encode()).hexdigest()[:16]
+        key = f"ai-edit-v2/{owner_hash}/{job['id']}/output/final.mp4"
+        self.cos.put_bytes(self.downloader(stage_input["previous"]["render_url"]), key, "video/mp4", private=True)
+        return {"artifact": self._artifact(key), "output_available": True}
+
+    @staticmethod
+    def _download(url: str) -> bytes:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            return response.read()
+
+
+def production_dependencies(db_path: str, *, services: Any = None) -> dict[str, Any]:
+    """Build concrete stages; configuration is checked before the worker claims work."""
+    service = services or ProductionServices(db_path)
 
     def handler(stage: str) -> Callable[..., Any]:
         def invoke(job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> Any:
             context["assert_active"]()
-            supplied = services.get(stage)
-            if not callable(supplied):
-                raise RuntimeError(f"production_{stage}_not_configured")
-            return supplied(
-                job,
-                context,
-                stage_input,
-                adapter_types=adapter_types,
-                cos_api=services.get("cos_api", cos_api),
-                db_path=db_path,
-            )
-
-        return invoke
-
-    def reconciler(stage: str) -> Callable[..., Any]:
-        def invoke(job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> Any:
-            context["assert_active"]()
-            supplied = services.get(f"reconcile_{stage}")
-            if not callable(supplied):
-                raise RuntimeError(f"production_{stage}_reconciler_not_configured")
-            return supplied(
-                job,
-                context,
-                stage_input,
-                adapter_types=adapter_types,
-                cos_api=services.get("cos_api", cos_api),
-                db_path=db_path,
-            )
-
+            return getattr(service, stage)(job, context, stage_input)
         return invoke
 
     def verify(_stage: str, artifact: dict[str, Any]) -> bool:
         try:
-            head = services.get("cos_api", cos_api).head_object(artifact["cos_key"])
+            head = service.cos.head_object(artifact["cos_key"])
             return (
                 int(head.get("content_length", -1)) == artifact["size_bytes"]
                 and str(head.get("etag", "")).strip('"') == artifact["etag"].strip('"')
@@ -210,11 +420,19 @@ def production_dependencies(db_path: str, *, services: dict[str, Any] | None = N
     return {
         "production": True,
         "handlers": {stage: handler(stage) for stage in STABLE_STAGE_SEQUENCE},
-        "reconcilers": {stage: reconciler(stage) for stage in PROVIDER_STAGES},
+        "reconcilers": {stage: handler(stage) for stage in PROVIDER_STAGES},
         "verify_artifact": verify,
         "db_path": db_path,
-        "adapter_types": adapter_types,
+        "services": service,
+        "readiness_errors": service.readiness_errors,
     }
+
+
+def assert_production_ready(dependencies: Any) -> None:
+    checker = option(dependencies, "readiness_errors")
+    errors = checker() if callable(checker) else ["production_services"]
+    if errors:
+        raise RuntimeError("ai_edit_v2_not_ready:" + ",".join(sorted(errors)))
 
 
 def runtime_ready() -> bool:

@@ -95,6 +95,7 @@ def run_worker(
         return
     worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
     dependencies = handlers or runtime.production_dependencies(config["db_path"])
+    runtime.assert_production_ready(dependencies)
     active: set[Future] = set()
     with ThreadPoolExecutor(
         max_workers=config["workers"], thread_name_prefix="ai-edit-v2"

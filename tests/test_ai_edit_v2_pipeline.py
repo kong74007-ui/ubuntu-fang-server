@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 import threading
 import tempfile
 import time
@@ -523,6 +524,61 @@ class PipelineTests(unittest.TestCase):
 
 
 class StableRunJobTests(PipelineTests):
+    def test_real_worker_and_concrete_production_services_reach_quality_check(self):
+        from server import ai_edit_v2_worker as worker
+
+        job_id = str(uuid.uuid4())
+        job = self._precharged_job(job_id)
+        payload = json.loads(job["payload_json"])
+        payload["draft"].update({"target_duration_ms": 1800, "style_text": "clean editorial"})
+        payload["draft"]["main_input"].update({"cos_key": "ai-edit-v2/source/input.mp4", "duration_ms": 1800})
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute("UPDATE edit_v2_jobs SET payload_json=? WHERE id=?", (json.dumps(payload), job_id))
+
+        class FakeCos:
+            def __init__(self): self.objects = {"ai-edit-v2/source/input.mp4": b"source"}
+            def enabled(self): return True
+            def download_file(self, key, path): Path(path).write_bytes(self.objects[key])
+            def put_bytes(self, content, key, _content_type, private=True): self.objects[key] = content
+            def put_file(self, path, key, _content_type, private=True): self.objects[key] = Path(path).read_bytes()
+            def head_object(self, key): return {"content_length": len(self.objects[key]), "etag": "etag-" + str(len(self.objects[key]))}
+            def presign_get(self, key, expires=300): return "https://cos.test/" + key
+
+        transcript = json.loads((Path(__file__).parent / "fixtures/ai_edit_v2/provider_responses/fun_asr_success.json").read_text(encoding="utf-8"))
+        plan = json.loads(json.loads((Path(__file__).parent / "fixtures/ai_edit_v2/provider_responses/qwen_edit_plan_success.json").read_text(encoding="utf-8"))["output"]["choices"][0]["message"]["content"])
+        plan["audio_plan"].update({"music_policy": "none", "sfx_policy": "none"})
+
+        def dashscope_http(method, url, _headers, body, _timeout):
+            if "text-generation" in url:
+                return {"request_id": "qwen-1", "output": {"choices": [{"message": {"role": "assistant", "content": json.dumps(plan, ensure_ascii=False)}}]}, "usage": {"input_tokens": 1, "output_tokens": 1}}
+            if method == "POST":
+                return {"request_id": "submit-1", "output": {"task_id": "asr-1", "task_status": "PENDING"}}
+            if url.endswith("/tasks/asr-1"):
+                return {"request_id": "query-1", "output": {"task_id": "asr-1", "task_status": "SUCCEEDED", "results": [{"subtask_status": "SUCCEEDED", "transcription_url": "https://result.test/asr.json"}]}}
+            return transcript
+
+        def shotstack_http(method, _url, _headers, _body, _timeout):
+            if method == "POST":
+                return {"success": True, "response": {"id": "render-1", "status": "queued"}}
+            return {"success": True, "response": {"id": "render-1", "status": "done", "url": "https://render.test/final.mp4"}}
+
+        probe = {"format": {"duration": "1.8", "format_name": "mov,mp4"}, "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30/1"}, {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 2}]}
+        runner = lambda *_a, **_kw: type("Completed", (), {"returncode": 0, "stdout": json.dumps(probe), "stderr": b""})()
+        fake_cos = FakeCos()
+        services = runtime.ProductionServices(self.db_path, cos_api=fake_cos, runner=runner,
+                                              dashscope_http=dashscope_http, shotstack_http=shotstack_http,
+                                              downloader=lambda _url: b"rendered-mp4")
+        dependencies = runtime.production_dependencies(self.db_path, services=services)
+        dependencies["points_client"] = self.points
+        dependencies["now"] = lambda: 200
+        config = {"db_path": self.db_path, "lease_seconds": 180}
+        claimed = store.claim_job(job_id, "integration-lease", 180, 200, db_path=self.db_path)
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
+            runtime.assert_production_ready(dependencies)
+            result = worker._process_claimed(claimed, "integration-lease", config, dependencies)
+        self.assertEqual(result["state"], "quality_checking")
+        self.assertIn(b"rendered-mp4", fake_cos.objects.values())
+
     def _dependencies(self, calls, *, render_started=None, render_release=None):
         def handler(name):
             def run(_job, context, stage_input):
@@ -537,15 +593,24 @@ class StableRunJobTests(PipelineTests):
                         render_started.set()
                     if render_release is not None:
                         render_release.wait(5)
-                return {
-                    "stage": name,
-                    "artifact": {
+                artifact = {
                         "cos_key": f"private/{name}.json",
                         "etag": name,
                         "size_bytes": 10,
-                    },
-                    "input_stage": stage_input.get("stage"),
                 }
+                timeline = {"text": "ok", "words": [{}], "sentences": [{}],
+                            "alignment_status": "aligned", "duration_ms": 1000}
+                outputs = {
+                    "normalizing": {"normalized_media": {"cos_key": "private/source.mp4", "media_type": "video", "metadata": {"duration_ms": 1000}}, "artifact": artifact},
+                    "transcribing": {"asr_result": {"provider_task_id": "asr-1", "duration_ms": 1000, "words": [{}], "sentences": [{}]}},
+                    "aligning": {"text_timeline": timeline},
+                    "directing": {"edit_plan": {"version": "2.0", "duration_ms": 1000, "scenes": [{}]}},
+                    "resolving_materials": {"resolved_plan": {"duration_ms": 1000, "scenes": [{}], "materials": {}}},
+                    "generating_media": {"resolved_plan": {}, "audio_plan": {}, "generated_audio": {}},
+                    "rendering": {"provider_task_id": "shotstack-1", "provider_status": "succeeded", "render_url": "https://render.test/final.mp4"},
+                    "postprocessing": {"artifact": artifact, "output_available": True},
+                }
+                return outputs[name]
             return run
 
         return {
@@ -623,10 +688,9 @@ class StableRunJobTests(PipelineTests):
         def reconcile_render(_job, context, _stage_input):
             reconciled.append(context["provider_task_id"])
             return {
-                "stage": "rendering",
-                "artifact": {
-                    "cos_key": "private/render.mp4", "etag": "render", "size_bytes": 10
-                },
+                "provider_task_id": context["provider_task_id"],
+                "provider_status": "succeeded",
+                "render_url": "https://render.test/final.mp4",
             }
 
         dependencies["reconcilers"] = {"rendering": reconcile_render}
@@ -751,6 +815,7 @@ class StableRunJobTests(PipelineTests):
         calls = []
         dependencies = self._dependencies(calls)
         dependencies["handlers"]["normalizing"] = lambda *_args: {
+            "normalized_media": {"cos_key": "private/source.mp4", "media_type": "video", "metadata": {"duration_ms": 1000}},
             "nested": {
                 "artifacts": [
                     {"cos_key": "private/source.mp4", "etag": "bad", "size_bytes": 10}
@@ -768,7 +833,7 @@ class StableRunJobTests(PipelineTests):
 
         other = self._precharged_job("job-missing-artifact")
         dependencies = self._dependencies([])
-        dependencies["handlers"]["normalizing"] = lambda *_args: {"metadata": {}}
+        dependencies["handlers"]["normalizing"] = lambda *_args: {"normalized_media": {"cos_key": "private/source.mp4", "media_type": "video", "metadata": {"duration_ms": 1000}}}
         result = pipeline.run_job(other["id"], dependencies, db_path=self.db_path)
         self.assertEqual(result["error_code"], "stage_artifact_missing")
 
