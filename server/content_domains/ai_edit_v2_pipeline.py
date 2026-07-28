@@ -1143,14 +1143,35 @@ def reconcile_terminal_refunds(
             f"""SELECT b.job_id FROM edit_v2_billing b
                  JOIN edit_v2_jobs j ON j.id=b.job_id
                  WHERE b.operation='hold'
-                   AND b.status IN ('held','refund_pending','refunding')
-                   AND j.status IN ({placeholders})""",
+                   AND j.status IN ({placeholders})
+                   AND (
+                       b.status IN ('held','refund_pending','refunding')
+                       OR (
+                           b.status IN ('settling','settled')
+                           AND j.error_code='duplicate_successor_quarantined'
+                       )
+                   )""",
             tuple(FAILURE_STATES),
         ).fetchall()
     recovered = 0
     for row in rows:
-        billing.refund_failure(
-            row["job_id"], now, points_client=points_client, db_path=db_path
-        )
-        recovered += 1
+        try:
+            with closing(store.open_store(store._db_path(db_path))) as conn:
+                status = conn.execute(
+                    "SELECT status FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+                    (row["job_id"],),
+                ).fetchone()["status"]
+            if status in {"settling", "settled"}:
+                billing.reconcile_quarantined_settlement(
+                    row["job_id"], now, points_client=points_client, db_path=db_path
+                )
+            else:
+                billing.refund_failure(
+                    row["job_id"], now, points_client=points_client, db_path=db_path
+                )
+            recovered += 1
+        except Exception:
+            # Provider results are independently idempotent. One unknown result
+            # must not starve unrelated terminal billing reconciliation.
+            continue
     return recovered

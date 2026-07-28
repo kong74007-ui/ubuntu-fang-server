@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from . import ai_edit_v2_store as store
 from . import points
-from .ai_edit_v2_schema import validate_job_draft
+from .ai_edit_v2_schema import FAILURE_STATES, validate_job_draft
 
 
 PRICE_VERSION = "ai-edit-v2-price-v1"
@@ -384,7 +384,7 @@ def reconcile_pending_precharges(
 ) -> int:
     with closing(store.open_store(store._db_path(db_path))) as conn:
         rows = conn.execute(
-            """SELECT b.*,j.owner FROM edit_v2_billing b
+            """SELECT b.*,j.owner,j.status AS job_status FROM edit_v2_billing b
                JOIN edit_v2_jobs j ON j.id=b.job_id
                WHERE b.operation='hold' AND b.status='pending'"""
         ).fetchall()
@@ -397,7 +397,9 @@ def reconcile_pending_precharges(
             )
         except Exception as exc:
             if not _is_definitive_points_rejection(exc):
-                raise
+                # A provider timeout is an unknown result, not a failed hold. Keep
+                # the durable pending operation and let the remaining rows reconcile.
+                continue
             _reject_precharge(row, exc, now, db_path)
             continue
         with closing(store.open_store(store._db_path(db_path))) as conn:
@@ -406,7 +408,15 @@ def reconcile_pending_precharges(
                    WHERE id=? AND status='pending'""",
                 (_canonical({"points_after": points_after}), now, row["id"]),
             )
-        _queue_held_job(row["job_id"], now, db_path)
+        if row["job_status"] in FAILURE_STATES:
+            with closing(store.open_store(store._db_path(db_path))) as conn:
+                conn.execute(
+                    """UPDATE edit_v2_billing SET status='refund_pending',updated_at=?
+                       WHERE id=? AND status='held'""",
+                    (now, row["id"]),
+                )
+        else:
+            _queue_held_job(row["job_id"], now, db_path)
         recovered += 1
     return recovered
 
@@ -517,13 +527,40 @@ def settle_success(
     if bill["status"] == "settled":
         return json.loads(bill["response_json"] or "{}")
     difference = held - actual
+    transaction_key = f"ai-edit-v2:{job_id}:settlement"
+    intent = {
+        "operation": "settlement",
+        "transaction_key": transaction_key,
+        "held_points": held,
+        "actual_points": actual,
+        "refunded_points": difference,
+        "provider_operation_status": "pending",
+    }
+    try:
+        existing_intent = json.loads(bill["response_json"] or "{}")
+    except (TypeError, ValueError):
+        existing_intent = {}
+    if existing_intent.get("operation") == "settlement":
+        if (
+            int(existing_intent.get("actual_points", -1)) != actual
+            or existing_intent.get("transaction_key") != transaction_key
+        ):
+            raise BillingError("settlement_intent_conflict")
+        intent = existing_intent
+    else:
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            conn.execute(
+                """UPDATE edit_v2_billing SET response_json=?,updated_at=?
+                   WHERE id=? AND status='settling'""",
+                (_canonical(intent), now, bill["id"]),
+            )
     points_after = None
     if difference:
         points_after = points_client.refund_points(
             _job_owner(job_id, db_path),
             difference,
             "ai-edit-v2 settlement difference",
-            transaction_key=f"ai-edit-v2:{job_id}:settlement",
+            transaction_key=transaction_key,
         )
     response = {"held_points": held, "actual_points": actual, "refunded_points": difference, "points_after": points_after}
     with closing(store.open_store(store._db_path(db_path))) as conn:
@@ -546,6 +583,90 @@ def settle_success(
         except Exception:
             conn.rollback()
             raise
+    return response
+
+
+def reconcile_quarantined_settlement(
+    job_id: str,
+    now: int,
+    *,
+    points_client: Any = points,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    """Recover an exact settlement, then refund only its remaining charge.
+
+    The hold row stays ``settling`` until both idempotent provider operations are
+    known. An absent/invalid intent is deliberately left untouched: guessing the
+    charged amount could over-refund an already-applied settlement difference.
+    """
+    bill = _billing_row(job_id, db_path)
+    if bill is None:
+        raise BillingError("billing_not_found")
+    if bill["status"] == "refunded":
+        return json.loads(bill["response_json"] or "{}")
+    if bill["status"] not in {"settling", "settled"}:
+        raise BillingError("billing_not_settling")
+    try:
+        intent = json.loads(bill["response_json"] or "{}")
+        held = int(intent["held_points"])
+        actual = int(intent["actual_points"])
+        difference = int(intent["refunded_points"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BillingError("settlement_intent_missing") from exc
+    settlement_key = f"ai-edit-v2:{job_id}:settlement"
+    if (
+        held != int(bill["amount"])
+        or not 0 <= actual <= held
+        or difference != held - actual
+    ):
+        raise BillingError("settlement_intent_invalid")
+
+    phase = intent.get("provider_operation_status")
+    if bill["status"] == "settling" and (
+        intent.get("operation") != "settlement"
+        or intent.get("transaction_key") != settlement_key
+    ):
+        raise BillingError("settlement_intent_invalid")
+    if bill["status"] == "settling" and phase != "settlement_recovered":
+        settlement_points_after = None
+        if difference:
+            settlement_points_after = points_client.refund_points(
+                _job_owner(job_id, db_path),
+                difference,
+                "ai-edit-v2 settlement difference",
+                transaction_key=settlement_key,
+            )
+        intent["provider_operation_status"] = "settlement_recovered"
+        intent["settlement_points_after"] = settlement_points_after
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            conn.execute(
+                """UPDATE edit_v2_billing SET response_json=?,updated_at=?
+                   WHERE id=? AND status='settling'""",
+                (_canonical(intent), now, bill["id"]),
+            )
+
+    points_after = intent.get("settlement_points_after")
+    if actual:
+        points_after = points_client.refund_points(
+            _job_owner(job_id, db_path),
+            actual,
+            "ai-edit-v2 quarantined successor compensation",
+            transaction_key=f"ai-edit-v2:{job_id}:failure-refund",
+        )
+    response = {
+        "held_points": held,
+        "actual_points": 0,
+        "refunded_points": held,
+        "points_after": points_after,
+        "settlement_actual_points": actual,
+        "settlement_refunded_points": difference,
+    }
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        conn.execute(
+            """UPDATE edit_v2_billing SET status='refunded',response_json=?,updated_at=?
+               WHERE id=? AND status IN ('settling','settled')""",
+            (_canonical(response), now, bill["id"]),
+        )
     return response
 
 

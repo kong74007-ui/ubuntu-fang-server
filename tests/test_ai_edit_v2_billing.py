@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -83,6 +84,26 @@ class LoseFirstResponsePoints(FakePoints):
             self.lost_operations.add(marker)
             raise points.AuthPointsError(502, "response lost")
         return result
+
+
+class AlwaysUnknownSettlementPoints(FakePoints):
+    def refund_points(self, username, amount, reason="", transaction_key=None):
+        self.calls.append(("refund", username, amount, transaction_key))
+        if transaction_key and transaction_key.endswith(":settlement"):
+            raise points.AuthPointsError(502, "provider result unknown")
+        return super().refund_points(username, amount, reason, transaction_key)
+
+
+class SelectiveUnknownDeductPoints(FakePoints):
+    def __init__(self, unknown_key, balance=500):
+        super().__init__(balance)
+        self.unknown_key = unknown_key
+
+    def deduct_points(self, username, amount, reason="", transaction_key=None):
+        if transaction_key == self.unknown_key:
+            self.calls.append(("deduct", username, amount, transaction_key))
+            raise points.AuthPointsError(502, "provider result unknown")
+        return super().deduct_points(username, amount, reason, transaction_key)
 
 class BillingTests(unittest.TestCase):
     def setUp(self):
@@ -268,6 +289,211 @@ class BillingTests(unittest.TestCase):
             "job-crash", quote["min_points"], 201, points_client=fake_points
         )
         self.assertEqual(fake_points.balance, 500 - quote["min_points"])
+
+    def test_settlement_intent_is_durable_before_lost_provider_response(self):
+        quote = billing.create_quote(
+            "alice", draft(), now=100, uuid_factory=lambda: "quote-intent"
+        )
+        fake_points = LoseFirstResponsePoints()
+        billing.precharge_and_create_job(
+            "alice", {"draft": draft()}, quote["id"], "request-intent", 101,
+            points_client=FakePoints(), uuid_factory=lambda: "job-intent",
+        )
+        actual = quote["min_points"]
+
+        with self.assertRaises(points.AuthPointsError):
+            billing.settle_success(
+                "job-intent", actual, 200, points_client=fake_points
+            )
+
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT status,response_json FROM edit_v2_billing WHERE job_id='job-intent'"
+            ).fetchone()
+        intent = json.loads(row["response_json"])
+        self.assertEqual(row["status"], "settling")
+        self.assertEqual(intent["operation"], "settlement")
+        self.assertEqual(intent["transaction_key"], "ai-edit-v2:job-intent:settlement")
+        self.assertEqual(intent["actual_points"], actual)
+        self.assertEqual(intent["refunded_points"], quote["max_points"] - actual)
+        self.assertEqual(intent["provider_operation_status"], "pending")
+
+    def test_quarantined_settling_loser_replays_then_compensates_exact_charge_once(self):
+        fake_points = LoseFirstResponsePoints(balance=400)
+        job = store.create_job(
+            "alice", {"draft": draft()}, "quote", "settling-loser", 1,
+            uuid_factory=lambda: "job-settling-loser",
+        )
+        intent = {
+            "operation": "settlement",
+            "transaction_key": "ai-edit-v2:job-settling-loser:settlement",
+            "held_points": 100,
+            "actual_points": 70,
+            "refunded_points": 30,
+            "provider_operation_status": "pending",
+        }
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET status='storage_failed',error_code='duplicate_successor_quarantined'
+                   WHERE id=?""",
+                (job["id"],),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_billing(
+                       job_id,transaction_key,operation,amount,status,response_json,
+                       created_at,updated_at
+                   ) VALUES(?,?,'hold',100,'settling',?,1,1)""",
+                (job["id"], "ai-edit-v2:job-settling-loser:hold", json.dumps(intent)),
+            )
+
+        # Simulate the settlement-difference refund succeeding remotely while its
+        # response is lost. Reconciliation must replay that key before compensating.
+        with self.assertRaises(points.AuthPointsError):
+            fake_points.refund_points(
+                "alice", 30, transaction_key="ai-edit-v2:job-settling-loser:settlement"
+            )
+        self.assertEqual(fake_points.balance, 430)
+
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=2, db_path=self.db_path, points_client=fake_points
+        ), 0)
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=3, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=4, db_path=self.db_path, points_client=fake_points
+        ), 0)
+        self.assertEqual(fake_points.balance, 500)
+        refund_keys = [call[3] for call in fake_points.calls if call[0] == "refund"]
+        self.assertEqual(set(refund_keys), {
+            "ai-edit-v2:job-settling-loser:settlement",
+            "ai-edit-v2:job-settling-loser:failure-refund",
+        })
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT status,response_json FROM edit_v2_billing WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(row["status"], "refunded")
+        self.assertEqual(json.loads(row["response_json"])["refunded_points"], 100)
+
+    def test_unknown_settlement_loser_does_not_block_other_terminal_refunds(self):
+        fake_points = AlwaysUnknownSettlementPoints(balance=400)
+        for job_id, status, response in (
+            ("unknown-settlement", "settling", {
+                "operation": "settlement",
+                "transaction_key": "ai-edit-v2:unknown-settlement:settlement",
+                "held_points": 100, "actual_points": 70, "refunded_points": 30,
+                "provider_operation_status": "pending",
+            }),
+            ("ordinary-refund", "refund_pending", None),
+        ):
+            store.create_job(
+                "alice", {"draft": draft()}, "quote", job_id, 1,
+                uuid_factory=lambda value=job_id: value,
+            )
+            with closing(store.open_store(self.db_path)) as conn:
+                conn.execute(
+                    """UPDATE edit_v2_jobs
+                       SET status='storage_failed',error_code='duplicate_successor_quarantined'
+                       WHERE id=?""",
+                    (job_id,),
+                )
+                conn.execute(
+                    """INSERT INTO edit_v2_billing(
+                           job_id,transaction_key,operation,amount,status,response_json,
+                           created_at,updated_at
+                       ) VALUES(?,?,'hold',100,?,?,1,1)""",
+                    (job_id, f"ai-edit-v2:{job_id}:hold", status,
+                     json.dumps(response) if response else None),
+                )
+
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=2, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        with closing(store.open_store(self.db_path)) as conn:
+            statuses = dict(conn.execute(
+                "SELECT job_id,status FROM edit_v2_billing ORDER BY job_id"
+            ).fetchall())
+        self.assertEqual(statuses["unknown-settlement"], "settling")
+        self.assertEqual(statuses["ordinary-refund"], "refunded")
+        self.assertIn(
+            "ai-edit-v2:unknown-settlement:settlement",
+            [call[3] for call in fake_points.calls],
+        )
+
+    def test_quarantined_already_settled_loser_refunds_only_recorded_actual_charge(self):
+        fake_points = FakePoints(balance=425)
+        job = store.create_job(
+            "alice", {"draft": draft()}, "quote", "settled-loser", 1,
+            uuid_factory=lambda: "job-settled-loser",
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET status='storage_failed',error_code='duplicate_successor_quarantined'
+                   WHERE id=?""",
+                (job["id"],),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_billing(
+                       job_id,transaction_key,operation,amount,status,response_json,
+                       created_at,updated_at
+                   ) VALUES(?,?,'hold',100,'settled',?,1,1)""",
+                (job["id"], "ai-edit-v2:job-settled-loser:hold", json.dumps({
+                    "held_points": 100, "actual_points": 75,
+                    "refunded_points": 25, "points_after": 425,
+                })),
+            )
+
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=2, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=3, db_path=self.db_path, points_client=fake_points
+        ), 0)
+        self.assertEqual(fake_points.balance, 500)
+        self.assertEqual(
+            [call[2:] for call in fake_points.calls if call[0] == "refund"],
+            [(75, "ai-edit-v2:job-settled-loser:failure-refund")],
+        )
+
+    def test_unknown_pending_loser_does_not_block_other_precharge_reconciliation(self):
+        unknown_key = "ai-edit-v2:unknown-pending:hold"
+        fake_points = SelectiveUnknownDeductPoints(unknown_key, balance=500)
+        for job_id in ("unknown-pending", "known-pending"):
+            store.create_job(
+                "alice", {"draft": draft()}, "quote", job_id, 1,
+                uuid_factory=lambda value=job_id: value,
+            )
+            with closing(store.open_store(self.db_path)) as conn:
+                conn.execute(
+                    """UPDATE edit_v2_jobs
+                       SET status='storage_failed',error_code='duplicate_successor_quarantined'
+                       WHERE id=?""",
+                    (job_id,),
+                )
+                conn.execute(
+                    """INSERT INTO edit_v2_billing(
+                           job_id,transaction_key,operation,amount,status,created_at,updated_at
+                       ) VALUES(?,?,'hold',40,'pending',1,1)""",
+                    (job_id, f"ai-edit-v2:{job_id}:hold"),
+                )
+
+        self.assertEqual(billing.reconcile_pending_precharges(
+            2, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        with closing(store.open_store(self.db_path)) as conn:
+            statuses = dict(conn.execute(
+                "SELECT job_id,status FROM edit_v2_billing ORDER BY job_id"
+            ).fetchall())
+        self.assertEqual(statuses["unknown-pending"], "pending")
+        self.assertEqual(statuses["known-pending"], "refund_pending")
+        self.assertEqual(pipeline.reconcile_terminal_refunds(
+            now=3, db_path=self.db_path, points_client=fake_points
+        ), 1)
+        self.assertEqual(fake_points.balance, 500)
 
     def test_definitive_precharge_rejection_is_terminal_and_never_reconciled(self):
         quote = billing.create_quote(

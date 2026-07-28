@@ -156,6 +156,12 @@ class StoreTests(unittest.TestCase):
                 ("winner-a", "predecessor", "completed", 20),
                 ("winner-b", "predecessor", "completed", 20),
                 ("failed-old", "predecessor", "render_failed", 0),
+                ("pending-loser", "predecessor", "precharging", 2),
+                ("settling-loser", "predecessor", "settling", 3),
+                ("settled-loser", "predecessor", "completed", 21),
+                ("refund-pending-loser", "predecessor", "storage_failed", 4),
+                ("refunded-loser", "predecessor", "storage_failed", 5),
+                ("rejected-loser", "predecessor", "validation_failed", 6),
             )
             for job_id, predecessor, status, created_at in rows:
                 conn.execute(
@@ -171,6 +177,12 @@ class StoreTests(unittest.TestCase):
                 ("winner-a", 50, "settled"),
                 ("winner-b", 60, "held"),
                 ("failed-old", 70, "refunding"),
+                ("pending-loser", 80, "pending"),
+                ("settling-loser", 90, "settling"),
+                ("settled-loser", 100, "settled"),
+                ("refund-pending-loser", 110, "refund_pending"),
+                ("refunded-loser", 120, "refunded"),
+                ("rejected-loser", 130, "rejected"),
             ):
                 conn.execute(
                     """INSERT INTO edit_v2_billing(
@@ -179,6 +191,26 @@ class StoreTests(unittest.TestCase):
                        ) VALUES(?,?,'hold',?,?,1,1)""",
                     (job_id, f"hold-{job_id}", amount, status),
                 )
+            settlement_intent = {
+                "operation": "settlement",
+                "transaction_key": "ai-edit-v2:settling-loser:settlement",
+                "held_points": 90,
+                "actual_points": 60,
+                "refunded_points": 30,
+                "provider_operation_status": "pending",
+            }
+            conn.execute(
+                "UPDATE edit_v2_billing SET response_json=? WHERE job_id='settling-loser'",
+                (json.dumps(settlement_intent),),
+            )
+            conn.execute(
+                """UPDATE edit_v2_billing SET response_json=?
+                   WHERE job_id='settled-loser'""",
+                (json.dumps({
+                    "held_points": 100, "actual_points": 75,
+                    "refunded_points": 25, "points_after": 425,
+                }),),
+            )
         return path
 
     def _row(self, table, row_id):
@@ -287,9 +319,9 @@ class StoreTests(unittest.TestCase):
                    FROM edit_v2_jobs WHERE id!='predecessor' ORDER BY id"""
             ).fetchall()
             bills = {
-                row["job_id"]: row["status"]
+                row["job_id"]: (row["status"], row["response_json"])
                 for row in conn.execute(
-                    "SELECT job_id,status FROM edit_v2_billing WHERE operation='hold'"
+                    "SELECT job_id,status,response_json FROM edit_v2_billing WHERE operation='hold'"
                 )
             }
             version = conn.execute(
@@ -306,10 +338,23 @@ class StoreTests(unittest.TestCase):
             audit = json.loads(loser["checkpoint_json"])[-1]
             self.assertEqual(audit["data"]["winner_job_id"], "winner-a")
             self.assertEqual(audit["data"]["predecessor_job_id"], "predecessor")
-        self.assertEqual(bills["queued-early"], "refund_pending")
-        self.assertEqual(bills["winner-b"], "refund_pending")
-        self.assertEqual(bills["failed-old"], "refunding")
-        self.assertEqual(bills["winner-a"], "settled")
+            if loser["id"] in {"pending-loser", "settling-loser", "settled-loser"}:
+                self.assertEqual(
+                    audit["data"]["billing_reconcile_required"],
+                    loser["id"].removesuffix("-loser"),
+                )
+        self.assertEqual(bills["queued-early"][0], "refund_pending")
+        self.assertEqual(bills["winner-b"][0], "refund_pending")
+        self.assertEqual(bills["failed-old"][0], "refunding")
+        self.assertEqual(bills["pending-loser"][0], "pending")
+        self.assertEqual(bills["settling-loser"][0], "settling")
+        self.assertEqual(json.loads(bills["settling-loser"][1])["actual_points"], 60)
+        self.assertEqual(bills["settled-loser"][0], "settled")
+        self.assertEqual(json.loads(bills["settled-loser"][1])["actual_points"], 75)
+        self.assertEqual(bills["refund-pending-loser"][0], "refund_pending")
+        self.assertEqual(bills["refunded-loser"][0], "refunded")
+        self.assertEqual(bills["rejected-loser"][0], "rejected")
+        self.assertEqual(bills["winner-a"][0], "settled")
         self.assertEqual(version, 9)
 
     def test_v8_duplicate_migration_is_concurrency_safe(self):
@@ -341,6 +386,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(winner_count, 1)
         self.assertEqual(audit_counts, {
             "queued-early": 1, "winner-b": 1, "failed-old": 1,
+            "pending-loser": 1, "settling-loser": 1,
+            "settled-loser": 1,
+            "refund-pending-loser": 1, "refunded-loser": 1,
+            "rejected-loser": 1,
         })
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):

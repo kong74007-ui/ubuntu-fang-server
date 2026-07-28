@@ -117,14 +117,24 @@ def _quarantine_duplicate_successors(conn: sqlite3.Connection, now: int) -> None
             (winner_audit, winner["id"]),
         )
         for loser in losers:
+            billing = conn.execute(
+                """SELECT status FROM edit_v2_billing
+                   WHERE job_id=? AND operation='hold'""",
+                (loser["id"],),
+            ).fetchone()
+            audit_data = {
+                "predecessor_job_id": group["predecessor_job_id"],
+                "winner_job_id": winner["id"],
+            }
+            if billing is not None:
+                audit_data["billing_status"] = billing["status"]
+                if billing["status"] not in {"refunded", "rejected"}:
+                    audit_data["billing_reconcile_required"] = billing["status"]
             loser_audit = _migration_checkpoint(
                 loser["checkpoint_json"],
                 "migration_v9_duplicate_successor_quarantined",
                 now,
-                {
-                    "predecessor_job_id": group["predecessor_job_id"],
-                    "winner_job_id": winner["id"],
-                },
+                audit_data,
             )
             conn.execute(
                 """UPDATE edit_v2_jobs
