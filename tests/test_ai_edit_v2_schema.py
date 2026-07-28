@@ -358,6 +358,58 @@ class SchemaTests(unittest.TestCase):
                 )
             )
 
+    def test_edit_plan_rejects_executable_or_provider_specific_string_values(self):
+        forbidden_values = (
+            "https://evil.example.invalid/payload",
+            "<script>alert(document.cookie)</script>",
+            "javascript:fetch('/secrets')",
+            "DROP TABLE customer_jobs",
+            "SELECT * FROM private_tokens",
+            "provider=shotstack",
+            "render_engine=remotion",
+            "cos://private-bucket/object",
+            "database_url=mysql://user:pass@host/db",
+            "api_key=secret-value",
+            "数据库表名：private_tokens",
+            "COS路径：private-bucket/object",
+            "供应商：内部服务",
+            "JavaScript代码：const token = 1",
+        )
+        for value in forbidden_values:
+            scene = {**valid_plan()["scenes"][0], "intent": value}
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "字符串"):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_edit_plan_allows_ordinary_database_semantics(self):
+        scene = {
+            **valid_plan()["scenes"][0],
+            "intent": "介绍产品数据库能力与业务价值",
+            "headline": "让数据管理更清晰",
+        }
+        plan = valid_plan(scenes=[scene])
+
+        self.assertIs(schema.validate_edit_plan(plan), plan)
+
+    def test_material_slot_ids_use_a_strict_bounded_format(self):
+        invalid_slots = (
+            "slot 01",
+            "../slot_01",
+            "https://evil.example/slot",
+            "slot_<script>",
+            "slot_" + "x" * 65,
+            "material_01",
+        )
+        for slot in invalid_slots:
+            scene = {**valid_plan()["scenes"][0], "material_slots": [slot]}
+            with self.subTest(slot=slot), self.assertRaisesRegex(ValueError, "槽位ID"):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_model_generated_strings_have_reasonable_length(self):
+        scene = {**valid_plan()["scenes"][0], "headline": "长" * 501}
+
+        with self.assertRaisesRegex(ValueError, "字符串"):
+            schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
     def test_terminal_state_cannot_be_reopened(self):
         self.assertNotIn("completed", schema.STATE_TRANSITIONS)
         for state in schema.FAILURE_STATES:

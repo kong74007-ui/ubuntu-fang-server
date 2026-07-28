@@ -96,7 +96,7 @@ class DirectorTests(unittest.TestCase):
 
         system_prompt = client.calls[0][0]
         self.assertIn("不得改写字幕正文", system_prompt)
-        for forbidden in ("COS", "URL", "Shotstack", "tracks", "代码"):
+        for forbidden in ("COS", "URL", "Shotstack", "tracks", "代码", "数据库", "JavaScript"):
             with self.subTest(forbidden=forbidden):
                 self.assertIn(forbidden, system_prompt)
 
@@ -129,7 +129,12 @@ class DirectorTests(unittest.TestCase):
         self.assertNotIn("must-not-leak", repair_prompt)
 
     def test_director_enforces_published_template_visual_and_sound_policy(self):
-        context = {**CONTEXT, "creation_mode": "platform_template", "template_id": "business_diagnostic"}
+        context = {
+            **CONTEXT,
+            "creation_mode": "platform_template",
+            "template_id": "business_diagnostic",
+            "template_version": "1.0",
+        }
         context.pop("style_text")
         correct = copy.deepcopy(VALID_PLAN)
         correct["creation_mode"] = "platform_template"
@@ -149,6 +154,53 @@ class DirectorTests(unittest.TestCase):
 
         self.assertEqual(plan, correct)
         self.assertEqual(len(client.calls), 2)
+
+    def test_platform_template_rejects_style_only_missing_id_or_unknown_version(self):
+        unknown_version = {
+            **CONTEXT,
+            "creation_mode": "platform_template",
+            "template_id": "business_diagnostic",
+            "template_version": "99.0",
+        }
+        unknown_version.pop("style_text")
+        missing_version = {
+            **CONTEXT,
+            "creation_mode": "platform_template",
+            "template_id": "business_diagnostic",
+        }
+        missing_version.pop("style_text")
+        invalid_contexts = (
+            {**CONTEXT, "creation_mode": "platform_template"},
+            unknown_version,
+            missing_version,
+        )
+
+        for context in invalid_contexts:
+            with self.subTest(context=context), self.assertRaises(DirectorError) as caught:
+                generate_edit_plan(context, FakeQwen([json.dumps(VALID_PLAN)]))
+            self.assertEqual(caught.exception.code, "director_context_invalid")
+
+    def test_repair_prompt_redacts_credentials_and_limits_previous_response(self):
+        secret = "test-dashscope-key-should-never-repeat"
+        invalid = json.dumps(
+            {
+                "api_key": secret,
+                "access_token": "token-value-should-never-repeat",
+                "padding": "x" * 20_000,
+            }
+        )
+        client = FakeQwen([invalid, json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan, VALID_PLAN)
+        repair_prompt = client.calls[1][1]
+        self.assertNotIn(secret, repair_prompt)
+        self.assertNotIn("token-value-should-never-repeat", repair_prompt)
+        self.assertNotIn("api_key", repair_prompt)
+        self.assertNotIn("access_token", repair_prompt)
+        self.assertIn("[REDACTED]", repair_prompt)
+        self.assertLessEqual(len(json.loads(repair_prompt)["previous_response"]), 8_000)
 
     def test_director_stops_after_two_schema_repairs(self):
         client = FakeQwen(["{}", "{}", "{}", json.dumps(VALID_PLAN)])

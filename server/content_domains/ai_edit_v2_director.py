@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Final
 
 from .ai_edit_v2_providers.base import ProviderError, ProviderResult
@@ -25,6 +26,7 @@ from .ai_edit_v2_templates import TemplateError, get_published_template
 _SYSTEM_PROMPT: Final = """你是 AI Edit V2 的受约束导演，只能返回一个 JSON 对象。
 不得改写字幕正文；字幕正文始终且只能来自输入 text_timeline，输出 caption_plan 只能引用它。
 不得输出 COS、URL、Shotstack、provider、api_key、tracks、HTML 或代码字段。
+不得输出数据库字段、SQL、JavaScript/JS、脚本或任何可执行代码片段。
 不得输出渲染指令、素材地址或具体画面坐标。
 每个 scene 必须且只能使用已发布的稳定组件语义，并包含 id、start_ms、end_ms、intent、layout、visual_type、headline、material_slots、transition。
 layout 可选：{layouts}。
@@ -44,6 +46,17 @@ audio policy：speech_policy={speech}; music_policy 可选 {music}; sfx_policy �
     music=", ".join(sorted(MUSIC_POLICIES)),
     sfx=", ".join(sorted(SFX_POLICIES)),
 )
+_MAX_REPAIR_RESPONSE_CHARS: Final = 8_000
+_MAX_REPAIR_ERROR_CHARS: Final = 1_000
+_SENSITIVE_KEY_RE: Final = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?(?:key|token)|token|secret|password|credential|authorization|cookie)"
+)
+_SENSITIVE_ASSIGNMENT_RE: Final = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?(?:key|token)|token|secret|password|credential|authorization|cookie)"
+    r"\s*[:=]\s*(?:bearer\s+)?[^\s,;}]+"
+)
+_BEARER_RE: Final = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}")
+_SECRET_TOKEN_RE: Final = re.compile(r"(?i)\b(?:sk|ak)-[a-z0-9_-]{8,}")
 
 
 class DirectorError(RuntimeError):
@@ -122,13 +135,27 @@ def _safe_context(context: Any) -> dict[str, Any]:
         "language": "zh-CN",
     }
     template_id = context.get("template_id")
+    template_version = context.get("template_version")
     style_text = context.get("style_text")
-    if template_id is not None:
+    if creation_mode == "platform_template":
+        if (
+            not isinstance(template_id, str)
+            or not template_id.strip()
+            or not isinstance(template_version, str)
+            or not template_version.strip()
+            or style_text is not None
+        ):
+            raise DirectorError("director_context_invalid")
         try:
-            safe["template"] = get_published_template(template_id, context.get("template_version"))
+            safe["template"] = get_published_template(template_id, template_version)
         except TemplateError as exc:
             raise DirectorError("director_context_invalid") from exc
-    elif isinstance(style_text, str) and style_text.strip():
+    elif (
+        isinstance(style_text, str)
+        and style_text.strip()
+        and template_id is None
+        and template_version is None
+    ):
         safe["style_text"] = style_text.strip()
     else:
         raise DirectorError("director_context_invalid")
@@ -187,11 +214,46 @@ def _initial_prompt(safe_context: dict[str, Any]) -> str:
     )
 
 
+def _redact_sensitive_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, child in value.items():
+            if _SENSITIVE_KEY_RE.search(str(key)):
+                redacted["[REDACTED_KEY]"] = "[REDACTED]"
+            else:
+                redacted[str(key)] = _redact_sensitive_json(child)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_json(child) for child in value]
+    return value
+
+
+def _redact_sensitive_text(value: str) -> str:
+    redacted = _SENSITIVE_ASSIGNMENT_RE.sub("[REDACTED_CREDENTIAL]", value)
+    redacted = _BEARER_RE.sub("Bearer [REDACTED]", redacted)
+    return _SECRET_TOKEN_RE.sub("[REDACTED]", redacted)
+
+
+def _sanitize_previous_response(previous_response: str) -> str:
+    try:
+        parsed = json.loads(previous_response)
+    except (json.JSONDecodeError, TypeError):
+        sanitized = _redact_sensitive_text(previous_response)
+    else:
+        sanitized = json.dumps(
+            _redact_sensitive_json(parsed),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        sanitized = _redact_sensitive_text(sanitized)
+    return sanitized[:_MAX_REPAIR_RESPONSE_CHARS]
+
+
 def _repair_prompt(error: ValueError, previous_response: str) -> str:
     return json.dumps(
         {
-            "schema_errors": str(error),
-            "previous_response": previous_response,
+            "schema_errors": _redact_sensitive_text(str(error))[:_MAX_REPAIR_ERROR_CHARS],
+            "previous_response": _sanitize_previous_response(previous_response),
         },
         ensure_ascii=False,
         separators=(",", ":"),

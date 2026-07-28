@@ -27,6 +27,31 @@ CAPTION_STYLES: Final = frozenset({"clean", "word_highlight", "karaoke"})
 SPEECH_POLICIES: Final = frozenset({"preserve_source"})
 MUSIC_POLICIES: Final = frozenset({"none", "duck_under_speech"})
 SFX_POLICIES: Final = frozenset({"none", "semantic_only"})
+MAX_MODEL_STRING_LENGTH: Final = 500
+MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
+FORBIDDEN_MODEL_VALUE_PATTERNS: Final = (
+    re.compile(r"(?i)(?:https?|ftp|file|javascript|cos|s3)://|\bwww\."),
+    re.compile(r"(?is)<\s*/?\s*[a-z][^>]*>"),
+    re.compile(
+        r"(?is)\b(?:select\s+.+?\s+from|insert\s+into|update\s+\w+\s+set|delete\s+from|"
+        r"drop\s+(?:table|database)|alter\s+table|create\s+(?:table|database)|truncate\s+table)\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|secret|password|credential|provider|"
+        r"render(?:er)?(?:[_-](?:engine|id|url|path))?|cos(?:[_-](?:key|path|url))?|"
+        r"database[_-](?:url|dsn|password|query|table)|db[_-](?:url|dsn|password|query|table)|"
+        r"code[_-](?:payload|script))\s*[:=]"
+    ),
+    re.compile(r"(?i)\b(?:shotstack|dashscope|remotion)\b"),
+    re.compile(
+        r"(?i)(?:数据库(?:地址|连接串|密码|查询|表名)|COS(?:地址|路径|密钥)|供应商|"
+        r"渲染(?:器|引擎)|(?:JavaScript|JS)?(?:代码|脚本))\s*[:：=]"
+    ),
+    re.compile(
+        r"(?i)(?:```|\b(?:eval|function|fetch)\s*\(|\bdocument\.(?:cookie|write)|"
+        r"\bwindow\.|\bos\.system\s*\(|\bsubprocess\.)"
+    ),
+)
 
 MAX_MATERIALS_PER_WINDOW: Final = 10
 MAX_SOURCE_DURATION_MS: Final = 10 * 60 * 1000
@@ -243,6 +268,21 @@ def _reject_forbidden_plan_keys(value: Any, path: str = "plan") -> None:
             _reject_forbidden_plan_keys(child, f"{path}[{index}]")
 
 
+def _reject_forbidden_plan_values(value: Any, path: str = "plan") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _reject_forbidden_plan_values(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_forbidden_plan_values(child, f"{path}[{index}]")
+    elif isinstance(value, str):
+        _require(len(value) <= MAX_MODEL_STRING_LENGTH, f"模型字符串过长: {path}")
+        _require(
+            not any(pattern.search(value) for pattern in FORBIDDEN_MODEL_VALUE_PATTERNS),
+            f"模型字符串包含禁止的地址、脚本、数据库或供应商模式: {path}",
+        )
+
+
 def _validate_scenes(scenes: Any, duration_ms: int) -> None:
     _require(isinstance(scenes, list) and bool(scenes), "剪辑方案scenes不能为空")
     previous_end = 0
@@ -289,8 +329,8 @@ def _validate_scenes(scenes: Any, duration_ms: int) -> None:
         material_slots = scene.get("material_slots")
         _require(isinstance(material_slots, list), f"{path}.material_slots必须是数组")
         _require(
-            all(isinstance(slot, str) and bool(slot.strip()) for slot in material_slots),
-            f"{path}.material_slots只能包含非空槽位ID",
+            all(isinstance(slot, str) and MATERIAL_SLOT_ID_RE.fullmatch(slot) for slot in material_slots),
+            f"{path}.material_slots只能包含严格格式的槽位ID",
         )
         _require(len(material_slots) == len(set(material_slots)), f"{path}.material_slots不能重复")
     _require(previous_end == duration_ms, "场景总时长必须等于剪辑方案时长")
@@ -364,4 +404,5 @@ def validate_edit_plan(plan: dict[str, Any]) -> dict[str, Any]:
     _validate_scenes(plan.get("scenes"), duration_ms)
     _validate_caption_plan(plan.get("caption_plan"))
     _validate_audio_plan(plan.get("audio_plan"))
+    _reject_forbidden_plan_values(plan)
     return plan
