@@ -629,6 +629,110 @@ def _stable_failure(
     return {"job_id": job_id, "state": target, "error_code": code}
 
 
+def _quality_and_delivery(
+    job: dict[str, Any], dependencies: Any, *, worker_id: str,
+    lease_seconds: int, now_fn: Callable[[], int], db_path: str | None,
+    points_client: Any,
+) -> dict[str, Any]:
+    """Continue Task 7's durable boundary through repair and atomic delivery."""
+
+    from . import ai_edit_v2_delivery as delivery
+    from . import ai_edit_v2_quality as quality
+    from . import ai_edit_v2_runtime as runtime
+
+    runner = runtime.option(dependencies, "quality_runner")
+    actual_cost = runtime.option(dependencies, "actual_cost")
+    if not callable(runner) or actual_cost is None:
+        return {"job_id": job["id"], "state": "quality_checking"}
+    outputs = _completed_pipeline_outputs(job["id"], db_path)
+    resolved_plan = None
+    for stage in ("generating_media", "resolving_materials"):
+        candidate = outputs.get(stage, {}).get("resolved_plan")
+        if isinstance(candidate, dict):
+            resolved_plan = candidate
+            break
+    if resolved_plan is None:
+        return _stable_failure(
+            job["id"], "quality_check", "quality_plan_missing", int(now_fn()),
+            worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+            points_client=points_client,
+        )
+    output_path = runtime.option(dependencies, "quality_output_path")
+    if callable(output_path):
+        output_path = output_path(job, outputs)
+    if not isinstance(output_path, str) or not output_path:
+        return _stable_failure(
+            job["id"], "quality_check", "quality_output_missing", int(now_fn()),
+            worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+            points_client=points_client,
+        )
+    report = quality.inspect_output(output_path, resolved_plan, runner)
+    if not report.passed:
+        now = int(now_fn())
+        if not report.repairable:
+            return _stable_failure(
+                job["id"], "quality_check", report.error_codes[0], now,
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        repair = runtime.option(dependencies, "repair_layer")
+        if not callable(repair):
+            return _stable_failure(
+                job["id"], "quality_check", "repair_handler_missing", now,
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        if not store.transition_leased(
+            job["id"], "quality_check", "repairing",
+            {"qc": {**report.as_dict(), "issues": list(report.error_codes)}}, now,
+            worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+        ):
+            raise PipelineError("stage_compare_and_swap_failed")
+        repair_start = now
+        deadline_at = repair_start + _repair_budget()
+        value = repair(job, {
+            "failing_layers": report.failing_layers,
+            "error_codes": report.error_codes,
+            "deadline_at": deadline_at,
+        })
+        finished = int(now_fn())
+        if finished > deadline_at:
+            return _stable_failure(
+                job["id"], "repairing", "repair_budget_exceeded", finished,
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        if isinstance(value, dict) and value.get("output_path"):
+            output_path = value["output_path"]
+        report = quality.inspect_output(output_path, resolved_plan, runner)
+        if not report.passed:
+            return _stable_failure(
+                job["id"], "repairing", report.error_codes[0], finished,
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        if not store.transition_leased(
+            job["id"], "repairing", "settling",
+            {"qc": report.as_dict(), "repaired_layers": list(report.failing_layers)},
+            finished, worker_id=worker_id, lease_seconds=lease_seconds,
+            db_path=db_path,
+        ):
+            raise PipelineError("stage_compare_and_swap_failed")
+    cost = actual_cost(job, outputs) if callable(actual_cost) else int(actual_cost)
+    try:
+        return delivery.deliver(
+            job["id"], output_path, report, cost, db_path=db_path
+        )
+    except delivery.DeliveryError as exc:
+        current = _load_job(job["id"], db_path)
+        if current["status"] in TERMINAL_STATES:
+            return {
+                "job_id": job["id"], "state": runtime.public_state(current["status"]),
+                "error_code": current.get("error_code") or exc.code,
+            }
+        raise
+
+
 def run_job(
     job_id: str, dependencies: Any, db_path: str | None = None
 ) -> dict[str, Any]:
@@ -649,8 +753,12 @@ def run_job(
     worker_id = str(preclaimed_owner) if preclaimed_owner else f"{worker_base}:{uuid.uuid4().hex}"
     now = int(now_fn())
     job = _load_job(job_id, db_path)
-    if job["status"] in TERMINAL_STATES or job["status"] == "quality_check":
+    if job["status"] in TERMINAL_STATES:
         return {"job_id": job_id, "state": runtime.public_state(job["status"])}
+    if job["status"] == "quality_check" and not callable(
+        runtime.option(dependencies, "quality_runner")
+    ):
+        return {"job_id": job_id, "state": "quality_checking"}
     claimed = (
         job
         if preclaimed_owner
@@ -672,7 +780,15 @@ def run_job(
             now = int(now_fn())
             job = _load_job(job_id, db_path)
             state = str(job["status"])
-            if state == "quality_check" or state in TERMINAL_STATES:
+            if state == "quality_check":
+                result = _quality_and_delivery(
+                    job, dependencies, worker_id=worker_id,
+                    lease_seconds=lease_seconds, now_fn=now_fn, db_path=db_path,
+                    points_client=points_client,
+                )
+                store.release_job_lease(job_id, worker_id, db_path=db_path)
+                return result
+            if state in TERMINAL_STATES:
                 store.release_job_lease(job_id, worker_id, db_path=db_path)
                 return {"job_id": job_id, "state": runtime.public_state(state)}
             if state == "queued":
@@ -924,7 +1040,7 @@ def reconcile_terminal_refunds(
         rows = conn.execute(
             f"""SELECT b.job_id FROM edit_v2_billing b
                  JOIN edit_v2_jobs j ON j.id=b.job_id
-                 WHERE b.operation='hold' AND b.status='held'
+                 WHERE b.operation='hold' AND b.status IN ('held','refunding')
                    AND j.status IN ({placeholders})""",
             tuple(FAILURE_STATES),
         ).fetchall()

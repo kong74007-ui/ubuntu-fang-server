@@ -499,18 +499,23 @@ def settle_success(
     *,
     points_client: Any = points,
     db_path: str | None = None,
+    finalize: Callable[[sqlite3.Connection, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    bill = _billing_row(job_id, db_path)
-    if bill is None:
+    initial = _billing_row(job_id, db_path)
+    if initial is None:
         raise BillingError("billing_not_found")
-    if bill["status"] == "settled":
-        return json.loads(bill["response_json"] or "{}")
-    if bill["status"] != "held":
-        raise BillingError("billing_not_held")
-    held = int(bill["amount"])
-    actual = int(actual_points)
+    if initial["status"] == "settled":
+        return json.loads(initial["response_json"] or "{}")
+    held = int(initial["amount"])
+    try:
+        actual = int(actual_points)
+    except (TypeError, ValueError) as exc:
+        raise BillingError("actual_points_invalid") from exc
     if actual < 0 or actual > held:
         raise BillingError("actual_points_invalid")
+    bill = _claim_terminal_operation(job_id, "settling", now, db_path)
+    if bill["status"] == "settled":
+        return json.loads(bill["response_json"] or "{}")
     difference = held - actual
     points_after = None
     if difference:
@@ -522,12 +527,62 @@ def settle_success(
         )
     response = {"held_points": held, "actual_points": actual, "refunded_points": difference, "points_after": points_after}
     with closing(store.open_store(store._db_path(db_path))) as conn:
-        conn.execute(
-            """UPDATE edit_v2_billing SET status='settled',response_json=?,updated_at=?
-               WHERE id=? AND status='held'""",
-            (_canonical(response), now, bill["id"]),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = conn.execute("SELECT * FROM edit_v2_billing WHERE id=?", (bill["id"],)).fetchone()
+            if current["status"] == "settled":
+                conn.commit()
+                return json.loads(current["response_json"] or "{}")
+            if current["status"] != "settling":
+                raise BillingError("billing_operation_conflict")
+            if finalize is not None:
+                finalize(conn, response)
+            conn.execute(
+                """UPDATE edit_v2_billing SET status='settled',response_json=?,updated_at=?
+                   WHERE id=? AND status='settling'""",
+                (_canonical(response), now, bill["id"]),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return response
+
+
+def _claim_terminal_operation(
+    job_id: str, target: str, now: int, db_path: str | None
+) -> Any:
+    final = "settled" if target == "settling" else "refunded"
+    other = {"settling", "settled", "refunding", "refunded"} - {target, final}
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT * FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise BillingError("billing_not_found")
+            if row["status"] == final:
+                conn.commit()
+                return row
+            if row["status"] in other:
+                raise BillingError("billing_operation_conflict")
+            if row["status"] == target:
+                if int(row["updated_at"]) >= int(now):
+                    raise BillingError("billing_operation_in_progress")
+            elif row["status"] != "held":
+                raise BillingError("billing_not_held")
+            conn.execute(
+                "UPDATE edit_v2_billing SET status=?,updated_at=? WHERE id=?",
+                (target, int(now), row["id"]),
+            )
+            row = conn.execute("SELECT * FROM edit_v2_billing WHERE id=?", (row["id"],)).fetchone()
+            conn.commit()
+            return row
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _job_owner(job_id: str, db_path: str | None = None) -> str:
@@ -545,13 +600,9 @@ def refund_failure(
     points_client: Any = points,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    bill = _billing_row(job_id, db_path)
-    if bill is None:
-        raise BillingError("billing_not_found")
+    bill = _claim_terminal_operation(job_id, "refunding", now, db_path)
     if bill["status"] == "refunded":
         return json.loads(bill["response_json"] or "{}")
-    if bill["status"] != "held":
-        raise BillingError("billing_not_held")
     held = int(bill["amount"])
     points_after = points_client.refund_points(
         _job_owner(job_id, db_path),
@@ -563,7 +614,7 @@ def refund_failure(
     with closing(store.open_store(store._db_path(db_path))) as conn:
         conn.execute(
             """UPDATE edit_v2_billing SET status='refunded',response_json=?,updated_at=?
-               WHERE id=? AND status='held'""",
+               WHERE id=? AND status='refunding'""",
             (_canonical(response), now, bill["id"]),
         )
     return response

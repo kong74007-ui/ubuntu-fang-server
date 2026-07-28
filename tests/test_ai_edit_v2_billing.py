@@ -1,7 +1,9 @@
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -310,6 +312,76 @@ class BillingTests(unittest.TestCase):
         )
         self.assertEqual(quote["price_version"], "price-live-v2")
         self.assertEqual(quote["breakdown"]["base"], 33)
+
+    def test_concurrent_settlement_and_failure_refund_choose_one_terminal_operation(self):
+        quote = billing.create_quote(
+            "alice", draft(), now=100, uuid_factory=lambda: "quote-race"
+        )
+        fake_points = FakePoints()
+        billing.precharge_and_create_job(
+            "alice", {"draft": draft()}, quote["id"], "request-race", 101,
+            points_client=fake_points, uuid_factory=lambda: "job-race",
+        )
+        barrier = threading.Barrier(2)
+
+        def settle():
+            barrier.wait(timeout=5)
+            try:
+                return ("settled", billing.settle_success(
+                    "job-race", quote["min_points"], 200, points_client=fake_points
+                ))
+            except billing.BillingError as exc:
+                return (exc.code, None)
+
+        def refund():
+            barrier.wait(timeout=5)
+            try:
+                return ("refunded", billing.refund_failure(
+                    "job-race", 200, points_client=fake_points
+                ))
+            except billing.BillingError as exc:
+                return (exc.code, None)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = [executor.submit(settle), executor.submit(refund)]
+            outcomes = [future.result(timeout=10) for future in outcomes]
+
+        with closing(store.open_store(self.db_path)) as conn:
+            status = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id='job-race'"
+            ).fetchone()[0]
+        self.assertIn(status, {"settled", "refunded"})
+        self.assertIn("billing_operation_conflict", {item[0] for item in outcomes})
+        terminal_keys = {
+            call[3] for call in fake_points.calls
+            if call[0] == "refund" and call[3] in {
+                "ai-edit-v2:job-race:settlement",
+                "ai-edit-v2:job-race:failure-refund",
+            }
+        }
+        self.assertEqual(len(terminal_keys), 1)
+
+    def test_invalid_actual_cost_does_not_strand_the_hold_in_settling(self):
+        quote = billing.create_quote(
+            "alice", draft(), now=100, uuid_factory=lambda: "quote-invalid-actual"
+        )
+        fake_points = FakePoints()
+        billing.precharge_and_create_job(
+            "alice", {"draft": draft()}, quote["id"], "request-invalid-actual", 101,
+            points_client=fake_points, uuid_factory=lambda: "job-invalid-actual",
+        )
+
+        with self.assertRaisesRegex(billing.BillingError, "actual_points_invalid"):
+            billing.settle_success(
+                "job-invalid-actual", quote["max_points"] + 1, 200,
+                points_client=fake_points,
+            )
+
+        with closing(store.open_store(self.db_path)) as conn:
+            status = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id='job-invalid-actual'"
+            ).fetchone()[0]
+        self.assertEqual(status, "held")
 
 
 if __name__ == "__main__":

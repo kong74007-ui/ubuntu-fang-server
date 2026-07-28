@@ -16,6 +16,9 @@ from server.content_domains import ai_edit_v2_asr as asr
 from server.content_domains import ai_edit_v2_pipeline as pipeline
 from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains import ai_edit_v2_delivery as delivery
+from tests.test_ai_edit_v2_delivery import FakeCos as DeliveryCos
+from tests.test_ai_edit_v2_quality import EvidenceRunner, passing_evidence
 from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
 from tests.test_ai_edit_v2_director import VALID_PLAN
 from tests.test_ai_edit_v2_openai_image import png_bytes
@@ -544,6 +547,66 @@ class PipelineTests(unittest.TestCase):
 
 
 class StableRunJobTests(PipelineTests):
+    def test_quality_boundary_delivers_after_task7_quality_checking(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        calls = []
+        dependencies = self._dependencies(calls)
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        output = os.path.join(self.temp_dir.name, "quality-final.mp4")
+        Path(output).write_bytes(b"playable-final-mp4")
+        quality_evidence = passing_evidence()
+        quality_evidence["probe"]["duration_ms"] = 1_000
+        dependencies.update({
+            "quality_runner": EvidenceRunner(quality_evidence),
+            "quality_output_path": output,
+            "actual_cost": 20,
+            "now": lambda: int(time.time()),
+        })
+
+        with patch.object(delivery, "cos", DeliveryCos()), patch.object(billing, "points", self.points):
+            result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "completed")
+
+    def test_repair_receives_only_failing_layer_and_uses_900_second_deadline(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        dependencies = self._dependencies([])
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        output = os.path.join(self.temp_dir.name, "repair-final.mp4")
+        Path(output).write_bytes(b"playable-final-mp4")
+        evidence = passing_evidence()
+        evidence["probe"]["duration_ms"] = 1_000
+        bad_captions = {"safe_area": False, "tofu_count": 1, "missing_glyphs": []}
+        probe_count = [0]
+
+        def runner(check, **_kwargs):
+            if check == "probe":
+                probe_count[0] += 1
+            if check == "captions" and probe_count[0] == 1:
+                return bad_captions
+            return evidence[check]
+
+        repaired = []
+        def repair(_job, context):
+            repaired.append(context)
+            return {"output_path": output}
+
+        now = int(time.time())
+        dependencies.update({
+            "quality_runner": runner,
+            "quality_output_path": output,
+            "repair_layer": repair,
+            "actual_cost": 20,
+            "now": lambda: now,
+        })
+        with patch.object(delivery, "cos", DeliveryCos()), patch.object(billing, "points", self.points):
+            result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(repaired[0]["failing_layers"], ("captions",))
+        self.assertEqual(repaired[0]["deadline_at"], now + 900)
+        self.assertEqual(probe_count[0], 2)
+
     def test_real_worker_and_concrete_production_services_reach_quality_check(self):
         from server import ai_edit_v2_worker as worker
 
