@@ -29,13 +29,21 @@ MUSIC_POLICIES: Final = frozenset({"none", "duck_under_speech"})
 SFX_POLICIES: Final = frozenset({"none", "semantic_only"})
 MAX_MODEL_STRING_LENGTH: Final = 500
 MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
+_HOST_LABEL_PATTERN: Final = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOST_SEMANTIC_LABEL_PATTERN: Final = r"(?:api|auth|cdn|host|mail|server|static)"
 FORBIDDEN_MODEL_VALUE_PATTERNS: Final = (
     re.compile(
         r"(?i)(?:https?|ftp|file|javascript|cos|s3)://|\bwww\.|"
-        r"(?<![\w@-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-        r"[a-z]{2,63}(?![a-z0-9-])(?::\d{1,5})?(?:/\S*)?|"
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
         r"(?::\d{1,5})?(?:/\S*)?"
+    ),
+    re.compile(
+        rf"(?<![\w@-])(?:(?:{_HOST_LABEL_PATTERN}\.){{2,}}[A-Za-z]{{2,63}}|"
+        rf"{_HOST_SEMANTIC_LABEL_PATTERN}\.[A-Za-z]{{2,63}})(?![A-Za-z0-9-])"
+        r"(?::\d{1,5})?(?:/\S*)?|"
+        rf"(?<![\w@-])(?:{_HOST_LABEL_PATTERN}\.)+[A-Za-z]{{2,63}}"
+        r"(?![A-Za-z0-9-])(?::\d{1,5}(?:/\S*)?|/\S*)",
+        re.IGNORECASE,
     ),
     re.compile(r"(?is)<\s*/?\s*[a-z][^>]*>"),
     re.compile(

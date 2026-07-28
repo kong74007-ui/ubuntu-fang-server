@@ -245,6 +245,27 @@ class DirectorTests(unittest.TestCase):
         self.assertIn("ordinary short text", repair_prompt)
         self.assertIn("more context", repair_prompt)
 
+    def test_repair_prompt_redacts_punctuation_credentials_until_safe_delimiter(self):
+        cases = (
+            ("api_key=p@ssw0rd ordinary text", "[REDACTED_CREDENTIAL] ordinary text"),
+            ('password="abcd$efgh", ordinary text', "[REDACTED_CREDENTIAL], ordinary text"),
+            ("token='key!/%value') ordinary text", "[REDACTED_CREDENTIAL]) ordinary text"),
+            (
+                'secret="unclosed!/%value ordinary text\nmore context',
+                "[REDACTED_CREDENTIAL] ordinary text\nmore context",
+            ),
+        )
+
+        for invalid, expected in cases:
+            with self.subTest(invalid=invalid):
+                client = FakeQwen([invalid, json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+                plan = generate_edit_plan(CONTEXT, client)
+
+                self.assertEqual(plan, VALID_PLAN)
+                repair_prompt = json.loads(client.calls[1][1])
+                self.assertEqual(repair_prompt["previous_response"], expected)
+
     def test_director_stops_after_two_schema_repairs(self):
         client = FakeQwen(["{}", "{}", "{}", json.dumps(VALID_PLAN)])
 

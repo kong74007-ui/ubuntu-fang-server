@@ -54,7 +54,7 @@ _SENSITIVE_KEY_RE: Final = re.compile(
 _SENSITIVE_ASSIGNMENT_RE: Final = re.compile(
     r"(?i)[\"']?(?:api[_-]?key|access[_-]?(?:key|token)|token|secret|password|credential|"
     r"authorization|cookie)[\"']?\s*[:=]\s*(?:bearer\s+)?"
-    r"[\"']?[a-z0-9._~+/=-]{4,}[\"']?"
+    r"[\"']?[^\s,;)}\]]+"
 )
 _BEARER_RE: Final = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}")
 _SECRET_TOKEN_RE: Final = re.compile(

@@ -375,7 +375,9 @@ class SchemaTests(unittest.TestCase):
             "JavaScript代码：const token = 1",
             "evil.example.com/payload",
             "evil.example.xyz/payload",
+            "EVIL.EXAMPLE.XYZ",
             "host.tech",
+            "HOST.TECH",
             "127.0.0.1:8080/private",
             "const x=1;",
             "import os",
@@ -399,6 +401,14 @@ class SchemaTests(unittest.TestCase):
         plan = valid_plan(scenes=[scene])
 
         self.assertIs(schema.validate_edit_plan(plan), plan)
+
+    def test_edit_plan_allows_ordinary_period_text_without_spaces(self):
+        for value in ("clear.Keep", "version.final", "release.note", "status.ok"):
+            scene = {**valid_plan()["scenes"][0], "intent": value}
+            plan = valid_plan(scenes=[scene])
+
+            with self.subTest(value=value):
+                self.assertIs(schema.validate_edit_plan(plan), plan)
 
     def test_material_slot_ids_use_a_strict_bounded_format(self):
         invalid_slots = (
