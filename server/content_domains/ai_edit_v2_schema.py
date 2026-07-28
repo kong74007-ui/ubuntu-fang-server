@@ -30,7 +30,13 @@ SFX_POLICIES: Final = frozenset({"none", "semantic_only"})
 MAX_MODEL_STRING_LENGTH: Final = 500
 MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
 FORBIDDEN_MODEL_VALUE_PATTERNS: Final = (
-    re.compile(r"(?i)(?:https?|ftp|file|javascript|cos|s3)://|\bwww\."),
+    re.compile(
+        r"(?i)(?:https?|ftp|file|javascript|cos|s3)://|\bwww\.|"
+        r"(?<![\w@])(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)+"
+        r"(?:com|net|org|cn|io|ai|co|dev|app|cloud|example)(?:[:/]\S*)?|"
+        r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
+        r"(?::\d{1,5})?(?:/\S*)?"
+    ),
     re.compile(r"(?is)<\s*/?\s*[a-z][^>]*>"),
     re.compile(
         r"(?is)\b(?:select\s+.+?\s+from|insert\s+into|update\s+\w+\s+set|delete\s+from|"
@@ -44,12 +50,17 @@ FORBIDDEN_MODEL_VALUE_PATTERNS: Final = (
     ),
     re.compile(r"(?i)\b(?:shotstack|dashscope|remotion)\b"),
     re.compile(
-        r"(?i)(?:数据库(?:地址|连接串|密码|查询|表名)|COS(?:地址|路径|密钥)|供应商|"
+        r"(?i)(?:数据库(?:地址|连接串|密码|查询|表名)|COS(?:地址|路径|密钥)|"
         r"渲染(?:器|引擎)|(?:JavaScript|JS)?(?:代码|脚本))\s*[:：=]"
     ),
     re.compile(
+        r"(?i)\b(?:provider(?:_[a-z0-9]+)+|render(?:_[a-z0-9]+)*|"
+        r"db(?:_[a-z0-9]+)+|database(?:_[a-z0-9]+)+)\s*="
+    ),
+    re.compile(
         r"(?i)(?:```|\b(?:eval|function|fetch)\s*\(|\bdocument\.(?:cookie|write)|"
-        r"\bwindow\.|\bos\.system\s*\(|\bsubprocess\.)"
+        r"\bwindow\.|\bos\.system\s*\(|\bsubprocess\.|\bconst\s+[a-z_$][\w$]*\s*=|"
+        r"\b(?:from\s+[a-z_][\w.]*\s+)?import\s+[a-z_][\w.]*|\bprint\s*\()"
     ),
 )
 

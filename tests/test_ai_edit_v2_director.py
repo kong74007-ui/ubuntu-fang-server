@@ -202,6 +202,34 @@ class DirectorTests(unittest.TestCase):
         self.assertIn("[REDACTED]", repair_prompt)
         self.assertLessEqual(len(json.loads(repair_prompt)["previous_response"]), 8_000)
 
+    def test_repair_prompt_redacts_malformed_assignments_and_bare_tokens(self):
+        secrets = (
+            "plain-secret-123",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart123",
+            "AKIAIOSFODNN7EXAMPLE",
+            "LTAI5tQexample12345678",
+            "ghp_abcdefghijklmnopqrstuvwxyz123456",
+            "xoxb-1234567890-abcdefghijklmnop",
+        )
+        invalid = (
+            '{"api_key" : "plain-secret-123", '
+            '"jwt":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart123", '
+            '"aws":"AKIAIOSFODNN7EXAMPLE", "aliyun":"LTAI5tQexample12345678", '
+            '"github":"ghp_abcdefghijklmnopqrstuvwxyz123456", '
+            '"slack":"xoxb-1234567890-abcdefghijklmnop", '
+            '"note":"ordinary short text"'
+        )
+        client = FakeQwen([invalid, json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan, VALID_PLAN)
+        repair_prompt = client.calls[1][1]
+        for secret in secrets:
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, repair_prompt)
+        self.assertIn("ordinary short text", repair_prompt)
+
     def test_director_stops_after_two_schema_repairs(self):
         client = FakeQwen(["{}", "{}", "{}", json.dumps(VALID_PLAN)])
 

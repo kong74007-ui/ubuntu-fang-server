@@ -372,8 +372,16 @@ class SchemaTests(unittest.TestCase):
             "api_key=secret-value",
             "数据库表名：private_tokens",
             "COS路径：private-bucket/object",
-            "供应商：内部服务",
             "JavaScript代码：const token = 1",
+            "evil.example.com/payload",
+            "127.0.0.1:8080/private",
+            "const x=1;",
+            "import os",
+            "print(secret)",
+            "provider_id=internal",
+            "render=true",
+            "db_host=127.0.0.1",
+            "database_name=private",
         )
         for value in forbidden_values:
             scene = {**valid_plan()["scenes"][0], "intent": value}
@@ -384,7 +392,7 @@ class SchemaTests(unittest.TestCase):
         scene = {
             **valid_plan()["scenes"][0],
             "intent": "介绍产品数据库能力与业务价值",
-            "headline": "让数据管理更清晰",
+            "headline": "供应商：本地农户",
         }
         plan = valid_plan(scenes=[scene])
 
