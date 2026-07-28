@@ -1,0 +1,26 @@
+{
+  "file_url": "https://media.example.invalid/source.mp4",
+  "properties": {
+    "original_duration_in_milliseconds": 1800
+  },
+  "transcripts": [
+    {
+      "channel_id": 0,
+      "text": "品牌价格是29元",
+      "sentences": [
+        {
+          "begin_time": 0,
+          "end_time": 1800,
+          "text": "品牌价格是29元",
+          "words": [
+            {"begin_time": 0, "end_time": 300, "text": "品牌", "punctuation": ""},
+            {"begin_time": 300, "end_time": 600, "text": "价格", "punctuation": ""},
+            {"begin_time": 600, "end_time": 900, "text": "是", "punctuation": ""},
+            {"begin_time": 900, "end_time": 1350, "text": "29", "punctuation": ""},
+            {"begin_time": 1350, "end_time": 1800, "text": "元", "punctuation": ""}
+          ]
+        }
+      ]
+    }
+  ]
+}

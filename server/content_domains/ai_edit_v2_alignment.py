@@ -258,3 +258,68 @@ def validate_punctuation_only(original: str, candidate: str) -> str:
     if factual_characters(original) != factual_characters(candidate):
         raise ValueError("外部转录修复不得改变正文")
     return candidate
+
+
+def _validate_external_timeline(words: list[Any], sentences: list[Any]) -> None:
+    for records in (words, sentences):
+        previous_start = previous_end = -1
+        for item in records:
+            if not isinstance(item, dict):
+                raise AlignmentError("asr_timeline_invalid")
+            text = item.get("text")
+            start_ms = item.get("start_ms")
+            end_ms = item.get("end_ms")
+            if (
+                not isinstance(text, str) or not text
+                or not isinstance(start_ms, int) or isinstance(start_ms, bool)
+                or not isinstance(end_ms, int) or isinstance(end_ms, bool)
+                or start_ms < 0 or end_ms < start_ms
+                or start_ms < previous_start or end_ms < previous_end
+            ):
+                raise AlignmentError("asr_timeline_invalid")
+            previous_start, previous_end = start_ms, end_ms
+
+
+def build_text_timeline(source_type: str, original_text: str | None, asr_result: Any) -> dict[str, Any]:
+    """Select the sole allowed text source while retaining ASR timing."""
+
+    if not isinstance(asr_result, dict):
+        raise AlignmentError("asr_result_invalid")
+    words = asr_result.get("words")
+    sentences = asr_result.get("sentences")
+    if not isinstance(words, list) or not isinstance(sentences, list) or not words or not sentences:
+        raise AlignmentError("asr_result_invalid")
+
+    if source_type == "platform_video":
+        if not isinstance(original_text, str) or not original_text:
+            raise AlignmentError("platform_text_missing")
+        aligned = align_platform_text(original_text, words)
+        return {
+            "source_type": source_type,
+            "text": original_text,
+            "words": aligned["aligned_words"],
+            "sentences": sentences,
+            "coverage": aligned["coverage"],
+        }
+
+    if source_type in {"external_video", "external_audio"}:
+        _validate_external_timeline(words, sentences)
+        raw_text = asr_result.get("raw_text")
+        if not isinstance(raw_text, str) or not raw_text:
+            raw_text = "".join(
+                item.get("text", "") for item in sentences if isinstance(item, dict)
+            )
+        cleaned_text = asr_result.get("cleaned_text", raw_text)
+        if not isinstance(raw_text, str) or not raw_text or not isinstance(cleaned_text, str) or not cleaned_text:
+            raise AlignmentError("external_text_invalid")
+        try:
+            text = validate_punctuation_only(raw_text, cleaned_text)
+        except ValueError as exc:
+            raise AlignmentError("external_text_changed") from exc
+        return {
+            "source_type": source_type,
+            "text": text,
+            "words": words,
+            "sentences": sentences,
+        }
+    raise AlignmentError("source_type_invalid")

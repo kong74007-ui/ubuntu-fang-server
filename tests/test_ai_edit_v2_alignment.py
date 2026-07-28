@@ -2,6 +2,7 @@ import unittest
 
 from server.content_domains import ai_edit_v2_alignment as alignment
 from server.content_domains import ai_edit_v2_asr as asr
+from server.content_domains.ai_edit_v2_providers.base import ProviderResult
 
 
 def timed_chars(text, step=180):
@@ -17,6 +18,48 @@ def timed_chars(text, step=180):
 
 
 class AlignmentTests(unittest.TestCase):
+    def test_platform_text_uses_original_words_with_asr_times(self):
+        asr_result = {
+            "words": timed_chars("品牌价格是29元"),
+            "sentences": [{"text": "品牌价格是29元", "start_ms": 0, "end_ms": 1080}],
+        }
+
+        result = alignment.build_text_timeline("platform_video", "品牌价格是29元", asr_result)
+
+        self.assertEqual("".join(word["text"] for word in result["words"]), "品牌价格是29元")
+        self.assertTrue(
+            all(
+                left["start_ms"] <= left["end_ms"] <= right["end_ms"]
+                for left, right in zip(result["words"], result["words"][1:])
+            )
+        )
+
+    def test_external_cleanup_rejects_word_change(self):
+        changed_meaning_fixture = {
+            "words": timed_chars("你好世界"),
+            "sentences": [{"text": "你好世界", "start_ms": 0, "end_ms": 720}],
+            "cleaned_text": "您好，世界！",
+        }
+
+        with self.assertRaises(alignment.AlignmentError) as caught:
+            alignment.build_text_timeline("external_video", None, changed_meaning_fixture)
+
+        self.assertEqual(caught.exception.code, "external_text_changed")
+
+    def test_external_timeline_rejects_empty_or_backward_words(self):
+        invalid_result = {
+            "words": [
+                {"text": "你好", "start_ms": 100, "end_ms": 200},
+                {"text": "", "start_ms": 50, "end_ms": 90},
+            ],
+            "sentences": [{"text": "你好", "start_ms": 0, "end_ms": 200}],
+        }
+
+        with self.assertRaises(alignment.AlignmentError) as caught:
+            alignment.build_text_timeline("external_video", None, invalid_result)
+
+        self.assertEqual(caught.exception.code, "asr_timeline_invalid")
+
     def test_original_brand_text_wins_over_asr_homophone_with_monotonic_timing(self):
         result = alignment.align_platform_text(
             "黄雀引擎2", timed_chars("黄鹊引擎二")
@@ -95,6 +138,46 @@ class Clock:
 
 
 class AsrTests(unittest.TestCase):
+    def test_dashscope_task_id_is_saved_before_the_first_poll(self):
+        saved_task_ids = []
+
+        class ProviderClient:
+            def submit_asr(self, cos_url, reference):
+                return ProviderResult(
+                    provider="dashscope", capability="asr", request_id="submit-1",
+                    payload={"provider_task_id": "task-new", "reference": reference, "status": "pending"},
+                    cost_units=0, elapsed_ms=1,
+                )
+
+            def query_asr(self, task_id):
+                if saved_task_ids != ["task-new"]:
+                    raise AssertionError("provider task was not persisted before polling")
+                return ProviderResult(
+                    provider="dashscope", capability="asr", request_id="query-1",
+                    payload={
+                        "provider_task_id": task_id,
+                        "status": "succeeded",
+                        "language": "zh-CN",
+                        "duration_ms": 360,
+                        "sentences": [{"start_ms": 0, "end_ms": 360, "text": "黄雀"}],
+                        "words": timed_chars("黄雀"),
+                    },
+                    cost_units=0, elapsed_ms=1,
+                )
+
+        result = asr.transcribe(
+            "https://media.example.invalid/source.mp4",
+            ProviderClient(),
+            deadline_at=100,
+            reference="job-17",
+            save_provider_task_id=saved_task_ids.append,
+            now_fn=lambda: 1,
+            sleep_fn=lambda _: None,
+        )
+
+        self.assertEqual(saved_task_ids, ["task-new"])
+        self.assertEqual(result["provider_task_id"], "task-new")
+
     def test_existing_provider_task_is_polled_without_resubmission(self):
         client = FakeAsrClient(
             [

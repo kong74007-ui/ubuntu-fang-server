@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from .ai_edit_v2_providers.base import ProviderError, ProviderResult, UnknownSubmissionError
+
 
 class AsrError(RuntimeError):
     def __init__(self, code: str):
@@ -74,31 +76,53 @@ def transcribe(
     deadline_at: int,
     *,
     provider_task_id: str | None = None,
+    reference: str | None = None,
+    save_provider_task_id: Callable[[str], None] | None = None,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     task_id = provider_task_id
     if not task_id:
         try:
-            submitted = client.submit(cos_key)
-            task_id = submitted.get("task_id") if isinstance(submitted, dict) else submitted
+            if hasattr(client, "submit_asr"):
+                submitted = client.submit_asr(cos_key, reference or cos_key)
+                if not isinstance(submitted, ProviderResult):
+                    raise AsrError("asr_submit_failed")
+                task_id = submitted.payload.get("provider_task_id")
+            else:
+                submitted = client.submit(cos_key)
+                task_id = submitted.get("task_id") if isinstance(submitted, dict) else submitted
+        except UnknownSubmissionError:
+            raise
+        except ProviderError as exc:
+            raise AsrError("asr_submit_failed") from exc
         except Exception as exc:
             raise AsrError("asr_submit_failed") from exc
         if not isinstance(task_id, str) or not task_id:
             raise AsrError("asr_submit_failed")
+        if save_provider_task_id is not None:
+            save_provider_task_id(task_id)
 
     while True:
         if now_fn() >= deadline_at:
             raise AsrError("asr_timeout")
         try:
-            response = client.get(task_id)
+            if hasattr(client, "query_asr"):
+                queried = client.query_asr(task_id)
+                if not isinstance(queried, ProviderResult):
+                    raise AsrError("asr_result_invalid")
+                response = queried.payload
+            else:
+                response = client.get(task_id)
+        except ProviderError as exc:
+            raise AsrError("asr_poll_failed") from exc
         except Exception as exc:
             raise AsrError("asr_poll_failed") from exc
         if not isinstance(response, dict):
             raise AsrError("asr_result_invalid")
         status = str(response.get("status") or "").lower()
         if status in {"succeeded", "completed", "success"}:
-            return _normalize_result(response.get("result"), task_id)
+            return _normalize_result(response.get("result", response), task_id)
         if status in {"failed", "error", "cancelled", "canceled"}:
             raise AsrError("asr_provider_failed")
         if status not in {"queued", "pending", "running", "processing"}:
