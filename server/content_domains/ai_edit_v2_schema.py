@@ -37,6 +37,10 @@ STABLE_RENDER_COMPONENTS: Final = frozenset(
         "audio_bed",
     }
 )
+BUNDLED_NOTO_SANS_SC_URL: Final = (
+    "https://shotstack-assets.s3-ap-southeast-2.amazonaws.com/"
+    "fonts/NotoSansSC-Regular.otf"
+)
 MAX_MODEL_STRING_LENGTH: Final = 500
 MATERIAL_SLOT_ID_RE: Final = re.compile(r"^slot_[a-z0-9][a-z0-9_-]{0,63}$")
 _HOST_LABEL_PATTERN: Final = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -483,11 +487,15 @@ def validate_render_graph(graph: dict[str, Any]) -> dict[str, Any]:
         if kind == "basic_caption":
             font_url = _nonempty_string(component.get("font_url"), f"{path}.font_url")
             _require(
-                font_url.startswith(("http://", "https://")) and "noto" in font_url.lower(),
+                font_url == BUNDLED_NOTO_SANS_SC_URL,
                 f"{path}.font_url必须使用Noto Sans SC",
             )
         if kind == "standard_transition":
             _require(component.get("name") in SCENE_TRANSITIONS, f"{path}.name不受支持")
+    _require(
+        sum(component["type"] == "audio_bed" for component in components) <= 1,
+        "render_graph只允许一个mastered audio_bed",
+    )
     output = graph.get("output")
     _require(
         output == {"format": "mp4", "resolution": "1080p", "video_codec": "h264", "audio_codec": "aac"},

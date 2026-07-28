@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -19,7 +20,11 @@ from .ai_edit_v2_providers.base import (
     RetryableProviderError,
     UnknownSubmissionError,
 )
-from .ai_edit_v2_schema import STABLE_RENDER_COMPONENTS, validate_render_graph
+from .ai_edit_v2_schema import (
+    BUNDLED_NOTO_SANS_SC_URL,
+    STABLE_RENDER_COMPONENTS,
+    validate_render_graph,
+)
 
 
 _DEFAULT_API_BASE = "https://api.shotstack.io/edit/stage"
@@ -42,7 +47,7 @@ def build_render_graph(
         timeline = resolved_plan["text_timeline"]
         if timeline.get("alignment_status") != "aligned":
             raise RenderGraphError("caption_timeline_not_aligned")
-        if not isinstance(font_url, str) or "noto" not in font_url.lower():
+        if font_url != BUNDLED_NOTO_SANS_SC_URL:
             raise RenderGraphError("caption_font_invalid")
         _reject_unstable_components(resolved_plan.get("components", []))
         components: list[dict[str, Any]] = []
@@ -185,6 +190,85 @@ def _positive_int(value: Any) -> int:
     return result
 
 
+def _compile_shotstack_edit(
+    render_graph: dict[str, Any], callback_url: str
+) -> dict[str, Any]:
+    """Compile the internal stable allowlist into the official Edit API shape."""
+
+    try:
+        validate_render_graph(render_graph)
+    except (TypeError, ValueError) as exc:
+        raise ProviderError("shotstack_render_graph_invalid") from exc
+    components = render_graph["components"]
+    has_master = any(item["type"] == "audio_bed" for item in components)
+    transitions = {
+        float(item["start"]): item["name"]
+        for item in components
+        if item["type"] == "standard_transition"
+    }
+    transition_names = {
+        "cut": "none",
+        "dissolve": "fade",
+        "fade": "fade",
+        "wipe": "wipeLeft",
+    }
+    tracks: list[dict[str, Any]] = []
+    for component in components:
+        kind = component["type"]
+        if kind == "standard_transition":
+            continue
+        if kind in {"basic_caption", "basic_card"}:
+            asset: dict[str, Any] = {
+                "type": "rich-text",
+                "text": component["text"],
+                "font": {
+                    "family": "NotoSansSC-Regular",
+                    "size": 52 if kind == "basic_caption" else 64,
+                    "weight": "600",
+                    "color": "#ffffff",
+                },
+                "align": {"horizontal": "center", "vertical": "middle"},
+            }
+        elif kind == "broll_image":
+            asset = {"type": "image", "src": component["src"]}
+        elif kind == "broll_video":
+            asset = {"type": "video", "src": component["src"]}
+            if has_master:
+                asset["volume"] = 0
+        elif kind == "audio_bed":
+            asset = {"type": "audio", "src": component["src"], "volume": 1}
+        else:  # validate_render_graph makes this unreachable.
+            raise ProviderError("shotstack_render_component_invalid")
+        clip: dict[str, Any] = {
+            "asset": asset,
+            "start": component["start"],
+            "length": component["length"],
+        }
+        transition = transitions.get(float(component["start"]))
+        if transition is not None and kind != "audio_bed":
+            clip["transition"] = {"in": transition_names[transition]}
+        if kind == "basic_caption":
+            clip.update({"position": "bottom", "width": 1720, "height": 240})
+        elif kind == "basic_card":
+            clip.update({"position": "center", "width": 1500, "height": 360})
+        tracks.append({"clips": [clip]})
+    return {
+        "timeline": {
+            "background": "#000000",
+            "fonts": [{"src": BUNDLED_NOTO_SANS_SC_URL}],
+            "tracks": tracks,
+            "cache": True,
+        },
+        "output": {
+            "format": "mp4",
+            "resolution": "1080",
+            "aspectRatio": render_graph["aspect_ratio"],
+            "fps": 30,
+        },
+        "callback": callback_url,
+    }
+
+
 class ShotstackClient:
     def __init__(
         self,
@@ -198,6 +282,8 @@ class ShotstackClient:
         timeout_seconds: int = 30,
         clock_ms: Callable[[], int] | None = None,
         now_seconds: Callable[[], int] | None = None,
+        callback_base_url: str | None = None,
+        callback_secret: str | None = None,
     ) -> None:
         self.job_id = job_id
         self.attempt_id = int(attempt_id)
@@ -208,6 +294,12 @@ class ShotstackClient:
         self.timeout_seconds = int(timeout_seconds)
         self.clock_ms = clock_ms or (lambda: round(time.monotonic() * 1000))
         self.now_seconds = now_seconds or (lambda: round(time.time()))
+        self.callback_base_url = callback_base_url or os.environ.get(
+            "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL", ""
+        )
+        self.callback_secret = callback_secret or os.environ.get(
+            "AI_EDIT_V2_WEBHOOK_SECRET", ""
+        )
 
     def submit(self, render_graph: dict[str, Any], reference: str) -> ProviderResult:
         if not isinstance(render_graph, dict):
@@ -236,24 +328,19 @@ class ShotstackClient:
                 return self.reconcile(
                     provider_task_id=durable["provider_task_id"]
                 )
-            try:
-                return self.reconcile(reference=reference)
-            except ProviderError as exc:
-                raise UnknownSubmissionError("shotstack_submission_unknown") from exc
+            raise UnknownSubmissionError("shotstack_submission_unknown")
         started = self.clock_ms()
+        callback_url = self._callback_url(reference)
         body = json.dumps(
-            {**render_graph, "reference": reference},
+            _compile_shotstack_edit(render_graph, callback_url),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
         try:
             response = self._request("POST", f"{self.api_base}/render", body)
-        except (TimeoutError, socket.timeout, RetryableProviderError, urllib.error.URLError, OSError):
-            try:
-                return self.reconcile(reference=reference)
-            except ProviderError as exc:
-                raise UnknownSubmissionError("shotstack_submission_unknown") from exc
+        except (TimeoutError, socket.timeout, RetryableProviderError, urllib.error.URLError, OSError) as exc:
+            raise UnknownSubmissionError("shotstack_submission_unknown") from exc
         task_id, status, output_url, request_id = self._parse_response(response)
         self._bind(task_id, reference, status)
         return self._result(task_id, reference, status, output_url, request_id, started)
@@ -263,29 +350,64 @@ class ShotstackClient:
         provider_task_id: str | None = None,
         reference: str | None = None,
     ) -> ProviderResult:
-        if bool(provider_task_id) == bool(reference):
+        if not provider_task_id or reference is not None:
             raise ProviderError("shotstack_reconcile_identity_invalid")
         started = self.clock_ms()
-        if provider_task_id:
-            encoded = urllib.parse.quote(provider_task_id, safe="")
-            url = f"{self.api_base}/render/{encoded}"
-        else:
-            encoded = urllib.parse.urlencode({"reference": reference})
-            url = f"{self.api_base}/render?{encoded}"
-        response = self._request("GET", url, None)
+        encoded = urllib.parse.quote(provider_task_id, safe="")
+        url = f"{self.api_base}/render/{encoded}"
+        try:
+            response = self._request("GET", url, None)
+        except (TimeoutError, socket.timeout, RetryableProviderError, urllib.error.URLError, OSError) as exc:
+            raise UnknownSubmissionError("shotstack_reconcile_unknown") from exc
         task_id, status, output_url, request_id = self._parse_response(
-            response, expected_task_id=provider_task_id, expected_reference=reference
+            response, expected_task_id=provider_task_id
         )
         bound = store.find_provider_submission(
             "shotstack", provider_task_id=task_id, db_path=self.db_path
         )
-        durable_reference = reference or (bound or {}).get("reference")
+        durable_reference = (bound or {}).get("reference")
         if not durable_reference:
             raise ProviderError("shotstack_reference_missing")
         self._bind(task_id, durable_reference, status)
         return self._result(
             task_id, durable_reference, status, output_url, request_id, started
         )
+
+    def callback_token(self, reference: str) -> str:
+        if not self.callback_secret or not isinstance(reference, str) or not reference:
+            raise ProviderError("shotstack_callback_not_configured")
+        message = f"{self.job_id}:{self.attempt_id}:{reference}".encode("utf-8")
+        return hmac.new(
+            self.callback_secret.encode("utf-8"), message, hashlib.sha256
+        ).hexdigest()
+
+    def _callback_url(self, reference: str) -> str:
+        if not self.callback_base_url.startswith("https://"):
+            raise ProviderError("shotstack_callback_not_configured")
+        parsed = urllib.parse.urlsplit(self.callback_base_url)
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        query.extend(
+            [
+                ("attempt_id", str(self.attempt_id)),
+                ("token", self.callback_token(reference)),
+            ]
+        )
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), "")
+        )
+
+    def bind_callback_task(
+        self, callback_attempt_id: int, callback_token: str, task_id: str
+    ) -> None:
+        if callback_attempt_id != self.attempt_id:
+            raise ProviderError("shotstack_callback_identity_invalid")
+        durable = store.find_stage_submission(self.attempt_id, db_path=self.db_path)
+        reference = (durable or {}).get("provider_reference")
+        if not reference or not hmac.compare_digest(
+            str(callback_token), self.callback_token(reference)
+        ):
+            raise ProviderError("shotstack_callback_identity_invalid")
+        self._bind(task_id, reference, "pending")
 
     def _bind(self, task_id: str, reference: str, status: str) -> None:
         try:
@@ -328,20 +450,10 @@ class ShotstackClient:
         response: Any,
         *,
         expected_task_id: str | None = None,
-        expected_reference: str | None = None,
     ) -> tuple[str, str, str | None, str]:
         if not isinstance(response, dict) or response.get("success") is not True:
             raise ProviderError("shotstack_response_invalid")
         value = response.get("response")
-        if isinstance(value, list):
-            matches = [
-                item for item in value
-                if isinstance(item, dict)
-                and (expected_reference is None or item.get("reference") == expected_reference)
-            ]
-            if len(matches) != 1:
-                raise ProviderError("shotstack_render_not_found")
-            value = matches[0]
         if not isinstance(value, dict):
             raise ProviderError("shotstack_response_invalid")
         task_id = value.get("id")
@@ -415,6 +527,8 @@ def reconcile_webhook(
     event: dict[str, Any],
     client: ShotstackClient,
     *,
+    callback_attempt_id: int,
+    callback_token: str,
     received_at: int,
     db_path: str | None = None,
 ) -> ProviderResult | None:
@@ -431,11 +545,19 @@ def reconcile_webhook(
         job_id,
         "shotstack",
         task_id,
-        "wake",
+        "pending",
         fingerprint,
         received_at,
         db_path=db_path,
     )
     if not inserted:
         return None
-    return client.reconcile(provider_task_id=task_id)
+    try:
+        client.bind_callback_task(callback_attempt_id, callback_token, task_id)
+        result = client.reconcile(provider_task_id=task_id)
+    except ProviderError:
+        store.release_pending_provider_event(fingerprint, db_path=db_path)
+        raise
+    if not store.mark_provider_event_processed(fingerprint, db_path=db_path):
+        raise ProviderError("shotstack_webhook_state_conflict")
+    return result

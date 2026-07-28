@@ -1295,6 +1295,30 @@ def record_provider_event(
             return False
 
 
+def mark_provider_event_processed(
+    fingerprint: str, *, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """UPDATE edit_v2_provider_events SET normalized_status='processed'
+               WHERE fingerprint=? AND normalized_status='pending'""",
+            (fingerprint,),
+        ).rowcount
+    return changed == 1
+
+
+def release_pending_provider_event(
+    fingerprint: str, *, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        changed = conn.execute(
+            """DELETE FROM edit_v2_provider_events
+               WHERE fingerprint=? AND normalized_status='pending'""",
+            (fingerprint,),
+        ).rowcount
+    return changed == 1
+
+
 def bind_provider_submission(
     *,
     attempt_id: int,

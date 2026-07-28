@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from server.content_domains import ai_edit_v2_store as store
@@ -17,7 +18,7 @@ from server.content_domains.ai_edit_v2_shotstack import (
 )
 
 
-FONT_URL = "https://fonts.example.invalid/noto-sans-sc.woff2"
+FONT_URL = "https://shotstack-assets.s3-ap-southeast-2.amazonaws.com/fonts/NotoSansSC-Regular.otf"
 SIGNED_ASSETS = {
     "private/main.mp4": "https://cos.example.invalid/main.mp4?signature=short",
     "private/broll.png": "https://cos.example.invalid/broll.png?signature=short",
@@ -108,6 +109,14 @@ class RenderGraphTests(unittest.TestCase):
         with self.assertRaises(RenderGraphError):
             build_render_graph(RESOLVED_PLAN, {}, FONT_URL)
 
+    def test_noto_font_is_a_fixed_versioned_allowlist_not_a_name_substring(self):
+        with self.assertRaises(RenderGraphError):
+            build_render_graph(
+                RESOLVED_PLAN,
+                SIGNED_ASSETS,
+                "https://evil.invalid/notorious-noto-malware.ttf",
+            )
+
 
 class ShotstackClientTests(unittest.TestCase):
     def setUp(self):
@@ -126,6 +135,7 @@ class ShotstackClientTests(unittest.TestCase):
         self.attempt_id = store.record_stage_attempt(
             self.job["id"], "rendering", 1, "running", 101, db_path=self.db_path
         )
+        self.graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
 
     def tearDown(self):
         self.env.stop()
@@ -135,7 +145,60 @@ class ShotstackClientTests(unittest.TestCase):
         return ShotstackClient(
             job_id=self.job["id"], attempt_id=self.attempt_id,
             db_path=self.db_path, http_request=request, clock_ms=lambda: 50,
+            callback_base_url="https://app.example.invalid/api/v2/edit/webhooks/shotstack",
+            callback_secret="callback-test-secret",
         )
+
+    @staticmethod
+    def _callback_identity(body):
+        callback = json.loads(body)["callback"]
+        query = parse_qs(urlparse(callback).query)
+        return int(query["attempt_id"][0]), query["token"][0]
+
+    def test_submit_compiles_official_edit_api_json_before_transport(self):
+        bodies = []
+
+        def request(method, url, headers, body, timeout):
+            bodies.append(json.loads(body))
+            return {"success": True, "message": "Created", "response": {"id": "render-123"}}
+
+        self._client(request).submit(self.graph, "job:render:1")
+
+        payload = bodies[0]
+        self.assertEqual(set(payload), {"timeline", "output", "callback"})
+        self.assertEqual(payload["output"], {
+            "format": "mp4", "resolution": "1080", "aspectRatio": "16:9", "fps": 30,
+        })
+        self.assertEqual(payload["timeline"]["fonts"], [{"src": FONT_URL}])
+        self.assertNotIn("soundtrack", payload["timeline"])
+        clips = [clip for track in payload["timeline"]["tracks"] for clip in track["clips"]]
+        self.assertTrue(clips)
+        self.assertTrue(all(set(clip) >= {"asset", "start", "length"} for clip in clips))
+        self.assertTrue(all(clip["asset"]["type"] in {"rich-text", "image", "video", "audio"} for clip in clips))
+        self.assertNotIn("reference", payload)
+        self.assertNotIn("components", payload)
+
+    def test_mastered_audio_mutes_every_video_and_is_the_only_audible_track(self):
+        bodies = []
+
+        def request(method, url, headers, body, timeout):
+            bodies.append(json.loads(body))
+            return {"success": True, "message": "Created", "response": {"id": "render-123"}}
+
+        self._client(request).submit(self.graph, "job:render:1")
+
+        assets = [
+            clip["asset"] for track in bodies[0]["timeline"]["tracks"]
+            for clip in track["clips"]
+        ]
+        videos = [asset for asset in assets if asset["type"] == "video"]
+        audible = [asset for asset in assets if asset["type"] in {"video", "audio"} and asset.get("volume", 1) > 0]
+        self.assertTrue(videos)
+        self.assertTrue(all(asset["volume"] == 0 for asset in videos))
+        self.assertEqual(len(audible), 1)
+        self.assertEqual(audible[0], {
+            "type": "audio", "src": SIGNED_ASSETS["private/master.m4a"], "volume": 1,
+        })
 
     def test_submit_persists_task_and_attempt_atomically_then_replays_without_post(self):
         calls = []
@@ -145,8 +208,8 @@ class ShotstackClientTests(unittest.TestCase):
             return {"success": True, "response": {"id": "render-123", "status": "queued"}}
 
         client = self._client(request)
-        first = client.submit({"timeline": {}, "output": {}}, "job:render:1")
-        second = client.submit({"timeline": {}, "output": {}}, "job:render:1")
+        first = client.submit(self.graph, "job:render:1")
+        second = client.submit(self.graph, "job:render:1")
 
         self.assertEqual(first.payload["provider_task_id"], "render-123")
         self.assertEqual(second.payload["provider_task_id"], "render-123")
@@ -162,19 +225,21 @@ class ShotstackClientTests(unittest.TestCase):
         self.assertEqual(attempt[0], "render-123")
         self.assertEqual(provider, ("render-123", "job:render:1"))
 
-    def test_submit_timeout_reconciles_by_reference_without_second_post(self):
+    def test_submit_timeout_freezes_unknown_and_never_uses_reference_get_or_reposts(self):
         calls = []
 
         def request(method, url, headers, body, timeout):
             calls.append((method, url, headers, body))
-            if method == "POST":
-                raise TimeoutError("unknown submission")
-            return {"success": True, "response": [{"id": "render-123", "status": "queued", "reference": "job:render:1"}]}
+            raise TimeoutError("unknown submission")
 
-        result = self._client(request).submit({"timeline": {}, "output": {}}, "job:render:1")
+        client = self._client(request)
+        with self.assertRaises(UnknownSubmissionError):
+            client.submit(self.graph, "job:render:1")
+        with self.assertRaises(UnknownSubmissionError):
+            client.submit(self.graph, "job:render:1")
 
-        self.assertEqual(result.payload["provider_task_id"], "render-123")
-        self.assertEqual([call[0] for call in calls], ["POST", "GET"])
+        self.assertEqual([call[0] for call in calls], ["POST"])
+        self.assertTrue(all("?reference=" not in call[1] for call in calls))
 
     def test_unknown_submit_timeout_never_blindly_reposts(self):
         calls = []
@@ -186,8 +251,43 @@ class ShotstackClientTests(unittest.TestCase):
             return {"success": True, "response": []}
 
         with self.assertRaises(UnknownSubmissionError):
-            self._client(request).submit({"timeline": {}, "output": {}}, "job:render:1")
-        self.assertEqual(calls, ["POST", "GET"])
+            self._client(request).submit(self.graph, "job:render:1")
+        self.assertEqual(calls, ["POST"])
+
+    def test_callback_after_lost_post_response_binds_task_then_reconciles_by_id(self):
+        calls = []
+        submitted_body = None
+
+        def request(method, url, headers, body, timeout):
+            nonlocal submitted_body
+            calls.append((method, url))
+            if method == "POST":
+                submitted_body = body
+                raise TimeoutError("response lost")
+            return {"success": True, "message": "OK", "response": {
+                "id": "render-123", "status": "done", "url": "https://cdn.example.invalid/render.mp4",
+            }}
+
+        client = self._client(request)
+        with self.assertRaises(UnknownSubmissionError):
+            client.submit(self.graph, "job:render:1")
+        callback_attempt, callback_token = self._callback_identity(submitted_body)
+        result = reconcile_webhook(
+            self.job["id"], {"id": "render-123", "status": "done"}, client,
+            callback_attempt_id=callback_attempt, callback_token=callback_token,
+            received_at=200, db_path=self.db_path,
+        )
+
+        self.assertEqual(result.payload["status"], "succeeded")
+        self.assertEqual(calls, [
+            ("POST", "https://api.shotstack.io/edit/stage/render"),
+            ("GET", "https://api.shotstack.io/edit/stage/render/render-123"),
+        ])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            bound = conn.execute(
+                "SELECT provider_task_id FROM edit_v2_stage_attempts WHERE id=?", (self.attempt_id,)
+            ).fetchone()[0]
+        self.assertEqual(bound, "render-123")
 
     def test_webhook_is_only_a_deduplicated_wakeup_and_query_is_authoritative(self):
         fixture = json.loads(
@@ -212,8 +312,17 @@ class ShotstackClientTests(unittest.TestCase):
             db_path=self.db_path,
         )
         forged = {"id": "render-123", "status": "failed", "url": "https://evil.invalid/forged.mp4"}
-        first = reconcile_webhook(self.job["id"], forged, client, received_at=200, db_path=self.db_path)
-        duplicate = reconcile_webhook(self.job["id"], forged, client, received_at=201, db_path=self.db_path)
+        token = client.callback_token("job:render:1")
+        first = reconcile_webhook(
+            self.job["id"], forged, client,
+            callback_attempt_id=self.attempt_id, callback_token=token,
+            received_at=200, db_path=self.db_path,
+        )
+        duplicate = reconcile_webhook(
+            self.job["id"], forged, client,
+            callback_attempt_id=self.attempt_id, callback_token=token,
+            received_at=201, db_path=self.db_path,
+        )
 
         self.assertEqual(first.payload["status"], "succeeded")
         self.assertEqual(first.payload["output_url"], fixture["response"]["url"])
@@ -221,6 +330,47 @@ class ShotstackClientTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "GET")
         self.assertEqual(calls[0][2]["x-api-key"], "secret-test-key")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            status = conn.execute(
+                "SELECT normalized_status FROM edit_v2_provider_events"
+            ).fetchone()[0]
+        self.assertEqual(status, "processed")
+
+    def test_failed_provider_get_releases_pending_webhook_for_retry(self):
+        attempts = 0
+
+        def request(method, url, headers, body, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("provider query timeout")
+            return {"success": True, "message": "OK", "response": {
+                "id": "render-123", "status": "done", "url": "https://cdn.example.invalid/render.mp4",
+            }}
+
+        client = self._client(request)
+        store.bind_provider_submission(
+            attempt_id=self.attempt_id, job_id=self.job["id"], provider="shotstack",
+            capability="render", provider_task_id="render-123", reference="job:render:1",
+            status="pending", now=199, db_path=self.db_path,
+        )
+        event = {"id": "render-123", "status": "done"}
+        token = client.callback_token("job:render:1")
+        kwargs = {
+            "callback_attempt_id": self.attempt_id, "callback_token": token,
+            "received_at": 200, "db_path": self.db_path,
+        }
+        with self.assertRaises(UnknownSubmissionError):
+            reconcile_webhook(self.job["id"], event, client, **kwargs)
+        result = reconcile_webhook(self.job["id"], event, client, **kwargs)
+
+        self.assertEqual(result.payload["status"], "succeeded")
+        self.assertEqual(attempts, 2)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            statuses = conn.execute(
+                "SELECT normalized_status FROM edit_v2_provider_events"
+            ).fetchall()
+        self.assertEqual(statuses, [("processed",)])
 
 
 if __name__ == "__main__":
