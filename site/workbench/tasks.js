@@ -14,7 +14,12 @@
   }
 
   var KEY = "hq_jobs";
-  var ACTIVE = { queued: 1, running: 1, pending: 1, processing: 1 };
+  var ACTIVE = {
+    queued: 1, running: 1, pending: 1, processing: 1, billing_pending: 1,
+    created: 1, normalizing: 1, transcribing: 1, aligning: 1, directing: 1,
+    resolving_materials: 1, generating_media: 1, rendering: 1,
+    postprocessing: 1, quality_check: 1, repairing: 1, settling: 1
+  };
   var MAX_HISTORY = 30; // 完成态最多留 30 条，进行中全留
   var mem = null;       // localStorage 不可用时的内存兜底
   var listeners = [];
@@ -107,12 +112,15 @@
   }
 
   function taskKind(job) {
+    if (job && job.kind === "ai_edit_v2") return "ai_edit_v2";
     return job && job.kind === "video" ? "video" : "leads";
   }
 
   function taskHref(job) {
     var id = encodeURIComponent(String(job && job.id != null ? job.id : ""));
-    return taskKind(job) === "video" ? "video.html?task=" + id : "leads.html#task=" + id;
+    var kind = taskKind(job);
+    if (kind === "ai_edit_v2") return "ai-edit.html?task=" + id;
+    return kind === "video" ? "video.html?task=" + id : "leads.html#task=" + id;
   }
 
   function onChange(cb) { if (typeof cb === "function") listeners.push(cb); }
@@ -163,7 +171,13 @@
             var active = latestActive();
             if (!active) return;
             var kind = taskKind(active);
-            if (kind === "video" && /\/video(?:\.html)?$/.test(location.pathname)) {
+            if (kind === "ai_edit_v2" && /\/ai-edit(?:\.html)?$/.test(location.pathname)) {
+              ev.preventDefault();
+              var editUrl = new URL(location.href);
+              editUrl.searchParams.set("task", String(active.id));
+              history.replaceState(null, "", editUrl.pathname + editUrl.search + editUrl.hash);
+              window.dispatchEvent(new CustomEvent("hq:resume-task", { detail: { id: active.id, kind: kind } }));
+            } else if (kind === "video" && /\/video(?:\.html)?$/.test(location.pathname)) {
               ev.preventDefault();
               var current = new URL(location.href);
               current.searchParams.set("task", String(active.id));
