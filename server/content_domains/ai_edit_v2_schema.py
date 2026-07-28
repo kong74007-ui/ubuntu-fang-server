@@ -183,6 +183,8 @@ class JobDraft(TypedDict, total=False):
     language: str
     aspect_ratio: str
     target_duration_ms: int | None
+    input_mode: str
+    original_text: str
     main_input: MaterialInput
     required_materials: list[MaterialInput]
     reference_materials: list[MaterialInput]
@@ -253,6 +255,12 @@ def validate_job_draft(draft: dict[str, Any]) -> dict[str, Any]:
     _require(draft.get("creation_mode") in CREATION_MODES, "创作入口不受支持")
     _require(draft.get("aspect_ratio") in ASPECT_RATIOS, "画面比例不受支持")
     _require(draft.get("language") == "zh-CN", "第一阶段只支持中文")
+    input_mode = draft.get("input_mode")
+    if input_mode is not None:
+        _require(input_mode in {"platform_video", "external_video", "external_audio"},
+                 "input_mode unsupported")
+    if input_mode == "platform_video":
+        _nonempty_string(draft.get("original_text"), "original_text")
     target_duration_ms = draft.get("target_duration_ms")
     if target_duration_ms is not None:
         _positive_int(target_duration_ms, "目标时长")
@@ -273,6 +281,11 @@ def validate_job_draft(draft: dict[str, Any]) -> dict[str, Any]:
     total_bytes = _validate_material(
         draft.get("main_input"), purpose="primary", is_main=True
     )
+    main_kind = draft["main_input"].get("kind")
+    if input_mode == "external_audio":
+        _require(main_kind == "audio", "external_audio requires audio input")
+    elif input_mode in {"platform_video", "external_video"}:
+        _require(main_kind == "video", "video input_mode requires video input")
     total_bytes += sum(
         _validate_material(material, purpose="required") for material in required
     )

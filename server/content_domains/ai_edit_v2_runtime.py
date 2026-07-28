@@ -569,8 +569,18 @@ class ProductionServices:
     def aligning(self, _job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
         from .ai_edit_v2_alignment import build_text_timeline
         previous, draft = stage_input["previous"], self._draft(stage_input)
-        source_type = "external_audio" if previous["normalized_media"]["media_type"] == "audio" else "external_video"
-        timeline = build_text_timeline(source_type, draft.get("original_text"), previous["asr_result"])
+        if previous["normalized_media"]["media_type"] == "audio":
+            source_type = "external_audio"
+        elif draft.get("input_mode") == "platform_video" or (
+            draft.get("input_mode") is None
+            and draft.get("creation_mode") == "platform_template"
+            and isinstance(draft.get("original_text"), str)
+        ):
+            source_type = "platform_video"
+        else:
+            source_type = "external_video"
+        original_text = draft.get("original_text") if source_type == "platform_video" else None
+        timeline = build_text_timeline(source_type, original_text, previous["asr_result"])
         timeline.update({"alignment_status": "aligned", "duration_ms": previous["asr_result"]["duration_ms"]})
         return {"normalized_media": previous["normalized_media"], "text_timeline": timeline}
 

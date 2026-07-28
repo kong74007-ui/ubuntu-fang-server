@@ -598,7 +598,9 @@ git commit -m "feat(ai-edit-v2): expose stable editing workflow"
 
 **Files:**
 - Create: `scripts/ai_edit_v2_provider_smoke.py`
+- Create: `scripts/ai_edit_v2_secret_scan.py`
 - Create: `tests/test_ai_edit_v2_e2e.py`
+- Create: `tests/test_ai_edit_v2_secret_scan.py`
 - Create: `tests/fixtures/ai_edit_v2/e2e/platform_video.json`
 - Create: `tests/fixtures/ai_edit_v2/e2e/external_video.json`
 - Create: `tests/fixtures/ai_edit_v2/e2e/audio_only.json`
@@ -642,10 +644,13 @@ Run the repository's documented backend and frontend test commands, then:
 
 ```bash
 git diff --check
-git grep -nE 'sk_[A-Za-z0-9_-]{20,}|xi-api-key:[[:space:]]*[^$]' -- ':!docs/superpowers/plans/2026-07-28-ai-edit-v2-stable-release-plan.md'
+python scripts/ai_edit_v2_secret_scan.py
 ```
 
-Expected: tests PASS; secret scan prints no credential.
+Expected: tests PASS; the scanner enumerates tracked and untracked files with
+`git ls-files -co --exclude-standard`, includes fixtures, prints only path and
+credential type on failure, and prints `secret_scan=clean` without credentials
+on success.
 
 - [x] **Step 6: Commit**
 
@@ -664,6 +669,17 @@ and `git diff --check` passed. The Windows repository-wide run passed 1330 of
 Bash), outside Task 10. CI secret validation passed; the plan's narrow grep
 matched only nine pre-existing test-fixture files and no Task 10 file. No real
 provider call, push, deployment, service restart or Task 11 action was run.
+
+Task 10 fix-round evidence (2026-07-29): provider smoke invocation now runs in
+a terminable subprocess; timeout performs terminate/kill/wait and returns the
+fixed redacted exit-4 result without forwarding child stdout/stderr. Production
+alignment derives platform/external video/audio semantics from durable draft
+and normalized input, preserving platform original text while using ASR timing.
+The E2E no longer injects an alignment handler. A process-exit drill now stops
+after the ASR provider identity is saved, rebuilds runtime services from the
+persistent database, reconciles that identity and verifies every charged fake
+outbound operation, hold and settlement refund occur exactly once. The dedicated
+secret scanner has tracked/untracked, fixture, ignore and provider-canary tests.
 
 ### Task 11: PR Review and Test-Environment Deployment
 

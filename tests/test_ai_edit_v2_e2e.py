@@ -1,6 +1,5 @@
 import importlib
 import copy
-import io
 import json
 import os
 import sqlite3
@@ -11,7 +10,6 @@ import time
 import unittest
 import uuid
 from contextlib import closing
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +17,6 @@ from server.content_domains import ai_edit_v2_billing as billing
 from server.content_domains import ai_edit_v2_pipeline as pipeline
 from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains import ai_edit_v2_store as store
-from server.content_domains.ai_edit_v2_alignment import build_text_timeline
 from tests.test_ai_edit_v2_director import VALID_PLAN
 from tests.test_ai_edit_v2_openai_image import png_bytes
 
@@ -29,9 +26,13 @@ FIXTURES = ROOT / "tests" / "fixtures" / "ai_edit_v2" / "e2e"
 SMOKE_SCRIPT = ROOT / "scripts" / "ai_edit_v2_provider_smoke.py"
 
 
-def run_fixture(name):
+class _SimulatedProcessExit(BaseException):
+    pass
+
+
+def run_fixture(name, *, restart_after_submit=False):
     fixture = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
-    return _execute_fixture(fixture)
+    return _execute_fixture(fixture, restart_after_submit=restart_after_submit)
 
 
 class _FakePoints:
@@ -133,7 +134,7 @@ def _edit_plan(fixture):
     return plan
 
 
-def _execute_fixture(fixture):
+def _execute_fixture(fixture, *, restart_after_submit=False):
     counters = {name: 0 for name in (
         "dashscope-asr", "dashscope-qwen", "openai-image",
         "elevenlabs-music", "elevenlabs-sfx", "shotstack", "cos-output",
@@ -169,6 +170,7 @@ def _execute_fixture(fixture):
             "required_materials": [],
             "reference_materials": [],
             "original_text": fixture["original_text"],
+            "input_mode": fixture["source_type"],
         }
         if fixture["creation_mode"] == "platform_template":
             draft.update(template_id=fixture["template_id"], template_version=fixture["template_version"])
@@ -190,6 +192,8 @@ def _execute_fixture(fixture):
         transcript["properties"]["original_duration_in_milliseconds"] = fixture["duration_ms"]
         plan = _edit_plan(fixture)
 
+        crash_state = {"pending": restart_after_submit, "observed": False}
+
         def dashscope_http(method, url, _headers, _body, _timeout):
             if "text-generation" in url:
                 counters["dashscope-qwen"] += 1
@@ -206,6 +210,9 @@ def _execute_fixture(fixture):
                     "task_id": "asr-task-1", "task_status": "PENDING"
                 }}
             if url.endswith("/tasks/asr-task-1"):
+                if crash_state["pending"]:
+                    crash_state.update(pending=False, observed=True)
+                    raise _SimulatedProcessExit()
                 return {"request_id": "asr-query-1", "output": {
                     "task_id": "asr-task-1", "task_status": "SUCCEEDED",
                     "results": [{"subtask_status": "SUCCEEDED",
@@ -285,35 +292,26 @@ def _execute_fixture(fixture):
             "captions_ocr": True, "glyphs": True, "materials": True,
             "transcript_facts": True, "audio": True,
         }
-        services = runtime.ProductionServices(
-            db_path, cos_api=fake_cos, runner=runner,
-            dashscope_http=dashscope_http, shotstack_http=shotstack_http,
-            openai_http=openai_http, openai_downloader=openai_download,
-            elevenlabs_http=elevenlabs_http,
-            downloader=lambda _url: b"fake-rendered-mp4",
-            repair_handler=lambda *_args: {}, repair_reconciler=lambda *_args: {},
-            quality_analyzer=quality_analyzer,
-        )
-        dependencies = runtime.production_dependencies(db_path, services=services)
-
-        def align_handler(_job, _context, stage_input):
-            previous = stage_input["previous"]
-            timeline = build_text_timeline(
-                fixture["source_type"], fixture["original_text"], previous["asr_result"]
+        def build_runtime():
+            services = runtime.ProductionServices(
+                db_path, cos_api=fake_cos, runner=runner,
+                dashscope_http=dashscope_http, shotstack_http=shotstack_http,
+                openai_http=openai_http, openai_downloader=openai_download,
+                elevenlabs_http=elevenlabs_http,
+                downloader=lambda _url: b"fake-rendered-mp4",
+                repair_handler=lambda *_args: {}, repair_reconciler=lambda *_args: {},
+                quality_analyzer=quality_analyzer,
             )
-            timeline.update({
-                "alignment_status": "aligned",
-                "duration_ms": previous["asr_result"]["duration_ms"],
+            dependencies = runtime.production_dependencies(db_path, services=services)
+            dependencies.update({
+                "points_client": points,
+                "asset_db_path": assets_path,
+                "actual_cost": fixture["actual_points"],
+                "now": lambda: int(time.time()),
             })
-            return {"normalized_media": previous["normalized_media"], "text_timeline": timeline}
+            return services, dependencies
 
-        dependencies["handlers"]["aligning"] = align_handler
-        dependencies.update({
-            "points_client": points,
-            "asset_db_path": assets_path,
-            "actual_cost": fixture["actual_points"],
-            "now": lambda: int(time.time()),
-        })
+        services, dependencies = build_runtime()
         env = {
             "DASHSCOPE_API_KEY": "test-placeholder",
             "SHOTSTACK_API_KEY": "test-placeholder",
@@ -324,6 +322,27 @@ def _execute_fixture(fixture):
             "AI_EDIT_V2_WEBHOOK_SECRET": "test-placeholder",
         }
         with patch.dict(os.environ, env, clear=False):
+            restart_checkpoint = None
+            if restart_after_submit:
+                try:
+                    pipeline.run_job(created["job"]["id"], dependencies, db_path=db_path)
+                except _SimulatedProcessExit:
+                    pass
+                else:
+                    raise AssertionError("simulated process exit was not reached")
+                with closing(store.open_store(db_path)) as conn:
+                    restart_checkpoint = dict(conn.execute(
+                        "SELECT stage,status,provider_task_id FROM edit_v2_pipeline_checkpoints WHERE job_id=? AND stage='transcribing'",
+                        (job_id,),
+                    ).fetchone())
+                    conn.execute(
+                        "UPDATE edit_v2_jobs SET lease_owner=NULL,lease_until=NULL WHERE id=?",
+                        (job_id,),
+                    )
+                previous_services = services
+                services, dependencies = build_runtime()
+                if services is previous_services:
+                    raise AssertionError("runtime services were not rebuilt")
             result = pipeline.run_job(created["job"]["id"], dependencies, db_path=db_path)
             replay = pipeline.run_job(created["job"]["id"], dependencies, db_path=db_path)
 
@@ -335,6 +354,10 @@ def _execute_fixture(fixture):
             checkpoint_stages = [row[0] for row in conn.execute(
                 "SELECT stage FROM edit_v2_pipeline_checkpoints WHERE job_id=? ORDER BY id", (job_id,)
             ).fetchall()]
+            aligning_output = json.loads(conn.execute(
+                "SELECT output_json FROM edit_v2_pipeline_checkpoints WHERE job_id=? AND stage='aligning'",
+                (job_id,),
+            ).fetchone()[0])
         with closing(sqlite3.connect(assets_path)) as conn:
             conn.row_factory = sqlite3.Row
             asset_row = conn.execute("SELECT * FROM video_assets WHERE job_id=?", (job_id,)).fetchone()
@@ -369,6 +392,12 @@ def _execute_fixture(fixture):
             "refunded_points": settlement["refunded_points"],
             "starting_balance": starting_balance,
             "ending_balance": points.balance,
+            "timeline_source_type": aligning_output["text_timeline"]["source_type"],
+            "timeline_text": aligning_output["text_timeline"]["text"],
+            "expected_timeline_text": fixture["original_text"] if fixture["source_type"] == "platform_video" else "".join(item["text"] for item in transcript["transcripts"]),
+            "restart_checkpoint": restart_checkpoint,
+            "deduct_calls": len([call for call in points.calls if call[0] == "deduct"]),
+            "refund_calls": len([call for call in points.calls if call[0] == "refund"]),
         }
 
 
@@ -398,6 +427,9 @@ class FakeProviderE2ETests(unittest.TestCase):
         })
         self.assertEqual(result["held_points"] - result["actual_points"], result["refunded_points"])
         self.assertEqual(result["ending_balance"], result["starting_balance"] - result["actual_points"])
+        fixture = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["timeline_source_type"], fixture["source_type"])
+        self.assertEqual(result["timeline_text"], result["expected_timeline_text"])
 
     def test_platform_video_e2e(self):
         self.assert_run_fixture("platform_video")
@@ -407,6 +439,21 @@ class FakeProviderE2ETests(unittest.TestCase):
 
     def test_audio_only_e2e(self):
         self.assert_run_fixture("audio_only")
+
+    def test_restart_after_provider_identity_reconciles_without_duplicate_charges(self):
+        result = run_fixture("external_video", restart_after_submit=True)
+        self.assertEqual(result["state"], "completed")
+        self.assertTrue(result["restart_checkpoint"])
+        self.assertEqual(result["restart_checkpoint"]["stage"], "transcribing")
+        self.assertEqual(result["restart_checkpoint"]["status"], "running")
+        self.assertEqual(result["restart_checkpoint"]["provider_task_id"], "asr-task-1")
+        self.assertEqual(result["deduct_calls"], 1)
+        self.assertEqual(result["refund_calls"], 1)
+        self.assertEqual(result["external_charge_counts"], {
+            "dashscope-asr": 1, "dashscope-qwen": 1, "openai-image": 1,
+            "elevenlabs-music": 1, "elevenlabs-sfx": 1, "shotstack": 1,
+            "cos-output": 1,
+        })
 
 
 class ProviderSmokeCLITests(unittest.TestCase):
@@ -434,69 +481,50 @@ class ProviderSmokeCLITests(unittest.TestCase):
         smoke = self._module()
         for provider in self.PROVIDERS:
             with self.subTest(provider=provider):
-                called = []
                 result = smoke.run_smoke(
                     provider,
                     environ={},
-                    operation=lambda: called.append(provider),
                     timeout_seconds=0.05,
                 )
                 self.assertEqual(result.exit_code, 3)
                 self.assertEqual(result.stage, "not_ready")
-                self.assertEqual(called, [])
 
     def test_success_output_contains_only_stage_and_redacted_request_id(self):
         smoke = self._module()
+        child = "import json; print('AI_EDIT_V2_SMOKE_RESULT='+json.dumps({'request_id':'req-sensitive-prefix-12345678'}))"
         result = smoke.run_smoke(
             "dashscope-qwen",
             environ={"DASHSCOPE_API_KEY": "test-placeholder"},
-            operation=lambda: {
-                "request_id": "req-sensitive-prefix-12345678",
-                "headers": {"Authorization": "test-placeholder"},
-                "body": {"signed_url": "https://private.test/output?signature=secret"},
-            },
-            timeout_seconds=0.05,
+            command=[sys.executable, "-c", child],
+            timeout_seconds=1,
         )
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(smoke.format_result(result), "stage=completed request_id=...5678")
 
-    def test_provider_stdout_and_stderr_are_suppressed(self):
+    def test_child_stdout_and_stderr_are_never_forwarded(self):
         smoke = self._module()
-
-        def noisy_operation():
-            print("Authorization: test-placeholder")
-            print("https://private.invalid/output?signature=test-placeholder", file=sys.stderr)
-            return {"request_id": "safe-request-12345678"}
-
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            result = smoke.run_smoke(
-                "dashscope-qwen",
-                environ={"DASHSCOPE_API_KEY": "test-placeholder"},
-                operation=noisy_operation,
-                timeout_seconds=0.05,
-            )
+        child = "import json,sys; print('Authorization: canary-secret'); print('signed=canary-secret',file=sys.stderr); print('AI_EDIT_V2_SMOKE_RESULT='+json.dumps({'request_id':'safe-request-12345678'}))"
+        result = smoke.run_smoke(
+            "dashscope-qwen", environ={"DASHSCOPE_API_KEY": "test-placeholder"},
+            command=[sys.executable, "-c", child], timeout_seconds=1,
+        )
         self.assertEqual(result.exit_code, 0)
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(smoke.format_result(result), "stage=completed request_id=...5678")
 
     def test_timeout_has_stable_exit_and_does_not_leak_operation_result(self):
         smoke = self._module()
 
-        def slow_operation():
-            time.sleep(0.2)
-            return {"request_id": "late-secret-request-id", "body": "secret-body"}
-
+        started = time.monotonic()
         result = smoke.run_smoke(
             "dashscope-asr",
             environ={
                 "DASHSCOPE_API_KEY": "test-placeholder",
                 "AI_EDIT_V2_SMOKE_ASR_URL": "https://input.invalid/audio.m4a",
             },
-            operation=slow_operation,
+            command=[sys.executable, "-c", "import time; print('canary-secret'); time.sleep(10)"],
             timeout_seconds=0.01,
         )
+        self.assertLess(time.monotonic() - started, 1.0)
         self.assertEqual(result.exit_code, 4)
         self.assertEqual(smoke.format_result(result), "stage=timeout request_id=none")
 

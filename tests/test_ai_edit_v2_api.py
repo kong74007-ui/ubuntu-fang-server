@@ -28,6 +28,7 @@ def valid_api_draft():
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 30_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "1",
             "kind": "video",
@@ -168,6 +169,17 @@ class ApiTests(unittest.TestCase):
         self.cos_patch.stop()
         self.env.stop()
         self.temp_dir.cleanup()
+
+    def test_canonical_draft_preserves_platform_input_mode_and_original_text(self):
+        draft = valid_api_draft()
+        draft.update({
+            "creation_mode": "platform_template",
+            "input_mode": "platform_video",
+            "original_text": "品牌价格是29元",
+        })
+        canonical, _bindings = api.canonicalize_job_draft("alice", draft)
+        self.assertEqual(canonical["input_mode"], "platform_video")
+        self.assertEqual(canonical["original_text"], "品牌价格是29元")
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)

@@ -17,6 +17,8 @@ performed.
 - CLI output is restricted to `stage=<stage> request_id=<redacted>`; provider
   stdout/stderr is suppressed and request IDs expose at most the last four safe
   characters. Headers, bodies, signed URLs and credentials are never emitted.
+- Each provider operation runs in its own subprocess. The parent enforces the
+  wall clock timeout with terminate/kill/wait and never forwards child output.
 - Added fixture-driven `platform_video`, `external_video` and `audio_only`
   fake-provider E2E coverage. Each flow uses real quote, hold, job store,
   normalization, transcript/alignment, director, material resolution, OpenAI
@@ -26,6 +28,14 @@ performed.
   fake operation and final COS delivery occur exactly once, owner identity is
   preserved, and the actual charge plus refunded hold difference equals the
   final points balance.
+- Production alignment now distinguishes platform video, external video and
+  external audio from durable input metadata. Platform text remains authoritative
+  while ASR supplies timestamps; external inputs use ASR text.
+- Added a Git-aware secret scanner covering tracked and untracked files (including
+  fixtures) while honoring `--exclude-standard`. Findings contain path/type only.
+- Added a true restart E2E that exits after ASR provider identity persistence,
+  rebuilds services/dependencies from the same database, reconciles, and completes
+  without duplicate provider calls, hold, settlement or refund.
 
 ## TDD evidence
 
@@ -33,12 +43,12 @@ performed.
   three E2E fixtures and the smoke module were absent.
 - Additional RED: the noisy-provider test demonstrated provider stdout leakage
   before suppression was added.
-- GREEN: final targeted suite passed 8/8.
+- Fix-round GREEN: Task 10 E2E plus scanner suite passed 12/12.
 
 ## Verification
 
-- `python -m unittest tests.test_ai_edit_v2_e2e -v`: 8/8 passed.
-- `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py' -v`: 336/336
+- `python -m unittest tests.test_ai_edit_v2_e2e tests.test_ai_edit_v2_secret_scan -v`: 12/12 passed.
+- `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: 341/341
   passed.
 - `node --test tests/test_ai_edit_v2_ui.js`: 6/6 passed.
 - `python scripts/ci_validate.py`: passed.

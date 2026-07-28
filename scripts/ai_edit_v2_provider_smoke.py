@@ -4,19 +4,18 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +59,7 @@ _REQUIRED_ENV = {
     ),
     "cos": _COS_ENV + ("AI_EDIT_V2_SMOKE_COS_KEY",),
 }
+_RESULT_PREFIX = "AI_EDIT_V2_SMOKE_RESULT="
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ def run_smoke(
     provider: str,
     *,
     environ: Mapping[str, str] | None = None,
-    operation: Callable[[], Any] | None = None,
+    command: Sequence[str] | None = None,
     timeout_seconds: float = 30.0,
 ) -> SmokeResult:
     env = os.environ if environ is None else environ
@@ -108,24 +108,48 @@ def run_smoke(
         return SmokeResult(EXIT_USAGE, "argument_validation")
     if not _ready(provider, env):
         return SmokeResult(EXIT_NOT_READY, "not_ready")
-    callback = operation or (lambda: _run_provider(provider, env, timeout_seconds))
-
-    def quiet_callback() -> Any:
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            return callback()
-
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="provider-smoke")
-    future = executor.submit(quiet_callback)
+    child_command = list(command or (
+        sys.executable, str(Path(__file__).resolve()), "--_provider-child",
+        "--provider", provider, "--timeout", str(timeout_seconds),
+    ))
     try:
-        value = future.result(timeout=max(0.001, float(timeout_seconds)))
-        return SmokeResult(EXIT_OK, "completed", _request_id(value))
-    except FutureTimeout:
-        future.cancel()
+        process = subprocess.Popen(
+            child_command, cwd=ROOT, env=dict(env), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        )
+        stdout, _stderr = process.communicate(timeout=max(0.001, float(timeout_seconds)))
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.communicate(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
         return SmokeResult(EXIT_TIMEOUT, "timeout")
-    except BaseException:
+    except (OSError, ValueError):
         return SmokeResult(EXIT_PROVIDER_FAILURE, "failed")
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    if process.returncode != EXIT_OK:
+        return SmokeResult(EXIT_PROVIDER_FAILURE, "failed")
+    for line in stdout.splitlines():
+        if not line.startswith(_RESULT_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(_RESULT_PREFIX):])
+        except (TypeError, ValueError):
+            return SmokeResult(EXIT_PROVIDER_FAILURE, "failed")
+        return SmokeResult(EXIT_OK, "completed", _request_id(value))
+    return SmokeResult(EXIT_PROVIDER_FAILURE, "failed")
+
+
+def _run_child(provider: str, timeout_seconds: float) -> int:
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as sink:
+            with redirect_stdout(sink), redirect_stderr(sink):
+                value = _run_provider(provider, os.environ, timeout_seconds)
+    except BaseException:
+        return EXIT_PROVIDER_FAILURE
+    print(_RESULT_PREFIX + json.dumps({"request_id": _request_id(value)}), flush=True)
+    return EXIT_OK
 
 
 def _run_provider(provider: str, environ: Mapping[str, str], timeout: float) -> Any:
@@ -219,9 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one AI Edit V2 provider smoke check")
     parser.add_argument("--provider", choices=PROVIDERS)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--_provider-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.provider is None:
         return EXIT_USAGE
+    if args._provider_child:
+        return _run_child(args.provider, args.timeout)
     result = run_smoke(args.provider, timeout_seconds=args.timeout)
     print(format_result(result), flush=True)
     return result.exit_code

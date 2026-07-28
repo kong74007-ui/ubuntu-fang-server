@@ -365,8 +365,13 @@ def canonicalize_job_draft(owner: str, client_draft: dict[str, Any]) -> tuple[di
         bindings.append({"material_id": material_id, "purpose": purpose})
     canonical = {
         key: client_draft.get(key)
-        for key in ("creation_mode", "brief", "language", "aspect_ratio", "target_duration_ms")
+        for key in (
+            "creation_mode", "brief", "language", "aspect_ratio", "target_duration_ms",
+            "input_mode",
+        )
     }
+    if client_draft.get("original_text") is not None:
+        canonical["original_text"] = client_draft["original_text"]
     canonical["main_input"] = canonical_groups["primary"][0]
     canonical["required_materials"] = canonical_groups["required"]
     canonical["reference_materials"] = canonical_groups["reference"]
