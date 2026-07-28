@@ -327,6 +327,119 @@ class StoreTests(unittest.TestCase):
 
         self.assertGreater(material_id, 0)
 
+    def test_generated_material_creation_is_idempotent_and_job_scoped(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "image-slot-1",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "mime_type": "image/png",
+            "etag": "etag-1",
+            "size_bytes": 8,
+            "width": 1536,
+            "height": 1024,
+        }
+
+        first = store.create_generated_material(**fields, now=100, db_path=self.db_path)
+        second = store.create_generated_material(**fields, now=101, db_path=self.db_path)
+
+        self.assertEqual(second["id"], first["id"])
+        found = store.find_generated_material(
+            "user-a", job["id"], "image-slot-1", db_path=self.db_path
+        )
+        self.assertEqual(found["id"], first["id"])
+        self.assertNotIn("url", json.dumps(dict(found)).lower())
+        with self.assertRaisesRegex(ValueError, "job_scope"):
+            store.create_generated_material(
+                **{**fields, "job_id": "223e4567-e89b-12d3-a456-426614174000"},
+                now=102,
+                db_path=self.db_path,
+            )
+
+    def test_material_resolution_records_are_idempotent_and_reject_urls(self):
+        job = self._create_job()
+        records = [
+            {
+                "slot_id": "slot_product_1",
+                "semantic_query": "product close-up",
+                "time_range": {"start_ms": 0, "end_ms": 2_000},
+                "ratio": "16:9",
+                "dimensions": {"width": 1920, "height": 1080},
+                "source": "current_upload",
+                "asset_id": "asset-1",
+                "cos_key": "ai-edit-v2/safe/material.png",
+                "required": True,
+                "selected_score": 0.9,
+                "exclusion_code": None,
+            }
+        ]
+
+        first = store.save_material_resolution_records(
+            job["id"], records, now=100, db_path=self.db_path
+        )
+        second = store.save_material_resolution_records(
+            job["id"], records, now=101, db_path=self.db_path
+        )
+
+        self.assertEqual(second, first)
+        row = self._row("edit_v2_stage_attempts", first)
+        persisted = json.loads(row["output_summary_json"])["material_resolutions"]
+        self.assertEqual(persisted, records)
+        with self.assertRaisesRegex(ValueError, "unsafe_resolution_record"):
+            store.save_material_resolution_records(
+                job["id"],
+                [{**records[0], "provider_url": "https://signed.example/x"}],
+                now=102,
+                db_path=self.db_path,
+            )
+        second_job = self._create_job(key="request-unsafe-url", now=103)
+        with self.assertRaisesRegex(ValueError, "unsafe_resolution_record"):
+            store.save_material_resolution_records(
+                second_job["id"],
+                [{**records[0], "cos_key": "https://provider.example/image.png?sig=x"}],
+                now=104,
+                db_path=self.db_path,
+            )
+
+    def test_material_resolution_completes_an_existing_stage_attempt(self):
+        job = self._create_job()
+        attempt_id = store.record_stage_attempt(
+            job["id"],
+            "resolving_assets",
+            1,
+            "running",
+            90,
+            db_path=self.db_path,
+        )
+        records = [
+            {
+                "slot_id": "slot_1",
+                "semantic_query": "safe query",
+                "time_range": {"start_ms": 0, "end_ms": 100},
+                "ratio": "16:9",
+                "dimensions": {"width": 1920, "height": 1080},
+                "source": "platform_public",
+                "asset_id": "asset-1",
+                "cos_key": "ai-edit-v2/safe/material.png",
+                "required": False,
+                "selected_score": 0.8,
+                "exclusion_code": None,
+            }
+        ]
+
+        saved_id = store.save_material_resolution_records(
+            job["id"], records, now=100, db_path=self.db_path
+        )
+
+        row = self._row("edit_v2_stage_attempts", attempt_id)
+        self.assertEqual(saved_id, attempt_id)
+        self.assertEqual(row["status"], "succeeded")
+        self.assertEqual(row["finished_at"], 100)
+        self.assertEqual(
+            json.loads(row["output_summary_json"]),
+            {"material_resolutions": records},
+        )
     def test_terminal_transition_clears_style_analysis_but_keeps_cos_and_audit(self):
         job = self._create_job()
         with closing(store.open_store(self.db_path)) as conn:

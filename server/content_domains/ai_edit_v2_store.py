@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -218,6 +219,9 @@ def init_db(db_path: str | None = None) -> None:
                 ON edit_v2_jobs(status, lease_until, created_at);
             CREATE INDEX IF NOT EXISTS idx_edit_v2_materials_owner
                 ON edit_v2_materials(owner, created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_generated_idempotency
+                ON edit_v2_materials(owner, semantic_label)
+                WHERE source='gpt_image';
             CREATE INDEX IF NOT EXISTS idx_edit_v2_attempts_job
                 ON edit_v2_stage_attempts(job_id, stage, attempt);
             """
@@ -368,6 +372,179 @@ def bind_job_materials(
                     (job_id, material_id, binding["purpose"], now),
                 )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _generation_label(job_id: str, idempotency_key: str) -> str:
+    digest = hashlib.sha256(f"{job_id}\0{idempotency_key}".encode("utf-8")).hexdigest()
+    return f"generation:{digest}"
+
+
+def find_generated_material(
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    *,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    label = _generation_label(job_id, idempotency_key)
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT * FROM edit_v2_materials
+               WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+            (owner, label),
+        ).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "job_id": job_id}
+
+
+def create_generated_material(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    cos_key: str,
+    mime_type: str,
+    etag: str,
+    size_bytes: int,
+    width: int,
+    height: int,
+    now: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    owner_hash = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+    expected_prefix = f"ai-edit-v2/{owner_hash}/{job_id}/generated/"
+    if not isinstance(cos_key, str) or not cos_key.startswith(expected_prefix):
+        raise ValueError("generated_material_job_scope_invalid")
+    label = _generation_label(job_id, idempotency_key)
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = conn.execute(
+                "SELECT id FROM edit_v2_jobs WHERE id=? AND owner=?", (job_id, owner)
+            ).fetchone()
+            if job is None:
+                raise ValueError("generated_material_job_scope_invalid")
+            conn.execute(
+                """INSERT OR IGNORE INTO edit_v2_materials(
+                       owner,kind,purpose,semantic_label,source,cos_key,mime_type,
+                       etag,size_bytes,width,height,status,created_at,updated_at
+                   ) VALUES(?, 'image','generated',?,'gpt_image',?,?,?,?,?,?,'ready',?,?)""",
+                (
+                    owner,
+                    label,
+                    cos_key,
+                    mime_type,
+                    etag,
+                    int(size_bytes),
+                    int(width),
+                    int(height),
+                    int(now),
+                    int(now),
+                ),
+            )
+            row = conn.execute(
+                """SELECT * FROM edit_v2_materials
+                   WHERE owner=? AND source='gpt_image' AND semantic_label=?""",
+                (owner, label),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("generated_material_create_failed")
+            expected = {
+                "cos_key": cos_key,
+                "mime_type": mime_type,
+                "etag": etag,
+                "size_bytes": int(size_bytes),
+                "width": int(width),
+                "height": int(height),
+            }
+            if any(row[key] != value for key, value in expected.items()):
+                raise ValueError("generated_material_idempotency_conflict")
+            conn.commit()
+            return {**dict(row), "job_id": job_id}
+        except Exception:
+            conn.rollback()
+            raise
+
+
+_RESOLUTION_RECORD_FIELDS = {
+    "slot_id",
+    "semantic_query",
+    "time_range",
+    "ratio",
+    "dimensions",
+    "source",
+    "asset_id",
+    "cos_key",
+    "required",
+    "selected_score",
+    "exclusion_code",
+}
+
+
+def save_material_resolution_records(
+    job_id: str,
+    records: list[dict[str, Any]],
+    now: int,
+    *,
+    db_path: str | None = None,
+) -> int:
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) or set(record) != _RESOLUTION_RECORD_FIELDS
+        for record in records
+    ):
+        raise ValueError("unsafe_resolution_record")
+    serialized = json.dumps(
+        {"material_resolutions": records},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    lowered = serialized.lower()
+    if any(
+        marker in lowered
+        for marker in ('"url"', "provider_url", "signed_url", "://", "?signature=", "?sig=")
+    ):
+        raise ValueError("unsafe_resolution_record")
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                """SELECT id,status,output_summary_json FROM edit_v2_stage_attempts
+                   WHERE job_id=? AND stage='resolving_assets' AND attempt=1""",
+                (job_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["output_summary_json"] is None:
+                    conn.execute(
+                        """UPDATE edit_v2_stage_attempts
+                           SET status='succeeded',output_summary_json=?,finished_at=?,error_code=NULL
+                           WHERE id=?""",
+                        (serialized, now, existing["id"]),
+                    )
+                    conn.commit()
+                    return int(existing["id"])
+                existing_json = json.dumps(
+                    json.loads(existing["output_summary_json"] or "{}"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if existing_json != serialized:
+                    raise ValueError("material_resolution_idempotency_conflict")
+                conn.commit()
+                return int(existing["id"])
+            cursor = conn.execute(
+                """INSERT INTO edit_v2_stage_attempts(
+                       job_id,stage,attempt,status,output_summary_json,started_at,finished_at
+                   ) VALUES(?,'resolving_assets',1,'succeeded',?,?,?)""",
+                (job_id, serialized, now, now),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
         except Exception:
             conn.rollback()
             raise
