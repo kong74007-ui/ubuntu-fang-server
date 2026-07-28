@@ -1,5 +1,22 @@
 # Task 7 实施报告
 
+## Fix Round 1
+
+- 生产 worker 已从旧的逐阶段 `run_stage` 切换到 `run_job`，每次 claim 使用唯一 lease token，并装配 `runtime.production_dependencies()`；bundle 显式提供 Task 2-6 的 DashScope、OpenAI image、ElevenLabs、Shotstack adapter 类型、各阶段 handler/reconciler 和私有 COS verifier。功能开关关闭时仍只做账务 reconcile、不 claim 新任务。
+- 增加逐阶段输出契约及递归 artifact extractor。`normalizing`、`resolving_materials`、`generating_media`、`rendering`、`postprocessing` 必须提供带 `cos_key`、`etag`、正 `size_bytes` 的产物；nested artifact、缺失 metadata、COS size/etag 不一致均失败关闭。
+- heartbeat 失租会传播 `job_lease_lost`。检查点 prepare/increment/invalidate/complete、stage attempt、provider identity 和迁移全部以 job lease owner/expiry 作 fencing；旧 worker 失租后不能保存晚到 provider ID 或覆盖新 worker。
+- handler 前后、checkpoint 前和 transition 前均检查 lease/deadline；晚结果保持 checkpoint 为 running，不推进状态。provider identity 已先持久化时仍供下一 worker reconcile。
+- 失败 transition 原子写 `edit_v2_jobs.error_code`；成功 transition 清空旧错误，API/restart 读取数据库可得到稳定终态错误。
+
+Fix Round 1 RED：worker 仍调用 `run_stage`；nested artifact 被漏检；heartbeat 失租后晚 provider ID 可写；晚 handler 结果触发 CAS 而非预算失败；终态 `error_code` 为 NULL。
+
+```text
+Task 7 定向：Ran 70 tests in 19.486s, OK
+全量 test_ai_edit_v2*.py：Ran 262 tests in 24.058s, OK
+```
+
+未部署、未重启、未调用真实供应商；生产 bundle 的真实 adapter 类型和 handler/reconciler 边界由测试覆盖，真实供应商验收继续属于 Task 11。
+
 - 分支：`codex/ai-edit-v2-stable-release`
 - 基线 SHA：`72f714aff0f3ff756bd4f98ce812f471fe50482b`
 - Task 7 SHA：本报告所在的单独提交（以交付时 `git rev-parse HEAD` 为准）

@@ -1232,6 +1232,18 @@ def release_job_lease(
     return changed == 1
 
 
+def lease_owned(
+    job_id: str, worker_id: str, now: int, *, db_path: str | None = None
+) -> bool:
+    with _connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT 1 FROM edit_v2_jobs
+               WHERE id=? AND lease_owner=? AND lease_until>?""",
+            (job_id, worker_id, int(now)),
+        ).fetchone()
+    return row is not None
+
+
 def transition_leased(
     job_id: str,
     expected: str,
@@ -1273,13 +1285,14 @@ def transition_leased(
             terminal = target in TERMINAL_STATES
             changed = conn.execute(
                 """UPDATE edit_v2_jobs
-                   SET status=?,checkpoint_json=?,updated_at=?,
+                   SET status=?,checkpoint_json=?,updated_at=?,error_code=?,
                        lease_owner=?,lease_until=?
                    WHERE id=? AND status=? AND lease_owner=?""",
                 (
                     target,
                     json.dumps(checkpoints, ensure_ascii=False, separators=(",", ":")),
                     int(now),
+                    checkpoint.get("error_code") if terminal else None,
                     None if terminal else worker_id,
                     None if terminal else int(now) + int(lease_seconds),
                     job_id,
@@ -1300,6 +1313,7 @@ def prepare_pipeline_checkpoint(
     input_fingerprint: str,
     now: int,
     *,
+    lease_owner: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
     """Create or load one stable-stage checkpoint without discarding provider IDs."""
@@ -1307,6 +1321,12 @@ def prepare_pipeline_checkpoint(
     with _connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if lease_owner and conn.execute(
+                """SELECT 1 FROM edit_v2_jobs
+                   WHERE id=? AND lease_owner=? AND lease_until>?""",
+                (job_id, lease_owner, int(now)),
+            ).fetchone() is None:
+                raise ValueError("job_lease_lost")
             row = conn.execute(
                 """SELECT * FROM edit_v2_pipeline_checkpoints
                    WHERE job_id=? AND stage=?""",
@@ -1341,9 +1361,19 @@ def prepare_pipeline_checkpoint(
 
 
 def increment_pipeline_attempt(
-    checkpoint_id: int, now: int, *, db_path: str | None = None
+    checkpoint_id: int, now: int, *, lease_owner: str | None = None,
+    db_path: str | None = None
 ) -> dict[str, Any]:
     with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
         conn.execute(
             """UPDATE edit_v2_pipeline_checkpoints
                SET status='running',attempt_count=attempt_count+1,updated_at=?
@@ -1354,6 +1384,7 @@ def increment_pipeline_attempt(
             "SELECT * FROM edit_v2_pipeline_checkpoints WHERE id=?",
             (int(checkpoint_id),),
         ).fetchone()
+        conn.commit()
     if row is None:
         raise ValueError("pipeline_checkpoint_missing")
     return dict(row)
@@ -1364,6 +1395,7 @@ def save_pipeline_provider_identity(
     *,
     provider_task_id: str | None = None,
     provider_reference: str | None = None,
+    lease_owner: str | None = None,
     now: int,
     db_path: str | None = None,
 ) -> None:
@@ -1373,12 +1405,20 @@ def save_pipeline_provider_identity(
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                """SELECT provider_task_id,provider_reference
-                   FROM edit_v2_pipeline_checkpoints WHERE id=?""",
+                """SELECT c.provider_task_id,c.provider_reference,c.job_id,
+                          j.lease_owner,j.lease_until
+                   FROM edit_v2_pipeline_checkpoints c
+                   JOIN edit_v2_jobs j ON j.id=c.job_id WHERE c.id=?""",
                 (int(checkpoint_id),),
             ).fetchone()
             if row is None:
                 raise ValueError("pipeline_checkpoint_missing")
+            if lease_owner and (
+                row["lease_owner"] != lease_owner
+                or row["lease_until"] is None
+                or int(row["lease_until"]) <= int(now)
+            ):
+                raise ValueError("job_lease_lost")
             if provider_task_id and row["provider_task_id"] not in {None, provider_task_id}:
                 raise ValueError("pipeline_provider_identity_conflict")
             if provider_reference and row["provider_reference"] not in {None, provider_reference}:
@@ -1401,30 +1441,52 @@ def complete_pipeline_checkpoint(
     output: dict[str, Any],
     now: int,
     *,
+    lease_owner: str | None = None,
     db_path: str | None = None,
 ) -> None:
     serialized = json.dumps(
         output, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
         changed = conn.execute(
             """UPDATE edit_v2_pipeline_checkpoints
                SET status='completed',output_json=?,updated_at=? WHERE id=?""",
             (serialized, int(now), int(checkpoint_id)),
         ).rowcount
+        conn.commit()
     if changed != 1:
         raise ValueError("pipeline_checkpoint_missing")
 
 
 def invalidate_pipeline_checkpoint(
-    checkpoint_id: int, now: int, *, db_path: str | None = None
+    checkpoint_id: int, now: int, *, lease_owner: str | None = None,
+    db_path: str | None = None
 ) -> None:
     with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if lease_owner and conn.execute(
+            """SELECT 1 FROM edit_v2_pipeline_checkpoints c
+               JOIN edit_v2_jobs j ON j.id=c.job_id
+               WHERE c.id=? AND j.lease_owner=? AND j.lease_until>?""",
+            (int(checkpoint_id), lease_owner, int(now)),
+        ).fetchone() is None:
+            conn.rollback()
+            raise ValueError("job_lease_lost")
         conn.execute(
             """UPDATE edit_v2_pipeline_checkpoints
                SET status='running',output_json=NULL,updated_at=? WHERE id=?""",
             (int(now), int(checkpoint_id)),
         )
+        conn.commit()
 
 
 def renew_lease(
@@ -1479,12 +1541,14 @@ def transition(
             )
             changed = conn.execute(
                 """UPDATE edit_v2_jobs
-                   SET status=?,checkpoint_json=?,lease_owner=NULL,lease_until=NULL,updated_at=?
+                   SET status=?,checkpoint_json=?,lease_owner=NULL,lease_until=NULL,
+                       updated_at=?,error_code=?
                    WHERE id=? AND status=?""",
                 (
                     target,
                     json.dumps(checkpoints, ensure_ascii=False, separators=(",", ":")),
                     now,
+                    checkpoint.get("error_code") if target in FAILURE_STATES else None,
                     job_id,
                     expected,
                 ),
@@ -1521,9 +1585,19 @@ def record_stage_attempt(
     input_summary: dict[str, Any] | None = None,
     output_summary: dict[str, Any] | None = None,
     error_code: str | None = None,
+    lease_owner: str | None = None,
     db_path: str | None = None,
 ) -> int:
     with _connection(db_path) as conn:
+        if lease_owner:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                """SELECT 1 FROM edit_v2_jobs
+                   WHERE id=? AND lease_owner=? AND lease_until>?""",
+                (job_id, lease_owner, int(started_at)),
+            ).fetchone() is None:
+                conn.rollback()
+                raise ValueError("job_lease_lost")
         cursor = conn.execute(
             """INSERT INTO edit_v2_stage_attempts(
                    job_id,stage,attempt,status,provider_task_id,input_summary_json,
@@ -1542,6 +1616,8 @@ def record_stage_attempt(
                 finished_at,
             ),
         )
+        if lease_owner:
+            conn.commit()
         return int(cursor.lastrowid)
 
 

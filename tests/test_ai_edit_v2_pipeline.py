@@ -539,7 +539,11 @@ class StableRunJobTests(PipelineTests):
                         render_release.wait(5)
                 return {
                     "stage": name,
-                    "artifact": {"cos_key": f"private/{name}.json", "etag": name},
+                    "artifact": {
+                        "cos_key": f"private/{name}.json",
+                        "etag": name,
+                        "size_bytes": 10,
+                    },
                     "input_stage": stage_input.get("stage"),
                 }
             return run
@@ -620,7 +624,9 @@ class StableRunJobTests(PipelineTests):
             reconciled.append(context["provider_task_id"])
             return {
                 "stage": "rendering",
-                "artifact": {"cos_key": "private/render.mp4", "etag": "render"},
+                "artifact": {
+                    "cos_key": "private/render.mp4", "etag": "render", "size_bytes": 10
+                },
             }
 
         dependencies["reconcilers"] = {"rendering": reconcile_render}
@@ -739,6 +745,136 @@ class StableRunJobTests(PipelineTests):
                 release.set()
                 future.result(timeout=5)
             self.assertGreaterEqual(renew.call_count, 1)
+
+    def test_required_artifact_metadata_and_nested_verification_fail_closed(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        dependencies["handlers"]["normalizing"] = lambda *_args: {
+            "nested": {
+                "artifacts": [
+                    {"cos_key": "private/source.mp4", "etag": "bad", "size_bytes": 10}
+                ]
+            }
+        }
+        dependencies["verify_artifact"] = (
+            lambda _stage, artifact: artifact["etag"] == "good"
+        )
+
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "validation_failed")
+        self.assertEqual(result["error_code"], "stage_artifact_invalid")
+
+        other = self._precharged_job("job-missing-artifact")
+        dependencies = self._dependencies([])
+        dependencies["handlers"]["normalizing"] = lambda *_args: {"metadata": {}}
+        result = pipeline.run_job(other["id"], dependencies, db_path=self.db_path)
+        self.assertEqual(result["error_code"], "stage_artifact_missing")
+
+    def test_late_handler_result_never_completes_checkpoint_or_advances(self):
+        job = self._precharged_job()
+        calls = []
+        clock = [100]
+        dependencies = self._dependencies(calls)
+        dependencies["now"] = lambda: clock[0]
+        dependencies["lease_seconds"] = 5_000
+
+        def late(*_args):
+            clock[0] = 2_901
+            return {
+                "artifact": {
+                    "cos_key": "private/late.mp4", "etag": "late", "size_bytes": 10
+                }
+            }
+
+        dependencies["handlers"]["normalizing"] = late
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "validation_failed")
+        self.assertEqual(result["error_code"], "normal_budget_exceeded")
+        with closing(store.open_store(self.db_path)) as conn:
+            checkpoint = conn.execute(
+                "SELECT status FROM edit_v2_pipeline_checkpoints WHERE job_id=? AND stage='normalizing'",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(checkpoint["status"], "running")
+
+    def test_lost_heartbeat_fences_old_worker_before_checkpoint_write(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        dependencies["lease_seconds"] = 1
+        dependencies["now"] = lambda: int(time.time())
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked(_job, context, _stage_input):
+            entered.set()
+            release.wait(3)
+            context["save_provider_task_id"]("late-provider-id")
+            return {
+                "artifact": {
+                    "cos_key": "private/old.mp4", "etag": "old", "size_bytes": 10
+                }
+            }
+
+        dependencies["handlers"]["normalizing"] = blocked
+        real_renew = store.renew_lease
+        renewals = []
+        lease_lost = threading.Event()
+
+        def lose_once(*args, **kwargs):
+            renewals.append(1)
+            if len(renewals) == 1:
+                lease_lost.set()
+                return False
+            return real_renew(*args, **kwargs)
+
+        with patch.object(store, "renew_lease", side_effect=lose_once):
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    pipeline.run_job, job["id"], dependencies, db_path=self.db_path
+                )
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(lease_lost.wait(2))
+                release.set()
+                with self.assertRaisesRegex(pipeline.PipelineError, "job_lease_lost"):
+                    future.result(timeout=5)
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT status,output_json,provider_task_id FROM edit_v2_pipeline_checkpoints WHERE job_id=? AND stage='normalizing'",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(row["status"], "running")
+        self.assertIsNone(row["output_json"])
+        self.assertIsNone(row["provider_task_id"])
+
+    def test_terminal_failure_persists_error_code_and_success_clears_stale_code(self):
+        job = self._precharged_job()
+        dependencies = self._dependencies([])
+        dependencies["handlers"]["normalizing"] = lambda *_args: (_ for _ in ()).throw(
+            pipeline.PipelineError("normalize_failed")
+        )
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        with closing(store.open_store(self.db_path)) as conn:
+            failed = conn.execute(
+                "SELECT error_code FROM edit_v2_jobs WHERE id=?", (job["id"],)
+            ).fetchone()[0]
+        self.assertEqual(failed, "normalize_failed")
+
+        successful = self._precharged_job("job-success-error-clear")
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_jobs SET error_code='stale' WHERE id=?", (successful["id"],)
+            )
+        pipeline.run_job(successful["id"], self._dependencies([]), db_path=self.db_path)
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT status,error_code FROM edit_v2_jobs WHERE id=?", (successful["id"],)
+            ).fetchone()
+        self.assertEqual(row["status"], "quality_check")
+        self.assertIsNone(row["error_code"])
 
 
 if __name__ == "__main__":

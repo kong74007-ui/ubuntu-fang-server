@@ -134,14 +134,20 @@ def _latest_attempt(job_id: str, stage: str, db_path: str | None = None):
 
 
 def _finish_attempt(
-    attempt_id: int, result: StageResult, now: int, db_path: str | None = None
+    attempt_id: int, result: StageResult, now: int, db_path: str | None = None,
+    *, lease_owner: str | None = None,
 ) -> None:
     with closing(store.open_store(store._db_path(db_path))) as conn:
-        conn.execute(
+        conn.execute("BEGIN IMMEDIATE")
+        changed = conn.execute(
             """UPDATE edit_v2_stage_attempts
                SET status=?,provider_task_id=COALESCE(?,provider_task_id),
                    output_summary_json=?,error_code=?,finished_at=?
-               WHERE id=?""",
+               WHERE id=? AND (? IS NULL OR EXISTS(
+                   SELECT 1 FROM edit_v2_jobs j
+                   WHERE j.id=edit_v2_stage_attempts.job_id
+                     AND j.lease_owner=? AND j.lease_until>?
+               ))""",
             (
                 "failed" if result.next_state in FAILURE_STATES else "completed",
                 result.provider_task_id,
@@ -149,12 +155,20 @@ def _finish_attempt(
                 result.error_code,
                 now,
                 attempt_id,
+                lease_owner,
+                lease_owner,
+                now,
             ),
-        )
+        ).rowcount
+        if changed != 1:
+            conn.rollback()
+            raise PipelineError("job_lease_lost" if lease_owner else "stage_attempt_missing")
+        conn.commit()
 
 
 def _save_provider_task_id(
-    attempt_id: int, provider_task_id: str, db_path: str | None = None
+    attempt_id: int, provider_task_id: str, db_path: str | None = None,
+    *, lease_owner: str | None = None, now: int | None = None,
 ) -> None:
     provider_task_id = str(provider_task_id or "").strip()
     if not provider_task_id:
@@ -163,11 +177,20 @@ def _save_provider_task_id(
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT provider_task_id,input_summary_json FROM edit_v2_stage_attempts WHERE id=?",
+                """SELECT a.provider_task_id,a.input_summary_json,a.job_id,
+                          j.lease_owner,j.lease_until
+                   FROM edit_v2_stage_attempts a
+                   JOIN edit_v2_jobs j ON j.id=a.job_id WHERE a.id=?""",
                 (attempt_id,),
             ).fetchone()
             if row is None or row["provider_task_id"] not in {None, provider_task_id}:
                 raise PipelineError("provider_task_id_conflict")
+            if lease_owner and (
+                row["lease_owner"] != lease_owner
+                or row["lease_until"] is None
+                or int(row["lease_until"]) <= int(now or time.time())
+            ):
+                raise PipelineError("job_lease_lost")
             conn.execute(
                 "UPDATE edit_v2_stage_attempts SET provider_task_id=? WHERE id=?",
                 (provider_task_id, attempt_id),
@@ -489,21 +512,12 @@ def _artifact_reusable(
 ) -> bool:
     from . import ai_edit_v2_runtime as runtime
 
-    artifacts: list[Any] = []
-    if "artifact" in output:
-        artifacts.append(output["artifact"])
-    value = output.get("artifacts")
-    if isinstance(value, list):
-        artifacts.extend(value)
-    elif value is not None:
-        artifacts.append(value)
-    if not artifacts:
-        return True
     verifier = runtime.option(dependencies, "verify_artifact")
-    if not callable(verifier):
-        return False
     try:
-        return all(verifier(stage, artifact) is True for artifact in artifacts)
+        valid, _code = runtime.validate_stage_output(
+            stage, output, verifier if callable(verifier) else None
+        )
+        return valid
     except Exception:
         return False
 
@@ -514,6 +528,7 @@ def _ensure_stable_attempt(
     input_fingerprint: str,
     now: int,
     db_path: str | None,
+    lease_owner: str | None = None,
 ) -> int:
     attempt = _latest_attempt(job_id, state, db_path)
     if attempt is not None:
@@ -533,6 +548,7 @@ def _ensure_stable_attempt(
         "running",
         int(now),
         input_summary={"pipeline_input_fingerprint": input_fingerprint},
+        lease_owner=lease_owner,
         db_path=db_path,
     )
 
@@ -552,6 +568,7 @@ class _LeaseHeartbeat:
         self.db_path = db_path
         self.now_fn = now_fn
         self.finished = threading.Event()
+        self.lost = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
@@ -564,7 +581,17 @@ class _LeaseHeartbeat:
                 int(self.now_fn()),
                 db_path=self.db_path,
             ):
+                self.lost.set()
                 return
+
+    def assert_active(self) -> None:
+        if self.lost.is_set():
+            raise PipelineError("job_lease_lost")
+        if not store.lease_owned(
+            self.job_id, self.worker_id, int(self.now_fn()), db_path=self.db_path
+        ):
+            self.lost.set()
+            raise PipelineError("job_lease_lost")
 
     def __enter__(self) -> "_LeaseHeartbeat":
         self.thread.start()
@@ -617,14 +644,18 @@ def run_job(
     if not callable(now_fn):
         raise PipelineError("pipeline_clock_invalid")
     lease_seconds = max(1, int(runtime.option(dependencies, "lease_seconds", 180)))
+    preclaimed_owner = runtime.option(dependencies, "lease_owner")
     worker_base = str(runtime.option(dependencies, "worker_id", "run-job"))
-    worker_id = f"{worker_base}:{uuid.uuid4().hex}"
+    worker_id = str(preclaimed_owner) if preclaimed_owner else f"{worker_base}:{uuid.uuid4().hex}"
     now = int(now_fn())
     job = _load_job(job_id, db_path)
     if job["status"] in TERMINAL_STATES or job["status"] == "quality_check":
         return {"job_id": job_id, "state": runtime.public_state(job["status"])}
-    claimed = store.claim_job(
-        job_id, worker_id, lease_seconds, now, db_path=db_path
+    claimed = (
+        job
+        if preclaimed_owner
+        and store.lease_owned(job_id, worker_id, now, db_path=db_path)
+        else store.claim_job(job_id, worker_id, lease_seconds, now, db_path=db_path)
     )
     if claimed is None:
         current = _load_job(job_id, db_path)
@@ -635,8 +666,9 @@ def run_job(
         }
     points_client = runtime.option(dependencies, "points_client", points)
 
-    with _LeaseHeartbeat(job_id, worker_id, lease_seconds, db_path, now_fn):
+    with _LeaseHeartbeat(job_id, worker_id, lease_seconds, db_path, now_fn) as heartbeat:
         while True:
+            heartbeat.assert_active()
             now = int(now_fn())
             job = _load_job(job_id, db_path)
             state = str(job["status"])
@@ -695,7 +727,8 @@ def run_job(
             )
             input_fingerprint = _fingerprint(stage_input)
             checkpoint = store.prepare_pipeline_checkpoint(
-                job_id, stage, input_fingerprint, now, db_path=db_path
+                job_id, stage, input_fingerprint, now,
+                lease_owner=worker_id, db_path=db_path
             )
             output: dict[str, Any] | None = None
             if checkpoint["status"] == "completed":
@@ -709,12 +742,13 @@ def run_job(
                     output = saved
                 else:
                     store.invalidate_pipeline_checkpoint(
-                        int(checkpoint["id"]), now, db_path=db_path
+                        int(checkpoint["id"]), now,
+                        lease_owner=worker_id, db_path=db_path
                     )
                     checkpoint["status"] = "running"
 
             attempt_id = _ensure_stable_attempt(
-                job_id, state, input_fingerprint, now, db_path
+                job_id, state, input_fingerprint, now, db_path, worker_id
             )
             if output is None:
                 handler = runtime.dependency_callable(dependencies, "handlers", stage)
@@ -740,8 +774,10 @@ def run_job(
                 if remaining_calls == 0:
                     last_code = "provider_retry_exhausted"
                 for _ in range(remaining_calls):
+                    heartbeat.assert_active()
                     checkpoint = store.increment_pipeline_attempt(
-                        int(checkpoint["id"]), int(now_fn()), db_path=db_path
+                        int(checkpoint["id"]), int(now_fn()),
+                        lease_owner=worker_id, db_path=db_path
                     )
                     context = {
                         "attempt_id": attempt_id,
@@ -749,6 +785,7 @@ def run_job(
                         "provider_task_id": checkpoint.get("provider_task_id"),
                         "provider_reference": checkpoint.get("provider_reference"),
                         "deadline_at": deadline_at,
+                        "assert_active": heartbeat.assert_active,
                         "renew_lease": lambda: store.renew_lease(
                             job_id,
                             worker_id,
@@ -757,20 +794,29 @@ def run_job(
                             db_path=db_path,
                         ),
                         "save_provider_task_id": lambda value: (
-                            _save_provider_task_id(attempt_id, value, db_path),
+                            heartbeat.assert_active(),
+                            _save_provider_task_id(
+                                attempt_id, value, db_path,
+                                lease_owner=worker_id, now=int(now_fn())
+                            ),
                             store.save_pipeline_provider_identity(
                                 int(checkpoint["id"]),
                                 provider_task_id=value,
+                                lease_owner=worker_id,
                                 now=int(now_fn()),
                                 db_path=db_path,
                             ),
                         )[-1],
-                        "save_provider_reference": lambda value: store.save_pipeline_provider_identity(
-                            int(checkpoint["id"]),
-                            provider_reference=value,
-                            now=int(now_fn()),
-                            db_path=db_path,
-                        ),
+                        "save_provider_reference": lambda value: (
+                            heartbeat.assert_active(),
+                            store.save_pipeline_provider_identity(
+                                int(checkpoint["id"]),
+                                provider_reference=value,
+                                lease_owner=worker_id,
+                                now=int(now_fn()),
+                                db_path=db_path,
+                            ),
+                        )[-1],
                     }
                     has_identity = bool(
                         context["provider_task_id"] or context["provider_reference"]
@@ -784,16 +830,35 @@ def run_job(
                             last_code = "provider_reconciliation_required"
                             break
                     try:
+                        heartbeat.assert_active()
                         value = callback(job, context, stage_input)
+                        heartbeat.assert_active()
+                        if int(now_fn()) > deadline_at:
+                            last_code = "normal_budget_exceeded"
+                            break
                         if isinstance(value, StageResult):
                             value = value.checkpoint
                         if not isinstance(value, dict):
                             raise PipelineError("stage_result_invalid")
+                        verifier = runtime.option(dependencies, "verify_artifact")
+                        valid, validation_code = runtime.validate_stage_output(
+                            stage,
+                            value,
+                            verifier if callable(verifier) else None,
+                        )
+                        if not valid:
+                            last_code = validation_code or "stage_output_invalid"
+                            break
                         output = value
                         break
                     except (RetryableStageError, RetryableProviderError) as exc:
                         last_code = getattr(exc, "code", None) or str(exc) or "provider_unavailable"
                         continue
+                    except PipelineError as exc:
+                        if exc.code == "job_lease_lost":
+                            raise
+                        last_code = exc.code
+                        break
                     except Exception as exc:
                         last_code = getattr(exc, "code", None) or "stage_execution_failed"
                         break
@@ -809,16 +874,31 @@ def run_job(
                         points_client=points_client,
                     )
                 store.complete_pipeline_checkpoint(
-                    int(checkpoint["id"]), output, int(now_fn()), db_path=db_path
+                    int(checkpoint["id"]), output, int(now_fn()),
+                    lease_owner=worker_id, db_path=db_path
                 )
+                heartbeat.assert_active()
                 _finish_attempt(
                     attempt_id,
                     StageResult(runtime.STAGE_TO_NEXT_STATE[stage], output),
                     int(now_fn()),
                     db_path,
+                    lease_owner=worker_id,
                 )
 
             target = runtime.STAGE_TO_NEXT_STATE[stage]
+            heartbeat.assert_active()
+            if int(now_fn()) > deadline_at:
+                return _stable_failure(
+                    job_id,
+                    state,
+                    "normal_budget_exceeded",
+                    int(now_fn()),
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    db_path=db_path,
+                    points_client=points_client,
+                )
             if not store.transition_leased(
                 job_id,
                 state,

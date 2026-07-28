@@ -61,30 +61,23 @@ def _heartbeat(
 
 
 def _process_claimed(
-    job: dict[str, Any], worker_id: str, config: dict[str, Any], handlers: dict[str, pipeline.Handler]
-) -> pipeline.StageResult:
-    finished = threading.Event()
-    heartbeat = threading.Thread(
-        target=_heartbeat,
-        args=(job["id"], worker_id, config["lease_seconds"], finished, config["db_path"]),
-        daemon=True,
+    job: dict[str, Any], worker_id: str, config: dict[str, Any], dependencies: dict[str, Any]
+) -> dict[str, Any]:
+    bundle = dict(dependencies)
+    bundle.update(
+        {
+            "lease_owner": worker_id,
+            "lease_seconds": config["lease_seconds"],
+        }
     )
-    heartbeat.start()
-    try:
-        return pipeline.run_stage(
-            job["id"], job["status"], handlers=handlers,
-            db_path=config["db_path"], now=int(time.time()),
-        )
-    finally:
-        finished.set()
-        heartbeat.join(timeout=2)
+    return pipeline.run_job(job["id"], bundle, db_path=config["db_path"])
 
 
 def run_worker(
     stop_event: threading.Event,
     *,
     config: dict[str, Any] | None = None,
-    handlers: dict[str, pipeline.Handler] | None = None,
+    handlers: dict[str, Any] | None = None,
 ) -> None:
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
@@ -101,6 +94,7 @@ def run_worker(
             stop_event.wait(config["poll_seconds"])
         return
     worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
+    dependencies = handlers or runtime.production_dependencies(config["db_path"])
     active: set[Future] = set()
     with ThreadPoolExecutor(
         max_workers=config["workers"], thread_name_prefix="ai-edit-v2"
@@ -121,15 +115,16 @@ def run_worker(
                 except Exception:
                     LOG.exception("[ai-edit-v2] stage execution failed")
             while len(active) < config["workers"] and not stop_event.is_set():
+                claim_owner = f"{worker_id}-{uuid.uuid4().hex}"
                 job = store.claim_next_job(
-                    worker_id, config["lease_seconds"], int(time.time()),
+                    claim_owner, config["lease_seconds"], int(time.time()),
                     db_path=config["db_path"],
                 )
                 if job is None:
                     break
                 active.add(
                     executor.submit(
-                        _process_claimed, job, worker_id, config, handlers or STAGE_HANDLERS
+                        _process_claimed, job, claim_owner, config, dependencies
                     )
                 )
             stop_event.wait(config["poll_seconds"])
