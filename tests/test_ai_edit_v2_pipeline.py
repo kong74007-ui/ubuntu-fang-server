@@ -901,7 +901,8 @@ class StableRunJobTests(PipelineTests):
                                               downloader=lambda _url: b"rendered-mp4",
                                               repair_handler=lambda *_args: {},
                                               repair_reconciler=lambda *_args: {},
-                                              quality_analyzer=quality_analyzer)
+                                              quality_analyzer=quality_analyzer,
+                                              quality_binary_finder=lambda name: name)
         dependencies = runtime.production_dependencies(self.db_path, services=services)
         dependencies["points_client"] = self.points
         current_time = int(time.time())

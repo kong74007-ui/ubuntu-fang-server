@@ -449,7 +449,8 @@ class ProductionServices:
                  downloader: Callable[[str], bytes] | None = None,
                  repair_handler: Callable[..., Any] | None = None,
                  repair_reconciler: Callable[..., Any] | None = None,
-                 quality_analyzer: Callable[..., Any] | None = None) -> None:
+                 quality_analyzer: Callable[..., Any] | None = None,
+                 quality_binary_finder: Callable[[str], str | None] | None = None) -> None:
         from . import ai_edit_v2_cos
         self.db_path = db_path
         self.cos = cos_api or ai_edit_v2_cos
@@ -469,7 +470,11 @@ class ProductionServices:
         quality_analyzer = quality_analyzer or _load_production_injection(
             "AI_EDIT_V2_QUALITY_ANALYZER_FACTORY", db_path
         )
-        self.quality_runner = LocalQualityRunner(runner, analyzer=quality_analyzer)
+        self.quality_runner = LocalQualityRunner(
+            runner,
+            analyzer=quality_analyzer,
+            binary_finder=quality_binary_finder,
+        )
 
     def readiness_errors(self) -> list[str]:
         errors = []
