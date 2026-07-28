@@ -1295,6 +1295,51 @@ def record_provider_event(
             return False
 
 
+def claim_provider_event(
+    job_id: str,
+    provider: str,
+    provider_task_id: str,
+    fingerprint: str,
+    received_at: int,
+    *,
+    db_path: str | None = None,
+) -> str:
+    """Atomically classify a webhook fingerprint as claimed, pending, or processed."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """SELECT normalized_status FROM edit_v2_provider_events
+                   WHERE fingerprint=?""",
+                (fingerprint,),
+            ).fetchone()
+            if row is not None:
+                status = str(row["normalized_status"])
+                if status not in {"pending", "processed"}:
+                    raise ValueError("provider_event_status_invalid")
+                conn.commit()
+                return status
+            conn.execute(
+                """INSERT INTO edit_v2_provider_events(
+                       job_id,provider,provider_task_id,normalized_status,fingerprint,received_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    provider,
+                    provider_task_id,
+                    "pending",
+                    fingerprint,
+                    received_at,
+                ),
+            )
+            conn.commit()
+            return "claimed"
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def mark_provider_event_processed(
     fingerprint: str, *, db_path: str | None = None
 ) -> bool:
@@ -1459,6 +1504,31 @@ def claim_provider_submission_reference(
                 """UPDATE edit_v2_stage_attempts SET provider_reference=?
                    WHERE id=? AND provider_reference IS NULL""",
                 (reference, attempt_id),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def release_provider_submission_reference(
+    *,
+    attempt_id: int,
+    job_id: str,
+    reference: str,
+    db_path: str | None = None,
+) -> bool:
+    """CAS-release an unbound reference after a provider definitively rejects POST."""
+
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                """UPDATE edit_v2_stage_attempts SET provider_reference=NULL
+                   WHERE id=? AND job_id=? AND provider_reference=?
+                     AND provider_task_id IS NULL""",
+                (attempt_id, job_id, reference),
             ).rowcount
             conn.commit()
             return changed == 1

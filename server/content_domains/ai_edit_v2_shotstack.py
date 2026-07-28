@@ -34,6 +34,10 @@ class RenderGraphError(RuntimeError):
     pass
 
 
+class _DeterministicRequestRejected(ProviderError):
+    pass
+
+
 def build_render_graph(
     resolved_plan: dict[str, Any],
     signed_assets: dict[str, str],
@@ -306,6 +310,13 @@ class ShotstackClient:
             raise ProviderError("shotstack_render_graph_invalid")
         if not isinstance(reference, str) or not reference.strip():
             raise ProviderError("shotstack_reference_invalid")
+        callback_url = self._callback_url(reference)
+        body = json.dumps(
+            _compile_shotstack_edit(render_graph, callback_url),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         existing = store.find_provider_submission(
             "shotstack", reference=reference, db_path=self.db_path
         )
@@ -330,15 +341,20 @@ class ShotstackClient:
                 )
             raise UnknownSubmissionError("shotstack_submission_unknown")
         started = self.clock_ms()
-        callback_url = self._callback_url(reference)
-        body = json.dumps(
-            _compile_shotstack_edit(render_graph, callback_url),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
         try:
             response = self._request("POST", f"{self.api_base}/render", body)
+        except _DeterministicRequestRejected as exc:
+            released = store.release_provider_submission_reference(
+                attempt_id=self.attempt_id,
+                job_id=self.job_id,
+                reference=reference,
+                db_path=self.db_path,
+            )
+            if not released:
+                raise UnknownSubmissionError(
+                    "shotstack_submission_release_failed"
+                ) from exc
+            raise RetryableProviderError("shotstack_request_rejected") from exc
         except (TimeoutError, socket.timeout, RetryableProviderError, urllib.error.URLError, OSError) as exc:
             raise UnknownSubmissionError("shotstack_submission_unknown") from exc
         task_id, status, output_url, request_id = self._parse_response(response)
@@ -382,9 +398,15 @@ class ShotstackClient:
         ).hexdigest()
 
     def _callback_url(self, reference: str) -> str:
-        if not self.callback_base_url.startswith("https://"):
-            raise ProviderError("shotstack_callback_not_configured")
         parsed = urllib.parse.urlsplit(self.callback_base_url)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ProviderError("shotstack_callback_not_configured")
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         query.extend(
             [
@@ -441,7 +463,7 @@ class ShotstackClient:
         except urllib.error.HTTPError as exc:
             if exc.code in {408, 429} or exc.code >= 500:
                 raise RetryableProviderError("shotstack_unavailable") from exc
-            raise ProviderError("shotstack_request_rejected") from exc
+            raise _DeterministicRequestRejected("shotstack_request_rejected") from exc
         except (urllib.error.URLError, OSError) as exc:
             raise RetryableProviderError("shotstack_unavailable") from exc
 
@@ -541,17 +563,18 @@ def reconcile_webhook(
         raise ProviderError("shotstack_webhook_invalid")
     canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    inserted = store.record_provider_event(
+    claim = store.claim_provider_event(
         job_id,
         "shotstack",
         task_id,
-        "pending",
         fingerprint,
         received_at,
         db_path=db_path,
     )
-    if not inserted:
+    if claim == "processed":
         return None
+    if claim == "pending":
+        raise RetryableProviderError("shotstack_webhook_in_progress")
     try:
         client.bind_callback_task(callback_attempt_id, callback_token, task_id)
         result = client.reconcile(provider_task_id=task_id)

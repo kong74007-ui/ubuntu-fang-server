@@ -2,14 +2,20 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.error
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from server.content_domains import ai_edit_v2_store as store
-from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
+from server.content_domains.ai_edit_v2_providers.base import (
+    ProviderError,
+    RetryableProviderError,
+    UnknownSubmissionError,
+)
 from server.content_domains.ai_edit_v2_shotstack import (
     RenderGraphError,
     ShotstackClient,
@@ -177,6 +183,70 @@ class ShotstackClientTests(unittest.TestCase):
         self.assertTrue(all(clip["asset"]["type"] in {"rich-text", "image", "video", "audio"} for clip in clips))
         self.assertNotIn("reference", payload)
         self.assertNotIn("components", payload)
+
+    def test_submit_validates_callback_https_before_claiming_reference(self):
+        calls = []
+        client = ShotstackClient(
+            job_id=self.job["id"], attempt_id=self.attempt_id,
+            db_path=self.db_path, http_request=lambda *args: calls.append(args),
+            callback_base_url="http://app.example.invalid/webhooks/shotstack",
+            callback_secret="callback-test-secret",
+        )
+
+        with self.assertRaisesRegex(ProviderError, "shotstack_callback_not_configured"):
+            client.submit(self.graph, "job:render:1")
+
+        self.assertEqual(calls, [])
+        self.assertIsNone(
+            store.find_stage_submission(self.attempt_id, db_path=self.db_path)[
+                "provider_reference"
+            ]
+        )
+
+    def test_submit_compiles_json_before_claiming_reference(self):
+        invalid_graph = {**self.graph, "duration_ms": 0}
+
+        with self.assertRaisesRegex(ProviderError, "shotstack_render_graph_invalid"):
+            self._client(lambda *args: self.fail("transport must not run")).submit(
+                invalid_graph, "job:render:1"
+            )
+
+        self.assertIsNone(
+            store.find_stage_submission(self.attempt_id, db_path=self.db_path)[
+                "provider_reference"
+            ]
+        )
+
+    def test_deterministic_4xx_releases_claim_for_retry(self):
+        calls = []
+        reject = True
+
+        def request(method, url, headers, body, timeout):
+            nonlocal reject
+            calls.append(method)
+            if reject:
+                raise urllib.error.HTTPError(url, 400, "Bad Request", None, None)
+            return {
+                "success": True,
+                "response": {"id": "render-123", "status": "queued"},
+            }
+
+        client = self._client(request)
+        with self.assertRaisesRegex(
+            RetryableProviderError, "shotstack_request_rejected"
+        ):
+            client.submit(self.graph, "job:render:1")
+        self.assertIsNone(
+            store.find_stage_submission(self.attempt_id, db_path=self.db_path)[
+                "provider_reference"
+            ]
+        )
+
+        reject = False
+        result = client.submit(self.graph, "job:render:1")
+
+        self.assertEqual(result.payload["provider_task_id"], "render-123")
+        self.assertEqual(calls, ["POST", "POST"])
 
     def test_mastered_audio_mutes_every_video_and_is_the_only_audible_track(self):
         bodies = []
@@ -371,6 +441,66 @@ class ShotstackClientTests(unittest.TestCase):
                 "SELECT normalized_status FROM edit_v2_provider_events"
             ).fetchall()
         self.assertEqual(statuses, [("processed",)])
+
+    def test_pending_duplicate_webhook_is_retryable_and_recovers_after_first_get_fails(self):
+        first_get_entered = threading.Event()
+        release_first_get = threading.Event()
+        attempts_lock = threading.Lock()
+        attempts = 0
+
+        def request(method, url, headers, body, timeout):
+            nonlocal attempts
+            with attempts_lock:
+                attempts += 1
+                current_attempt = attempts
+            if current_attempt == 1:
+                first_get_entered.set()
+                self.assertTrue(release_first_get.wait(5))
+                raise TimeoutError("provider query timeout")
+            return {"success": True, "message": "OK", "response": {
+                "id": "render-123", "status": "done",
+                "url": "https://cdn.example.invalid/render.mp4",
+            }}
+
+        client = self._client(request)
+        store.bind_provider_submission(
+            attempt_id=self.attempt_id, job_id=self.job["id"], provider="shotstack",
+            capability="render", provider_task_id="render-123", reference="job:render:1",
+            status="pending", now=199, db_path=self.db_path,
+        )
+        event = {"id": "render-123", "status": "done"}
+        token = client.callback_token("job:render:1")
+        kwargs = {
+            "callback_attempt_id": self.attempt_id, "callback_token": token,
+            "received_at": 200, "db_path": self.db_path,
+        }
+        first_error = []
+
+        def first_delivery():
+            try:
+                reconcile_webhook(self.job["id"], event, client, **kwargs)
+            except ProviderError as exc:
+                first_error.append(exc)
+
+        worker = threading.Thread(target=first_delivery)
+        worker.start()
+        self.assertTrue(first_get_entered.wait(5))
+        try:
+            with self.assertRaisesRegex(
+                RetryableProviderError, "shotstack_webhook_in_progress"
+            ):
+                reconcile_webhook(self.job["id"], event, client, **kwargs)
+        finally:
+            release_first_get.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(first_error), 1)
+        self.assertIsInstance(first_error[0], UnknownSubmissionError)
+
+        recovered = reconcile_webhook(self.job["id"], event, client, **kwargs)
+
+        self.assertEqual(recovered.payload["status"], "succeeded")
+        self.assertEqual(attempts, 2)
 
 
 if __name__ == "__main__":

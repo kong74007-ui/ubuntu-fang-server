@@ -14,6 +14,10 @@ class FeatureCapabilityTests(unittest.TestCase):
             "OPENAI_API_KEY": "test-openai-key",
             "ELEVENLABS_API_KEY": "test-elevenlabs-key",
             "SHOTSTACK_API_KEY": "test-shotstack-key",
+            "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": (
+                "https://app.example.test/api/v2/edit/webhooks/shotstack"
+            ),
+            "AI_EDIT_V2_WEBHOOK_SECRET": "test-shotstack-webhook-secret",
             "AI_EDIT_V2_COS_SECRET_ID": "test-cos-id",
             "AI_EDIT_V2_COS_SECRET_KEY": "test-cos-key",
             "AI_EDIT_V2_COS_REGION": "ap-guangzhou",
@@ -44,6 +48,10 @@ class FeatureCapabilityTests(unittest.TestCase):
             "OPENAI_API_KEY": "replace-with-openai-key",
             "ELEVENLABS_API_KEY": "replace-with-elevenlabs-key",
             "SHOTSTACK_API_KEY": "replace-with-shotstack-key",
+            "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": (
+                "https://replace-with-public-host/api/v2/edit/webhooks/shotstack"
+            ),
+            "AI_EDIT_V2_WEBHOOK_SECRET": "replace-with-random-v2-webhook-secret",
             "AI_EDIT_V2_COS_SECRET_ID": "replace-with-v2-cos-secret-id",
             "AI_EDIT_V2_COS_SECRET_KEY": "replace-with-v2-cos-secret-key",
             "AI_EDIT_V2_COS_REGION": "ap-guangzhou",
@@ -62,6 +70,8 @@ class FeatureCapabilityTests(unittest.TestCase):
             "OPENAI_API_KEY",
             "ELEVENLABS_API_KEY",
             "SHOTSTACK_API_KEY",
+            "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL",
+            "AI_EDIT_V2_WEBHOOK_SECRET",
             "AI_EDIT_V2_COS_SECRET_ID",
             "AI_EDIT_V2_COS_SECRET_KEY",
             "AI_EDIT_V2_COS_REGION",
@@ -89,6 +99,21 @@ class FeatureCapabilityTests(unittest.TestCase):
             ):
                 value = feature.capability()
             self.assertFalse(value["renderers"]["shotstack"])
+
+    def test_shotstack_callback_must_be_https(self):
+        for invalid_url in (
+            "http://app.example.test/api/v2/edit/webhooks/shotstack",
+            "not-a-url",
+            "https://replace-with-public-host/api/v2/edit/webhooks/shotstack",
+        ):
+            with self.subTest(invalid_url=invalid_url):
+                configured = self._configured_environment()
+                configured["AI_EDIT_V2_SHOTSTACK_CALLBACK_URL"] = invalid_url
+                with patch.dict(os.environ, configured, clear=True), patch.object(
+                    feature, "runtime_ready", return_value=True
+                ), patch.object(feature.shutil, "which", return_value="/usr/bin/tool"):
+                    value = feature.capability()
+                self.assertFalse(value["renderers"]["shotstack"])
 
 
 if __name__ == "__main__":

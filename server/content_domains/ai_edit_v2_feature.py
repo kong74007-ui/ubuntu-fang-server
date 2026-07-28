@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import ai_edit_v2_runtime as runtime
 
@@ -27,12 +28,28 @@ def _configured(*names: str) -> bool:
     )
 
 
+def _configured_https_url(name: str) -> bool:
+    value = os.environ.get(name, "").strip()
+    if not value or "replace-with-" in value.lower():
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme.lower() == "https"
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.fragment
+    )
+
+
 def _stable_components() -> dict[str, bool]:
     return {
         "dashscope": _configured("DASHSCOPE_API_KEY"),
         "openai_image": _configured("OPENAI_API_KEY"),
         "elevenlabs": _configured("ELEVENLABS_API_KEY"),
-        "shotstack": _configured("SHOTSTACK_API_KEY"),
+        "shotstack": _configured(
+            "SHOTSTACK_API_KEY", "AI_EDIT_V2_WEBHOOK_SECRET"
+        ) and _configured_https_url("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL"),
         "cos": _configured(
             "AI_EDIT_V2_COS_SECRET_ID",
             "AI_EDIT_V2_COS_SECRET_KEY",
