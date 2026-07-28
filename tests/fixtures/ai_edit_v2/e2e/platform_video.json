@@ -1,0 +1,13 @@
+{
+  "name": "platform_video",
+  "owner": "platform-owner",
+  "creation_mode": "platform_template",
+  "aspect_ratio": "16:9",
+  "main_kind": "video",
+  "source_type": "platform_video",
+  "original_text": "品牌价格是29元",
+  "duration_ms": 3000,
+  "actual_points": 20,
+  "template_id": "business_diagnostic",
+  "template_version": "1.0"
+}

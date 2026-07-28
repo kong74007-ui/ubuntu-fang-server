@@ -5,7 +5,9 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const pagePath = path.join(root, 'site/workbench/ai-edit.html');
+const videoPath = path.join(root, 'site/workbench/video.html');
 const shellPath = path.join(root, 'site/workbench/cloud-shell.js');
+const tasksPath = path.join(root, 'site/workbench/tasks.js');
 
 test('AI edit page exposes the frozen Phase A task flow', () => {
   assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit.html must exist');
@@ -30,21 +32,62 @@ test('AI edit page exposes the frozen Phase A task flow', () => {
   for (const id of ['queueTime', 'processingTime', 'repairTime', 'resultVideo', 'downloadResult']) {
     assert.match(page, new RegExp(`id="${id}"`));
   }
+  for (const id of ['elapsedTime', 'estimatedTime', 'degradationList', 'qualitySummary', 'actualCharge', 'refundedDifference', 'assetResult', 'retryJobBtn']) {
+    assert.match(page, new RegExp(`id="${id}"`), id);
+  }
 });
 
 test('page implements draft quote confirmation upload retry and job polling', () => {
   const page = fs.readFileSync(pagePath, 'utf8');
-  for (const name of ['buildDraft', 'requestQuote', 'confirmJob', 'pollJob', 'uploadFiles', 'retryUpload']) {
+  for (const name of ['buildDraft', 'requestQuote', 'confirmJob', 'pollJob', 'uploadFiles', 'retryUpload', 'retryJob']) {
     assert.match(page, new RegExp(`function ${name}\\(`), name);
   }
-  for (const endpoint of ['/api/v2/edit/uploads', '/api/v2/edit/quotes', '/api/v2/edit/jobs']) {
+  for (const endpoint of ['/api/v2/edit/uploads', '/api/v2/edit/quote', '/api/v2/edit/jobs']) {
     assert.ok(page.includes(endpoint), endpoint);
   }
   assert.match(page, /files\.length>10/);
   assert.match(page, /setInterval\(pollJob/);
   assert.match(page, /state\.jobRequestKey/);
   assert.match(page, /sessionStorage/);
+  assert.match(page, /sessionStorage\.setItem\(retryStorageKey,key\).*await api/s);
+  assert.match(page, /sessionStorage\.getItem\(retryStorageKey\)/);
+  assert.match(page, /sessionStorage\.removeItem\(retryStorageKey\)/);
   assert.match(page, /billing_pending/);
+  assert.match(page, /id="inputMode"/);
+  for (const mode of ['platform_video', 'external_video', 'audio_only']) {
+    assert.match(page, new RegExp(`value="${mode}"`));
+  }
+  assert.match(page, /template_id/);
+  assert.match(page, /template_version/);
+  assert.match(page, /function loadPlatformAssets\(/);
+  assert.match(page, /\/api\/v2\/edit\/platform-assets/);
+  assert.match(page, /data-platform-reference/);
+  assert.doesNotMatch(page, /original_text/);
+  assert.match(page, /data\.degradations/);
+  assert.match(page, /data\.quality/);
+  assert.match(page, /actual_charge_points/);
+  assert.match(page, /refunded_difference_points/);
+  assert.match(page, /data\.output\.asset_url/);
+  assert.match(page, /estimated_remaining_seconds===0/);
+  assert.match(page, /HQTasks\.upsert/);
+});
+
+test('legacy video workflow keeps its controls and links to the stable editor', () => {
+  const video = fs.readFileSync(videoPath, 'utf8');
+  assert.match(video, /data-function="talking"/);
+  assert.match(video, /id="generateBtn"/);
+  assert.match(video, /href="ai-edit\.html"[^>]*data-ai-edit-v2-entry/);
+});
+
+test('shared task tracker resumes V2 editing jobs without changing legacy video routing', () => {
+  const tasks = fs.readFileSync(tasksPath, 'utf8');
+  assert.match(tasks, /ai_edit_v2/);
+  assert.match(tasks, /ai-edit\.html\?task=/);
+  assert.match(tasks, /normalizing/);
+  assert.match(tasks, /quality_check/);
+  assert.match(tasks, /repairing/);
+  assert.match(tasks, /settling/);
+  assert.match(tasks, /video\.html\?task=/);
 });
 
 test('user page does not expose provider internals or an editable timeline', () => {

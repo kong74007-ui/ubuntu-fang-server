@@ -1,0 +1,9 @@
+{
+  "success": true,
+  "message": "OK",
+  "response": {
+    "id": "render-123",
+    "status": "done",
+    "url": "https://cdn.example.invalid/render-123.mp4"
+  }
+}

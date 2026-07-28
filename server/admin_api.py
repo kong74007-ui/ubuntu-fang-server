@@ -1255,12 +1255,13 @@ def _ai_edit_price_audit(actor, action, target, detail, now):
 
 
 def _price_sample_draft(mode, duration_ms):
-    return {
+    draft = {
         "creation_mode": mode,
         "brief": "AI video editing pricing preview",
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": duration_ms,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "pricing-preview",
             "kind": "video",
@@ -1270,6 +1271,9 @@ def _price_sample_draft(mode, duration_ms):
         "required_materials": [],
         "reference_materials": [],
     }
+    if mode == "platform_template":
+        draft.update(template_id="business_diagnostic", template_version="1.0")
+    return draft
 
 
 def preview_ai_edit_v2_pricing(body):

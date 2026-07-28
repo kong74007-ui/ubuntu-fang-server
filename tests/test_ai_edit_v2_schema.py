@@ -13,6 +13,7 @@ def valid_draft(**overrides):
         "language": "zh-CN",
         "aspect_ratio": "16:9",
         "target_duration_ms": 40_000,
+        "input_mode": "external_video",
         "main_input": {
             "asset_id": "main-video",
             "kind": "video",
@@ -34,47 +35,44 @@ def valid_plan(**overrides):
         "target_duration_ms": 40_000,
         "aspect_ratio": "16:9",
         "language": "zh-CN",
-        "editorial_decisions": [],
         "style_system": {},
         "scenes": [
             {
                 "id": "scene_01",
                 "start_ms": 0,
-                "end_ms": 5_800,
+                "end_ms": 44_920,
                 "intent": "介绍新品价值",
-                "source_ranges": [{"start_ms": 0, "end_ms": 5_800}],
-                "layout_intent": "speaker_with_product",
+                "layout": "speaker_product_split",
                 "visual_type": "product_hook",
                 "headline": "新品为什么值得关注？",
                 "material_slots": ["slot_01"],
-                "motion_graphics": [],
-                "transition_intent": "hard_emphasis",
-                "complexity": "standard",
+                "transition": "cut",
             }
         ],
-        "overlays": [],
-        "materials": [
-            {
-                "slot_id": "slot_01",
-                "start_ms": 1_200,
-                "end_ms": 4_200,
-                "semantic": "产品包装特写",
-                "recommended_visual": "干净背景中的产品包装",
-                "kind": "image_or_video",
-                "required": False,
-                "generation_allowed": True,
-                "generation_intent": "写实产品摄影",
-            }
-        ],
-        "caption_plan": {},
-        "audio_plan": {},
-        "delivery": {"resolution": "1080p", "format": "mp4"},
+        "caption_plan": {"source": "text_timeline", "style": "clean"},
+        "audio_plan": {
+            "speech_policy": "preserve_source",
+            "music_policy": "duck_under_speech",
+            "sfx_policy": "semantic_only",
+        },
     }
     plan.update(overrides)
     return plan
 
 
 class SchemaTests(unittest.TestCase):
+    def test_audio_only_is_the_explicit_audio_input_mode(self):
+        value = valid_draft()
+        value["input_mode"] = "audio_only"
+        value["main_input"]["kind"] = "audio"
+        value["main_input"]["size_bytes"] = 50 * MB
+        self.assertIs(schema.validate_job_draft(value), value)
+
+    def test_template_mode_requires_published_identity_before_quote(self):
+        value = valid_draft()
+        value["creation_mode"] = "platform_template"
+        with self.assertRaisesRegex(ValueError, "template"):
+            schema.validate_job_draft(value)
     def test_rejects_more_than_ten_required_materials(self):
         draft = valid_draft(
             required_materials=[
@@ -122,6 +120,8 @@ class SchemaTests(unittest.TestCase):
                     draft = valid_draft(
                         creation_mode=creation_mode,
                         aspect_ratio=aspect_ratio,
+                        **({"template_id": "business_diagnostic", "template_version": "1.0"}
+                           if creation_mode == "platform_template" else {}),
                         required_materials=[
                             {
                                 "asset_id": "required-video",
@@ -264,13 +264,186 @@ class SchemaTests(unittest.TestCase):
         self.assertIs(schema.validate_edit_plan(plan), plan)
 
     def test_edit_plan_recursively_rejects_each_boundary_field(self):
-        for forbidden_key in ("url", "cos_key", "provider", "api_key", "html", "code"):
+        for forbidden_key in (
+            "url",
+            "cos_key",
+            "provider",
+            "api_key",
+            "html",
+            "code",
+            "tracks",
+            "shotstack",
+            "subtitle_text",
+            "transcript",
+        ):
             with self.subTest(key=forbidden_key), self.assertRaisesRegex(
                 ValueError, "禁止字段"
             ):
                 schema.validate_edit_plan(
                     valid_plan(style_system={"nested": [{forbidden_key: "secret"}]})
                 )
+
+    def test_edit_plan_rejects_scene_overlap_and_duration_mismatch(self):
+        invalid_scenes = (
+            [
+                {
+                    **valid_plan()["scenes"][0],
+                    "end_ms": 30_000,
+                },
+                {
+                    **valid_plan()["scenes"][0],
+                    "id": "scene_02",
+                    "start_ms": 29_999,
+                    "end_ms": 44_920,
+                },
+            ],
+            [{**valid_plan()["scenes"][0], "end_ms": 44_919}],
+            [{**valid_plan()["scenes"][0], "start_ms": 1, "end_ms": 44_920}],
+        )
+
+        for scenes in invalid_scenes:
+            with self.subTest(scenes=scenes), self.assertRaises(ValueError):
+                schema.validate_edit_plan(valid_plan(scenes=scenes))
+
+    def test_edit_plan_rejects_unknown_scene_components(self):
+        for field in ("layout", "visual_type", "transition"):
+            scene = {**valid_plan()["scenes"][0], field: "experimental_component"}
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_edit_plan_rejects_unpublished_scene_component_fields(self):
+        for field in ("shader", "motion_graphics", "render_component"):
+            scene = {**valid_plan()["scenes"][0], field: "beta_component"}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_edit_plan_rejects_provider_fields_with_decorated_names(self):
+        for forbidden_key in (
+            "source_url",
+            "sourceUrl",
+            "cos_path",
+            "cosPath",
+            "shotstack_template_id",
+            "shotstackTemplateId",
+            "provider_name",
+            "providerName",
+            "render_code",
+            "renderEngine",
+            "codePayload",
+        ):
+            with self.subTest(key=forbidden_key), self.assertRaisesRegex(ValueError, "禁止字段"):
+                schema.validate_edit_plan(
+                    valid_plan(style_system={"nested": {forbidden_key: "secret"}})
+                )
+
+    def test_edit_plan_rejects_material_and_render_top_level_sections(self):
+        for field in ("materials", "delivery", "overlays", "tracks", "render_plan"):
+            plan = valid_plan()
+            plan[field] = []
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                schema.validate_edit_plan(plan)
+
+    def test_edit_plan_style_system_only_references_stable_family_or_template(self):
+        invalid_style_systems = (
+            {"component_family": "editorial_business", "palette": "#fff"},
+            {"template_id": "business_diagnostic", "component_family": "editorial_business"},
+            {
+                "template_id": "business_diagnostic",
+                "template_version": "1.0",
+                "component_family": "experimental_family",
+            },
+        )
+        for style_system in invalid_style_systems:
+            with self.subTest(style_system=style_system), self.assertRaises(ValueError):
+                schema.validate_edit_plan(valid_plan(style_system=style_system))
+
+    def test_edit_plan_rejects_caption_body_and_unknown_audio_policy(self):
+        with self.assertRaisesRegex(ValueError, "字幕正文"):
+            schema.validate_edit_plan(
+                valid_plan(caption_plan={"source": "text_timeline", "style": "clean", "text": "改写"})
+            )
+        with self.assertRaisesRegex(ValueError, "music_policy"):
+            schema.validate_edit_plan(
+                valid_plan(
+                    audio_plan={
+                        "speech_policy": "preserve_source",
+                        "music_policy": "invent_new_policy",
+                        "sfx_policy": "semantic_only",
+                    }
+                )
+            )
+
+    def test_edit_plan_rejects_executable_or_provider_specific_string_values(self):
+        forbidden_values = (
+            "https://evil.example.invalid/payload",
+            "<script>alert(document.cookie)</script>",
+            "javascript:fetch('/secrets')",
+            "DROP TABLE customer_jobs",
+            "SELECT * FROM private_tokens",
+            "provider=shotstack",
+            "render_engine=remotion",
+            "cos://private-bucket/object",
+            "database_url=mysql://user:pass@host/db",
+            "api_key=secret-value",
+            "数据库表名：private_tokens",
+            "COS路径：private-bucket/object",
+            "JavaScript代码：const token = 1",
+            "evil.example.com/payload",
+            "evil.example.xyz/payload",
+            "EVIL.EXAMPLE.XYZ",
+            "host.tech",
+            "HOST.TECH",
+            "127.0.0.1:8080/private",
+            "const x=1;",
+            "import os",
+            "print(secret)",
+            "provider_id=internal",
+            "render=true",
+            "db_host=127.0.0.1",
+            "database_name=private",
+        )
+        for value in forbidden_values:
+            scene = {**valid_plan()["scenes"][0], "intent": value}
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "字符串"):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_edit_plan_allows_ordinary_database_semantics(self):
+        scene = {
+            **valid_plan()["scenes"][0],
+            "intent": "介绍产品数据库能力与业务价值",
+            "headline": "供应商：本地农户。This is clear. Keep it concise.",
+        }
+        plan = valid_plan(scenes=[scene])
+
+        self.assertIs(schema.validate_edit_plan(plan), plan)
+
+    def test_edit_plan_allows_ordinary_period_text_without_spaces(self):
+        for value in ("clear.Keep", "version.final", "release.note", "status.ok"):
+            scene = {**valid_plan()["scenes"][0], "intent": value}
+            plan = valid_plan(scenes=[scene])
+
+            with self.subTest(value=value):
+                self.assertIs(schema.validate_edit_plan(plan), plan)
+
+    def test_material_slot_ids_use_a_strict_bounded_format(self):
+        invalid_slots = (
+            "slot 01",
+            "../slot_01",
+            "https://evil.example/slot",
+            "slot_<script>",
+            "slot_" + "x" * 65,
+            "material_01",
+        )
+        for slot in invalid_slots:
+            scene = {**valid_plan()["scenes"][0], "material_slots": [slot]}
+            with self.subTest(slot=slot), self.assertRaisesRegex(ValueError, "槽位ID"):
+                schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_model_generated_strings_have_reasonable_length(self):
+        scene = {**valid_plan()["scenes"][0], "headline": "长" * 501}
+
+        with self.assertRaisesRegex(ValueError, "字符串"):
+            schema.validate_edit_plan(valid_plan(scenes=[scene]))
 
     def test_terminal_state_cannot_be_reopened(self):
         self.assertNotIn("completed", schema.STATE_TRANSITIONS)
