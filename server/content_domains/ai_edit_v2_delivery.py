@@ -404,11 +404,56 @@ def _dispatch_and_complete(job_id: str, now: int, db_path: str | None,
             raise
 
 
+def _wait_for_canonical_delivery(
+    job_id: str,
+    intent: dict[str, Any],
+    *,
+    db_path: str | None,
+    asset_db_path: str | None,
+    worker_id: str | None,
+    now_fn: Callable[[], int],
+    timeout_seconds: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for the canonical winner; replay only its completed settlement/outbox."""
+
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        job = _load(job_id, db_path)
+        if job["status"] == "completed":
+            return _result(job_id, db_path)
+        if job["status"] == "storage_failed":
+            raise DeliveryError("storage_failed")
+        durable = load_validated_intent(job_id, db_path=db_path)
+        if durable["canonical_digest"] != intent["canonical_digest"]:
+            raise DeliveryError("delivery_intent_conflict")
+        with closing(store.open_store(store._db_path(db_path))) as conn:
+            bill = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+                (job_id,),
+            ).fetchone()
+            outbox = conn.execute(
+                "SELECT status FROM edit_v2_delivery_outbox WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        if bill is not None and bill["status"] == "settled" and outbox is not None:
+            try:
+                _dispatch_and_complete(
+                    job_id, int(now_fn()), db_path, asset_db_path,
+                    worker_id, now_fn,
+                )
+                return _result(job_id, db_path)
+            except DeliveryError as exc:
+                if exc.code not in {"delivery_state_conflict", "delivery_incomplete"}:
+                    raise
+        time.sleep(0.01)
+    raise DeliveryError("delivery_in_progress")
+
+
 def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: int,
             db_path: str | None = None, *, worker_id: str | None = None,
             lease_seconds: int = 180, now_fn: Callable[[], int] | None = None,
             cos_api: Any = None, asset_db_path: str | None = None,
-            points_client: Any = None) -> dict[str, Any]:
+            points_client: Any = None, _resume: bool = False) -> dict[str, Any]:
     """Persist intent before upload; reconcile HEAD/settlement/outbox on replay."""
     if not isinstance(report, QualityReport) or not report.passed:
         raise DeliveryError("quality_not_passed")
@@ -426,6 +471,30 @@ def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: i
         raise DeliveryError("delivery_state_conflict")
     _assert_lease(job_id, worker_id, now, db_path)
     intent = _prepare_intent(job, output_path, report, actual_cost, now, db_path, worker_id)
+    current = _load(job_id, db_path)
+    if current["status"] == "quality_check":
+        changed = store.transition_leased(
+            job_id, "quality_check", "settling",
+            {"quality_report": report.as_dict(), "verified_cos_key": intent["cos_key"]}, now,
+            worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+        ) if worker_id else store.transition(
+            job_id, "quality_check", "settling",
+            {"quality_report": report.as_dict(), "verified_cos_key": intent["cos_key"]}, now,
+            db_path=db_path,
+        )
+        if not changed:
+            _assert_lease(job_id, worker_id, int(clock()), db_path)
+            return _wait_for_canonical_delivery(
+                job_id, intent, db_path=db_path, asset_db_path=asset_db_path,
+                worker_id=worker_id, now_fn=clock,
+            )
+    elif not _resume and not (
+        worker_id and store.lease_owned(job_id, worker_id, int(clock()), db_path=db_path)
+    ):
+        return _wait_for_canonical_delivery(
+            job_id, intent, db_path=db_path, asset_db_path=asset_db_path,
+            worker_id=worker_id, now_fn=clock,
+        )
     cos_client = cos_api or cos
     try:
         metadata = _verified_head(intent, cos_client)
@@ -449,19 +518,6 @@ def deliver(job_id: str, output_path: str, report: QualityReport, actual_cost: i
 
     now = int(clock())
     _assert_lease(job_id, worker_id, now, db_path)
-    current = _load(job_id, db_path)
-    if current["status"] == "quality_check":
-        changed = store.transition_leased(
-            job_id, "quality_check", "settling",
-            {"quality_report": report.as_dict(), "verified_cos_key": intent["cos_key"]}, now,
-            worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
-        ) if worker_id else store.transition(
-            job_id, "quality_check", "settling",
-            {"quality_report": report.as_dict(), "verified_cos_key": intent["cos_key"]}, now,
-            db_path=db_path,
-        )
-        if not changed:
-            raise DeliveryError("delivery_state_conflict")
     try:
         _assert_lease(job_id, worker_id, int(clock()), db_path)
         _settle_and_enqueue(_load(job_id, db_path), intent, int(clock()), db_path, worker_id, clock, points_api)
@@ -499,6 +555,7 @@ def resume_delivery(job_id: str, *, db_path: str | None = None,
         job_id, "", report, int(intent["actual_cost"]), db_path=db_path,
         worker_id=worker_id, lease_seconds=lease_seconds, now_fn=now_fn,
         cos_api=cos_api, asset_db_path=asset_db_path, points_client=points_client,
+        _resume=True,
     )
 
 

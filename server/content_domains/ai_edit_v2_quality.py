@@ -87,13 +87,23 @@ class LocalQualityRunner:
 
     def __init__(self, process_runner: Callable[..., Any] = subprocess.run, *,
                  analyzer: Callable[..., Any] | None = None,
-                 binary_finder: Callable[[str], str | None] = shutil.which) -> None:
+                 binary_finder: Callable[[str], str | None] | None = None) -> None:
         self.process_runner = process_runner
         self.analyzer = analyzer
-        self.binary_finder = binary_finder
+        self.binary_finder = binary_finder or shutil.which
+
+    @staticmethod
+    def _binary_command(name: str) -> str:
+        configured = str(os.environ.get(
+            f"AI_EDIT_V2_QUALITY_{name.upper()}_BIN", ""
+        ) or "").strip()
+        return configured or name
 
     def readiness_errors(self) -> list[str]:
-        errors = [name for name in ("ffprobe", "ffmpeg") if self.binary_finder(name) is None]
+        errors = [
+            name for name in ("ffprobe", "ffmpeg")
+            if self.binary_finder(self._binary_command(name)) is None
+        ]
         capabilities_fn = (
             getattr(self.analyzer, "capabilities", None)
             if callable(self.analyzer) else None
@@ -149,7 +159,7 @@ class LocalQualityRunner:
                  resolved_plan: dict[str, Any]) -> dict[str, Any]:
         if check == "probe":
             result = self._run([
-                "ffprobe", "-v", "error", "-show_streams", "-show_format",
+                self._binary_command("ffprobe"), "-v", "error", "-show_streams", "-show_format",
                 "-of", "json", os.fspath(path),
             ], 30)
             if int(getattr(result, "returncode", 1)) != 0:
@@ -183,13 +193,13 @@ class LocalQualityRunner:
         if check in {"decode_video", "decode_audio"}:
             selector = "0:v:0" if check == "decode_video" else "0:a:0"
             result = self._run([
-                "ffmpeg", "-v", "error", "-i", os.fspath(path),
+                self._binary_command("ffmpeg"), "-v", "error", "-i", os.fspath(path),
                 "-map", selector, "-f", "null", "-",
             ], 600)
             return {"decodable": int(getattr(result, "returncode", 1)) == 0}
         if check == "frames":
             result = self._run([
-                "ffmpeg", "-v", "info", "-i", os.fspath(path), "-vf",
+                self._binary_command("ffmpeg"), "-v", "info", "-i", os.fspath(path), "-vf",
                 "blackdetect=d=0.25:pix_th=0.10,freezedetect=n=-60dB:d=0.5",
                 "-an", "-f", "null", "-",
             ], 600)
@@ -207,7 +217,7 @@ class LocalQualityRunner:
             # dialogue/BGM/SFX balance remains render-plan evidence because the
             # flattened master cannot recover those sources independently.
             result = self._run([
-                "ffmpeg", "-v", "info", "-i", os.fspath(path), "-vn",
+                self._binary_command("ffmpeg"), "-v", "info", "-i", os.fspath(path), "-vn",
                 "-af", "silencedetect=n=-50dB:d=0.2,ebur128=peak=true",
                 "-f", "null", "-",
             ], 600)

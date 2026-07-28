@@ -133,6 +133,86 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_render_artifacts WHERE job_id=? AND kind='delivery_internal'", (self.job_id,)).fetchone()[0], 1)
         self.assertEqual(self.points.calls.count(f"ai-edit-v2:{self.job_id}:settlement"), 1)
 
+    def test_same_canonical_delivery_loser_waits_without_duplicate_side_effects_multiple_rounds(self):
+        test = self
+
+        class BlockingCos(FakeCos):
+            def __init__(self):
+                super().__init__()
+                self.first_upload = threading.Event()
+                self.release = threading.Event()
+                self.second_upload = threading.Event()
+                self.put_count = 0
+
+            def put_file(self, path, key, content_type, private=True):
+                with self.lock:
+                    self.put_count += 1
+                    number = self.put_count
+                if number == 1:
+                    self.first_upload.set()
+                    self.release.wait(2)
+                else:
+                    self.second_upload.set()
+                with self.lock:
+                    self.objects[key] = Path(path).read_bytes()
+                return {"ETag": '"uploaded"'}
+
+        for round_index in range(5):
+            with self.subTest(round=round_index):
+                job_id = self.job_id if round_index == 0 else str(uuid.uuid4())
+                if round_index:
+                    with closing(store.open_store(self.db)) as conn:
+                        conn.execute(
+                            "INSERT INTO edit_v2_jobs(id,owner,idempotency_key,quote_id,status,payload_json,checkpoint_json,created_at,updated_at) VALUES(?,?,?,?,?,'{}','[]',1,1)",
+                            (job_id, "alice", f"request-{round_index}", "quote", "quality_check"),
+                        )
+                        conn.execute(
+                            "INSERT INTO edit_v2_billing(job_id,transaction_key,operation,amount,status,created_at,updated_at) VALUES(?,?,'hold',100,'held',1,1)",
+                            (job_id, f"ai-edit-v2:{job_id}:hold"),
+                        )
+                fake_cos = BlockingCos()
+                with patch.object(delivery, "cos", fake_cos), \
+                     patch.object(billing, "points", test.points), \
+                     ThreadPoolExecutor(max_workers=2) as executor:
+                    winner = executor.submit(
+                        delivery.deliver, job_id, self.video, PASS_REPORT, 42,
+                        self.db,
+                    )
+                    self.assertTrue(fake_cos.first_upload.wait(1))
+                    loser = executor.submit(
+                        delivery.deliver, job_id, self.video, PASS_REPORT, 42,
+                        self.db,
+                    )
+                    fake_cos.second_upload.wait(.1)
+                    fake_cos.release.set()
+                    results = [winner.result(timeout=3), loser.result(timeout=3)]
+                self.assertEqual(results[0], results[1])
+                self.assertEqual(fake_cos.put_count, 1)
+                with closing(sqlite3.connect(self.assets_db)) as conn:
+                    self.assertEqual(conn.execute(
+                        "SELECT COUNT(*) FROM video_assets WHERE job_id=?", (job_id,)
+                    ).fetchone()[0], 1)
+                self.assertEqual(
+                    self.points.calls.count(f"ai-edit-v2:{job_id}:settlement"), 1
+                )
+
+    def test_in_progress_delivery_rejects_a_different_canonical_intent(self):
+        fake_cos = FakeCos()
+        with patch.object(delivery, "cos", fake_cos), \
+             patch.object(billing, "points", self.points), \
+             patch.object(delivery, "_settle_and_enqueue", side_effect=BaseException("pause")):
+            with self.assertRaises(BaseException):
+                delivery.deliver(
+                    self.job_id, self.video, PASS_REPORT, 42, db_path=self.db
+                )
+        different = os.path.join(self.temp.name, "different.mp4")
+        Path(different).write_bytes(b"different-delivery-content")
+        with self.assertRaisesRegex(delivery.DeliveryError, "delivery_intent_conflict"):
+            delivery.deliver(
+                self.job_id, different, PASS_REPORT, 41, db_path=self.db,
+                cos_api=fake_cos, points_client=self.points,
+            )
+
     def test_storage_verification_failure_never_settles_success_and_refunds_once(self):
         with patch.object(delivery, "cos", FakeCos(bad_head=True)), patch.object(billing, "points", self.points):
             with self.assertRaisesRegex(delivery.DeliveryError, "storage_verification_failed"):
@@ -189,7 +269,7 @@ class DeliveryTests(unittest.TestCase):
             job = conn.execute("SELECT status FROM edit_v2_jobs WHERE id=?", (self.job_id,)).fetchone()[0]
             bill = conn.execute("SELECT status FROM edit_v2_billing WHERE job_id=?", (self.job_id,)).fetchone()[0]
             outbox = conn.execute("SELECT COUNT(*) FROM edit_v2_delivery_outbox WHERE job_id=?", (self.job_id,)).fetchone()[0]
-        self.assertEqual((job, bill, outbox), ("quality_check", "held", 0))
+        self.assertEqual((job, bill, outbox), ("settling", "held", 0))
 
     def test_pending_outbox_reconciler_recovers_after_v2_commit_before_asset_write(self):
         fake_cos = FakeCos()

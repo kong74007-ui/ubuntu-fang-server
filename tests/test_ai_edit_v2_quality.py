@@ -1,6 +1,10 @@
 import json
+import os
 import unittest
+from unittest.mock import patch
 
+from server.content_domains import ai_edit_v2_quality as quality
+from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains.ai_edit_v2_quality import LocalQualityRunner, inspect_output
 
 
@@ -45,6 +49,30 @@ class EvidenceRunner:
 
 
 class QualityTests(unittest.TestCase):
+    def test_production_readiness_discovers_quality_binaries_from_current_path(self):
+        def analyzer(*_args, **_kwargs): return {}
+        analyzer.capabilities = lambda: dict(ANALYZER_CAPABILITIES)
+        discovered = {"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}
+        with patch.dict(os.environ, {"PATH": "/ci/system/bin"}, clear=True), \
+             patch.object(quality.shutil, "which", side_effect=lambda name: discovered.get(name)):
+            runner = LocalQualityRunner(lambda *_a, **_k: None, analyzer=analyzer)
+            runtime.assert_production_ready({"readiness_errors": runner.readiness_errors})
+
+    def test_bad_explicit_quality_binary_never_falls_back_to_path(self):
+        def analyzer(*_args, **_kwargs): return {}
+        analyzer.capabilities = lambda: dict(ANALYZER_CAPABILITIES)
+        explicit = "/missing/quality-ffmpeg"
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_QUALITY_FFMPEG_BIN": explicit,
+            "PATH": "/ci/system/bin",
+        }, clear=True):
+            runner = LocalQualityRunner(
+                lambda *_a, **_k: None, analyzer=analyzer,
+                binary_finder=lambda name: None if name == explicit else f"/usr/bin/{name}",
+            )
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg"):
+                runtime.assert_production_ready({"readiness_errors": runner.readiness_errors})
+
     def test_local_runner_uses_only_real_ffprobe_and_ffmpeg_commands(self):
         evidence = passing_evidence()
         plan = {**PLAN, "quality_analysis": {"captions": {"safe_area": False}}}
