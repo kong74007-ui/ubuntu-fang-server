@@ -293,6 +293,84 @@ class ElevenLabsProviderTests(unittest.TestCase):
         self.assertEqual(len(first.calls), 1)
         self.assertEqual(retry.calls, [])
 
+    def test_concurrent_retryable_reclaim_has_one_submitter_then_replays(self):
+        unavailable = urllib.error.HTTPError(
+            "https://api.elevenlabs.io/v1/music", 503, "unavailable", {},
+            io.BytesIO(b'{"detail":"try later"}'),
+        )
+
+        class BlockingTransport(RecordingTransport):
+            def __init__(self):
+                super().__init__()
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self.call_lock = threading.Lock()
+
+            def __call__(self, method, url, headers, body, timeout):
+                with self.call_lock:
+                    self.calls.append((method, url, headers, body, timeout))
+                self.entered.set()
+                if not self.release.wait(timeout=10):
+                    raise AssertionError("test did not release winning transport")
+                return self.response
+
+        worker_count = 8
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"ELEVENLABS_API_KEY": "test-eleven-key"}, clear=False
+        ):
+            with self.assertRaises(RetryableProviderError):
+                self._provider(
+                    temp_dir, transport=RecordingTransport(failure=unavailable)
+                ).generate_music("calm", 3_000, "concurrent-retry-key")
+
+            transport = BlockingTransport()
+            start = threading.Barrier(worker_count + 1)
+            condition = threading.Condition()
+            outcomes = []
+
+            def reclaim():
+                provider = self._provider(temp_dir, transport=transport)
+                start.wait(timeout=10)
+                try:
+                    provider.generate_music("calm", 3_000, "concurrent-retry-key")
+                    outcome = "completed"
+                except UnknownSubmissionError:
+                    outcome = "frozen"
+                except BaseException as exc:
+                    outcome = exc
+                with condition:
+                    outcomes.append(outcome)
+                    condition.notify_all()
+
+            threads = [threading.Thread(target=reclaim) for _ in range(worker_count)]
+            for thread in threads:
+                thread.start()
+            start.wait(timeout=10)
+            self.assertTrue(transport.entered.wait(timeout=10))
+            with condition:
+                losers_froze = condition.wait_for(
+                    lambda: outcomes.count("frozen") == worker_count - 1,
+                    timeout=10,
+                )
+            transport.release.set()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            self.assertTrue(losers_froze)
+            self.assertEqual(len(transport.calls), 1)
+            self.assertEqual(outcomes.count("completed"), 1)
+            self.assertEqual(outcomes.count("frozen"), worker_count - 1)
+            self.assertFalse(any(isinstance(value, BaseException) for value in outcomes))
+
+            replay_transport = RecordingTransport(
+                failure=AssertionError("completed result must replay")
+            )
+            replay = self._provider(
+                temp_dir, transport=replay_transport
+            ).generate_music("calm", 3_000, "concurrent-retry-key")
+            self.assertEqual(replay.request_id, "eleven-request-1")
+            self.assertEqual(replay_transport.calls, [])
+
     def test_concurrent_initialization_handles_fresh_delete_and_wal_databases(self):
         for journal_mode in (None, "DELETE", "WAL"):
             with self.subTest(journal_mode=journal_mode), tempfile.TemporaryDirectory() as temp_dir:
