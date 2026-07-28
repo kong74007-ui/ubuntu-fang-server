@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 import zlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from unittest.mock import patch
 
 from server.content_domains.ai_edit_v2_providers.base import (
     ProviderError,
@@ -17,6 +18,7 @@ from server.content_domains import ai_edit_v2_store as store
 
 
 JOB = "123e4567-e89b-12d3-a456-426614174000"
+ACCEPTANCE_ENV = "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED"
 SLOT = {
     "id": "slot_product_1",
     "semantic_query": "Clean product still life",
@@ -126,6 +128,11 @@ class FakeAssetStore:
 
 
 class OpenAIImageProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.acceptance_env = patch.dict(os.environ, {ACCEPTANCE_ENV: "1"})
+        self.acceptance_env.start()
+        self.addCleanup(self.acceptance_env.stop)
+
     def _provider(self, response=None, downloaded=None, *, head=None):
         events = []
         response = response or {
@@ -155,7 +162,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
             clock_ms=iter((100, 125)).__next__,
             now_seconds=lambda: 100,
             worker_id="worker-test",
-            acceptance_probe_passed=True,
         )
         return provider, store, events
 
@@ -197,24 +203,54 @@ class OpenAIImageProviderTests(unittest.TestCase):
         self.assertEqual(request[4]["size"], "1536x1024")
 
     def test_live_generation_is_blocked_until_task11_idempotency_probe_passes(self):
-        provider, store, events = self._provider()
-        provider.acceptance_probe_passed = False
+        for value in (None, "0", "true", "yes", "on"):
+            with self.subTest(value=value):
+                environment = {} if value is None else {ACCEPTANCE_ENV: value}
+                with patch.dict(os.environ, environment, clear=True):
+                    provider, store, events = self._provider()
 
-        with self.assertRaisesRegex(
-            ProviderError, "openai_image_idempotency_acceptance_required"
-        ):
-            provider.generate(SLOT, "blocked-before-acceptance")
+                    with self.assertRaisesRegex(
+                        ProviderError,
+                        "openai_image_idempotency_acceptance_required",
+                    ):
+                        provider.generate(SLOT, "blocked-before-acceptance")
 
-        self.assertIsNone(store.saved)
-        self.assertEqual([event[0] for event in events], ["find"])
+                self.assertIsNone(store.saved)
+                self.assertEqual([event[0] for event in events], ["find"])
+
+    def test_exact_one_acceptance_environment_enables_live_generation(self):
+        with patch.dict(os.environ, {ACCEPTANCE_ENV: "1"}, clear=True):
+            provider, _, events = self._provider()
+
+            provider.generate(SLOT, "accepted-by-server-environment")
+
+        self.assertIn("request", [event[0] for event in events])
+
+    def test_constructor_rejects_direct_acceptance_override(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(TypeError):
+                OpenAIImageProvider(
+                    owner="user-a",
+                    job_id=JOB,
+                    acceptance_probe_passed=True,
+                )
 
     def test_ready_asset_replays_while_live_generation_acceptance_is_blocked(self):
         provider, store, events = self._provider()
         first = provider.generate(SLOT, "ready-before-gate")
-        provider.acceptance_probe_passed = False
         events.clear()
 
-        replay = provider.generate(SLOT, "ready-before-gate")
+        with patch.dict(os.environ, {}, clear=True):
+            blocked_provider = OpenAIImageProvider(
+                owner="user-a",
+                job_id=JOB,
+                api_key="test-key",
+                asset_store=store,
+                http_request=lambda *args: self.fail(
+                    "ready replay must not call the provider"
+                ),
+            )
+            replay = blocked_provider.generate(SLOT, "ready-before-gate")
 
         self.assertEqual(replay.payload, first.payload)
         self.assertEqual([event[0] for event in events], ["find"])
@@ -387,7 +423,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 cos_api=cos, asset_store=store, http_request=uncertain_request,
                 downloader=lambda *args: None, now_seconds=lambda: 100,
                 worker_id="worker-first", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             with self.assertRaises(RetryableProviderError):
                 first.generate(SLOT, "same-provider-key")
@@ -411,7 +446,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                     "content": png_bytes(), "content_type": "image/png"
                 },
                 now_seconds=lambda: 131, worker_id="worker-second", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             result = second.generate(SLOT, "same-provider-key")
 
@@ -444,7 +478,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 owner="user-a", job_id=job["id"], api_key="test-key",
                 cos_api=cos, asset_store=store, http_request=rate_limited,
                 now_seconds=lambda: 100, worker_id="worker-first", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             with self.assertRaises(RetryableProviderError):
                 first.generate(SLOT, "rate-limit-key")
@@ -459,7 +492,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 cos_api=cos, asset_store=store,
                 http_request=lambda *args: self.fail("backoff must not resubmit"),
                 now_seconds=lambda: 129, worker_id="worker-too-soon", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             with self.assertRaisesRegex(
                 RetryableProviderError, "openai_image_retry_backoff"
@@ -480,7 +512,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                     "content": png_bytes(), "content_type": "image/png"
                 },
                 now_seconds=lambda: 131, worker_id="worker-second", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             second.generate(SLOT, "rate-limit-key")
 
@@ -506,7 +537,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 owner="user-a", job_id=job["id"], api_key="test-key",
                 asset_store=store, http_request=rejected,
                 now_seconds=lambda: 100, worker_id="worker-first", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             with self.assertRaisesRegex(ProviderError, "openai_image_request_rejected"):
                 first.generate(SLOT, "terminal-key")
@@ -515,7 +545,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 owner="user-a", job_id=job["id"], api_key="test-key",
                 asset_store=store, http_request=rejected,
                 now_seconds=lambda: 1000, worker_id="worker-second", db_path=db_path,
-                acceptance_probe_passed=True,
             )
             with self.assertRaisesRegex(ProviderError, "openai_image_generation_failed"):
                 second.generate(SLOT, "terminal-key")
@@ -562,7 +591,6 @@ class OpenAIImageProviderTests(unittest.TestCase):
                     http_request=request,
                     downloader=download,
                     db_path=db_path,
-                    acceptance_probe_passed=True,
                 )
                 start.wait(timeout=5)
                 return provider.generate(SLOT, "same-concurrent-key")

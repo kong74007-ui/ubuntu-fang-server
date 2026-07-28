@@ -34,12 +34,7 @@ _ACCEPTANCE_ENV = "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED"
 
 
 def _env_enabled(name: str) -> bool:
-    return str(os.environ.get(name, "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return str(os.environ.get(name, "")).strip() == "1"
 
 
 class OpenAIImageProvider:
@@ -59,7 +54,6 @@ class OpenAIImageProvider:
         timeout_seconds: int = 60,
         lease_seconds: int = 180,
         retry_backoff_seconds: int = 30,
-        acceptance_probe_passed: bool | None = None,
         db_path: str | None = None,
         model: str | None = None,
     ) -> None:
@@ -84,11 +78,6 @@ class OpenAIImageProvider:
             int(lease_seconds), (2 * self.timeout_seconds) + 30
         )
         self.retry_backoff_seconds = int(retry_backoff_seconds)
-        self.acceptance_probe_passed = (
-            _env_enabled(_ACCEPTANCE_ENV)
-            if acceptance_probe_passed is None
-            else acceptance_probe_passed is True
-        )
         self.db_path = db_path
         self.model = model or os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
         self.max_download_bytes = _MAX_IMAGE_BYTES
@@ -110,7 +99,7 @@ class OpenAIImageProvider:
             separators=(",", ":"),
         ).encode("utf-8")
         request_digest = hashlib.sha256(body).hexdigest()
-        if not self.acceptance_probe_passed:
+        if not _env_enabled(_ACCEPTANCE_ENV):
             existing = self.asset_store.find_generated_material(
                 self.owner,
                 self.job_id,

@@ -213,18 +213,23 @@ class StoreTests(unittest.TestCase):
 
         store.init_db(legacy_path)
 
-        legacy_ready_replay = OpenAIImageProvider(
-            owner=owner,
-            job_id=job_id,
-            api_key="",
-            asset_store=store,
-            http_request=lambda *args: self.fail("ready replay must not call provider"),
-            acceptance_probe_passed=False,
-            db_path=legacy_path,
-        ).generate(
-            {"semantic_query": "legacy ready", "ratio": "16:9"},
-            "legacy-ready",
-        )
+        with patch.dict(
+            os.environ,
+            {"AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "0"},
+        ):
+            legacy_ready_replay = OpenAIImageProvider(
+                owner=owner,
+                job_id=job_id,
+                api_key="",
+                asset_store=store,
+                http_request=lambda *args: self.fail(
+                    "ready replay must not call provider"
+                ),
+                db_path=legacy_path,
+            ).generate(
+                {"semantic_query": "legacy ready", "ratio": "16:9"},
+                "legacy-ready",
+            )
         self.assertEqual(legacy_ready_replay.payload["asset_id"], 1)
 
         def reserve(key, digest, worker, now):
