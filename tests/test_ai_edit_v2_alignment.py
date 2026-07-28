@@ -168,6 +168,19 @@ class Clock:
 
 
 class AsrTests(unittest.TestCase):
+    def test_failed_submission_claim_never_calls_provider_submit(self):
+        class ProviderClient:
+            def submit_asr(self, cos_url, reference):
+                raise AssertionError("a non-owner must not submit")
+
+        with self.assertRaises(UnknownSubmissionError):
+            asr.transcribe(
+                "https://media.example.invalid/source.mp4", ProviderClient(), deadline_at=100,
+                reference="job-17:transcribing:1",
+                save_submission_intent=lambda reference: False,
+                now_fn=lambda: 1, sleep_fn=lambda _: None,
+            )
+
     def test_unknown_submission_is_persisted_and_restart_never_resubmits(self):
         events = []
         case = self

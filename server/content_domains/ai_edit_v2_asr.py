@@ -94,7 +94,9 @@ def transcribe(
         try:
             if hasattr(client, "submit_asr"):
                 if save_submission_intent is not None:
-                    save_submission_intent(submission_reference)
+                    may_submit = save_submission_intent(submission_reference)
+                    if may_submit is False:
+                        raise UnknownSubmissionError("asr_submission_reconciliation_required")
                 try:
                     submitted = client.submit_asr(cos_key, submission_reference)
                 except UnknownSubmissionError:

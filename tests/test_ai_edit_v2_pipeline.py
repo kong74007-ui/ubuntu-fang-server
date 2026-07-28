@@ -3,13 +3,16 @@ import os
 import threading
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
 
 from server.content_domains import ai_edit_v2_billing as billing
+from server.content_domains import ai_edit_v2_asr as asr
 from server.content_domains import ai_edit_v2_pipeline as pipeline
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
 
 
 def draft():
@@ -261,6 +264,113 @@ class PipelineTests(unittest.TestCase):
             "provider": "dashscope", "capability": "asr",
             "reference": "job-1:transcribing:1", "status": "pending",
         }})
+
+    def test_concurrent_unknown_submission_is_claimed_once_and_never_retried(self):
+        job = self._precharged_job()
+        self._set_state(
+            job["id"], "transcribing",
+            [{"version": 1, "state": "normalizing", "at": 100, "data": {}}],
+        )
+        store.record_stage_attempt(
+            job["id"], "transcribing", 1, "waiting", 120, db_path=self.db_path,
+        )
+        barrier = threading.Barrier(2)
+        latest_barrier = threading.Barrier(2)
+        submitted = []
+        claims = []
+        submitted_lock = threading.Lock()
+
+        class UnknownAfterSendClient:
+            def submit_asr(self, cos_url, reference):
+                with submitted_lock:
+                    submitted.append((cos_url, reference))
+                raise UnknownSubmissionError("connection lost after provider accepted")
+
+        def transcribe(_job, context):
+            def claim(reference):
+                may_submit = context["save_submission_intent"]("dashscope", "asr", reference)
+                with submitted_lock:
+                    claims.append(may_submit)
+                barrier.wait(timeout=5)
+                return may_submit
+
+            try:
+                asr.transcribe(
+                    "https://media.example.invalid/source.mp4", UnknownAfterSendClient(), deadline_at=500,
+                    reference="job-1:transcribing:1", provider_task_id=context["provider_task_id"],
+                    submission_intent=context["submission_intent"],
+                    save_submission_intent=claim,
+                    mark_submission_unknown=context["mark_submission_unknown"],
+                    now_fn=lambda: 130, sleep_fn=lambda _: None,
+                )
+            except UnknownSubmissionError:
+                return pipeline.StageResult("transcription_failed", {"unknown": True})
+            raise AssertionError("unknown provider submission must not succeed")
+
+        def runner():
+            try:
+                result = pipeline.run_stage(
+                    job["id"], "transcribing", handlers={"transcribing": transcribe},
+                    now=130, db_path=self.db_path, points_client=self.points,
+                )
+                return ("result", result)
+            except Exception as exc:
+                return ("error", type(exc).__name__, str(exc))
+
+        original_latest_attempt = pipeline._latest_attempt
+
+        def synchronized_latest_attempt(*args, **kwargs):
+            attempt = original_latest_attempt(*args, **kwargs)
+            latest_barrier.wait(timeout=5)
+            return attempt
+
+        with patch.object(pipeline, "_latest_attempt", side_effect=synchronized_latest_attempt):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = [future.result(timeout=10) for future in (executor.submit(runner), executor.submit(runner))]
+
+        self.assertEqual(len(claims), 2, outcomes)
+        self.assertEqual(sorted(claims), [False, True])
+        self.assertEqual(submitted, [
+            ("https://media.example.invalid/source.mp4", "job-1:transcribing:1")
+        ])
+        with closing(store.open_store(self.db_path)) as conn:
+            intent = json.loads(conn.execute(
+                "SELECT input_summary_json FROM edit_v2_stage_attempts WHERE job_id=? AND stage='transcribing'",
+                (job["id"],),
+            ).fetchone()["input_summary_json"])["submission_intent"]
+        self.assertEqual(intent, {
+            "provider": "dashscope", "capability": "asr",
+            "reference": "job-1:transcribing:1", "status": "unknown",
+        })
+
+    def test_provider_bound_intent_is_not_reclaimed_by_a_restart(self):
+        job = self._precharged_job()
+        self._set_state(
+            job["id"], "transcribing",
+            [{"version": 1, "state": "normalizing", "at": 100, "data": {}}],
+        )
+        store.record_stage_attempt(
+            job["id"], "transcribing", 1, "waiting", 120,
+            provider_task_id="fun-asr-1",
+            input_summary={"submission_intent": {
+                "provider": "dashscope", "capability": "asr",
+                "reference": "job-1:transcribing:1", "status": "provider_bound",
+            }},
+            db_path=self.db_path,
+        )
+
+        def resume(_job, context):
+            self.assertIs(
+                context["save_submission_intent"]("dashscope", "asr", "job-1:transcribing:1"),
+                False,
+            )
+            return pipeline.StageResult("transcription_failed", {"recovered": True})
+
+        result = pipeline.run_stage(
+            job["id"], "transcribing", handlers={"transcribing": resume},
+            now=130, db_path=self.db_path, points_client=self.points,
+        )
+        self.assertIsNone(result.error_code)
 
     def test_worker_and_service_are_isolated_disabled_by_default_and_graceful(self):
         from server import ai_edit_v2_worker as worker
