@@ -1142,7 +1142,8 @@ def reconcile_terminal_refunds(
         rows = conn.execute(
             f"""SELECT b.job_id FROM edit_v2_billing b
                  JOIN edit_v2_jobs j ON j.id=b.job_id
-                 WHERE b.operation='hold' AND b.status IN ('held','refunding')
+                 WHERE b.operation='hold'
+                   AND b.status IN ('held','refund_pending','refunding')
                    AND j.status IN ({placeholders})""",
             tuple(FAILURE_STATES),
         ).fetchall()

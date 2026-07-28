@@ -145,6 +145,42 @@ class StoreTests(unittest.TestCase):
             )
             conn.commit()
 
+    def _prepare_v8_duplicate_successors(self, path):
+        store.init_db(path)
+        with closing(store.open_store(path)) as conn:
+            conn.execute("DROP INDEX idx_edit_v2_jobs_successor")
+            conn.execute("UPDATE edit_v2_schema_meta SET version=8 WHERE id=1")
+            rows = (
+                ("predecessor", None, "render_failed", 0),
+                ("queued-early", "predecessor", "queued", 1),
+                ("winner-a", "predecessor", "completed", 20),
+                ("winner-b", "predecessor", "completed", 20),
+                ("failed-old", "predecessor", "render_failed", 0),
+            )
+            for job_id, predecessor, status, created_at in rows:
+                conn.execute(
+                    """INSERT INTO edit_v2_jobs(
+                           id,owner,idempotency_key,quote_id,predecessor_job_id,
+                           status,payload_json,checkpoint_json,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,'{}','[]',?,?)""",
+                    (job_id, "alice", f"key-{job_id}", f"quote-{job_id}",
+                     predecessor, status, created_at, created_at),
+                )
+            for job_id, amount, status in (
+                ("queued-early", 40, "held"),
+                ("winner-a", 50, "settled"),
+                ("winner-b", 60, "held"),
+                ("failed-old", 70, "refunding"),
+            ):
+                conn.execute(
+                    """INSERT INTO edit_v2_billing(
+                           job_id,transaction_key,operation,amount,status,
+                           created_at,updated_at
+                       ) VALUES(?,?,'hold',?,?,1,1)""",
+                    (job_id, f"hold-{job_id}", amount, status),
+                )
+        return path
+
     def _row(self, table, row_id):
         with closing(store.open_store(self.db_path)) as conn:
             return conn.execute(
@@ -237,6 +273,75 @@ class StoreTests(unittest.TestCase):
                 predecessor_job_id=predecessor["id"],
                 uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174092",
             )
+
+    def test_v8_duplicate_successors_choose_stable_winner_and_persist_refunds(self):
+        path = os.path.join(self.temp_dir.name, "duplicate-v8.db")
+        self._prepare_v8_duplicate_successors(path)
+
+        store.init_db(path)
+        store.init_db(path)
+
+        with closing(store.open_store(path)) as conn:
+            successors = conn.execute(
+                """SELECT id,status,predecessor_job_id,error_code,checkpoint_json
+                   FROM edit_v2_jobs WHERE id!='predecessor' ORDER BY id"""
+            ).fetchall()
+            bills = {
+                row["job_id"]: row["status"]
+                for row in conn.execute(
+                    "SELECT job_id,status FROM edit_v2_billing WHERE operation='hold'"
+                )
+            }
+            version = conn.execute(
+                "SELECT version FROM edit_v2_schema_meta WHERE id=1"
+            ).fetchone()["version"]
+
+        winner = next(row for row in successors if row["id"] == "winner-a")
+        self.assertEqual(winner["predecessor_job_id"], "predecessor")
+        self.assertEqual(winner["status"], "completed")
+        for loser in (row for row in successors if row["id"] != "winner-a"):
+            self.assertEqual(loser["status"], "storage_failed")
+            self.assertIsNone(loser["predecessor_job_id"])
+            self.assertEqual(loser["error_code"], "duplicate_successor_quarantined")
+            audit = json.loads(loser["checkpoint_json"])[-1]
+            self.assertEqual(audit["data"]["winner_job_id"], "winner-a")
+            self.assertEqual(audit["data"]["predecessor_job_id"], "predecessor")
+        self.assertEqual(bills["queued-early"], "refund_pending")
+        self.assertEqual(bills["winner-b"], "refund_pending")
+        self.assertEqual(bills["failed-old"], "refunding")
+        self.assertEqual(bills["winner-a"], "settled")
+        self.assertEqual(version, 9)
+
+    def test_v8_duplicate_migration_is_concurrency_safe(self):
+        path = os.path.join(self.temp_dir.name, "duplicate-v8-concurrent.db")
+        self._prepare_v8_duplicate_successors(path)
+        barrier = threading.Barrier(2)
+
+        def migrate():
+            barrier.wait(timeout=5)
+            store.init_db(path)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(migrate) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=15)
+
+        with closing(store.open_store(path)) as conn:
+            winner_count = conn.execute(
+                """SELECT COUNT(*) FROM edit_v2_jobs
+                   WHERE owner='alice' AND predecessor_job_id='predecessor'"""
+            ).fetchone()[0]
+            audit_counts = {
+                row["id"]: len(json.loads(row["checkpoint_json"]))
+                for row in conn.execute(
+                    """SELECT id,checkpoint_json FROM edit_v2_jobs
+                       WHERE error_code='duplicate_successor_quarantined'"""
+                )
+            }
+        self.assertEqual(winner_count, 1)
+        self.assertEqual(audit_counts, {
+            "queued-early": 1, "winner-b": 1, "failed-old": 1,
+        })
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
         for scenario in ("new", "delete_v1", "wal_v1"):

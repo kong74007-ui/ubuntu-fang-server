@@ -252,7 +252,9 @@ class RuntimeTests(unittest.TestCase):
             config = {"enabled": True, "workers": 1, "lease_seconds": 30,
                       "poll_seconds": .1, "db_path": directory + "/v2.db"}
             dependencies = {"readiness_errors": lambda: ["DASHSCOPE_API_KEY"]}
-            with patch.object(worker.runtime, "production_dependencies", return_value=dependencies), \
+            with patch.object(worker.feature, "capability", return_value={
+                     "stable_runtime_ready": True, "accepts_submissions": True,
+                 }), patch.object(worker.runtime, "production_dependencies", return_value=dependencies), \
                  patch.object(worker.store, "claim_next_job") as claim:
                 with self.assertRaisesRegex(RuntimeError, "ai_edit_v2_not_ready"):
                     worker.run_worker(threading.Event(), config=config)

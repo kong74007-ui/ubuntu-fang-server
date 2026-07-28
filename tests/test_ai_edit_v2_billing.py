@@ -14,6 +14,7 @@ if server_dir not in sys.path:
 
 from server.content_domains import ai_edit_v2_billing as billing
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains import ai_edit_v2_pipeline as pipeline
 from server.content_domains import points
 
 
@@ -106,6 +107,37 @@ class BillingTests(unittest.TestCase):
         self.assertIn("base", quote["breakdown"])
         self.assertEqual(quote["price_version"], "ai-edit-v2-price-v1")
         self.assertGreater(quote["expires_at"], 100)
+
+    def test_migration_refund_pending_is_reconciled_by_existing_failure_refund(self):
+        fake_points = FakePoints()
+        job = store.create_job(
+            "alice", {"draft": draft()}, "quote", "duplicate-loser", 1,
+            uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174089",
+        )
+        with closing(store.open_store(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_jobs SET status='storage_failed' WHERE id=?",
+                (job["id"],),
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_billing(
+                       job_id,transaction_key,operation,amount,status,created_at,updated_at
+                   ) VALUES(?,?,'hold',40,'refund_pending',1,1)""",
+                (job["id"], "hold-duplicate-loser"),
+            )
+
+        recovered = pipeline.reconcile_terminal_refunds(
+            now=2, db_path=self.db_path, points_client=fake_points
+        )
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(fake_points.balance, 540)
+        with closing(store.open_store(self.db_path)) as conn:
+            status = conn.execute(
+                "SELECT status FROM edit_v2_billing WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()["status"]
+        self.assertEqual(status, "refunded")
 
     def test_quote_rejects_expiry_owner_or_changed_draft(self):
         quote = billing.create_quote(

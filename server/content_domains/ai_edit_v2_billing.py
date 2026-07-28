@@ -566,12 +566,16 @@ def _claim_terminal_operation(
             if row["status"] == final:
                 conn.commit()
                 return row
-            if row["status"] in other:
+            if row["status"] in other or (
+                target == "settling" and row["status"] == "refund_pending"
+            ):
                 raise BillingError("billing_operation_conflict")
             if row["status"] == target:
                 if int(row["updated_at"]) >= int(now):
                     raise BillingError("billing_operation_in_progress")
-            elif row["status"] != "held":
+            elif row["status"] != "held" and not (
+                target == "refunding" and row["status"] == "refund_pending"
+            ):
                 raise BillingError("billing_not_held")
             conn.execute(
                 "UPDATE edit_v2_billing SET status=?,updated_at=? WHERE id=?",

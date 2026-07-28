@@ -15,12 +15,14 @@ from typing import Any
 try:
     from content_domains import ai_edit_v2_billing as billing
     from content_domains import ai_edit_v2_delivery as delivery
+    from content_domains import ai_edit_v2_feature as feature
     from content_domains import ai_edit_v2_pipeline as pipeline
     from content_domains import ai_edit_v2_store as store
     from content_domains import ai_edit_v2_runtime as runtime
 except ImportError:
     from .content_domains import ai_edit_v2_billing as billing
     from .content_domains import ai_edit_v2_delivery as delivery
+    from .content_domains import ai_edit_v2_feature as feature
     from .content_domains import ai_edit_v2_pipeline as pipeline
     from .content_domains import ai_edit_v2_store as store
     from .content_domains import ai_edit_v2_runtime as runtime
@@ -84,6 +86,10 @@ def run_worker(
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
     dependencies = handlers or runtime.production_dependencies(config["db_path"])
+    capability = feature.capability()
+    accepts_submissions = bool(config["enabled"]) and bool(
+        capability.get("accepts_submissions")
+    )
 
     def reconcile_once() -> None:
         billing.reconcile_pending_precharges(
@@ -100,7 +106,7 @@ def run_worker(
             points_client=runtime.option(dependencies, "points_client", billing.points),
         )
 
-    if not config["enabled"]:
+    if not accepts_submissions:
         LOG.warning("[ai-edit-v2] submissions disabled; reconciliation-only mode")
         while not stop_event.is_set():
             try:

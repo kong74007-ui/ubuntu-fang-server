@@ -22,6 +22,24 @@ push, deployment, service restart, or real-provider request was performed.
 - Every completed or failed terminal job reports both
   `estimated_remaining_seconds` and `timing.remaining_seconds` as zero.
 
+## Fix Round 2
+
+- The worker now consumes the same `accepts_submissions` capability as the API.
+  When the feature flag is on but any stable dependency is unavailable, it runs
+  pending precharge, terminal refund, and delivery reconciliation only and never
+  claims a new job.
+- The v8-to-v9 migration resolves historical duplicate successors inside the
+  migration transaction before creating the unique index. Winner selection is
+  deterministic: completed first, then earlier `created_at`, then smallest ID.
+- Each winner and loser receives a durable migration checkpoint. Losers are
+  detached from the predecessor, quarantined as `storage_failed`, assigned the
+  stable `duplicate_successor_quarantined` error, and have leases cleared.
+  Held loser charges become durable `refund_pending`; existing refund
+  reconciliation advances them through the same idempotent failure-refund path.
+- Real duplicate v8 fixtures cover mixed job/billing states, repeated migration,
+  two-thread migration, stable winner selection, audit records, and refund
+  reconciliation.
+
 ## API
 
 - Added the stable singular `POST /api/v2/edit/quote` route while retaining the
@@ -74,12 +92,21 @@ push, deployment, service restart, or real-provider request was performed.
   accepted writes, different retry keys created two successors, and terminal
   jobs exposed 2699/2700 seconds remaining. The UI RED also proved retry keys
   were not durable before transport.
+- Round 2 RED reproduced both high-severity failures: dependency-incomplete
+  workers raised before reconciliation, and a real duplicate v8 database failed
+  the unique-index migration. A standalone `refund_pending` record was also not
+  consumed by terminal refund reconciliation.
 
 ## Verification
 
 - Task 9 API/admin/legacy-video compatibility: 45 tests passed.
 - Task 9 UI: 6 tests passed.
-- Full AI Edit V2 Python suite: 315 tests passed in 29.685s.
+- Round 2 worker/runtime/store/pipeline/billing regression: 105 tests passed.
+- Round 2 full AI Edit V2 discovery ran 320 tests twice. Each run had one
+  different pre-existing concurrency-sensitive failure outside the changed
+  paths: one `delivery_state_conflict`, then one two-second heartbeat-entry
+  timeout. The delivery concurrency test subsequently passed 10/10 isolated
+  repetitions; no Round 2 target test failed.
 - Changed Python files passed `python -m py_compile`.
 - `python scripts/stamp_assets.py --check`: cache stamps OK.
 - `python scripts/ci_validate.py`: 703 Python files and 24 HTML pages passed.

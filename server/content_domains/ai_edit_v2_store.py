@@ -71,6 +71,77 @@ def _connection(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migration_checkpoint(raw: Any, state: str, now: int, data: dict[str, Any]) -> str:
+    try:
+        checkpoints = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        checkpoints = []
+    if not isinstance(checkpoints, list):
+        checkpoints = []
+    checkpoints.append({
+        "version": len(checkpoints) + 1,
+        "state": state,
+        "at": int(now),
+        "data": data,
+    })
+    return json.dumps(
+        checkpoints, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _quarantine_duplicate_successors(conn: sqlite3.Connection, now: int) -> None:
+    groups = conn.execute(
+        """SELECT owner,predecessor_job_id FROM edit_v2_jobs
+           WHERE predecessor_job_id IS NOT NULL
+           GROUP BY owner,predecessor_job_id HAVING COUNT(*)>1"""
+    ).fetchall()
+    for group in groups:
+        rows = conn.execute(
+            """SELECT * FROM edit_v2_jobs
+               WHERE owner=? AND predecessor_job_id=?
+               ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END,
+                        created_at,id""",
+            (group["owner"], group["predecessor_job_id"]),
+        ).fetchall()
+        winner, losers = rows[0], rows[1:]
+        loser_ids = [row["id"] for row in losers]
+        winner_audit = _migration_checkpoint(
+            winner["checkpoint_json"], "migration_v9_successor_winner", now,
+            {
+                "predecessor_job_id": group["predecessor_job_id"],
+                "loser_job_ids": loser_ids,
+            },
+        )
+        conn.execute(
+            "UPDATE edit_v2_jobs SET checkpoint_json=? WHERE id=?",
+            (winner_audit, winner["id"]),
+        )
+        for loser in losers:
+            loser_audit = _migration_checkpoint(
+                loser["checkpoint_json"],
+                "migration_v9_duplicate_successor_quarantined",
+                now,
+                {
+                    "predecessor_job_id": group["predecessor_job_id"],
+                    "winner_job_id": winner["id"],
+                },
+            )
+            conn.execute(
+                """UPDATE edit_v2_jobs
+                   SET predecessor_job_id=NULL,status='storage_failed',
+                       error_code='duplicate_successor_quarantined',
+                       checkpoint_json=?,lease_owner=NULL,lease_until=NULL,
+                       updated_at=MAX(updated_at,?)
+                   WHERE id=?""",
+                (loser_audit, int(now), loser["id"]),
+            )
+            conn.execute(
+                """UPDATE edit_v2_billing SET status='refund_pending',updated_at=?
+                   WHERE job_id=? AND operation='hold' AND status='held'""",
+                (int(now), loser["id"]),
+            )
+
+
 def init_db(db_path: str | None = None) -> None:
     path = _db_path(db_path)
     parent = os.path.dirname(os.path.abspath(path))
@@ -294,6 +365,7 @@ def init_db(db_path: str | None = None) -> None:
                     """ALTER TABLE edit_v2_jobs
                        ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
                 )
+            _quarantine_duplicate_successors(conn, int(time.time()))
             conn.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_jobs_successor
                    ON edit_v2_jobs(owner,predecessor_job_id)

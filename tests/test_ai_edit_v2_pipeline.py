@@ -474,6 +474,44 @@ class PipelineTests(unittest.TestCase):
         refunds.assert_called_once()
         claim.assert_not_called()
 
+    def test_dependency_incomplete_worker_reconciles_everything_without_claiming(self):
+        from server import ai_edit_v2_worker as worker
+        from server.content_domains import ai_edit_v2_feature as feature
+
+        config = {"enabled": True, "workers": 1, "lease_seconds": 30,
+                  "poll_seconds": 0.01, "normal_timeout_seconds": 2700,
+                  "repair_timeout_seconds": 900, "db_path": self.db_path}
+        stop_event = threading.Event()
+        dependencies = {
+            "readiness_errors": lambda: ["quality_dependency"],
+            "services": None,
+        }
+
+        def reconciled(*_args, **_kwargs):
+            stop_event.set()
+            return 0
+
+        with patch.object(feature, "capability", return_value={
+                 "enabled": True,
+                 "stable_runtime_ready": False,
+                 "accepts_submissions": False,
+             }), patch.object(
+                 worker.billing, "reconcile_pending_precharges"
+             ) as pending, patch.object(
+                 worker.pipeline, "reconcile_terminal_refunds"
+             ) as refunds, patch.object(
+                 worker.delivery, "reconcile_pending_deliveries",
+                 side_effect=reconciled,
+             ) as deliveries, patch.object(
+                 worker.store, "claim_next_job"
+             ) as claim:
+            worker.run_worker(stop_event, config=config, handlers=dependencies)
+
+        pending.assert_called_once()
+        refunds.assert_called_once()
+        deliveries.assert_called_once()
+        claim.assert_not_called()
+
     def test_enabled_worker_periodically_reconciles_pending_delivery_outbox(self):
         from server import ai_edit_v2_worker as worker
 
@@ -487,7 +525,9 @@ class PipelineTests(unittest.TestCase):
             return 0
 
         dependencies = {"readiness_errors": lambda: [], "services": None}
-        with patch.object(worker.billing, "reconcile_pending_precharges"), \
+        with patch.object(worker.feature, "capability", return_value={
+                 "stable_runtime_ready": True, "accepts_submissions": True,
+             }), patch.object(worker.billing, "reconcile_pending_precharges"), \
              patch.object(worker.pipeline, "reconcile_terminal_refunds"), \
              patch.object(worker.delivery, "reconcile_pending_deliveries", side_effect=reconciled) as delivery_reconcile, \
              patch.object(worker.store, "claim_next_job") as claim:
