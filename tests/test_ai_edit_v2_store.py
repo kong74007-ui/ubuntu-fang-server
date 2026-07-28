@@ -101,7 +101,7 @@ class StoreTests(unittest.TestCase):
                 "SELECT version FROM edit_v2_schema_meta WHERE id=1"
             ).fetchone()["version"]
         self.assertIn("predecessor_job_id", columns)
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
         for scenario in ("new", "delete_v1", "wal_v1"):
@@ -135,7 +135,7 @@ class StoreTests(unittest.TestCase):
                         "SELECT version FROM edit_v2_schema_meta WHERE id=1"
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
-                self.assertEqual(version, 2)
+                self.assertEqual(version, 3)
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:
@@ -365,15 +365,43 @@ class StoreTests(unittest.TestCase):
             "idempotency_key": "reserved-image",
             "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
             "now": 100,
+            "request_digest": "digest-reserved",
+            "lease_owner": "worker-a",
+            "lease_seconds": 30,
             "db_path": self.db_path,
         }
 
         winner = store.reserve_generated_material(**fields)
-        loser = store.reserve_generated_material(**{**fields, "now": 101})
+        loser = store.reserve_generated_material(
+            **{**fields, "now": 101, "lease_owner": "worker-b"}
+        )
 
         self.assertTrue(winner["claimed"])
         self.assertFalse(loser["claimed"])
         self.assertEqual(loser["material"]["status"], "pending")
+        self.assertEqual(loser["reason"], "in_progress")
+
+        self.assertTrue(
+            store.mark_generated_material_submitting(
+                owner="user-a",
+                job_id=job["id"],
+                idempotency_key="reserved-image",
+                lease_owner="worker-a",
+                now=101,
+                db_path=self.db_path,
+            )
+        )
+        self.assertTrue(
+            store.mark_generated_material_provider_confirmed(
+                owner="user-a",
+                job_id=job["id"],
+                idempotency_key="reserved-image",
+                lease_owner="worker-a",
+                provider_request_id="provider-request-1",
+                now=102,
+                db_path=self.db_path,
+            )
+        )
 
         ready = store.complete_generated_material(
             owner="user-a",
@@ -385,7 +413,8 @@ class StoreTests(unittest.TestCase):
             size_bytes=8,
             width=1536,
             height=1024,
-            now=102,
+            lease_owner="worker-a",
+            now=103,
             db_path=self.db_path,
         )
         self.assertEqual(ready["status"], "ready")
@@ -394,15 +423,16 @@ class StoreTests(unittest.TestCase):
                 "user-a",
                 job["id"],
                 "reserved-image",
-                now=103,
+                lease_owner="worker-a",
+                now=104,
                 db_path=self.db_path,
             )
         )
-        replay = store.reserve_generated_material(**{**fields, "now": 104})
+        replay = store.reserve_generated_material(**{**fields, "now": 105})
         self.assertFalse(replay["claimed"])
         self.assertEqual(replay["material"]["status"], "ready")
 
-    def test_failed_generated_material_reservation_cannot_return_to_pending_or_ready(self):
+    def test_terminal_generated_material_reservation_cannot_return_to_pending_or_ready(self):
         job = self._create_job()
         fields = {
             "owner": "user-a",
@@ -410,18 +440,33 @@ class StoreTests(unittest.TestCase):
             "idempotency_key": "failed-image",
             "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
             "now": 100,
+            "request_digest": "digest-failed",
+            "lease_owner": "worker-a",
+            "lease_seconds": 30,
             "db_path": self.db_path,
         }
         self.assertTrue(store.reserve_generated_material(**fields)["claimed"])
+        store.mark_generated_material_submitting(
+            owner="user-a",
+            job_id=job["id"],
+            idempotency_key="failed-image",
+            lease_owner="worker-a",
+            now=100,
+            db_path=self.db_path,
+        )
         self.assertTrue(
             store.fail_generated_material(
-                "user-a", job["id"], "failed-image", now=101, db_path=self.db_path
+                "user-a", job["id"], "failed-image", lease_owner="worker-a",
+                now=101, db_path=self.db_path
             )
         )
 
-        replay = store.reserve_generated_material(**{**fields, "now": 102})
+        replay = store.reserve_generated_material(
+            **{**fields, "now": 102, "lease_owner": "worker-b"}
+        )
         self.assertFalse(replay["claimed"])
         self.assertEqual(replay["material"]["status"], "failed")
+        self.assertEqual(replay["material"]["generation_state"], "terminal_failed")
         with self.assertRaisesRegex(ValueError, "generated_material_not_pending"):
             store.complete_generated_material(
                 owner="user-a",
@@ -433,8 +478,127 @@ class StoreTests(unittest.TestCase):
                 size_bytes=8,
                 width=1536,
                 height=1024,
+                lease_owner="worker-b",
                 now=103,
                 db_path=self.db_path,
+            )
+
+    def test_generated_pre_submit_lease_can_be_reclaimed_only_after_expiry(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "crash-before-submit",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "request_digest": "digest-crash",
+            "lease_seconds": 10,
+            "db_path": self.db_path,
+        }
+
+        first = store.reserve_generated_material(
+            **fields, lease_owner="worker-a", now=100
+        )
+        active = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=109
+        )
+        reclaimed = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=110
+        )
+
+        self.assertTrue(first["claimed"])
+        self.assertFalse(active["claimed"])
+        self.assertEqual(active["reason"], "in_progress")
+        self.assertTrue(reclaimed["claimed"])
+        self.assertEqual(reclaimed["material"]["id"], first["material"]["id"])
+        self.assertEqual(reclaimed["material"]["generation_state"], "pre_submit")
+        self.assertEqual(reclaimed["material"]["generation_lease_owner"], "worker-b")
+
+    def test_generated_retryable_state_obeys_backoff_then_reclaims(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "retryable-image",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "request_digest": "digest-retryable",
+            "lease_seconds": 10,
+            "db_path": self.db_path,
+        }
+        store.reserve_generated_material(**fields, lease_owner="worker-a", now=100)
+        store.mark_generated_material_submitting(
+            owner="user-a", job_id=job["id"], idempotency_key="retryable-image",
+            lease_owner="worker-a", now=101, db_path=self.db_path,
+        )
+        self.assertTrue(
+            store.mark_generated_material_recoverable(
+                owner="user-a", job_id=job["id"],
+                idempotency_key="retryable-image", lease_owner="worker-a",
+                state="retryable", retry_at=110, now=102, db_path=self.db_path,
+            )
+        )
+
+        backing_off = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=109
+        )
+        recovered = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=110
+        )
+
+        self.assertFalse(backing_off["claimed"])
+        self.assertEqual(backing_off["reason"], "retry_backoff")
+        self.assertTrue(recovered["claimed"])
+        self.assertEqual(recovered["material"]["generation_state"], "retryable")
+
+    def test_expired_submitting_lease_is_reclassified_as_unknown_submission(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "crash-during-submit",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "request_digest": "digest-submit-crash",
+            "lease_seconds": 10,
+            "db_path": self.db_path,
+        }
+        store.reserve_generated_material(
+            **fields, lease_owner="worker-a", now=100
+        )
+        store.mark_generated_material_submitting(
+            owner="user-a", job_id=job["id"],
+            idempotency_key="crash-during-submit", lease_owner="worker-a",
+            now=101, db_path=self.db_path,
+        )
+
+        recovered = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=110
+        )
+
+        self.assertTrue(recovered["claimed"])
+        self.assertEqual(
+            recovered["material"]["generation_state"], "unknown_submission"
+        )
+        self.assertEqual(
+            recovered["material"]["generation_lease_owner"], "worker-b"
+        )
+
+    def test_generated_idempotency_key_rejects_a_changed_canonical_body(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "same-key-changed-body",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "request_digest": "digest-original",
+            "lease_owner": "worker-a",
+            "lease_seconds": 10,
+            "now": 100,
+            "db_path": self.db_path,
+        }
+        store.reserve_generated_material(**fields)
+
+        with self.assertRaisesRegex(ValueError, "generated_request_conflict"):
+            store.reserve_generated_material(
+                **{**fields, "request_digest": "digest-changed", "now": 111}
             )
 
     def test_material_resolution_records_are_idempotent_and_reject_urls(self):

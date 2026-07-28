@@ -1,4 +1,10 @@
-"""OpenAI image generation with bounded download and COS-first persistence."""
+"""OpenAI image generation with bounded download and COS-first persistence.
+
+Recovery deliberately does not invent a provider task-query API.  Once a request may
+have crossed the network boundary, recovery depends on replaying the exact canonical
+body with the same OpenAI ``Idempotency-Key`` so the provider treats it as one logical
+submission.  The store persists the body digest and rejects changed-body replay.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +41,11 @@ class OpenAIImageProvider:
         http_request: Callable[..., dict[str, Any]] | None = None,
         downloader: Callable[..., dict[str, Any]] | None = None,
         clock_ms: Callable[[], int] | None = None,
+        now_seconds: Callable[[], int] | None = None,
+        worker_id: str | None = None,
         timeout_seconds: int = 60,
+        lease_seconds: int = 180,
+        retry_backoff_seconds: int = 30,
         db_path: str | None = None,
         model: str | None = None,
     ) -> None:
@@ -53,7 +63,13 @@ class OpenAIImageProvider:
         self.http_request = http_request or self._stdlib_request
         self.downloader = downloader or self._stdlib_download
         self.clock_ms = clock_ms or (lambda: round(time.monotonic() * 1000))
+        self.now_seconds = now_seconds or (lambda: round(time.time()))
+        self.worker_id = worker_id or str(uuid.uuid4())
         self.timeout_seconds = int(timeout_seconds)
+        self.lease_seconds = max(
+            int(lease_seconds), (2 * self.timeout_seconds) + 30
+        )
+        self.retry_backoff_seconds = int(retry_backoff_seconds)
         self.db_path = db_path
         self.model = model or os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
         self.max_download_bytes = _MAX_IMAGE_BYTES
@@ -62,6 +78,19 @@ class OpenAIImageProvider:
         if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 255:
             raise ProviderError("openai_image_idempotency_key_invalid")
         prompt, size, width, height = self._request_fields(slot)
+        body = json.dumps(
+            {
+                "model": self.model,
+                "prompt": prompt,
+                "size": size,
+                "quality": "medium",
+                "output_format": "png",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request_digest = hashlib.sha256(body).hexdigest()
         object_id = uuid.uuid5(uuid.UUID(self.job_id), idempotency_key)
         owner_hash = hashlib.sha256(self.owner.encode("utf-8")).hexdigest()[:16]
         cos_key = f"ai-edit-v2/{owner_hash}/{self.job_id}/generated/{object_id}.png"
@@ -70,7 +99,10 @@ class OpenAIImageProvider:
             job_id=self.job_id,
             idempotency_key=idempotency_key,
             cos_key=cos_key,
-            now=round(time.time()),
+            request_digest=request_digest,
+            lease_owner=self.worker_id,
+            lease_seconds=self.lease_seconds,
+            now=self.now_seconds(),
             db_path=self.db_path,
         )
         material = reservation["material"]
@@ -85,39 +117,55 @@ class OpenAIImageProvider:
                     cost_units=0,
                     elapsed_ms=0,
                 )
-            if material.get("status") == "pending":
+            if reservation.get("reason") == "retry_backoff":
+                raise RetryableProviderError("openai_image_retry_backoff")
+            if reservation.get("reason") == "in_progress":
                 raise ProviderError("openai_image_generation_in_progress")
             raise ProviderError("openai_image_generation_failed")
         started_at = self.clock_ms()
         if not self.api_key:
-            self._fail_reservation(idempotency_key)
+            self._mark_recoverable(idempotency_key, "retryable")
             raise ProviderError("openai_image_not_configured")
-        body = json.dumps(
-            {
-                "model": self.model,
-                "prompt": prompt,
-                "size": size,
-                "quality": "medium",
-                "output_format": "png",
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Idempotency-Key": idempotency_key,
         }
+        if not self.asset_store.mark_generated_material_submitting(
+            owner=self.owner,
+            job_id=self.job_id,
+            idempotency_key=idempotency_key,
+            lease_owner=self.worker_id,
+            now=self.now_seconds(),
+            db_path=self.db_path,
+        ):
+            raise ProviderError("openai_image_generation_lease_lost")
         try:
-            try:
-                response = self.http_request(
-                    "POST", _ENDPOINT, headers, body, self.timeout_seconds
-                )
-            except urllib.error.HTTPError as exc:
-                if exc.code in (408, 429) or exc.code >= 500:
-                    raise RetryableProviderError("openai_image_unavailable") from exc
-                raise ProviderError("openai_image_request_rejected") from exc
-            except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            response = self.http_request(
+                "POST", _ENDPOINT, headers, body, self.timeout_seconds
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code in (408, 429) or exc.code >= 500:
+                self._mark_recoverable(idempotency_key, "retryable")
                 raise RetryableProviderError("openai_image_unavailable") from exc
+            self._fail_reservation(idempotency_key)
+            raise ProviderError("openai_image_request_rejected") from exc
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            self._mark_recoverable(idempotency_key, "unknown_submission")
+            raise RetryableProviderError("openai_image_unavailable") from exc
+
+        provider_request_id = self._response_request_id(response)
+        if not self.asset_store.mark_generated_material_provider_confirmed(
+            owner=self.owner,
+            job_id=self.job_id,
+            idempotency_key=idempotency_key,
+            lease_owner=self.worker_id,
+            provider_request_id=provider_request_id,
+            now=self.now_seconds(),
+            db_path=self.db_path,
+        ):
+            raise ProviderError("openai_image_generation_lease_lost")
+        try:
             request_id, output, cost_units = self._parse_response(response)
             image = self._download_output(output, width, height)
             content = image["content"]
@@ -142,30 +190,56 @@ class OpenAIImageProvider:
                 size_bytes=len(content),
                 width=width,
                 height=height,
-                now=round(time.time()),
+                lease_owner=self.worker_id,
+                now=self.now_seconds(),
                 db_path=self.db_path,
             )
-            payload = self._existing_payload(material)
-            return ProviderResult(
-                provider="openai",
-                capability="image_generation",
-                request_id=request_id,
-                payload=payload,
-                cost_units=cost_units,
-                elapsed_ms=max(0, self.clock_ms() - started_at),
-            )
         except Exception:
-            self._fail_reservation(idempotency_key)
+            self._mark_recoverable(idempotency_key, "provider_confirmed")
             raise
+        payload = self._existing_payload(material)
+        return ProviderResult(
+            provider="openai",
+            capability="image_generation",
+            request_id=request_id,
+            payload=payload,
+            cost_units=cost_units,
+            elapsed_ms=max(0, self.clock_ms() - started_at),
+        )
 
     def _fail_reservation(self, idempotency_key: str) -> None:
         self.asset_store.fail_generated_material(
             self.owner,
             self.job_id,
             idempotency_key,
-            now=round(time.time()),
+            lease_owner=self.worker_id,
+            now=self.now_seconds(),
             db_path=self.db_path,
         )
+
+    def _mark_recoverable(self, idempotency_key: str, state: str) -> None:
+        now = self.now_seconds()
+        changed = self.asset_store.mark_generated_material_recoverable(
+            owner=self.owner,
+            job_id=self.job_id,
+            idempotency_key=idempotency_key,
+            lease_owner=self.worker_id,
+            state=state,
+            retry_at=now + self.retry_backoff_seconds,
+            now=now,
+            db_path=self.db_path,
+        )
+        if not changed:
+            raise ProviderError("openai_image_generation_lease_lost")
+
+    @staticmethod
+    def _response_request_id(response: Any) -> str:
+        if isinstance(response, dict):
+            for key in ("id", "request_id", "_request_id"):
+                value = response.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return "response-received"
 
     def _existing_payload(self, material: Any) -> dict[str, Any]:
         row = dict(material)

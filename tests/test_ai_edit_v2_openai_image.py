@@ -82,18 +82,41 @@ class FakeAssetStore:
             "job_id": fields["job_id"],
             "cos_key": fields["cos_key"],
             "status": "pending",
+            "generation_state": "pre_submit",
+            "generation_lease_owner": fields["lease_owner"],
+            "generation_request_digest": fields["request_digest"],
         }
-        return {"claimed": True, "material": dict(self.saved)}
+        return {"claimed": True, "reason": "claimed", "material": dict(self.saved)}
+
+    def mark_generated_material_submitting(self, **fields):
+        self.events.append(("submitting", fields))
+        self.saved["generation_state"] = "submitting"
+        return True
+
+    def mark_generated_material_provider_confirmed(self, **fields):
+        self.events.append(("confirmed", fields))
+        self.saved["generation_state"] = "provider_confirmed"
+        self.saved["generation_provider_request_id"] = fields["provider_request_id"]
+        return True
+
+    def mark_generated_material_recoverable(self, **fields):
+        self.events.append(("recoverable", fields))
+        self.saved["generation_state"] = fields["state"]
+        self.saved["generation_retry_at"] = fields["retry_at"]
+        self.saved["generation_lease_owner"] = None
+        return True
 
     def complete_generated_material(self, **fields):
         self.events.append(("complete", fields))
         self.saved = {**self.saved, **fields, "status": "ready"}
+        self.saved["generation_state"] = "ready"
         return dict(self.saved)
 
     def fail_generated_material(self, owner, job_id, idempotency_key, **kwargs):
         self.events.append(("fail", owner, job_id, idempotency_key))
         if self.saved is not None and self.saved["status"] == "pending":
             self.saved["status"] = "failed"
+            self.saved["generation_state"] = "terminal_failed"
             return True
         return False
 
@@ -126,6 +149,8 @@ class OpenAIImageProviderTests(unittest.TestCase):
             http_request=request,
             downloader=download,
             clock_ms=iter((100, 125)).__next__,
+            now_seconds=lambda: 100,
+            worker_id="worker-test",
         )
         return provider, store, events
 
@@ -148,7 +173,10 @@ class OpenAIImageProviderTests(unittest.TestCase):
         self.assertNotIn("provider.example", serialized)
         self.assertNotIn("url", serialized)
         operation_order = [event[0] for event in events]
-        self.assertEqual(operation_order, ["reserve", "request", "download", "put", "head", "complete"])
+        self.assertEqual(
+            operation_order,
+            ["reserve", "submitting", "request", "confirmed", "download", "put", "head", "complete"],
+        )
         saved = store.saved
         self.assertNotIn("url", json.dumps(saved).lower())
         self.assertEqual(saved["owner"], "user-a")
@@ -157,7 +185,7 @@ class OpenAIImageProviderTests(unittest.TestCase):
         self.assertEqual(saved["mime_type"], "image/png")
         self.assertEqual(saved["etag"], "etag-1")
 
-        request = events[1]
+        request = events[2]
         self.assertEqual(request[1:3], ("POST", "https://api.openai.com/v1/images/generations"))
         self.assertEqual(request[3]["Idempotency-Key"], "job-attempt-1")
         self.assertEqual(request[4]["model"], "gpt-image-2")
@@ -239,7 +267,8 @@ class OpenAIImageProviderTests(unittest.TestCase):
             provider.generate(SLOT, "mime-spoof")
 
         self.assertNotIn("put", [event[0] for event in events])
-        self.assertEqual(store.saved["status"], "failed")
+        self.assertEqual(store.saved["status"], "pending")
+        self.assertEqual(store.saved["generation_state"], "provider_confirmed")
 
     def test_rejects_truncated_png_before_cos_write(self):
         provider, _, events = self._provider(
@@ -286,7 +315,8 @@ class OpenAIImageProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "image_cos_verification_failed"):
             provider.generate(SLOT, "bad-head")
 
-        self.assertEqual(store.saved["status"], "failed")
+        self.assertEqual(store.saved["status"], "pending")
+        self.assertEqual(store.saved["generation_state"], "provider_confirmed")
         self.assertNotIn("complete", [event[0] for event in events])
 
     def test_rejects_cross_scope_existing_asset(self):
@@ -307,6 +337,155 @@ class OpenAIImageProviderTests(unittest.TestCase):
             provider.generate(SLOT, "cross-scope")
 
         self.assertEqual([event[0] for event in events], ["reserve"])
+
+    def test_unknown_submission_restarts_with_same_key_and_byte_identical_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "ai-edit-v2.db")
+            store.init_db(db_path)
+            job = store.create_job(
+                "user-a", {"brief": "image"}, "quote-1", "job-key", 1,
+                db_path=db_path,
+            )
+            attempts = []
+            events = []
+            cos = FakeCos(events)
+
+            def uncertain_request(method, url, headers, body, timeout):
+                attempts.append((headers["Idempotency-Key"], body))
+                raise TimeoutError("connection lost after send")
+
+            first = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                cos_api=cos, asset_store=store, http_request=uncertain_request,
+                downloader=lambda *args: None, now_seconds=lambda: 100,
+                worker_id="worker-first", db_path=db_path,
+            )
+            with self.assertRaises(RetryableProviderError):
+                first.generate(SLOT, "same-provider-key")
+
+            persisted = store.find_generated_material(
+                "user-a", job["id"], "same-provider-key", db_path=db_path
+            )
+            self.assertEqual(persisted["generation_state"], "unknown_submission")
+
+            def replay_request(method, url, headers, body, timeout):
+                attempts.append((headers["Idempotency-Key"], body))
+                return {
+                    "id": "request-replayed",
+                    "data": [{"url": "https://provider.example/image.png"}],
+                }
+
+            second = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                cos_api=cos, asset_store=store, http_request=replay_request,
+                downloader=lambda *args: {
+                    "content": png_bytes(), "content_type": "image/png"
+                },
+                now_seconds=lambda: 131, worker_id="worker-second", db_path=db_path,
+            )
+            result = second.generate(SLOT, "same-provider-key")
+
+            self.assertEqual(result.request_id, "request-replayed")
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(attempts[0], attempts[1])
+            with store._connection(db_path) as conn:
+                logical_rows = conn.execute(
+                    "SELECT COUNT(*) FROM edit_v2_materials WHERE source='gpt_image'"
+                ).fetchone()[0]
+            self.assertEqual(logical_rows, 1)
+
+    def test_retryable_response_is_recoverable_after_backoff(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "ai-edit-v2.db")
+            store.init_db(db_path)
+            job = store.create_job(
+                "user-a", {"brief": "image"}, "quote-1", "job-key", 1,
+                db_path=db_path,
+            )
+            attempts = []
+            events = []
+            cos = FakeCos(events)
+
+            def rate_limited(method, url, headers, body, timeout):
+                attempts.append((headers["Idempotency-Key"], body))
+                raise urllib.error.HTTPError(url, 429, "rate limited", {}, None)
+
+            first = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                cos_api=cos, asset_store=store, http_request=rate_limited,
+                now_seconds=lambda: 100, worker_id="worker-first", db_path=db_path,
+            )
+            with self.assertRaises(RetryableProviderError):
+                first.generate(SLOT, "rate-limit-key")
+
+            persisted = store.find_generated_material(
+                "user-a", job["id"], "rate-limit-key", db_path=db_path
+            )
+            self.assertEqual(persisted["generation_state"], "retryable")
+
+            during_backoff = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                cos_api=cos, asset_store=store,
+                http_request=lambda *args: self.fail("backoff must not resubmit"),
+                now_seconds=lambda: 129, worker_id="worker-too-soon", db_path=db_path,
+            )
+            with self.assertRaisesRegex(
+                RetryableProviderError, "openai_image_retry_backoff"
+            ):
+                during_backoff.generate(SLOT, "rate-limit-key")
+
+            def succeeds(method, url, headers, body, timeout):
+                attempts.append((headers["Idempotency-Key"], body))
+                return {
+                    "id": "request-after-backoff",
+                    "data": [{"url": "https://provider.example/image.png"}],
+                }
+
+            second = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                cos_api=cos, asset_store=store, http_request=succeeds,
+                downloader=lambda *args: {
+                    "content": png_bytes(), "content_type": "image/png"
+                },
+                now_seconds=lambda: 131, worker_id="worker-second", db_path=db_path,
+            )
+            second.generate(SLOT, "rate-limit-key")
+
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(attempts[0], attempts[1])
+
+    def test_terminal_4xx_is_not_resubmitted_on_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "ai-edit-v2.db")
+            store.init_db(db_path)
+            job = store.create_job(
+                "user-a", {"brief": "image"}, "quote-1", "job-key", 1,
+                db_path=db_path,
+            )
+            calls = 0
+
+            def rejected(method, url, headers, body, timeout):
+                nonlocal calls
+                calls += 1
+                raise urllib.error.HTTPError(url, 400, "bad request", {}, None)
+
+            first = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                asset_store=store, http_request=rejected,
+                now_seconds=lambda: 100, worker_id="worker-first", db_path=db_path,
+            )
+            with self.assertRaisesRegex(ProviderError, "openai_image_request_rejected"):
+                first.generate(SLOT, "terminal-key")
+
+            second = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                asset_store=store, http_request=rejected,
+                now_seconds=lambda: 1000, worker_id="worker-second", db_path=db_path,
+            )
+            with self.assertRaisesRegex(ProviderError, "openai_image_generation_failed"):
+                second.generate(SLOT, "terminal-key")
+
+            self.assertEqual(calls, 1)
 
     def test_concurrent_workers_submit_the_same_idempotency_key_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:

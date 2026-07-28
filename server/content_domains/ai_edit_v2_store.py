@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -124,6 +124,14 @@ def init_db(db_path: str | None = None) -> None:
                 height INTEGER,
                 reference_analysis_json TEXT,
                 status TEXT NOT NULL DEFAULT 'ready',
+                generation_job_id TEXT,
+                generation_idempotency_key TEXT,
+                generation_request_digest TEXT,
+                generation_state TEXT,
+                generation_lease_owner TEXT,
+                generation_lease_until INTEGER,
+                generation_retry_at INTEGER,
+                generation_provider_request_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -237,6 +245,31 @@ def init_db(db_path: str | None = None) -> None:
                     """ALTER TABLE edit_v2_jobs
                        ADD COLUMN predecessor_job_id TEXT REFERENCES edit_v2_jobs(id)"""
                 )
+            material_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(edit_v2_materials)")
+            }
+            generation_columns = {
+                "generation_job_id": "TEXT",
+                "generation_idempotency_key": "TEXT",
+                "generation_request_digest": "TEXT",
+                "generation_state": "TEXT",
+                "generation_lease_owner": "TEXT",
+                "generation_lease_until": "INTEGER",
+                "generation_retry_at": "INTEGER",
+                "generation_provider_request_id": "TEXT",
+            }
+            for column, column_type in generation_columns.items():
+                if column not in material_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_materials ADD COLUMN {column} {column_type}"
+                    )
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_edit_v2_generated_request
+                   ON edit_v2_materials(
+                       owner,generation_job_id,generation_idempotency_key
+                   ) WHERE source='gpt_image'"""
+            )
             conn.execute(
                 """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
                    VALUES(1,?,0)
@@ -398,7 +431,7 @@ def find_generated_material(
         ).fetchone()
     if row is None:
         return None
-    return {**dict(row), "job_id": job_id}
+    return {**dict(row), "job_id": row["generation_job_id"] or job_id}
 
 
 def _generated_scope(
@@ -417,10 +450,21 @@ def reserve_generated_material(
     job_id: str,
     idempotency_key: str,
     cos_key: str,
+    request_digest: str,
+    lease_owner: str,
+    lease_seconds: int,
     now: int,
     db_path: str | None = None,
 ) -> dict[str, Any]:
     label = _generated_scope(owner, job_id, idempotency_key, cos_key)
+    if not isinstance(request_digest, str) or not request_digest:
+        raise ValueError("generated_request_digest_invalid")
+    if not isinstance(lease_owner, str) or not lease_owner:
+        raise ValueError("generated_lease_owner_invalid")
+    if int(lease_seconds) <= 0:
+        raise ValueError("generated_lease_seconds_invalid")
+    now = int(now)
+    lease_until = now + int(lease_seconds)
     with _connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -439,21 +483,233 @@ def reserve_generated_material(
                 cursor = conn.execute(
                     """INSERT INTO edit_v2_materials(
                            owner,kind,purpose,semantic_label,source,cos_key,status,
+                           generation_job_id,generation_idempotency_key,
+                           generation_request_digest,generation_state,
+                           generation_lease_owner,generation_lease_until,
                            created_at,updated_at
-                       ) VALUES(?,'image','generated',?,'gpt_image',?,'pending',?,?)""",
-                    (owner, label, cos_key, int(now), int(now)),
+                       ) VALUES(?,'image','generated',?,'gpt_image',?,'pending',
+                                ?,?,?,'pre_submit',?,?,?,?)""",
+                    (
+                        owner,
+                        label,
+                        cos_key,
+                        job_id,
+                        idempotency_key,
+                        request_digest,
+                        lease_owner,
+                        lease_until,
+                        now,
+                        now,
+                    ),
                 )
                 row = conn.execute(
                     "SELECT * FROM edit_v2_materials WHERE id=?", (cursor.lastrowid,)
                 ).fetchone()
+                reason = "claimed"
+            else:
+                if row["generation_request_digest"] != request_digest:
+                    raise ValueError("generated_request_conflict")
+                if row["cos_key"] != cos_key:
+                    raise ValueError("generated_material_idempotency_conflict")
+                state = row["generation_state"]
+                if row["status"] == "ready" or state == "ready":
+                    reason = "ready"
+                elif row["status"] == "failed" or state == "terminal_failed":
+                    reason = "terminal_failed"
+                elif (
+                    row["generation_lease_owner"] is not None
+                    and row["generation_lease_until"] is not None
+                    and int(row["generation_lease_until"]) > now
+                ):
+                    reason = "in_progress"
+                elif (
+                    row["generation_retry_at"] is not None
+                    and int(row["generation_retry_at"]) > now
+                ):
+                    reason = "retry_backoff"
+                elif state in {
+                    "pre_submit",
+                    "submitting",
+                    "unknown_submission",
+                    "retryable",
+                    "provider_confirmed",
+                }:
+                    changed = conn.execute(
+                        """UPDATE edit_v2_materials
+                           SET generation_lease_owner=?,generation_lease_until=?,
+                               generation_retry_at=NULL,
+                               generation_state=CASE
+                                   WHEN generation_state='submitting'
+                                   THEN 'unknown_submission'
+                                   ELSE generation_state
+                               END,
+                               updated_at=?
+                           WHERE id=? AND status='pending'
+                             AND generation_request_digest=?
+                             AND (generation_lease_until IS NULL
+                                  OR generation_lease_until<=?)
+                             AND (generation_retry_at IS NULL
+                                  OR generation_retry_at<=?)""",
+                        (
+                            lease_owner,
+                            lease_until,
+                            now,
+                            row["id"],
+                            request_digest,
+                            now,
+                            now,
+                        ),
+                    ).rowcount
+                    claimed = changed == 1
+                    reason = "claimed" if claimed else "in_progress"
+                    row = conn.execute(
+                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                    ).fetchone()
+                else:
+                    reason = "terminal_failed"
             conn.commit()
             return {
                 "claimed": claimed,
-                "material": {**dict(row), "job_id": job_id},
+                "reason": reason,
+                "material": {**dict(row), "job_id": row["generation_job_id"] or job_id},
             }
         except Exception:
             conn.rollback()
             raise
+
+
+def _update_generated_state(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    from_states: tuple[str, ...],
+    to_state: str,
+    now: int,
+    db_path: str | None,
+    release_lease: bool = False,
+    retry_at: int | None = None,
+    provider_request_id: str | None = None,
+) -> bool:
+    label = _generation_label(job_id, idempotency_key)
+    placeholders = ",".join("?" for _ in from_states)
+    lease_value = None if release_lease else lease_owner
+    lease_until_sql = "NULL" if release_lease else "generation_lease_until"
+    with _connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                f"""UPDATE edit_v2_materials
+                    SET generation_state=?,generation_lease_owner=?,
+                        generation_lease_until={lease_until_sql},
+                        generation_retry_at=?,
+                        generation_provider_request_id=COALESCE(?,generation_provider_request_id),
+                        updated_at=?
+                    WHERE owner=? AND source='gpt_image' AND semantic_label=?
+                      AND status='pending' AND generation_lease_owner=?
+                      AND generation_state IN ({placeholders})""",
+                (
+                    to_state,
+                    lease_value,
+                    retry_at,
+                    provider_request_id,
+                    int(now),
+                    owner,
+                    label,
+                    lease_owner,
+                    *from_states,
+                ),
+            ).rowcount
+            conn.commit()
+            return changed == 1
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def mark_generated_material_submitting(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=(
+            "pre_submit",
+            "submitting",
+            "unknown_submission",
+            "retryable",
+            "provider_confirmed",
+        ),
+        to_state="submitting",
+        now=now,
+        db_path=db_path,
+    )
+
+
+def mark_generated_material_provider_confirmed(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    provider_request_id: str,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=("submitting",),
+        to_state="provider_confirmed",
+        provider_request_id=provider_request_id,
+        now=now,
+        db_path=db_path,
+    )
+
+
+def mark_generated_material_recoverable(
+    *,
+    owner: str,
+    job_id: str,
+    idempotency_key: str,
+    lease_owner: str,
+    state: str,
+    retry_at: int,
+    now: int,
+    db_path: str | None = None,
+) -> bool:
+    allowed_from = {
+        "unknown_submission": ("submitting",),
+        "retryable": ("pre_submit", "submitting"),
+        "provider_confirmed": ("provider_confirmed",),
+    }
+    if state not in allowed_from:
+        raise ValueError("generated_recovery_state_invalid")
+    if int(retry_at) < int(now):
+        raise ValueError("generated_retry_at_invalid")
+    return _update_generated_state(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner=lease_owner,
+        from_states=allowed_from[state],
+        to_state=state,
+        retry_at=int(retry_at),
+        release_lease=True,
+        now=now,
+        db_path=db_path,
+    )
 
 
 def complete_generated_material(
@@ -467,6 +723,7 @@ def complete_generated_material(
     size_bytes: int,
     width: int,
     height: int,
+    lease_owner: str,
     now: int,
     db_path: str | None = None,
 ) -> dict[str, Any]:
@@ -490,13 +747,21 @@ def complete_generated_material(
             if row is None or row["status"] not in {"pending", "ready"}:
                 raise ValueError("generated_material_not_pending")
             if row["status"] == "pending":
-                if row["cos_key"] != cos_key:
+                if (
+                    row["cos_key"] != cos_key
+                    or row["generation_state"] != "provider_confirmed"
+                    or row["generation_lease_owner"] != lease_owner
+                ):
                     raise ValueError("generated_material_idempotency_conflict")
                 conn.execute(
                     """UPDATE edit_v2_materials
                        SET mime_type=?,etag=?,size_bytes=?,width=?,height=?,
-                           status='ready',updated_at=?
-                       WHERE id=? AND status='pending'""",
+                           status='ready',generation_state='ready',
+                           generation_lease_owner=NULL,generation_lease_until=NULL,
+                           generation_retry_at=NULL,updated_at=?
+                       WHERE id=? AND status='pending'
+                         AND generation_state='provider_confirmed'
+                         AND generation_lease_owner=?""",
                     (
                         mime_type,
                         etag,
@@ -505,6 +770,7 @@ def complete_generated_material(
                         int(height),
                         int(now),
                         row["id"],
+                        lease_owner,
                     ),
                 )
                 row = conn.execute(
@@ -524,16 +790,21 @@ def fail_generated_material(
     job_id: str,
     idempotency_key: str,
     *,
+    lease_owner: str,
     now: int,
     db_path: str | None = None,
 ) -> bool:
     label = _generation_label(job_id, idempotency_key)
     with _connection(db_path) as conn:
         changed = conn.execute(
-            """UPDATE edit_v2_materials SET status='failed',updated_at=?
+            """UPDATE edit_v2_materials
+               SET status='failed',generation_state='terminal_failed',
+                   generation_lease_owner=NULL,generation_lease_until=NULL,
+                   generation_retry_at=NULL,updated_at=?
                WHERE owner=? AND source='gpt_image' AND semantic_label=?
-                 AND status='pending'""",
-            (int(now), owner, label),
+                 AND status='pending' AND generation_lease_owner=?
+                 AND generation_state IN ('pre_submit','submitting')""",
+            (int(now), owner, label, lease_owner),
         ).rowcount
         return changed == 1
 
@@ -557,12 +828,62 @@ def create_generated_material(
         job_id=job_id,
         idempotency_key=idempotency_key,
         cos_key=cos_key,
+        request_digest=hashlib.sha256(
+            json.dumps(
+                {
+                    "cos_key": cos_key,
+                    "mime_type": mime_type,
+                    "etag": etag,
+                    "size_bytes": int(size_bytes),
+                    "width": int(width),
+                    "height": int(height),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        lease_owner="legacy-create",
+        lease_seconds=60,
         now=now,
         db_path=db_path,
     )
     material = reservation["material"]
     if not reservation["claimed"] and material["status"] not in {"pending", "ready"}:
         raise ValueError("generated_material_not_pending")
+    if material["status"] == "ready":
+        return complete_generated_material(
+            owner=owner,
+            job_id=job_id,
+            idempotency_key=idempotency_key,
+            cos_key=cos_key,
+            mime_type=mime_type,
+            etag=etag,
+            size_bytes=size_bytes,
+            width=width,
+            height=height,
+            lease_owner="legacy-create",
+            now=now,
+            db_path=db_path,
+        )
+    if not reservation["claimed"]:
+        raise ValueError("generated_material_not_pending")
+    mark_generated_material_submitting(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner="legacy-create",
+        now=now,
+        db_path=db_path,
+    )
+    mark_generated_material_provider_confirmed(
+        owner=owner,
+        job_id=job_id,
+        idempotency_key=idempotency_key,
+        lease_owner="legacy-create",
+        provider_request_id="legacy-create",
+        now=now,
+        db_path=db_path,
+    )
     return complete_generated_material(
         owner=owner,
         job_id=job_id,
@@ -573,6 +894,7 @@ def create_generated_material(
         size_bytes=size_bytes,
         width=width,
         height=height,
+        lease_owner="legacy-create",
         now=now,
         db_path=db_path,
     )
