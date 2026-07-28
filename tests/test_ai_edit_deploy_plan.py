@@ -67,7 +67,8 @@ class AiEditDeployPlanTests(unittest.TestCase):
 
     def test_runtime_web_manifest_includes_the_published_openapi(self):
         self.assertIn(
-            "site/api-docs/openapi.json` -> `/var/www/huangquechuanmei/api-docs/openapi.json", PLAN)
+            "site/api-docs/openapi.json` -> `/var/www/html/api-docs/openapi.json", PLAN)
+        self.assertNotIn("/var/www/huangquechuanmei", PLAN)
         self.assertIn("docs/api/openapi.json", PLAN)
         self.assertIn("repo-only", PLAN)
 
