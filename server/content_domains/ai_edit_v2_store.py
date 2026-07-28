@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -239,6 +239,32 @@ def init_db(db_path: str | None = None) -> None:
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(job_id, stage)
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_delivery_intents(
+                job_id TEXT PRIMARY KEY REFERENCES edit_v2_jobs(id) ON DELETE CASCADE,
+                owner TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                cos_key TEXT NOT NULL,
+                source_size_bytes INTEGER NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                etag TEXT,
+                quality_json TEXT NOT NULL,
+                actual_cost INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS edit_v2_delivery_outbox(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL UNIQUE REFERENCES edit_v2_jobs(id) ON DELETE CASCADE,
+                owner TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                asset_id INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_edit_v2_jobs_claim

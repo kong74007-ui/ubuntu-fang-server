@@ -240,6 +240,10 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn(stage, bundle["reconcilers"])
         self.assertTrue(bundle["production"])
         self.assertIsInstance(bundle["services"], runtime.ProductionServices)
+        for name in ("quality_runner", "quality_output_path", "actual_cost",
+                     "repair_layer", "repair_reconciler"):
+            self.assertTrue(callable(bundle[name]), name)
+        self.assertIn("AI_EDIT_V2_REPAIR_PROVIDER", bundle["readiness_errors"]())
 
     def test_enabled_worker_fails_readiness_before_claiming(self):
         from server import ai_edit_v2_worker as worker

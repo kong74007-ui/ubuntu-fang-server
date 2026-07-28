@@ -443,7 +443,9 @@ class ProductionServices:
                  shotstack_http: Callable[..., Any] | None = None,
                  openai_http: Callable[..., Any] | None = None, openai_downloader: Callable[..., Any] | None = None,
                  elevenlabs_http: Callable[..., Any] | None = None,
-                 downloader: Callable[[str], bytes] | None = None) -> None:
+                 downloader: Callable[[str], bytes] | None = None,
+                 repair_handler: Callable[..., Any] | None = None,
+                 repair_reconciler: Callable[..., Any] | None = None) -> None:
         from . import ai_edit_v2_cos
         self.db_path = db_path
         self.cos = cos_api or ai_edit_v2_cos
@@ -453,6 +455,10 @@ class ProductionServices:
         self.openai_http, self.openai_downloader = openai_http, openai_downloader
         self.elevenlabs_http = elevenlabs_http
         self.downloader = downloader or self._download
+        self.repair_handler = repair_handler
+        self.repair_reconciler_handler = repair_reconciler
+        from .ai_edit_v2_quality import LocalQualityRunner
+        self.quality_runner = LocalQualityRunner(runner)
 
     def readiness_errors(self) -> list[str]:
         errors = []
@@ -473,7 +479,48 @@ class ProductionServices:
         enabled = getattr(self.cos, "enabled", None)
         if callable(enabled) and not enabled():
             errors.append("AI_EDIT_V2_COS")
+        errors.extend(f"AI_EDIT_V2_QUALITY_{name.upper()}" for name in self.quality_runner.readiness_errors())
+        if self.repair_handler is None or self.repair_reconciler_handler is None:
+            errors.append("AI_EDIT_V2_REPAIR_PROVIDER")
         return errors
+
+    def resolve_quality_output(self, job: dict[str, Any], outputs: dict[str, Any]) -> str:
+        post = outputs.get("postprocessing") or {}
+        artifact = post.get("artifact") if isinstance(post, dict) else None
+        key = artifact.get("cos_key") if isinstance(artifact, dict) else None
+        if not isinstance(key, str) or not key:
+            raise RuntimeError("quality_output_missing")
+        directory = os.path.join(tempfile.gettempdir(), "ai-edit-v2-quality", str(job["id"]))
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "final.mp4")
+        self.cos.download_file(key, path)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            raise RuntimeError("quality_output_missing")
+        return path
+
+    def actual_cost(self, job: dict[str, Any], _outputs: dict[str, Any]) -> int:
+        # The durable hold is the authoritative upper bound. Provider-specific
+        # costs can reduce this later, but an unavailable estimate must never
+        # undercharge or synthesize a floating-point value.
+        from . import ai_edit_v2_store as store
+        with closing(store.open_store(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT amount FROM edit_v2_billing WHERE job_id=? AND operation='hold'",
+                (job["id"],),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("billing_not_found")
+        return int(row["amount"])
+
+    def repair_layer(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        if self.repair_handler is None:
+            raise RuntimeError("repair_provider_not_configured")
+        return self.repair_handler(job, context)
+
+    def repair_reconciler(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        if self.repair_reconciler_handler is None:
+            raise RuntimeError("repair_provider_not_configured")
+        return self.repair_reconciler_handler(job, context)
 
     def _draft(self, stage_input: dict[str, Any]) -> dict[str, Any]:
         payload = stage_input.get("payload") or {}
@@ -645,6 +692,11 @@ def production_dependencies(db_path: str, *, services: Any = None) -> dict[str, 
         "handlers": {stage: handler(stage) for stage in STABLE_STAGE_SEQUENCE},
         "reconcilers": {stage: handler(stage) for stage in PROVIDER_STAGES},
         "verify_artifact": verify,
+        "quality_runner": service.quality_runner,
+        "quality_output_path": service.resolve_quality_output,
+        "actual_cost": service.actual_cost,
+        "repair_layer": service.repair_layer,
+        "repair_reconciler": service.repair_reconciler,
         "db_path": db_path,
         "services": service,
         "readiness_errors": service.readiness_errors,

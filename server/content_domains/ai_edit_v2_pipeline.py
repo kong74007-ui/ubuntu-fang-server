@@ -642,6 +642,7 @@ def _quality_and_delivery(
 
     runner = runtime.option(dependencies, "quality_runner")
     actual_cost = runtime.option(dependencies, "actual_cost")
+    repair = runtime.option(dependencies, "repair_layer")
     if not callable(runner) or actual_cost is None:
         return {"job_id": job["id"], "state": "quality_checking"}
     outputs = _completed_pipeline_outputs(job["id"], db_path)
@@ -666,8 +667,8 @@ def _quality_and_delivery(
             worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
             points_client=points_client,
         )
-    report = quality.inspect_output(output_path, resolved_plan, runner)
-    if not report.passed:
+    report = quality.inspect_output(output_path, resolved_plan, runner) if job["status"] == "quality_check" else None
+    if report is not None and not report.passed:
         now = int(now_fn())
         if not report.repairable:
             return _stable_failure(
@@ -675,7 +676,6 @@ def _quality_and_delivery(
                 worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
                 points_client=points_client,
             )
-        repair = runtime.option(dependencies, "repair_layer")
         if not callable(repair):
             return _stable_failure(
                 job["id"], "quality_check", "repair_handler_missing", now,
@@ -688,13 +688,91 @@ def _quality_and_delivery(
             worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
         ):
             raise PipelineError("stage_compare_and_swap_failed")
-        repair_start = now
+        job = _load_job(job["id"], db_path)
+    if job["status"] == "repairing":
+        if not callable(repair):
+            return _stable_failure(
+                job["id"], "repairing", "repair_handler_missing", int(now_fn()),
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        checkpoints = _checkpoints(job)
+        repair_start = _state_started(checkpoints, "repairing")
+        if repair_start is None:
+            return _stable_failure(
+                job["id"], "repairing", "repair_checkpoint_missing", int(now_fn()),
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
         deadline_at = repair_start + _repair_budget()
-        value = repair(job, {
-            "failing_layers": report.failing_layers,
-            "error_codes": report.error_codes,
+        qc = next((item.get("data", {}).get("qc") for item in reversed(checkpoints)
+                   if isinstance(item, dict) and isinstance(item.get("data"), dict)
+                   and isinstance(item.get("data", {}).get("qc"), dict)), None)
+        if qc is None:
+            return _stable_failure(
+                job["id"], "repairing", "repair_checkpoint_missing", int(now_fn()),
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
+        identity = _fingerprint({
+            "job_id": job["id"], "failing_layers": qc.get("failing_layers") or [],
+            "error_codes": qc.get("error_codes") or qc.get("issues") or [],
             "deadline_at": deadline_at,
         })
+        attempt = _latest_attempt(job["id"], "repairing", db_path)
+        if attempt is None:
+            attempt_id = store.record_stage_attempt(
+                job["id"], "repairing", 1, "running", repair_start,
+                input_summary={"repair_fingerprint": identity,
+                               "idempotency_key": f"ai-edit-v2:{job['id']}:repair:1",
+                               "deadline_at": deadline_at},
+                lease_owner=worker_id, db_path=db_path,
+            )
+            provider_task_id = None
+            saved_output = None
+        else:
+            attempt_id = int(attempt["id"])
+            summary = json.loads(attempt["input_summary_json"] or "{}")
+            if summary.get("repair_fingerprint") != identity:
+                raise PipelineError("repair_intent_conflict")
+            provider_task_id = attempt["provider_task_id"]
+            saved_output = json.loads(attempt["output_summary_json"] or "null")
+        assert_active = lambda: (
+            None if store.lease_owned(job["id"], worker_id, int(now_fn()), db_path=db_path)
+            else (_ for _ in ()).throw(PipelineError("job_lease_lost"))
+        )
+        context = {
+            "failing_layers": tuple(qc.get("failing_layers") or []),
+            "error_codes": tuple(qc.get("error_codes") or qc.get("issues") or []),
+            "deadline_at": deadline_at,
+            "idempotency_key": f"ai-edit-v2:{job['id']}:repair:1",
+            "provider_task_id": provider_task_id,
+            "assert_active": assert_active,
+            "save_provider_task_id": lambda value: (
+                assert_active(),
+                _save_provider_task_id(attempt_id, value, db_path,
+                                       lease_owner=worker_id, now=int(now_fn())),
+            )[-1],
+        }
+        if saved_output is None:
+            callback = repair
+            if provider_task_id:
+                callback = runtime.option(dependencies, "repair_reconciler")
+                if not callable(callback):
+                    raise PipelineError("repair_reconciliation_required")
+            assert_active()
+            value = callback(job, context)
+            assert_active()
+            if not isinstance(value, dict):
+                raise PipelineError("repair_result_invalid")
+            _finish_attempt(
+                attempt_id, StageResult("settling", value), int(now_fn()), db_path,
+                lease_owner=worker_id,
+            )
+        else:
+            value = saved_output
+        if isinstance(value, dict) and value.get("output_path"):
+            output_path = value["output_path"]
         finished = int(now_fn())
         if finished > deadline_at:
             return _stable_failure(
@@ -702,9 +780,14 @@ def _quality_and_delivery(
                 worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
                 points_client=points_client,
             )
-        if isinstance(value, dict) and value.get("output_path"):
-            output_path = value["output_path"]
         report = quality.inspect_output(output_path, resolved_plan, runner)
+        finished = int(now_fn())
+        if finished > deadline_at:
+            return _stable_failure(
+                job["id"], "repairing", "repair_budget_exceeded", finished,
+                worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
+                points_client=points_client,
+            )
         if not report.passed:
             return _stable_failure(
                 job["id"], "repairing", report.error_codes[0], finished,
@@ -713,15 +796,19 @@ def _quality_and_delivery(
             )
         if not store.transition_leased(
             job["id"], "repairing", "settling",
-            {"qc": report.as_dict(), "repaired_layers": list(report.failing_layers)},
+            {"qc": report.as_dict(), "repair_attempt_id": attempt_id},
             finished, worker_id=worker_id, lease_seconds=lease_seconds,
             db_path=db_path,
         ):
             raise PipelineError("stage_compare_and_swap_failed")
+    if report is None:
+        raise PipelineError("quality_report_missing")
     cost = actual_cost(job, outputs) if callable(actual_cost) else int(actual_cost)
     try:
         return delivery.deliver(
-            job["id"], output_path, report, cost, db_path=db_path
+            job["id"], output_path, report, cost, db_path=db_path,
+            worker_id=worker_id, lease_seconds=lease_seconds, now_fn=now_fn,
+            asset_db_path=runtime.option(dependencies, "asset_db_path"),
         )
     except delivery.DeliveryError as exc:
         current = _load_job(job["id"], db_path)
@@ -780,7 +867,7 @@ def run_job(
             now = int(now_fn())
             job = _load_job(job_id, db_path)
             state = str(job["status"])
-            if state == "quality_check":
+            if state in {"quality_check", "repairing"}:
                 result = _quality_and_delivery(
                     job, dependencies, worker_id=worker_id,
                     lease_seconds=lease_seconds, now_fn=now_fn, db_path=db_path,

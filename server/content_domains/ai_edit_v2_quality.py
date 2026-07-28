@@ -1,10 +1,12 @@
-"""Fail-closed hard quality gates for AI Edit V2 final outputs."""
+"""Fail-closed, locally auditable quality gates for AI Edit V2 outputs."""
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -38,80 +40,136 @@ _TERMINAL_CODES = frozenset({
 })
 
 
-def _completed_payload(result: Any) -> dict[str, Any]:
-    if int(getattr(result, "returncode", 1)) != 0:
-        raise RuntimeError("quality command failed")
-    raw = getattr(result, "stdout", b"") or b""
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _json_object(raw: bytes | str) -> dict[str, Any]:
     if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", "replace")
-    value = json.loads(raw or "{}")
+        raw = raw.decode("utf-8", "strict")
+    value = json.loads(raw or "{}", parse_constant=_reject_constant)
     if not isinstance(value, dict):
         raise ValueError("quality evidence invalid")
     return value
 
 
-def _command_evidence(
-    check: str, path: str, resolved_plan: dict[str, Any], runner: Callable[..., Any]
-) -> dict[str, Any]:
-    if check == "probe":
-        result = runner(
-            ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", os.fspath(path)],
-            check=False, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        payload = _completed_payload(result)
-        streams = payload.get("streams") or []
-        video = next((item for item in streams if item.get("codec_type") == "video"), None)
-        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
-        tags = video.get("tags") if isinstance(video, dict) else {}
-        side_data = video.get("side_data_list") if isinstance(video, dict) else []
-        rotation = (tags or {}).get("rotate", 0)
-        for item in side_data or []:
-            if "rotation" in item:
-                rotation = item["rotation"]
-        return {
-            "video": video is not None, "audio": audio is not None,
-            "width": video.get("width") if video else None,
-            "height": video.get("height") if video else None,
-            "rotation": rotation,
-            "duration_ms": round(float((payload.get("format") or {}).get("duration")) * 1000),
-        }
-    if check in {"decode_video", "decode_audio"}:
-        selector = "0:v:0" if check == "decode_video" else "0:a:0"
-        result = runner(
-            ["ffmpeg", "-v", "error", "-i", os.fspath(path), "-map", selector, "-f", "null", "-"],
-            check=False, timeout=600, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        return {"decodable": int(getattr(result, "returncode", 1)) == 0}
-    if check == "frames":
-        result = runner(
-            ["ffmpeg", "-v", "info", "-i", os.fspath(path), "-vf",
-             "blackdetect=d=0.25:pix_th=0.10,freezedetect=n=-60dB:d=0.5", "-an", "-f", "null", "-"],
-            check=False, timeout=600, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if int(getattr(result, "returncode", 1)) != 0:
-            raise RuntimeError("frame inspection failed")
-        raw = getattr(result, "stderr", b"") or b""
-        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-        duration = max(1, int(resolved_plan.get("duration_ms") or 1)) / 1000
-        black = sum(float(value) for value in re.findall(r"black_duration:([0-9.]+)", text))
-        blank = sum(float(value) for value in re.findall(r"freeze_duration:([0-9.]+)", text))
-        return {"black_ratio": black / duration, "blank_ratio": blank / duration}
-    result = runner(
-        ["ai-edit-v2-quality-inspect", check, os.fspath(path)],
-        check=False, timeout=600, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        resolved_plan=resolved_plan,
-    )
-    return _completed_payload(result)
+def _finite(value: Any, *, minimum: float | None = None,
+            maximum: float | None = None, integer: bool = False) -> float | int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("quality number invalid")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("quality number non-finite")
+    if minimum is not None and number < minimum:
+        raise ValueError("quality number below range")
+    if maximum is not None and number > maximum:
+        raise ValueError("quality number above range")
+    if integer:
+        if not number.is_integer():
+            raise ValueError("quality integer invalid")
+        return int(number)
+    return number
 
 
-def _run_evidence(check: str, path: str, plan: dict[str, Any], runner: Callable[..., Any]) -> dict[str, Any]:
-    try:
-        direct = runner(check, path=path, resolved_plan=plan)
-        if isinstance(direct, dict):
-            return direct
-    except (TypeError, AttributeError):
-        pass
-    return _command_evidence(check, path, plan, runner)
+def _plan_analysis(plan: dict[str, Any], check: str) -> dict[str, Any]:
+    analysis = plan.get("quality_analysis")
+    value = analysis.get(check) if isinstance(analysis, dict) else None
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{check} evidence missing")
+    # Round-trip with strict JSON so injected NaN/Infinity cannot be accepted.
+    return _json_object(json.dumps(value, allow_nan=False, ensure_ascii=False))
+
+
+class LocalQualityRunner:
+    """Collect technical evidence with ffprobe/ffmpeg and semantic evidence from
+    the frozen render plan.  No shell or imaginary helper executable is used.
+    """
+
+    def __init__(self, process_runner: Callable[..., Any] = subprocess.run) -> None:
+        self.process_runner = process_runner
+
+    @staticmethod
+    def readiness_errors() -> list[str]:
+        return [name for name in ("ffprobe", "ffmpeg") if shutil.which(name) is None]
+
+    def _run(self, command: list[str], timeout: int) -> Any:
+        return self.process_runner(
+            command, check=False, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def __call__(self, check: str, *, path: str,
+                 resolved_plan: dict[str, Any]) -> dict[str, Any]:
+        if check == "probe":
+            result = self._run([
+                "ffprobe", "-v", "error", "-show_streams", "-show_format",
+                "-of", "json", os.fspath(path),
+            ], 30)
+            if int(getattr(result, "returncode", 1)) != 0:
+                raise RuntimeError("ffprobe failed")
+            payload = _json_object(getattr(result, "stdout", b"") or b"")
+            streams = payload.get("streams")
+            if not isinstance(streams, list):
+                raise ValueError("ffprobe streams invalid")
+            video = next((x for x in streams if isinstance(x, dict) and x.get("codec_type") == "video"), None)
+            audio = next((x for x in streams if isinstance(x, dict) and x.get("codec_type") == "audio"), None)
+            rotation: Any = 0
+            if video:
+                tags = video.get("tags")
+                if isinstance(tags, dict) and "rotate" in tags:
+                    rotation = float(tags["rotate"])
+                for item in video.get("side_data_list") or []:
+                    if isinstance(item, dict) and "rotation" in item:
+                        rotation = float(item["rotation"])
+            fmt = payload.get("format")
+            if not isinstance(fmt, dict) or "duration" not in fmt:
+                raise ValueError("ffprobe duration missing")
+            duration = float(fmt["duration"])
+            if not math.isfinite(duration) or duration <= 0:
+                raise ValueError("ffprobe duration invalid")
+            return {
+                "video": video is not None, "audio": audio is not None,
+                "width": video.get("width") if video else None,
+                "height": video.get("height") if video else None,
+                "rotation": rotation, "duration_ms": round(duration * 1000),
+            }
+        if check in {"decode_video", "decode_audio"}:
+            selector = "0:v:0" if check == "decode_video" else "0:a:0"
+            result = self._run([
+                "ffmpeg", "-v", "error", "-i", os.fspath(path),
+                "-map", selector, "-f", "null", "-",
+            ], 600)
+            return {"decodable": int(getattr(result, "returncode", 1)) == 0}
+        if check == "frames":
+            result = self._run([
+                "ffmpeg", "-v", "info", "-i", os.fspath(path), "-vf",
+                "blackdetect=d=0.25:pix_th=0.10,freezedetect=n=-60dB:d=0.5",
+                "-an", "-f", "null", "-",
+            ], 600)
+            if int(getattr(result, "returncode", 1)) != 0:
+                raise RuntimeError("frame inspection failed")
+            raw = getattr(result, "stderr", b"") or b""
+            text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            target = resolved_plan.get("target_duration_ms", resolved_plan.get("duration_ms"))
+            duration = _finite(target, minimum=1) / 1000
+            black = sum(float(x) for x in re.findall(r"black_duration:([0-9.]+)", text))
+            blank = sum(float(x) for x in re.findall(r"freeze_duration:([0-9.]+)", text))
+            return {"black_ratio": black / duration, "blank_ratio": blank / duration}
+        if check == "audio":
+            # The actual file must pass an audio analysis invocation.  Track-level
+            # dialogue/BGM/SFX balance remains render-plan evidence because the
+            # flattened master cannot recover those sources independently.
+            result = self._run([
+                "ffmpeg", "-v", "info", "-i", os.fspath(path), "-vn",
+                "-af", "silencedetect=n=-50dB:d=0.2,ebur128=peak=true",
+                "-f", "null", "-",
+            ], 600)
+            if int(getattr(result, "returncode", 1)) != 0:
+                raise RuntimeError("audio inspection failed")
+            return _plan_analysis(resolved_plan, "audio")
+        if check in {"captions", "materials", "transcript"}:
+            return _plan_analysis(resolved_plan, check)
+        raise ValueError("quality check unsupported")
 
 
 def _required_ids(plan: dict[str, Any]) -> set[str]:
@@ -130,17 +188,9 @@ def _required_ids(plan: dict[str, Any]) -> set[str]:
     return result
 
 
-def inspect_output(
-    path: str,
-    resolved_plan: dict[str, Any],
-    runner: Callable[..., dict[str, Any]],
-) -> QualityReport:
-    """Inspect one final output using a deterministic, injectable evidence runner.
-
-    The runner is invoked once for each named hard gate and must return a mapping.
-    Missing or malformed evidence fails closed instead of silently approving output.
-    """
-
+def inspect_output(path: str, resolved_plan: dict[str, Any],
+                   runner: Callable[..., dict[str, Any]]) -> QualityReport:
+    """Inspect the final file. Missing, malformed, or non-finite evidence fails closed."""
     evidence: dict[str, dict[str, Any]] = {}
     codes: list[str] = []
     layers: list[str] = []
@@ -153,92 +203,114 @@ def inspect_output(
 
     for check in _CHECKS:
         try:
-            value = _run_evidence(check, path, resolved_plan, runner)
+            value = runner(check, path=path, resolved_plan=resolved_plan)
             if not isinstance(value, dict):
                 raise TypeError("inspection evidence must be a mapping")
-            evidence[check] = value
+            # Strict serialization also catches non-finite values nested in lists.
+            evidence[check] = _json_object(json.dumps(value, allow_nan=False, ensure_ascii=False))
         except Exception:
             issue("inspection_incomplete", check)
 
     probe = evidence.get("probe", {})
-    if not probe.get("video"):
+    try:
+        if probe.get("video") is not True or probe.get("audio") is not True:
+            raise ValueError("streams invalid")
+        width = _finite(probe.get("width"), minimum=1, maximum=16384, integer=True)
+        height = _finite(probe.get("height"), minimum=1, maximum=16384, integer=True)
+        rotation = _finite(probe.get("rotation"), minimum=-3600, maximum=3600, integer=True) % 360
+        duration_ms = _finite(probe.get("duration_ms"), minimum=1, maximum=86_400_000, integer=True)
+    except (TypeError, ValueError):
+        issue("inspection_incomplete", "probe")
+        width = height = duration_ms = None
+        rotation = None
+    if probe.get("video") is not True or evidence.get("decode_video", {}).get("decodable") is not True:
         issue("video_unplayable", "video")
-    if not probe.get("audio"):
+    if probe.get("audio") is not True or evidence.get("decode_audio", {}).get("decodable") is not True:
         issue("audio_unplayable", "audio")
-    if evidence.get("decode_video", {}).get("decodable") is not True:
-        issue("video_unplayable", "video")
-    if evidence.get("decode_audio", {}).get("decodable") is not True:
-        issue("audio_unplayable", "audio")
-
     ratio = resolved_plan.get("aspect_ratio")
     expected = (1920, 1080) if ratio == "16:9" else (1080, 1920) if ratio == "9:16" else None
-    actual = (probe.get("width"), probe.get("height"))
-    if expected is None or actual != expected:
+    if expected is None or (width, height) != expected:
         issue("output_dimensions_invalid", "video")
-    try:
-        rotation = int(probe.get("rotation", 0) or 0) % 360
-    except (TypeError, ValueError):
-        rotation = -1
     if rotation != 0:
         issue("output_rotation_invalid", "video")
-    target_ms = resolved_plan.get("target_duration_ms") or resolved_plan.get("duration_ms")
     try:
-        tolerance = max(500, int(target_ms) * 2 // 100)
-        if abs(int(probe.get("duration_ms")) - int(target_ms)) > tolerance:
+        target = _finite(
+            resolved_plan.get("target_duration_ms", resolved_plan.get("duration_ms")),
+            minimum=1, maximum=86_400_000, integer=True,
+        )
+        tolerance = max(500, target * 2 // 100)
+        if duration_ms is None or abs(duration_ms - target) > tolerance:
             issue("output_duration_mismatch", "assembly")
     except (TypeError, ValueError):
-        issue("output_duration_mismatch", "assembly")
+        issue("inspection_incomplete", "assembly")
 
     frames = evidence.get("frames", {})
     try:
-        if float(frames.get("black_ratio", 1.0)) > 0.05:
+        black = _finite(frames.get("black_ratio"), minimum=0, maximum=1)
+        blank = _finite(frames.get("blank_ratio"), minimum=0, maximum=1)
+        if black > 0.05:
             issue("black_frames_detected", "video")
-        if float(frames.get("blank_ratio", 1.0)) > 0.02:
+        if blank > 0.02:
             issue("blank_frames_detected", "video")
     except (TypeError, ValueError):
         issue("inspection_incomplete", "frames")
 
     captions = evidence.get("captions", {})
     caption_bad = False
-    if captions.get("safe_area") is not True:
-        issue("caption_out_of_safe_area", "captions")
-        caption_bad = True
-    if int(captions.get("tofu_count", 1) or 0) > 0:
-        issue("caption_tofu_detected", "captions")
-        caption_bad = True
-    if captions.get("missing_glyphs"):
-        issue("caption_glyph_missing", "captions")
-        caption_bad = True
-    if caption_bad:
+    try:
+        safe = captions.get("safe_area")
+        tofu = _finite(captions.get("tofu_count"), minimum=0, maximum=1_000_000, integer=True)
+        missing = captions.get("missing_glyphs")
+        if safe not in {True, False} or not isinstance(missing, list) or not all(isinstance(x, str) for x in missing):
+            raise ValueError("caption evidence invalid")
+        if safe is not True:
+            issue("caption_out_of_safe_area", "captions"); caption_bad = True
+        if tofu > 0:
+            issue("caption_tofu_detected", "captions"); caption_bad = True
+        if missing:
+            issue("caption_glyph_missing", "captions"); caption_bad = True
+    except (TypeError, ValueError):
+        issue("inspection_incomplete", "captions")
+    if caption_bad and "caption_invalid" not in codes:
         codes.insert(0, "caption_invalid")
 
-    covered = {str(value) for value in evidence.get("materials", {}).get("covered_asset_ids", [])}
-    if not _required_ids(resolved_plan).issubset(covered):
-        issue("required_material_missing", "materials")
+    try:
+        covered_values = evidence.get("materials", {}).get("covered_asset_ids")
+        if not isinstance(covered_values, list) or not all(isinstance(x, (str, int)) and not isinstance(x, bool) for x in covered_values):
+            raise ValueError("material evidence invalid")
+        covered = {str(value) for value in covered_values}
+        if not _required_ids(resolved_plan).issubset(covered):
+            issue("required_material_missing", "materials")
+    except (TypeError, ValueError):
+        issue("inspection_incomplete", "materials")
     transcript = evidence.get("transcript", {})
-    if transcript.get("source_matches") is not True:
-        issue("caption_source_mismatch", "transcript")
-    if transcript.get("facts_match") is not True:
-        issue("caption_facts_mismatch", "transcript")
+    if transcript.get("source_matches") not in {True, False} or transcript.get("facts_match") not in {True, False}:
+        issue("inspection_incomplete", "transcript")
+    else:
+        if transcript["source_matches"] is not True:
+            issue("caption_source_mismatch", "transcript")
+        if transcript["facts_match"] is not True:
+            issue("caption_facts_mismatch", "transcript")
 
     audio = evidence.get("audio", {})
     try:
-        if float(audio.get("silence_ratio", 1.0)) > 0.10:
+        silence = _finite(audio.get("silence_ratio"), minimum=0, maximum=1)
+        peak = _finite(audio.get("true_peak_dbfs"), minimum=-200, maximum=20)
+        bgm = _finite(audio.get("dialogue_to_bgm_db"), minimum=-200, maximum=200)
+        sfx = _finite(audio.get("dialogue_to_sfx_db"), minimum=-200, maximum=200)
+        if silence > 0.10:
             issue("audio_silence_detected", "audio")
-        if float(audio.get("true_peak_dbfs", 1.0)) > -0.1:
+        if peak > -0.1:
             issue("audio_clipping_detected", "audio")
-        if float(audio.get("dialogue_to_bgm_db", -99)) < 6.0:
+        if bgm < 6.0:
             issue("dialogue_bgm_imbalance", "audio")
-        if float(audio.get("dialogue_to_sfx_db", -99)) < 6.0:
+        if sfx < 6.0:
             issue("dialogue_sfx_imbalance", "audio")
     except (TypeError, ValueError):
         issue("inspection_incomplete", "audio")
 
     terminal = any(code in _TERMINAL_CODES for code in codes)
     return QualityReport(
-        passed=not codes,
-        error_codes=tuple(codes),
-        failing_layers=tuple(layers),
-        repairable=bool(codes) and not terminal,
-        terminal=terminal,
+        passed=not codes, error_codes=tuple(codes), failing_layers=tuple(layers),
+        repairable=bool(codes) and not terminal, terminal=terminal,
     )

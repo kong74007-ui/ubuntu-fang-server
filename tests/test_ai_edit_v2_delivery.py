@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import uuid
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
@@ -35,6 +36,19 @@ class FakePoints:
             return self.transactions[transaction_key]
 
 
+class LoseSettlementResponse(FakePoints):
+    def __init__(self):
+        super().__init__()
+        self.lost = False
+
+    def refund_points(self, *args, **kwargs):
+        value = super().refund_points(*args, **kwargs)
+        if not self.lost and str(kwargs.get("transaction_key", "")).endswith(":settlement"):
+            self.lost = True
+            raise RuntimeError("settlement response lost")
+        return value
+
+
 class FakeCos:
     def __init__(self, *, bad_head=False):
         self.objects = {}
@@ -57,7 +71,16 @@ class DeliveryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.temp.name, "v2.db")
         self.video = os.path.join(self.temp.name, "final.mp4")
+        self.assets_db = os.path.join(self.temp.name, "assets.db")
         Path(self.video).write_bytes(b"playable-final-mp4")
+        with closing(sqlite3.connect(self.assets_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT UNIQUE,
+                username TEXT NOT NULL,mode TEXT NOT NULL,video_file TEXT,
+                video_url TEXT,resolution TEXT,ratio TEXT,phase TEXT,
+                status TEXT NOT NULL,created_at INTEGER,updated_at INTEGER)""")
+        self.env = patch.dict(os.environ, {"AI_EDIT_V2_ASSET_DB": self.assets_db})
+        self.env.start()
         store.init_db(self.db)
         self.job_id = str(uuid.uuid4())
         with closing(store.open_store(self.db)) as conn:
@@ -72,6 +95,7 @@ class DeliveryTests(unittest.TestCase):
         self.points = FakePoints()
 
     def tearDown(self):
+        self.env.stop()
         self.temp.cleanup()
 
     def test_delivery_settles_and_inserts_asset_once(self):
@@ -83,10 +107,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(replay, first)
         with closing(store.open_store(self.db)) as conn:
             job = conn.execute("SELECT status,output_cos_key FROM edit_v2_jobs WHERE id=?", (self.job_id,)).fetchone()
-            assets = conn.execute("SELECT COUNT(*) FROM edit_v2_render_artifacts WHERE job_id=? AND kind='delivery'", (self.job_id,)).fetchone()[0]
+            assets = conn.execute("SELECT COUNT(*) FROM edit_v2_render_artifacts WHERE job_id=? AND kind='delivery_internal'", (self.job_id,)).fetchone()[0]
             bill = conn.execute("SELECT status,response_json FROM edit_v2_billing WHERE job_id=?", (self.job_id,)).fetchone()
         self.assertEqual(job["status"], "completed")
         self.assertEqual(assets, 1)
+        with closing(sqlite3.connect(self.assets_db)) as conn:
+            visible = conn.execute("SELECT username,mode,status FROM video_assets WHERE job_id=?", (self.job_id,)).fetchone()
+        self.assertEqual(visible, ("alice", "ai_edit_v2", "done"))
         self.assertEqual(bill["status"], "settled")
         self.assertEqual(json.loads(bill["response_json"])["actual_points"], 42)
         self.assertEqual(self.points.calls, [f"ai-edit-v2:{self.job_id}:settlement"])
@@ -103,7 +130,7 @@ class DeliveryTests(unittest.TestCase):
                 ))
         self.assertEqual(results[0], results[1])
         with closing(store.open_store(self.db)) as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_render_artifacts WHERE job_id=? AND kind='delivery'", (self.job_id,)).fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM edit_v2_render_artifacts WHERE job_id=? AND kind='delivery_internal'", (self.job_id,)).fetchone()[0], 1)
         self.assertEqual(self.points.calls.count(f"ai-edit-v2:{self.job_id}:settlement"), 1)
 
     def test_storage_verification_failure_never_settles_success_and_refunds_once(self):
@@ -118,6 +145,50 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(job, "storage_failed")
         self.assertEqual(bill, "refunded")
         self.assertEqual(self.points.calls.count(f"ai-edit-v2:{self.job_id}:failure-refund"), 1)
+
+    def test_settling_crash_reconciles_head_and_same_settlement_key(self):
+        fake_cos = FakeCos()
+        points = LoseSettlementResponse()
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", points):
+            with self.assertRaisesRegex(RuntimeError, "settlement response lost"):
+                delivery.deliver(self.job_id, self.video, PASS_REPORT, 42,
+                                 db_path=self.db, now_fn=lambda: 10)
+            recovered = delivery.deliver(self.job_id, self.video, PASS_REPORT, 42,
+                                         db_path=self.db, now_fn=lambda: 11)
+        self.assertEqual(recovered["state"], "completed")
+        self.assertEqual(points.calls.count(f"ai-edit-v2:{self.job_id}:settlement"), 2)
+        self.assertEqual(len(fake_cos.objects), 1)
+
+    def test_worker_losing_lease_after_upload_cannot_settle_or_publish_asset(self):
+        test = self
+
+        class LeaseStealingCos(FakeCos):
+            def put_file(self, *args, **kwargs):
+                value = super().put_file(*args, **kwargs)
+                with closing(store.open_store(test.db)) as conn:
+                    conn.execute(
+                        "UPDATE edit_v2_jobs SET lease_owner='new-worker',lease_until=100 WHERE id=?",
+                        (test.job_id,),
+                    )
+                return value
+
+        with closing(store.open_store(self.db)) as conn:
+            conn.execute(
+                "UPDATE edit_v2_jobs SET lease_owner='old-worker',lease_until=100 WHERE id=?",
+                (self.job_id,),
+            )
+        with patch.object(billing, "points", self.points):
+            with self.assertRaisesRegex(delivery.DeliveryError, "delivery_lease_lost"):
+                delivery.deliver(
+                    self.job_id, self.video, PASS_REPORT, 42, db_path=self.db,
+                    worker_id="old-worker", now_fn=lambda: 10,
+                    cos_api=LeaseStealingCos(),
+                )
+        with closing(store.open_store(self.db)) as conn:
+            job = conn.execute("SELECT status FROM edit_v2_jobs WHERE id=?", (self.job_id,)).fetchone()[0]
+            bill = conn.execute("SELECT status FROM edit_v2_billing WHERE job_id=?", (self.job_id,)).fetchone()[0]
+            outbox = conn.execute("SELECT COUNT(*) FROM edit_v2_delivery_outbox WHERE job_id=?", (self.job_id,)).fetchone()[0]
+        self.assertEqual((job, bill, outbox), ("quality_check", "held", 0))
 
 
 if __name__ == "__main__":

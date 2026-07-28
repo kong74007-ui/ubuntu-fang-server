@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from server.content_domains.ai_edit_v2_quality import inspect_output
+from server.content_domains.ai_edit_v2_quality import LocalQualityRunner, inspect_output
 
 
 PLAN = {
@@ -39,8 +39,11 @@ class EvidenceRunner:
 
 
 class QualityTests(unittest.TestCase):
-    def test_subprocess_style_runner_probes_and_decodes_real_media_boundaries(self):
+    def test_local_runner_uses_only_real_ffprobe_and_ffmpeg_commands(self):
         evidence = passing_evidence()
+        plan = {**PLAN, "quality_analysis": {
+            key: evidence[key] for key in ("captions", "materials", "transcript", "audio")
+        }}
         calls = []
 
         class Result:
@@ -49,10 +52,9 @@ class QualityTests(unittest.TestCase):
                 self.stdout = json.dumps(payload).encode() if payload is not None else b""
                 self.stderr = stderr
 
-        def runner(command, **_kwargs):
+        def process_runner(command, **kwargs):
             calls.append(command)
-            if isinstance(command, str):
-                return Result()
+            self.assertNotIn("resolved_plan", kwargs)
             if command[0] == "ffprobe":
                 return Result({
                     "format": {"duration": "10.08"},
@@ -64,15 +66,26 @@ class QualityTests(unittest.TestCase):
                 })
             if command[0] == "ffmpeg":
                 return Result(stderr=b"")
-            return Result(evidence[command[1]])
+            self.fail(f"unexpected executable: {command[0]}")
 
-        report = inspect_output("final.mp4", PLAN, runner)
+        report = inspect_output("final.mp4", plan, LocalQualityRunner(process_runner))
 
         self.assertTrue(report.passed, report.error_codes)
         self.assertTrue(any(isinstance(command, list) and command[0] == "ffprobe" for command in calls))
         self.assertGreaterEqual(sum(
             isinstance(command, list) and command[0] == "ffmpeg" for command in calls
         ), 3)
+        self.assertFalse(any(command[0] == "ai-edit-v2-quality-inspect" for command in calls))
+
+    def test_nan_and_infinity_evidence_fail_closed(self):
+        for invalid in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(invalid=invalid):
+                evidence = passing_evidence()
+                evidence["frames"]["black_ratio"] = invalid
+                report = inspect_output("final.mp4", PLAN, EvidenceRunner(evidence))
+                self.assertFalse(report.passed)
+                self.assertIn("inspection_incomplete", report.error_codes)
+                self.assertTrue(report.terminal)
 
     def test_all_hard_gates_pass_with_complete_evidence(self):
         runner = EvidenceRunner(passing_evidence())

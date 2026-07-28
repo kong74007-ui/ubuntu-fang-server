@@ -6,6 +6,7 @@ import threading
 import tempfile
 import time
 import unittest
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from unittest.mock import patch
@@ -94,11 +95,19 @@ class PipelineTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.temp_dir.name, "v2.db")
         self.pricing_path = os.path.join(self.temp_dir.name, "pricing.db")
+        self.assets_path = os.path.join(self.temp_dir.name, "assets.db")
+        with closing(sqlite3.connect(self.assets_path)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT UNIQUE,
+                username TEXT NOT NULL,mode TEXT NOT NULL,video_file TEXT,
+                video_url TEXT,resolution TEXT,ratio TEXT,phase TEXT,status TEXT NOT NULL,
+                created_at INTEGER,updated_at INTEGER)""")
         self.env = patch.dict(
             os.environ,
             {
                 "AI_EDIT_V2_DB": self.db_path,
                 "AI_EDIT_V2_PRICING_DB": self.pricing_path,
+                "AI_EDIT_V2_ASSET_DB": self.assets_path,
                 "AI_EDIT_V2_NORMAL_BUDGET_SECONDS": "2700",
                 "AI_EDIT_V2_REPAIR_BUDGET_SECONDS": "900",
             },
@@ -607,6 +616,55 @@ class StableRunJobTests(PipelineTests):
         self.assertEqual(repaired[0]["deadline_at"], now + 900)
         self.assertEqual(probe_count[0], 2)
 
+    def test_repair_lost_response_reconciles_saved_provider_id_without_resubmit(self):
+        class LostResponse(BaseException):
+            pass
+
+        job = self._precharged_job(str(uuid.uuid4()))
+        base = self._dependencies([])
+        pipeline.run_job(job["id"], base, db_path=self.db_path)
+        output = os.path.join(self.temp_dir.name, "repair-reconcile.mp4")
+        Path(output).write_bytes(b"repair-reconcile")
+        bad = passing_evidence(); bad["probe"]["duration_ms"] = 1_000
+        bad["captions"]["safe_area"] = False
+        submitted, reconciled = [], []
+        now = [200]
+
+        def submit(_job, context):
+            submitted.append(context["idempotency_key"])
+            context["save_provider_task_id"]("repair-provider-1")
+            raise LostResponse("provider accepted; response lost")
+
+        deps = {
+            **base, "quality_runner": EvidenceRunner(bad),
+            "quality_output_path": output, "actual_cost": 20,
+            "repair_layer": submit, "now": lambda: now[0],
+        }
+        with patch.object(delivery, "cos", DeliveryCos()), patch.object(billing, "points", self.points):
+            with self.assertRaises(LostResponse):
+                pipeline.run_job(job["id"], deps, db_path=self.db_path)
+            with closing(store.open_store(self.db_path)) as conn:
+                attempt = conn.execute(
+                    "SELECT status,provider_task_id FROM edit_v2_stage_attempts WHERE job_id=? AND stage='repairing'",
+                    (job["id"],),
+                ).fetchone()
+                conn.execute("UPDATE edit_v2_jobs SET lease_until=0 WHERE id=?", (job["id"],))
+            self.assertEqual((attempt["status"], attempt["provider_task_id"]), ("running", "repair-provider-1"))
+            good = passing_evidence(); good["probe"]["duration_ms"] = 1_000
+            now[0] = 201
+
+            def reconcile(_job, context):
+                reconciled.append(context["provider_task_id"])
+                return {"output_path": output}
+
+            recovered = pipeline.run_job(
+                job["id"], {**deps, "quality_runner": EvidenceRunner(good),
+                            "repair_reconciler": reconcile}, db_path=self.db_path,
+            )
+        self.assertEqual(recovered["state"], "completed")
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(reconciled, ["repair-provider-1"])
+
     def test_real_worker_and_concrete_production_services_reach_quality_check(self):
         from server import ai_edit_v2_worker as worker
 
@@ -656,7 +714,7 @@ class StableRunJobTests(PipelineTests):
         probe = {"format": {"duration": "3.0", "format_name": "mov,mp4"}, "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30/1"}, {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 2}]}
         def runner(command, **_kw):
             if command[0] == "ffprobe": return type("Completed", (), {"returncode": 0, "stdout": json.dumps(probe), "stderr": b""})()
-            if command[-1] != "NUL": Path(command[-1]).write_bytes(b"mastered-audio")
+            if command[-1] not in {"NUL", "-"}: Path(command[-1]).write_bytes(b"mastered-audio")
             loudness = b'{"input_i":"-20","input_tp":"-2","input_lra":"5","input_thresh":"-30","target_offset":"0"}'
             return type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": loudness})()
         fake_cos = FakeCos()
@@ -664,7 +722,9 @@ class StableRunJobTests(PipelineTests):
                                               dashscope_http=dashscope_http, shotstack_http=shotstack_http,
                                               openai_http=openai_http, openai_downloader=openai_download,
                                               elevenlabs_http=eleven_http,
-                                              downloader=lambda _url: b"rendered-mp4")
+                                              downloader=lambda _url: b"rendered-mp4",
+                                              repair_handler=lambda *_args: {},
+                                              repair_reconciler=lambda *_args: {})
         dependencies = runtime.production_dependencies(self.db_path, services=services)
         dependencies["points_client"] = self.points
         current_time = int(time.time())
@@ -674,7 +734,8 @@ class StableRunJobTests(PipelineTests):
         with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
             runtime.assert_production_ready(dependencies)
             result = worker._process_claimed(claimed, "integration-lease", config, dependencies)
-        self.assertEqual(result["state"], "quality_checking", result)
+        self.assertEqual(result["state"], "quality_failed", result)
+        self.assertEqual(result["error_code"], "inspection_incomplete")
         self.assertIn(b"rendered-mp4", fake_cos.objects.values())
         self.assertEqual(calls, {"openai": 1, "elevenlabs": 1})
 

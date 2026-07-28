@@ -1,59 +1,36 @@
-# Task 8 Report — Hard Quality Gates and Atomic Delivery
+# Task 8 Report - Hard Quality Gates and Atomic Delivery
 
 ## Scope
 
-Implemented only Task 8 on `codex/ai-edit-v2-stable-release`. No Task 9 API work, fetch, push, deployment, service restart, or real-provider call was performed.
+Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-release`. No Task 9 API work, fetch, push, deployment, restart, or real-provider call was performed.
 
-## Delivered
+## Round 1 fixes
 
-- Added fail-closed `inspect_output(path, resolved_plan, runner) -> QualityReport`.
-- Added stable quality codes and repairable/terminal classification for:
-  - video/audio presence and decode;
-  - 1080p target dimensions, rotation, duration tolerance;
-  - black and blank/frozen frames;
-  - caption safe area, tofu blocks, and missing glyphs;
-  - required-material coverage;
-  - subtitle source/fact fidelity;
-  - silence, clipping, dialogue/BGM balance, and dialogue/SFX balance.
-- Added subprocess-compatible FFprobe/FFmpeg checks plus a fail-closed injected semantic inspector boundary for caption/material/transcript/audio evidence.
-- Added `deliver(job_id, output_path, report, actual_cost, db_path=None)`:
-  - uploads only a passed MP4 to the owner-hashed private COS delivery prefix;
-  - verifies HEAD content length, content type, ETag, and non-empty source;
-  - creates one durable delivery video artifact;
-  - records actual-cost settlement, artifact, output key, and `completed` in one SQLite transaction after the external idempotent settlement response;
-  - replays completed delivery idempotently;
-  - refuses success settlement on storage/upload/HEAD failure and triggers one idempotent full refund.
-- Hardened billing settlement/refund races with durable `settling` / `refunding` claims, stable conflict/in-progress errors, lost-response replay, and terminal refund reconciliation.
-- Continued Task 7 from `quality_checking` through targeted repair and delivery when Task 8 dependencies are provided. Repair receives only failing layers and a fixed 900-second deadline. Existing Task 7 callers without Task 8 dependencies continue to stop safely at `quality_checking`.
+- Production dependencies now expose the real local quality runner, COS output resolver, durable actual-cost resolver, and injected repair submit/reconcile adapters. Readiness fails closed when FFprobe, FFmpeg, COS, or the repair provider is unavailable.
+- Removed the nonexistent `ai-edit-v2-quality-inspect` command and the invalid `resolved_plan` subprocess keyword. Technical inspection uses only FFprobe/FFmpeg; caption, material, transcript/fact, and track-balance evidence must be auditable plan evidence or quality fails with `inspection_incomplete`.
+- Strict JSON and numeric validation reject `NaN`, positive/negative infinity, booleans, wrong types, and out-of-range metrics. All quality metrics must be finite.
+- Schema v7 adds a delivery intent persisted before upload and a durable delivery outbox. Replays reconcile the deterministic COS key with HEAD and reuse the same settlement key.
+- Upload, settlement, outbox dispatch, and final completion are worker-lease fenced. A stale worker cannot settle or publish after losing its lease.
+- Settlement atomically creates the cross-database outbox. The dispatcher idempotently writes an owner-safe real `video_assets` row, then atomically marks the outbox delivered and the V2 job completed. The internal render record uses `delivery_internal` and is not exposed as a user asset.
+- Repair has a durable stage attempt, stable idempotency key, provider task ID, fixed absolute 900-second deadline, lease assertions, saved result, and restart reconciliation. A saved provider identity always invokes `repair_reconciler`, never resubmission.
 
-## TDD Evidence
+## Added adversarial coverage
 
-RED was observed before implementation:
-
-- quality and delivery modules failed import because they did not exist;
-- settlement/refund concurrency failed with `billing_not_held` rather than a single winner;
-- Task 7 pipeline remained at `quality_checking`;
-- invalid actual cost stranded billing in `settling`;
-- subprocess-style quality runner initially failed all gates.
-
-Each case was made GREEN with the minimum production change, followed by regression runs.
+- `NaN` and `+/-Infinity` quality evidence fails closed.
+- Production bundle exposes all Task 8 dependencies and readiness rejects a missing repair provider.
+- A lost settlement response resumes from durable intent/HEAD and the same settlement transaction key.
+- A worker that loses its lease immediately after upload cannot settle, complete, or publish an asset.
+- Completed delivery is visible in the real `video_assets` table and remains owner-safe/idempotent.
+- A lost repair response after saving provider task ID resumes through reconciliation without a duplicate submit.
 
 ## Verification
 
-- `python -m unittest tests.test_ai_edit_v2_quality tests.test_ai_edit_v2_delivery tests.test_ai_edit_v2_billing tests.test_collect_cos_and_refund`
-  - 65 tests passed.
-- `python -m unittest tests.test_ai_edit_v2_pipeline tests.test_ai_edit_v2_store -v`
-  - 70 tests passed.
-- `python -m unittest discover -s tests -p "test_ai_edit_v2_*.py" -v`
-  - 283 tests passed.
-- `python -m py_compile ...`
-  - quality, delivery, billing, and pipeline modules compiled successfully.
-- `git diff --check`
-  - clean.
+- Task 8 + runtime/store/pipeline targeted suite: 93 tests, with one expectation updated for the new fail-closed production quality boundary; rerun of the corrected case and runtime/store suite passed.
+- `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **287 tests passed** in 28.191s.
+- `git diff --check`: clean.
 
-## Review Notes
+## Boundary notes
 
-- Delivery completion, the single delivery artifact, output COS key, and settled billing record share one database transaction.
-- External point operations retain unique transaction keys, so a lost response can be replayed without double settlement/refund.
-- Storage verification occurs before settlement; a failed upload or HEAD mismatch cannot reach successful settlement.
-- No schema, store migration, public API, UI, deployment, or provider configuration was changed.
+- Private COS remains the delivery source of truth; user assets retain only the private COS key and owner metadata.
+- Cross-database completion uses a durable outbox: billing settlement plus outbox creation is atomic in the V2 database, while the user-asset insert is owner-checked and idempotent before V2 completion.
+- Missing semantic/OCR/glyph/material/fact/audio evidence never produces a pass.
