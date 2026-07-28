@@ -145,7 +145,9 @@ class ItRunsBeforeTheDeductionTests(unittest.TestCase):
 
     def test_the_guard_is_wired_before_cost_of_and_deduct(self):
         block = CORE_SRC.split("if p.startswith(\"/api/gen/\") and p[9:] in HANDLERS:")[1][:8000]
-        i_guard = block.index("upstream_guard.exhausted_reason")
+        helper = CORE_SRC.split("def _paid_submission_availability")[1].split("\ndef ")[0]
+        self.assertIn("upstream_guard.exhausted_reason", helper)
+        i_guard = block.index("_paid_submission_availability")
         i_cost = block.index("points_domain.cost_of")
         i_deduct = block.index("deduct_points")
         self.assertLess(i_guard, i_cost, "熔断必须在算点数之前")
@@ -154,7 +156,11 @@ class ItRunsBeforeTheDeductionTests(unittest.TestCase):
     def test_it_returns_503_not_500(self):
         """503 = 暂时不可用（等会儿再来），不是 500（我们的代码炸了）。
         前端会把 detail 原样显示给用户，所以那句话必须是人话。"""
-        self.assertIn('self._send(503, {"detail": blocked, "code": "upstream_exhausted"', CORE_SRC)
+        with patch.object(guard, "exhausted_reason", return_value="上游余额不足（未扣点）"):
+            status, payload = core._paid_submission_availability("video", {"mode": "motion"})
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "upstream_exhausted")
+        self.assertIn("未扣点", payload["detail"])
 
 
 class RatioUnavailableTests(unittest.TestCase):

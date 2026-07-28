@@ -1076,6 +1076,20 @@
         ],
         "summary": "一份文案 × 2-5 个形象批量生成口播视频",
         "description": "批量原子受理。每个形象创建独立 video 任务，独立排队、跟踪和失败退点。avatars 每项使用 image_data 或本人 avatar_id 二选一；整批受单用户 active job 上限约束。",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "本次付费批量提交的稳定请求编号；结果不确定时必须使用相同参数和相同编号重试。",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1117,7 +1131,9 @@
           "400": {"description": "形象数量、归属、素材或公共参数不合法"},
           "401": {"description": "未登录或 token 无效"},
           "402": {"description": "点数不足"},
+          "409": {"description": "请求编号与参数冲突、付费流水冲突，或同一请求仍在恢复中"},
           "429": {"description": "剩余任务位或队列容量不足，整批不受理"},
+          "502": {"description": "付费结果暂时未知；使用相同参数和 Idempotency-Key 重试"},
           "503": {"description": "视频功能已停用"}
         }
       }

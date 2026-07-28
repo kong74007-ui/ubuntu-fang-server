@@ -459,7 +459,7 @@ def _validate_job_request(handler: Any, owner: str) -> bool:
     except billing.BillingError as exc:
         return _send(handler, 409, {"code": exc.code, "detail": exc.code})
     except points.AuthPointsError as exc:
-        return _send(handler, 402 if exc.status == 402 else 502, {"detail": exc.detail})
+        return _send(handler, exc.status if exc.status in {402, 403, 409} else 502, {"detail": exc.detail})
     except (TypeError, ValueError) as exc:
         return _send(handler, 400, {"detail": str(exc)})
 
@@ -768,7 +768,7 @@ def _retry_job(handler: Any, owner: str, job_id: str) -> bool:
     except billing.BillingError as exc:
         return _send(handler, 409, {"code": exc.code, "detail": exc.code})
     except points.AuthPointsError as exc:
-        return _send(handler, 402 if exc.status == 402 else 502, {"detail": exc.detail})
+        return _send(handler, exc.status if exc.status in {402, 403, 409} else 502, {"detail": exc.detail})
 
 
 def _header(handler: Any, name: str) -> str:

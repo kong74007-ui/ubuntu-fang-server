@@ -116,8 +116,9 @@
       "post": {
         "tags": ["视频"], "summary": "一份文案 × 2-5 个形象批量生成口播视频",
         "description": "批量原子受理。每个形象创建独立 video 任务并独立失败退点；avatars 每项用 image_data 或本人 avatar_id 二选一。受单用户 active job 上限约束。",
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "description": "本次付费批量提交的稳定请求编号；结果不确定时用相同参数和编号重试。", "schema": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["text", "voice", "avatars"], "properties": { "mode": { "type": "string", "enum": ["text"], "default": "text" }, "text": { "type": "string" }, "voice": { "type": "string" }, "avatars": { "type": "array", "minItems": 2, "maxItems": 5, "items": { "type": "object", "properties": { "image_data": { "type": "string" }, "avatar_id": { "type": "integer" }, "label": { "type": "string" } } } }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" }, "subtitle": { "type": "boolean", "default": false } } } } } },
-        "responses": { "200": { "description": "整批受理，返回 batch_id/job_ids/count/cost/points_left" }, "400": { "description": "形象数量、素材或公共参数不合法" }, "402": { "description": "点数不足" }, "429": { "description": "剩余任务位或队列容量不足，整批不受理" } }
+        "responses": { "200": { "description": "整批受理，返回 batch_id/job_ids/count/cost/points_left" }, "400": { "description": "形象数量、素材或公共参数不合法" }, "402": { "description": "点数不足" }, "409": { "description": "请求编号/付费流水冲突，或同一请求仍在恢复中" }, "429": { "description": "剩余任务位或队列容量不足，整批不受理" }, "502": { "description": "付费结果暂时未知；使用相同参数和 Idempotency-Key 重试" } }
       }
     },
     "/api/gen/video/assets": {

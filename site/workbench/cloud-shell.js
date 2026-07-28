@@ -110,11 +110,11 @@
   var NAV=[
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
-    {k:'video',l:'视频生成',i:'video'}, {k:'ai_edit_v2',l:'AI智能剪辑',i:'edit',gated:true}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'},
+    {k:'video',l:'视频生成',i:'video'}, {k:'ai-edit',l:'一键剪辑',i:'edit'}, {k:'ai_edit_v2',l:'AI智能剪辑 V2',i:'edit',gated:true}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
+    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
-  var NAV_PAGES={ai_edit_v2:'ai-edit.html'};
+  var NAV_PAGES={ai_edit_v2:'ai-edit-v2.html'};
   var aiEditVisible=false;
 
   // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
@@ -474,7 +474,7 @@
     try{ localStorage.setItem(noticeStoreKey(),JSON.stringify((ids||[]).slice(-300))); }catch(e){}
   }
   function noticePage(kind){
-    var pages={image:'banana.html',video:'video.html',ai_edit_v2:'ai-edit.html',tryon:'video.html',xiaole_video:'video.html',audio:'audio.html',leads:'leads.html',leadgen:'leads.html',copy:'script.html',collect:'collect.html'};
+    var pages={image:'banana.html',video:'video.html',ai_edit_v2:'ai-edit-v2.html',tryon:'video.html',xiaole_video:'video.html',audio:'audio.html',leads:'leads.html',leadgen:'leads.html',copy:'script.html',collect:'collect.html'};
     return pages[kind]||'assets.html';
   }
   // 任务 kind → 资产库分类(catRow 的 data-cat)。已完成的任务，产物都在资产库里。

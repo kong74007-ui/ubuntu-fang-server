@@ -119,7 +119,7 @@
   function taskHref(job) {
     var id = encodeURIComponent(String(job && job.id != null ? job.id : ""));
     var kind = taskKind(job);
-    if (kind === "ai_edit_v2") return "ai-edit.html?task=" + id;
+    if (kind === "ai_edit_v2") return "ai-edit-v2.html?task=" + id;
     return kind === "video" ? "video.html?task=" + id : "leads.html#task=" + id;
   }
 
@@ -171,7 +171,7 @@
             var active = latestActive();
             if (!active) return;
             var kind = taskKind(active);
-            if (kind === "ai_edit_v2" && /\/ai-edit(?:\.html)?$/.test(location.pathname)) {
+            if (kind === "ai_edit_v2" && /\/ai-edit-v2(?:\.html)?$/.test(location.pathname)) {
               ev.preventDefault();
               var editUrl = new URL(location.href);
               editUrl.searchParams.set("task", String(active.id));

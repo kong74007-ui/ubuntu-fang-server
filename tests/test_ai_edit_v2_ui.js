@@ -4,13 +4,13 @@ const path = require('node:path');
 const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
-const pagePath = path.join(root, 'site/workbench/ai-edit.html');
+const pagePath = path.join(root, 'site/workbench/ai-edit-v2.html');
 const videoPath = path.join(root, 'site/workbench/video.html');
 const shellPath = path.join(root, 'site/workbench/cloud-shell.js');
 const tasksPath = path.join(root, 'site/workbench/tasks.js');
 
 test('AI edit page exposes the frozen Phase A task flow', () => {
-  assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit.html must exist');
+  assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit-v2.html must exist');
   const page = fs.readFileSync(pagePath, 'utf8');
   assert.match(page, /data-active="ai_edit_v2"/);
   for (const mode of ['natural_brief', 'platform_template', 'open_generation']) {
@@ -76,13 +76,13 @@ test('legacy video workflow keeps its controls and links to the stable editor', 
   const video = fs.readFileSync(videoPath, 'utf8');
   assert.match(video, /data-function="talking"/);
   assert.match(video, /id="generateBtn"/);
-  assert.match(video, /href="ai-edit\.html"[^>]*data-ai-edit-v2-entry/);
+  assert.match(video, /href="ai-edit-v2\.html"[^>]*data-ai-edit-v2-entry/);
 });
 
 test('shared task tracker resumes V2 editing jobs without changing legacy video routing', () => {
   const tasks = fs.readFileSync(tasksPath, 'utf8');
   assert.match(tasks, /ai_edit_v2/);
-  assert.match(tasks, /ai-edit\.html\?task=/);
+  assert.match(tasks, /ai-edit-v2\.html\?task=/);
   assert.match(tasks, /normalizing/);
   assert.match(tasks, /quality_check/);
   assert.match(tasks, /repairing/);
@@ -103,10 +103,10 @@ test('user page does not expose provider internals or an editable timeline', () 
 
 test('shared shell exposes AI edit only after the server capability allows it', () => {
   const shell = fs.readFileSync(shellPath, 'utf8');
-  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑',i:'edit',gated:true\}/);
+  assert.match(shell, /\{k:'ai_edit_v2',l:'AI智能剪辑 V2',i:'edit',gated:true\}/);
   assert.match(shell, /\/api\/v2\/edit\/capabilities/);
   assert.match(shell, /accepts_submissions/);
-  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit\.html'\}/);
+  assert.match(shell, /NAV_PAGES=\{ai_edit_v2:'ai-edit-v2\.html'\}/);
   const page = fs.readFileSync(pagePath, 'utf8');
   assert.match(page, /loadCapability/);
   assert.match(page, /功能尚未开放/);

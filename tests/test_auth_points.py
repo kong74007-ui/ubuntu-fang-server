@@ -8,6 +8,7 @@ import urllib.request
 import unittest
 from contextlib import closing
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 
 class AuthPointsTests(unittest.TestCase):
@@ -28,6 +29,10 @@ class AuthPointsTests(unittest.TestCase):
             c.execute(
                 "INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change) "
                 "VALUES('fang','h','s','fang',10,'member',0)"
+            )
+            c.execute(
+                "UPDATE users SET membership_tier='experience',membership_started_at=1,membership_expires_at=4102444800 "
+                "WHERE username='fang'"
             )
             c.commit()
         finally:
@@ -93,6 +98,124 @@ class AuthPointsTests(unittest.TestCase):
         self.assertIsNone(conflict)
         self.assertEqual(conflict_err, "transaction_conflict")
         self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
+    def test_refund_transaction_key_is_idempotent(self):
+        first, first_err = self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+        replay, replay_err = self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+
+        self.assertIsNone(first_err)
+        self.assertIsNone(replay_err)
+        self.assertEqual(first["points"], 15)
+        self.assertEqual(replay["points"], 15)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM points_audit WHERE transaction_key='job-refund:42'"
+            ).fetchone()[0], 1)
+        finally:
+            c.close()
+
+    def test_refund_transaction_key_rejects_different_amount(self):
+        self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+        points, err = self.auth.refund_points("fang", 6, "job#43", "job-refund:42")
+
+        self.assertIsNone(points)
+        self.assertEqual(err, "transaction_conflict")
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 15)
+
+    def test_refund_accepts_shared_transaction_key_limit(self):
+        for length in (161, 200):
+            with self.subTest(length=length):
+                points, err = self.auth.refund_points(
+                    "fang", 1, "boundary refund", "r" * length
+                )
+                self.assertIsNone(err)
+                self.assertIsNotNone(points)
+
+    def test_http_refund_transaction_key_boundary_is_200_characters(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+
+        def post(key):
+            request = urllib.request.Request(
+                base + "/api/auth/points/refund",
+                data=json.dumps({
+                    "username": "fang", "amount": 1,
+                    "reason": "boundary refund", "transaction_key": key,
+                }).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-HQ-Internal-Token": "test-internal-token",
+                }, method="POST")
+            return urllib.request.urlopen(request, timeout=3)
+
+        try:
+            key = "r" * 200
+            with post(key) as response:
+                self.assertEqual(11, json.loads(response.read())["points"])
+            with post(key) as response:
+                self.assertEqual(11, json.loads(response.read())["points"])
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                post("r" * 201)
+            self.assertEqual(400, caught.exception.code)
+            self.assertEqual("invalid transaction_key", json.loads(caught.exception.read())["detail"])
+            with closing(sqlite3.connect(self.auth.DB)) as conn:
+                self.assertEqual(11, conn.execute(
+                    "SELECT points FROM users WHERE username='fang'").fetchone()[0])
+                self.assertEqual(1, conn.execute(
+                    "SELECT COUNT(*) FROM points_transactions WHERE operation='refund' AND transaction_key=?",
+                    (key,)).fetchone()[0])
+                self.assertEqual(0, conn.execute(
+                    "SELECT COUNT(*) FROM points_transactions WHERE length(transaction_key)=201").fetchone()[0])
+                self.assertEqual(1, conn.execute(
+                    "SELECT COUNT(*) FROM points_audit WHERE transaction_key=?", (key,)).fetchone()[0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_wechat_transaction_can_only_approve_one_recharge_order(self):
+        first, first_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
+        second, second_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
+        self.assertIsNone(first_err)
+        self.assertIsNone(second_err)
+
+        _, approve_err = self.auth.review_recharge_order(
+            "wxpay", first["order_id"], "approve", "paid",
+            transaction_id="wx-transaction-1", pay_channel="wxpay",
+        )
+        duplicate, duplicate_err = self.auth.review_recharge_order(
+            "wxpay", second["order_id"], "approve", "paid",
+            transaction_id="wx-transaction-1", pay_channel="wxpay",
+        )
+
+        self.assertIsNone(approve_err)
+        self.assertIsNone(duplicate)
+        self.assertEqual(duplicate_err, "transaction_in_use")
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 1010)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            row = c.execute(
+                "SELECT transaction_id,pay_channel FROM recharge_orders WHERE order_id=?",
+                (first["order_id"],),
+            ).fetchone()
+            self.assertEqual(row, ("wx-transaction-1", "wxpay"))
+        finally:
+            c.close()
+
+    def test_wechat_callback_identity_must_match_merchant_and_app(self):
+        import server.wxpay as wxpay
+
+        expected = {"appid": "wx-huangque", "mchid": "merchant-huangque"}
+        with patch.object(wxpay, "_config", return_value=expected):
+            self.assertTrue(wxpay.payment_identity_matches(expected))
+            self.assertFalse(wxpay.payment_identity_matches({
+                "appid": "wx-other", "mchid": "merchant-huangque",
+            }))
+            self.assertFalse(wxpay.payment_identity_matches({
+                "appid": "wx-huangque", "mchid": "merchant-other",
+            }))
 
     def test_concurrent_deduct_never_overdraws(self):
         results = []
@@ -142,20 +265,20 @@ class AuthPointsTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
-    def test_http_transaction_replay_is_idempotent_and_conflict_is_409(self):
+    def test_http_transaction_resolution_precedes_expired_membership_gate(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         url = "http://127.0.0.1:%d/api/auth/points/deduct" % server.server_address[1]
 
-        def request(amount):
+        def request(amount, transaction_key="http-hold-1"):
             return urllib.request.Request(
                 url,
                 data=json.dumps(
                     {
                         "username": "fang",
                         "amount": amount,
-                        "transaction_key": "http-hold-1",
+                        "transaction_key": transaction_key,
                     }
                 ).encode(),
                 headers={
@@ -168,6 +291,11 @@ class AuthPointsTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(request(4), timeout=3) as response:
                 first = json.loads(response.read())
+            with closing(sqlite3.connect(self.auth.DB)) as conn:
+                conn.execute(
+                    "UPDATE users SET membership_expires_at=1 WHERE username='fang'"
+                )
+                conn.commit()
             with urllib.request.urlopen(request(4), timeout=3) as response:
                 replay = json.loads(response.read())
             self.assertEqual(first["points"], 6)
@@ -175,6 +303,9 @@ class AuthPointsTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request(5), timeout=3)
             self.assertEqual(caught.exception.code, 409)
+            with self.assertRaises(urllib.error.HTTPError) as membership_required:
+                urllib.request.urlopen(request(4, "http-hold-new"), timeout=3)
+            self.assertEqual(membership_required.exception.code, 403)
             self.assertEqual(self.auth.get_points_row("fang")["points"], 6)
         finally:
             server.shutdown()

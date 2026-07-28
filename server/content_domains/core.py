@@ -15,7 +15,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import ai_edit_v2_api, assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import ai_edit_api, ai_edit_v2_api, assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -188,17 +188,22 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
+AI_EDIT_COST = _env_positive_int("AI_EDIT_COST", 30)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
-TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
+TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 20)  # 口播(video mode=text/audio)专用池：20 路并发任务独立消费
 CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
 AVATAR_JOB_WORKERS = _env_positive_int("CONTENT_AVATAR_JOB_WORKERS", 5)        # 建形象池。5 路是实测的干净档位(2026-07-12)：5并发 5/5成功、0×429、零降速(就绪中位19.7s vs 单条基线19.8s)；10并发 HeyGen 侧照样零429不降速，但【我们的出境隧道】开始丢包(1条TLS握手超时、1条提交花了57s)。所以瓶颈是隧道不是HeyGen，隧道扩容后可再往上调。串行(1)的吞吐只有144个/小时——500人集中建形象要排3.5小时，而建形象是电影化身的【入口】，堵在这里等于整个功能没法用；5路→约900个/小时，排队压到35分钟
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
-JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
+JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 64)  # 32→64：50 齐点压测 3 条「队列已满」当场拒；64+worker 收得下整批
+TALKING_JOB_QUEUE_MAX = _env_positive_int("CONTENT_TALKING_JOB_QUEUE_MAX", 192)  # 口播独立积压上限，不放大其他任务队列
+_PENDING_RECOVERY_LIMIT = max(JOB_QUEUE_MAX, TALKING_JOB_QUEUE_MAX)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
-MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 3)  # 单用户果肉/豆姐/欧米视频 active 上限：别让单一渠道吃满全部任务位
+MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 2)  # 单用户果肉/豆姐/欧米视频共享 active 上限：别让单一渠道吃满全部任务位
+MAX_USER_ACTIVE_SORA_VIDEO = _env_positive_int("MAX_USER_ACTIVE_SORA_VIDEO", 1)      # Sora 高价限时 Beta：每用户默认只允许 1 条在飞
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
 MAX_USER_ACTIVE_CINEMATIC = _env_positive_int("MAX_USER_ACTIVE_CINEMATIC", 2)        # 单用户剧情视频 active 上限：重任务(约8分钟)，别让一个人占满 10 个 worker
 MAX_USER_ACTIVE_AVATAR = _env_positive_int("MAX_USER_ACTIVE_AVATAR", 2)              # 单用户建形象 active 上限。池已不再串行(5路)，但仍留 2：池只有 5 个槽，一个人占满就把别人挡在门外——而建形象是电影化身的入口
+MAX_USER_ACTIVE_AI_EDIT = _env_positive_int("MAX_USER_ACTIVE_AI_EDIT", 1)            # 一键剪辑会预处理+上传+云渲染，单用户一次只飞一条
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
 MAX_GLOBAL_RUNNING_BREAKDOWN = _env_positive_int("MAX_GLOBAL_RUNNING_BREAKDOWN", 2)  # 爆款拆解会跑下载+ffmpeg+ASR+多模态，全局限 2 条防慢任务挤爆机器
@@ -214,22 +219,24 @@ VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 
-# 【电影化身单独一条死线】20 分钟(kongli 2026-07-14，原跟全站 15 分钟走)。它是唯一「提交即扣费」
+# 【电影化身单独一条死线】30 分钟(kongli 2026-07-17，原 20 分钟→更早 15 分钟)。它是唯一「提交即扣费」
 # 的引擎($7/条，收钱在提交那一刻)：别的引擎超时顶多白等，它超时【钱已经花了】。线上真出现过我们
-# 900s 判超时退点、HeyGen 那边其实已 completed 出片 —— 片子被扔、$7 照付。宁可多等 5 分钟。
+# 20 分钟判超时退点、HeyGen 那边其实还在渲染/已 completed 出片 —— 片子被扔、$7 照付。宁可多等。
 # ⚠️ 宽限用加法钉死，别拆成两个字面量各写各的(口播就栽过：死线 1200s、宽限却 540s，reaper 先杀)。
-CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)
+CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1800)
 CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
-KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
-              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600}
+KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 900, "collect": 1200,
+              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600,
+              "ai_edit": 2100}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
-        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8}  # collect/leads/cinematic 走 cost_of() 动态算
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8,
+        "ai_edit": AI_EDIT_COST}  # collect/leads/cinematic 走 cost_of() 动态算
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -256,7 +263,12 @@ HANDLERS = {}
 
 # ============ 任务库 ============
 def jdb():
-    c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
+    # timeout 10→30 + WAL：content/imggen 两服务共写这张表，50 齐点压测时 10s 写锁等待
+    # 不够，INSERT 超时直接制造「扣款成功但任务未落库」的补偿路径。WAL 读写不互斥，
+    # 高并发下写锁冲突面显著收窄（WAL 是库级持久设置，重复 PRAGMA 是 no-op）。
+    c = sqlite3.connect(JOB_DB, timeout=30); c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    return c
 
 def adb():
     c = sqlite3.connect(AUDIO_DB, timeout=10)
@@ -276,6 +288,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
+    ai_edit_api.init_db()
     init_audio_db()
 
 def init_audio_db():
@@ -622,8 +635,53 @@ def _must_change_password(user):
 
 _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
-def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
+def _idempotency_complete(username, endpoint, key, response): return submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
+def _idempotency_abort_unprepared(username, endpoint, key, owner=None): return submission_idempotency.abort_unprepared(jdb, username, endpoint, key, owner=owner)
+def _idempotency_preparation(username, endpoint, key): return submission_idempotency.load_preparation(jdb, username, endpoint, key)
+def _idempotency_claim_admission(username, endpoint, key, body, owner): return submission_idempotency.claim_admission(jdb, username, endpoint, key, body, owner)
+def _idempotency_prepare(username, endpoint, key, body, preparation, owner=None): return submission_idempotency.prepare(jdb, username, endpoint, key, body, preparation, owner=owner)
+
+
+def _compact_video_batch_preparation(payloads, costs):
+    """Store shared batch media once instead of duplicating it per avatar."""
+    payloads = [dict(payload) for payload in payloads]
+    if not payloads:
+        raise ValueError("video batch preparation is empty")
+    common = {}
+    for key, value in payloads[0].items():
+        if all(key in payload and payload[key] == value for payload in payloads[1:]):
+            common[key] = value
+    items = [
+        {key: value for key, value in payload.items() if key not in common}
+        for payload in payloads
+    ]
+    return {
+        "kind": "video_batch_v1", "common": common, "items": items,
+        "costs": [int(value) for value in costs],
+    }
+
+
+def _expand_video_batch_preparation(prepared, expected_count=None):
+    if not isinstance(prepared, dict) or prepared.get("kind") != "video_batch_v1":
+        raise ValueError("invalid preparation kind")
+    common = prepared.get("common")
+    items = prepared.get("items")
+    costs = prepared.get("costs")
+    if not isinstance(common, dict) or not isinstance(items, list) or not isinstance(costs, list):
+        raise ValueError("invalid preparation shape")
+    payloads = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("invalid preparation item")
+        payload = dict(common)
+        payload.update(item)
+        payloads.append(payload)
+    parsed_costs = [int(value) for value in costs]
+    if (not payloads or len(payloads) != len(parsed_costs)
+            or (expected_count is not None and len(payloads) != int(expected_count))):
+        raise ValueError("invalid preparation shape")
+    return payloads, parsed_costs
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 # 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
@@ -663,7 +721,7 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点；慢/快队列分开防视频堵死作图） ============
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)          # 慢队列(tryon/xiaole_video + video兜底)
 _fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(audio/copy/collect/leads等秒级任务)
-_talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
+_talking_job_queue = queue.Queue(maxsize=TALKING_JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
 _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _cinematic_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # AI剧情视频队列(kind=cinematic，HeyGen，约8分钟/条)
 _avatar_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 建形象队列(kind=avatar，串行池)
@@ -691,42 +749,74 @@ _workers_started = False
 _shutting_down = threading.Event()
 _inflight = 0                      # 正在 run_job 里跑着的任务数
 _inflight_lock = threading.Lock()
-# 排空最长等多久。视频最长 15 分钟（VIDEO_GEN_DEADLINE=900s）+ 上传下载余量。
-DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1200)
+# 排空最长等多久。最长任务是电影化身 30 分钟（CINEMATIC_GEN_DEADLINE=1800s）+ 上传下载余量。
+# 必须 ≥ 最长死线，否则重启时会把跑到一半的 30 分钟剧情视频砍掉（$7 已扣，片子丢）。
+DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1800)
 
 
 def is_shutting_down():
     return _shutting_down.is_set()
 
+
+def _content_submission_guard(body):
+    """Return a shared pre-charge HTTP rejection for unsafe paid submissions."""
+    try:
+        miniprogram_security.check_payload(body)
+    except miniprogram_security.ContentRejected as exc:
+        return 400, {"detail": str(exc), "code": "content_rejected"}
+    except miniprogram_security.SecurityUnavailable as exc:
+        return 503, {
+            "detail": str(exc), "code": "content_security_unavailable",
+            "retry_after_ms": 5000,
+        }
+    return None
+
+
+def _paid_submission_availability(kind, body):
+    """Apply the shared shutdown and upstream guards before cost or deduction."""
+    if is_shutting_down():
+        return 503, {
+            "detail": "服务正在更新，请稍等几秒后重试（未扣点）",
+            "code": "shutting_down", "retry_after_ms": 5000,
+        }
+    from . import upstream_guard
+    blocked = upstream_guard.exhausted_reason(kind, body)
+    if blocked:
+        return 503, {
+            "detail": blocked, "code": "upstream_exhausted",
+            "retry_after_ms": 60000,
+        }
+    return None
+
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
-
-def _refund_once(job_id, username, cost):
-    # safe_refund_points 吞掉异常并返回当前点数，不让退点接口故障影响主流程 → 视为永远成功。
-    return jobs_store.refund_once(jdb, job_id, username, cost,
-                                  lambda u, c: (_domains()[1].safe_refund_points(u, c, "job#%d" % job_id), True)[1])
-
+def _refund_once(job_id, username, cost, transaction_key=""):
+    transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
+    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
+        _domains()[1].refund_points(u, c, "job#%d" % job_id, transaction_key=transaction_key), True)[1])
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
-    # video(口播 text/audio)走口播池；tryon/xiaole_video 走慢池。
+    # video(口播 text/audio)走口播池；tryon/xiaole_video/sora_video 走慢池。
     if kind is None:
         return _job_queue
     if kind == "image":
         return _image_job_queue
     if kind == "breakdown":
         return _job_queue               # 下载+ffmpeg+ASR+多模态，走慢池别堵快任务
+    if kind == "ai_edit":
+        return _job_queue               # 视频预处理+工程上传+云渲染，走慢池
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
         return _avatar_job_queue        # 建形象，串行 1 个 worker
-    if kind not in {"video", "tryon", "xiaole_video"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video"}:
         return _fast_job_queue
     if kind == "video":
         return _talking_job_queue
     return _job_queue
 
-def enqueue_jobs(job_ids, kind=None, mode=None):
+def enqueue_jobs(job_ids, kind=None, mode=None, before_enqueue=None):
     try:
         ids = [int(job_id) for job_id in job_ids]
     except Exception:
@@ -736,13 +826,19 @@ def enqueue_jobs(job_ids, kind=None, mode=None):
         fresh = [job_id for job_id in ids if job_id not in _queued_job_ids]
         if q.maxsize > 0 and q.qsize() + len(fresh) > q.maxsize:
             return False
+        if before_enqueue is not None:
+            try:
+                if not before_enqueue():
+                    return None
+            except Exception:
+                return None
         for job_id in fresh:
             q.put_nowait(job_id)
             _queued_job_ids.add(job_id)
         return True
 
-def enqueue_job(job_id, kind=None, mode=None):
-    return enqueue_jobs([job_id], kind, mode)
+def enqueue_job(job_id, kind=None, mode=None, before_enqueue=None):
+    return enqueue_jobs([job_id], kind, mode, before_enqueue=before_enqueue)
 
 def _user_active_job_count(username):
     if not username:
@@ -771,6 +867,12 @@ def _user_video_submit_limit(kind, body, username, cost):
             return {"detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO,
                     "code": "xiaole_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_XIAOLE_VIDEO,
                     "retry_after_ms": 4000, "need": cost}
+    elif kind == "sora_video":
+        active = _user_active_kind_count(username, "sora_video")
+        if active >= MAX_USER_ACTIVE_SORA_VIDEO:
+            return {"detail": "当前 Sora 限时测试最多同时生成 %d 个任务，请等待完成后再继续" % MAX_USER_ACTIVE_SORA_VIDEO,
+                    "code": "sora_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_SORA_VIDEO,
+                    "retry_after_ms": 5000, "need": cost}
     elif kind == "tryon":
         active = _user_active_kind_count(username, "tryon")
         if active >= MAX_USER_ACTIVE_TRYON:
@@ -788,6 +890,12 @@ def _user_video_submit_limit(kind, body, username, cost):
         if active >= MAX_USER_ACTIVE_AVATAR:
             return {"detail": "当前最多同时创建 %d 个形象，请等待完成后再继续" % MAX_USER_ACTIVE_AVATAR,
                     "code": "avatar_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_AVATAR,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "ai_edit":
+        active = _user_active_kind_count(username, "ai_edit")
+        if active >= MAX_USER_ACTIVE_AI_EDIT:
+            return {"detail": "当前已有一条视频正在一键剪辑，请等待完成后再继续",
+                    "code": "ai_edit_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_AI_EDIT,
                     "retry_after_ms": 4000, "need": cost}
     return None
 
@@ -817,13 +925,7 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
     return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
-    now = int(time.time())
-    with closing(jdb()) as c:
-        cur = c.execute("""UPDATE jobs SET status='error', error=?, updated_at=?
-                           WHERE id=? AND status='pending'""",
-                        (str(reason or "")[:300], now, job_id))
-        c.commit()
-        claimed = cur.rowcount >= 1
+    claimed = _set_terminal(job_id, "error", error=reason, from_states=("pending",))
     if claimed:
         _refund_once(job_id, username, cost)
     return claimed
@@ -851,24 +953,49 @@ def _job_worker_loop(q):
 
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
-    with closing(jdb()) as c:
-        rows = c.execute("SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
-                         (SERVICE_OWNER, SERVICE_OWNER, limit)).fetchall()
     recovered = 0
-    for row in rows:
-        try:
-            mode = (json.loads(row["payload"] or "{}") or {}).get("mode", "")
-        except Exception:
-            mode = ""
-        if not enqueue_job(row["id"], row["kind"], mode):
+    last_id = None
+    while recovered < limit:
+        batch_size = max(1, limit - recovered)
+        with closing(jdb()) as c:
+            if last_id is None:
+                rows = c.execute(
+                    "SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
+                    (SERVICE_OWNER, SERVICE_OWNER, batch_size)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? AND id>? ORDER BY id ASC LIMIT ?",
+                    (SERVICE_OWNER, SERVICE_OWNER, last_id, batch_size)).fetchall()
+        if not rows:
             break
-        recovered += 1
+        for row in rows:
+            last_id = row["id"]
+            try:
+                payload = json.loads(row["payload"] or "{}") or {}
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            # Explicit retry successors are private until their owner has
+            # completed metadata creation and atomically published ``ready``.
+            # Missing state is the legacy protocol and remains queueable.
+            submission_state = payload.get("_submission_state")
+            if submission_state is not None and submission_state != "ready":
+                continue
+            if not enqueue_job(row["id"], row["kind"], payload.get("mode", "")):
+                return recovered
+            recovered += 1
+            if recovered >= limit:
+                return recovered
+        if len(rows) < batch_size:
+            break
     return recovered
 
 def _pending_job_scanner():
     while True:
         try:
-            _recover_pending_jobs(JOB_QUEUE_MAX)
+            _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
+            jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
         time.sleep(30)
@@ -891,8 +1018,7 @@ def start_job_workers():
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
-    _recover_pending_jobs(JOB_QUEUE_MAX)
-
+    _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 
@@ -938,7 +1064,7 @@ def install_signal_handlers():
 
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
-    if kind not in {"video", "tryon", "xiaole_video", "cinematic"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
         return
     try:
         _, _, video_domain = _domains()
@@ -1011,7 +1137,7 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar", "breakdown"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "ai_edit"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1032,18 +1158,38 @@ def run_job(job_id):
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
+            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
                 video_domain.record_video_asset(job_id, username, result)
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
+        ai_edit_api.job_completed(kind, job_id, result)
     except Exception as e:
+        if kind == "sora_video":
+            try:
+                from . import video_openai
+                video_domain = _domains()[2]
+                confirmed_failure = isinstance(
+                    e, (video_openai.CreateRejected, video_openai.ProviderVideoFailed)
+                )
+                if not confirmed_failure:
+                    requeue = _requeue_running_job if isinstance(
+                        e, video_openai.TransientOpenAIError
+                    ) else None
+                    if video_domain.recover_sora_paid_job(job_id, e, requeue):
+                        return
+            except Exception as recovery_error:
+                # 恢复锚点暂时读不到时不能误退款或重发付费 POST；保留 running 供重启核对。
+                print("[sora] 恢复信息暂不可读，保留 job#%s: %s" %
+                      (job_id, str(recovery_error)[:160]), flush=True)
+                return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
+        ai_edit_api.job_failed(kind, job_id, e)
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1073,38 +1219,36 @@ def reaper():
                     grace = VIDEO_REAPER_GRACE
                 if grace and r["updated_at"] >= now - grace:
                     continue
+                if r["kind"] == "sora_video":
+                    try:
+                        if _domains()[2].recover_sora_paid_job(
+                                r["id"], "本地 worker 中断，正在恢复查询", _requeue_running_job):
+                            continue
+                    except Exception:
+                        continue  # 恢复库读不到时也不能把付费任务误判失败。
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
-                if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
+                if _set_terminal(r["id"], "error", error="生成超时自动结束，退款处理中"):
                     _refund_once(r["id"], r["username"], r["cost"])
-                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，已退点")
+                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
         except Exception:
             pass
         time.sleep(60)
 
-def reclaim_orphaned_running():
-    """启动时回收上一进程遗留的 running 孤儿任务。
+def _requeue_running_job(job_id):
+    return startup_recovery.requeue_running_job(jdb, job_id)
 
-    本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
-    本服务名下任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
-    再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
-    才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
-    CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
-    try:
-        with closing(jdb()) as c:
-            # 按 owner 过滤(#511)：imggen/leadgen 是独立进程，content 重启与它们无关；不过滤就会把它们正在飞的任务判失败退点，而对面 worker 还在跑 → 用户既没图又白等
-            rows = c.execute("SELECT id, username, cost, kind FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
-                             (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
-    except Exception:
-        return 0
-    n = 0
-    for r in rows:
-        if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
-            _refund_once(r["id"], r["username"], r["cost"])
-            _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
-            n += 1
-    if n:
-        print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
-    return n
+
+def reclaim_orphaned_running():
+    return startup_recovery.reclaim_orphaned_running(
+        jdb=jdb,
+        service_owner=SERVICE_OWNER,
+        domains=_domains,
+        set_terminal=_set_terminal,
+        refund_once=_refund_once,
+        mark_video_asset_failed=_mark_video_asset_failed,
+        requeue_job=_requeue_running_job,
+    )
+
 
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
@@ -1138,6 +1282,8 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v2/edit/"):
             route = self.path if "/webhooks/" in p else p; return ai_edit_v2_api.dispatch(self, "POST", route, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
+        handled, p = ai_edit_api.handle_post(self, p, points_domain, video_domain)
+        if handled: return
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1206,7 +1352,7 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
             except points_domain.AuthPointsError as e:
-                return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
+                return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -1272,81 +1418,302 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try:
-                feature_flags.require_enabled("video")
                 request_body = self._json_body_strict()
-                payloads = video_domain.validate_video_batch_payload(
-                    request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
-            except feature_flags.FeatureDisabled as e:
-                return self._send(503, {"detail": str(e)})
+                if not idem_key:
+                    raise ValueError("批量视频提交必须提供 Idempotency-Key")
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
-            costs = [points_domain.cost_of("video", body) for body in payloads]
+
+            idem_state, idem_response = _idempotency_begin(
+                user["username"], p, idem_key, request_body)
+            if idem_state == "replay":
+                return self._send(200, idem_response)
+            if idem_state == "conflict":
+                return self._send(409, {
+                    "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                    "code": "idempotency_conflict"})
+            prepared = _idempotency_preparation(user["username"], p, idem_key)
+            admission_owner = ""
+            if not prepared:
+                admission_owner = uuid.uuid4().hex
+                if not _idempotency_claim_admission(
+                        user["username"], p, idem_key, request_body,
+                        admission_owner):
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
+            if prepared:
+                try:
+                    payloads, costs = _expand_video_batch_preparation(prepared)
+                except Exception:
+                    return self._send(502, {
+                        "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                        "code": "submission_result_unknown", "retry_after_ms": 1000})
+            else:
+                try:
+                    feature_flags.require_enabled("video")
+                    rejected = _content_submission_guard(request_body)
+                    if rejected:
+                        if _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return self._send(*rejected)
+                        return self._send(409, {
+                            "detail": "相同请求正在受理，请稍后查询",
+                            "code": "idempotency_in_progress", "retry_after_ms": 500})
+                    payloads = video_domain.validate_video_batch_payload(
+                        request_body, user["username"],
+                        min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+                    unavailable = _paid_submission_availability("video", payloads[0])
+                    if unavailable:
+                        if _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return self._send(*unavailable)
+                        return self._send(409, {
+                            "detail": "相同请求正在受理，请稍后查询",
+                            "code": "idempotency_in_progress", "retry_after_ms": 500})
+                    costs = [points_domain.cost_of("video", body) for body in payloads]
+                except feature_flags.FeatureDisabled as e:
+                    if _idempotency_abort_unprepared(
+                            user["username"], p, idem_key,
+                            admission_owner):
+                        return self._send(503, {"detail": str(e)})
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
+                except ValueError as e:
+                    if _idempotency_abort_unprepared(
+                            user["username"], p, idem_key,
+                            admission_owner):
+                        return self._send(400, {"detail": str(e)[:220]})
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 500})
             total = sum(costs)
+            identity = submission_idempotency.paid_submission_identity(
+                user["username"], p, idem_key, len(payloads))
+            batch_id = identity["batch_id"]
+            job_ids = identity["job_ids"]
+            for body in payloads:
+                body["batch_id"] = batch_id
+            initialization_state = "initializing:" + uuid.uuid4().hex
+
+            def batch_response():
+                jobs = [{"job_id": jid, "label": body.get("batch_label"),
+                         "index": body.get("batch_index")}
+                        for jid, body in zip(job_ids, payloads)]
+                return {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
+                        "count": len(job_ids), "cost": total,
+                        "cost_per_job": costs[0], "points_left": None}
+
+            def batch_in_progress():
+                return self._send(409, {
+                    "detail": "相同请求正在受理，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 500,
+                    "batch_id": batch_id, "job_ids": job_ids})
+
             with _submission_lock:
-                idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
-                if idem_state == "replay":
-                    return self._send(200, idem_response)
-                if idem_state == "conflict":
+                latest_state, latest_response = _idempotency_begin(
+                    user["username"], p, idem_key, request_body)
+                if latest_state == "replay":
+                    return self._send(200, latest_response)
+                if latest_state == "conflict":
                     return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
-                if idem_state == "processing":
-                    return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
-                active_jobs = _user_active_job_count(user["username"])
-                if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
-                    _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
-                        (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
-                        "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
+                latest_prepared = _idempotency_preparation(
+                    user["username"], p, idem_key)
+                # The row may have been terminally aborted while this request
+                # waited for the submission lock.  Only the snapshot observed
+                # inside the lock is authoritative; never charge from a stale
+                # lock-outside copy.
+                prepared = latest_prepared
+                if latest_prepared:
+                    try:
+                        payloads, costs = _expand_video_batch_preparation(
+                            latest_prepared, expected_count=len(job_ids))
+                        total = sum(costs)
+                    except Exception:
+                        return self._send(502, {
+                            "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                            "code": "submission_result_unknown", "retry_after_ms": 1000})
+                existing_states = jobs_store.explicit_jobs_state(jdb, job_ids)
+                if not prepared and not existing_states:
+                    active_jobs = _user_active_job_count(user["username"])
+                    if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
+                            (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
+                            "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
+                if not prepared:
+                    try:
+                        prepared = _idempotency_prepare(
+                            user["username"], p, idem_key, request_body,
+                            _compact_video_batch_preparation(payloads, costs),
+                            owner=admission_owner)
+                    except submission_idempotency.PreparationTooLarge:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(413, {
+                            "detail": "批量媒体过大，无法安全保存付费恢复快照",
+                            "code": "submission_snapshot_too_large"})
+                    except submission_idempotency.PreparationCapacityError:
+                        if not _idempotency_abort_unprepared(
+                                user["username"], p, idem_key,
+                                admission_owner):
+                            return batch_in_progress()
+                        return self._send(429, {
+                            "detail": "尚有过多付费提交等待确认，请先用原请求编号恢复",
+                            "code": "pending_submission_cap", "retry_after_ms": 1000})
+                    if not prepared:
+                        state, winner = _idempotency_begin(
+                            user["username"], p, idem_key, request_body)
+                        if state == "replay":
+                            return self._send(200, winner)
+                        return batch_in_progress()
+                    try:
+                        payloads, costs = _expand_video_batch_preparation(
+                            prepared, expected_count=len(job_ids))
+                        total = sum(costs)
+                    except Exception:
+                        return self._send(502, {
+                            "detail": "付费提交恢复数据异常，请使用相同请求编号稍后重试",
+                            "code": "submission_result_unknown", "retry_after_ms": 1000})
                 try:
-                    points_left = points_domain.deduct_points(user["username"], total, "job:video_batch")
+                    job_ids, _points_left, _created = jobs_store.create_explicit_paid_jobs(
+                        jdb, points_domain.deduct_points, points_domain.refund_points, "video",
+                        user["username"], list(zip(costs, payloads)), SERVICE_OWNER,
+                        job_ids=job_ids, submission_ref=identity["submission_ref"],
+                        deduct_transaction_key=identity["deduct_transaction_key"],
+                        submission_state=initialization_state, return_created=True,
+                        reason_kind="video_batch")
                 except points_domain.AuthPointsError as e:
+                    status = e.status if e.status in (402, 403, 409) else 502
+                    if status in (402, 403, 409):
+                        _idempotency_abort(user["username"], p, idem_key)
+                        payload = {"detail": e.detail, "need": total}
+                        if status == 409:
+                            payload["code"] = "points_transaction_conflict"
+                        return self._send(status, payload)
+                    return self._send(502, {
+                        "detail": e.detail, "code": "points_result_unknown",
+                        "retry_after_ms": 1000, "need": total,
+                        "batch_id": batch_id, "job_ids": job_ids})
+                except jobs_store.PaidJobInsertError as e:
+                    if e.compensation in {"refunded", "queued"}:
+                        _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
+                        "queued": "批量任务创建失败，退款正在自动重试"}.get(e.compensation,
+                        "批量任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref,
+                        "code": "submission_compensated" if e.compensation in {"refunded", "queued"} else "submission_result_unknown",
+                        "compensation": e.compensation,
+                        "batch_id": batch_id, "job_ids": job_ids})
+                except jobs_store.PaidJobConflictError:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": total})
-                now, batch_id, job_ids, committed = int(time.time()), uuid.uuid4().hex, [], False
+                    return self._send(409, {"detail": "批量提交身份与现有任务冲突",
+                                            "code": "job_identity_conflict"})
+
+                states = jobs_store.explicit_jobs_state(jdb, job_ids)
+                if len(states) != len(job_ids):
+                    return batch_in_progress()
+                statuses = {value[0] for value in states.values()}
+                submission_states = {value[1] for value in states.values()}
+                if statuses <= {"running", "done", "success"} or submission_states == {"ready"}:
+                    response = batch_response()
+                    winner = _idempotency_complete(user["username"], p, idem_key, response)
+                    return self._send(200, winner or response)
+                if statuses & {"error", "failed"}:
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理",
+                                            "code": "submission_compensated",
+                                            "batch_id": batch_id, "job_ids": job_ids})
+                if statuses != {"pending"} or len(submission_states) != 1:
+                    return batch_in_progress()
+                previous_state = next(iter(submission_states))
+                if not jobs_store.set_explicit_jobs_state(
+                        jdb, job_ids, initialization_state, expected_states=(previous_state,)):
+                    return batch_in_progress()
+
+                def still_batch_owner():
+                    current = jobs_store.explicit_jobs_state(jdb, job_ids)
+                    return len(current) == len(job_ids) and all(
+                        status == "pending" and state == initialization_state
+                        for status, state, _updated_at in current.values())
+
                 try:
-                    with closing(jdb()) as c:
-                        for body, cost in zip(payloads, costs):
-                            body["batch_id"] = batch_id
-                            cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                                ("video", user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                            job_ids.append(cur.lastrowid)
-                        c.commit()
-                        committed = True
                     for jid, body in zip(job_ids, payloads):
                         video_domain.record_video_pending_asset(jid, user["username"], body)
-                except Exception:
-                    if committed:
+                except Exception as e:
+                    if not still_batch_owner():
+                        return batch_in_progress()
+                    if jobs_store.reject_explicit_jobs_owner(
+                            jdb, job_ids, initialization_state, "批量任务创建失败"):
                         for jid, cost in zip(job_ids, costs):
-                            _reject_pending_job(jid, user["username"], cost, "批量任务创建失败")
-                            video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
-                    else:
-                        points_domain.safe_refund_points(user["username"], total, "job:video_batch_insert_failed")
+                            try: _refund_once(jid, user["username"], cost)
+                            except Exception: pass
+                            try: video_domain.update_video_asset_phase(
+                                jid, "failed", status="failed", error="批量任务创建失败")
+                            except Exception: pass
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(500, {"detail": "批量任务创建失败，点数已退回"})
-                if not enqueue_jobs(job_ids, "video", "text"):
-                    for jid, cost in zip(job_ids, costs):
-                        _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                        video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理",
+                                            "code": "submission_compensated",
+                                            "batch_id": batch_id, "job_ids": job_ids})
+                if not still_batch_owner():
+                    return batch_in_progress()
+                queued = enqueue_jobs(
+                    job_ids, "video", "text",
+                    before_enqueue=lambda: jobs_store.publish_explicit_jobs_ready(
+                        jdb, job_ids, initialization_state))
+                if queued is None:
+                    return batch_in_progress()
+                if not queued:
+                    if jobs_store.reject_explicit_jobs_owner(
+                            jdb, job_ids, initialization_state, "任务队列已满，请稍后再试"):
+                        for jid, cost in zip(job_ids, costs):
+                            try: _refund_once(jid, user["username"], cost)
+                            except Exception: pass
+                            try: video_domain.update_video_asset_phase(
+                                jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                            except Exception: pass
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，点数已退回", "need": total})
-            jobs = [{"job_id": jid, "label": body.get("batch_label"), "index": body.get("batch_index")}
-                    for jid, body in zip(job_ids, payloads)]
-            response = {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
-                        "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left}
-            _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，退款正在处理",
+                                            "need": total, "batch_id": batch_id, "job_ids": job_ids})
+                response = batch_response()
+                winner = _idempotency_complete(user["username"], p, idem_key, response)
+                return self._send(200, winner or response)
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            if kind == "ai_edit":
+                try:
+                    request_body = self._json_body_strict()
+                    idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                    if not idem_key:
+                        raise ValueError("AI-edit 提交必须提供 Idempotency-Key")
+                except ValueError as e:
+                    return self._send(400, {"detail": str(e)[:220]})
+                return ai_edit_api.submit_initial(
+                    self, points_domain, video_domain, user["username"],
+                    request_body, p, idem_key)
             try:
                 feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             try:
-                body = self._json_body_strict() if kind in {"video", "tryon", "cinematic", "avatar"} else self._json_body()
+                body = self._json_body_strict() if kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "ai_edit"} else self._json_body()
                 request_body = dict(body) if isinstance(body, dict) else body
+                # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
+                # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
+                rejected = _content_submission_guard(body)
+                if rejected:
+                    return self._send(*rejected)
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1357,30 +1724,22 @@ class H(BaseHTTPRequestHandler):
                     body = video_domain.validate_avatar_payload(body)
                 elif kind == "xiaole_video":
                     body = video_domain.validate_xiaole_video_payload(body)
+                elif kind == "sora_video":
+                    body = video_domain.validate_sora_video_payload(body)
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                if kind == "sora_video" and not idem_key:
+                    raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
-            if is_shutting_down():
-                return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）",
-                                        "code": "shutting_down", "retry_after_ms": 5000})
-
-            # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
-            # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
-            # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
-            # 一句天书（"积分余额不足，请先充值" / "Insufficient credits"）。近 14 天 48 条
-            # 任务是这么死的。这里把它们挡在门外：不扣点、不排队、不让用户等。
-            # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
-            from . import upstream_guard
-            blocked = upstream_guard.exhausted_reason(kind, body)
-            if blocked:
-                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
-                                        "retry_after_ms": 60000})
+            unavailable = _paid_submission_availability(kind, body)
+            if unavailable:
+                return self._send(*unavailable)
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
@@ -1401,26 +1760,38 @@ class H(BaseHTTPRequestHandler):
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost})
                 try:
-                    points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
+                    jid, points_left = jobs_store.create_paid_job(
+                        jdb, points_domain.deduct_points, points_domain.refund_points,
+                        kind, user["username"], cost, body, SERVICE_OWNER)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
-                now = int(time.time())
-                with closing(jdb()) as c:
-                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                                    (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                    c.commit(); jid = cur.lastrowid
-                if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
-                    video_domain.record_video_pending_asset(jid, user["username"], body)
+                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": cost})
+                except jobs_store.PaidJobInsertError as e:
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                        "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
+                        "submission_ref": e.submission_ref})
+                if kind == "ai_edit":
+                    if ai_edit_api.prepare_submission(
+                            self, kind, jid, user["username"], body, cost,
+                            video_domain, p, idem_key):
+                        return
+                elif kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+                    try: video_domain.record_video_pending_asset(jid, user["username"], body)
+                    except Exception:
+                        _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                    if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
+                    if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    ai_edit_api.queue_rejected(kind, jid, "任务队列已满，请稍后再试")
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            ai_edit_api.decorate_submission(kind, response)
             _idempotency_complete(user["username"], p, idem_key, response)
-            return self._send(200, response)
+            return self._send(ai_edit_api.submission_status(self, kind), response)
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -1428,6 +1799,7 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/v2/edit/"):
             return ai_edit_v2_api.dispatch(self, "GET", p, None if "/webhooks/" in p else verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
+        if ai_edit_api.handle_get(self, p): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/asset/marks":
@@ -1463,7 +1835,7 @@ class H(BaseHTTPRequestHandler):
             if not r: return self._send(404, {"detail": "任务不存在"})
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
-            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "cinematic"} else None
+            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "ai_edit"} else None
             if phase is None and r["kind"] == "breakdown":
                 try:
                     phase = (json.loads(r["payload"] or "{}") or {}).get("phase")
@@ -1641,7 +2013,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
-                code = 402 if e.status == 402 else 502
+                code = e.status if e.status in (402, 403) else 502
                 return self._send(code, {"detail": e.detail, "need": 1})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
@@ -1654,8 +2026,9 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
-            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
+            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
+                                    "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
@@ -1666,8 +2039,11 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
-        self._send(404, {"detail": "not found"})
+        p = self.path.split("?")[0]
+        if p == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
+        if ai_edit_api.handle_delete(self, p): return
+        return self._send(404, {"detail": "not found"})
 if __name__ == "__main__":
     init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点
     start_job_workers(); threading.Thread(target=reaper, daemon=True).start()

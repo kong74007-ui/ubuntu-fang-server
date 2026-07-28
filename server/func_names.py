@@ -53,6 +53,7 @@ _SIMPLE = {
     "copy": "编导 · 文案脚本",
     "collect": "内容爬取",
     "breakdown": "爆款拆解",
+    "ai_edit": "一键剪辑",
     "leads": "获客",
     "leadgen": "获客",
     "dl": "无水印下载",
@@ -120,6 +121,10 @@ def func_name(kind, payload=None):
     if kind == "avatar":
         return "创建数字人形象"
 
+    if kind == "sora_video":
+        model = str(payload.get("model") or "sora-2").strip().lower()
+        return "Sora 2 Pro 视频" if model == "sora-2-pro" else "Sora 2 视频"
+
     if kind == "xiaole_video":
         return XIAOLE_CHANNELS.get(str(payload.get("channel") or "").strip().lower(),
                                    "果肉/豆姐/欧米视频")
@@ -150,6 +155,8 @@ PATH_FUNCS = [
     ("/api/gen/video/avatars", "数字人形象 · 读列表"),
     ("/api/gen/video/avatar-", "数字人形象 · 改名/删除"),
     ("/api/gen/video/batch", "数字化 IP · 批量提交"),
+    ("/api/gen/sora_video", "Sora 2 限时测试 · 提交"),
+    ("/api/gen/ai_edit", "一键剪辑 · 提交"),
     ("/api/gen/xiaole_video", "果肉/豆姐/欧米视频 · 提交"),
     ("/api/gen/cinematic", "电影化身 · 提交"),
     ("/api/gen/avatar", "创建数字人形象 · 提交"),
