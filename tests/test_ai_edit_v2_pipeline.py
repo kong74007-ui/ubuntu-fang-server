@@ -483,6 +483,33 @@ class PipelineTests(unittest.TestCase):
         delivery_reconcile.assert_called_once()
         claim.assert_not_called()
 
+    def test_disabled_worker_uses_same_delivery_reconciliation_dependencies(self):
+        from server import ai_edit_v2_worker as worker
+
+        config = {"enabled": False, "workers": 1, "lease_seconds": 30,
+                  "poll_seconds": 0.01, "normal_timeout_seconds": 2700,
+                  "repair_timeout_seconds": 900, "db_path": self.db_path}
+        stop_event = threading.Event()
+        fake_cos, fake_points = object(), object()
+        services = type("Services", (), {"cos": fake_cos})()
+        dependencies = {"services": services, "asset_db_path": self.assets_path,
+                        "points_client": fake_points}
+        captured = []
+
+        def reconciled(*_args, **kwargs):
+            captured.append(kwargs)
+            stop_event.set()
+            return 0
+
+        with patch.object(worker.billing, "reconcile_pending_precharges"), \
+             patch.object(worker.pipeline, "reconcile_terminal_refunds"), \
+             patch.object(worker.delivery, "reconcile_pending_deliveries", side_effect=reconciled):
+            worker.run_worker(stop_event, config=config, handlers=dependencies)
+        self.assertEqual(len(captured), 1)
+        self.assertIs(captured[0]["cos_api"], fake_cos)
+        self.assertEqual(captured[0]["asset_db_path"], self.assets_path)
+        self.assertIs(captured[0]["points_client"], fake_points)
+
     def test_terminal_failure_refund_is_reconciled_after_lost_response(self):
         lost_points = LoseFirstRefundResponse()
         self.points = lost_points
@@ -752,6 +779,10 @@ class StableRunJobTests(PipelineTests):
                 "audio": {"silence_ratio": 0.0, "true_peak_dbfs": -1.0,
                           "dialogue_to_bgm_db": 8.0, "dialogue_to_sfx_db": 8.0},
             }[check]
+        quality_analyzer.capabilities = lambda: {
+            "captions_ocr": True, "glyphs": True, "materials": True,
+            "transcript_facts": True, "audio": True,
+        }
         fake_cos = FakeCos()
         services = runtime.ProductionServices(self.db_path, cos_api=fake_cos, runner=runner,
                                               dashscope_http=dashscope_http, shotstack_http=shotstack_http,

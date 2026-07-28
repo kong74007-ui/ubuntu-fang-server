@@ -28,6 +28,12 @@ def passing_evidence():
     }
 
 
+ANALYZER_CAPABILITIES = {
+    "captions_ocr": True, "glyphs": True, "materials": True,
+    "transcript_facts": True, "audio": True,
+}
+
+
 class EvidenceRunner:
     def __init__(self, evidence):
         self.evidence = evidence
@@ -47,6 +53,7 @@ class QualityTests(unittest.TestCase):
         def analyzer(check, *, path, expected):
             analyzed.append((check, path, expected))
             return evidence[check]
+        analyzer.capabilities = lambda: dict(ANALYZER_CAPABILITIES)
         calls = []
 
         class Result:
@@ -89,15 +96,37 @@ class QualityTests(unittest.TestCase):
     def test_local_runner_readiness_requires_binaries_and_final_media_analyzer(self):
         runner = LocalQualityRunner(lambda *_a, **_k: None,
                                     binary_finder=lambda name: None if name == "ffprobe" else name)
-        self.assertEqual(set(runner.readiness_errors()), {"ffprobe", "final_media_analyzer"})
+        self.assertIn("ffprobe", runner.readiness_errors())
+        self.assertIn("final_media_analyzer_captions_ocr", runner.readiness_errors())
 
         class UnavailableAnalyzer:
             def __call__(self, *_a, **_k): return {}
-            def available(self): return False
+            def capabilities(self): return {**ANALYZER_CAPABILITIES, "glyphs": False}
 
         runner = LocalQualityRunner(lambda *_a, **_k: None, analyzer=UnavailableAnalyzer(),
                                     binary_finder=lambda name: name)
-        self.assertEqual(runner.readiness_errors(), ["final_media_analyzer"])
+        self.assertEqual(runner.readiness_errors(), ["final_media_analyzer_glyphs"])
+
+    def test_callable_or_partial_analyzer_is_never_ready(self):
+        bare = LocalQualityRunner(lambda *_a, **_k: None,
+                                  analyzer=lambda *_a, **_k: {},
+                                  binary_finder=lambda name: name)
+        self.assertEqual(set(bare.readiness_errors()), {
+            "final_media_analyzer_captions_ocr", "final_media_analyzer_glyphs",
+            "final_media_analyzer_materials", "final_media_analyzer_transcript_facts",
+            "final_media_analyzer_audio",
+        })
+
+        class Partial:
+            def __call__(self, *_a, **_k): return {}
+            def capabilities(self): return {"captions_ocr": True, "glyphs": True}
+
+        partial = LocalQualityRunner(lambda *_a, **_k: None, analyzer=Partial(),
+                                     binary_finder=lambda name: name)
+        self.assertEqual(set(partial.readiness_errors()), {
+            "final_media_analyzer_materials", "final_media_analyzer_transcript_facts",
+            "final_media_analyzer_audio",
+        })
 
     def test_nan_and_infinity_evidence_fail_closed(self):
         for invalid in (float("nan"), float("inf"), float("-inf")):

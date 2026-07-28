@@ -54,6 +54,63 @@ def _quality_report_from_intent(intent: dict[str, Any]) -> QualityReport:
         raise DeliveryError("delivery_quality_report_invalid") from exc
 
 
+_INTENT_STATUSES = frozenset({"prepared", "uploaded", "asset_pending", "completed"})
+
+
+def _intent_digest(value: dict[str, Any]) -> str:
+    canonical = {
+        key: value[key] for key in (
+            "job_id", "owner", "idempotency_key", "cos_key",
+            "source_size_bytes", "source_sha256", "actual_cost", "quality_json",
+        )
+    }
+    return hashlib.sha256(_strict_json(canonical).encode("utf-8")).hexdigest()
+
+
+def load_validated_intent(job_id: str, *, db_path: str | None = None) -> dict[str, Any]:
+    """Load an intent only when every immutable field is canonical for its job."""
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        row = conn.execute(
+            """SELECT d.*,j.owner AS job_owner,b.amount AS held_points
+               FROM edit_v2_delivery_intents d
+               JOIN edit_v2_jobs j ON j.id=d.job_id
+               JOIN edit_v2_billing b ON b.job_id=j.id AND b.operation='hold'
+               WHERE d.job_id=?""", (job_id,),
+        ).fetchone()
+    if row is None:
+        raise DeliveryError("delivery_intent_missing")
+    intent = dict(row)
+    owner_hash = hashlib.sha256(intent["job_owner"].encode("utf-8")).hexdigest()[:16]
+    expected_key = f"ai-edit-v2/{owner_hash}/{job_id}/delivery/final.mp4"
+    try:
+        _quality_report_from_intent(intent)
+        valid = (
+            intent["job_id"] == job_id
+            and intent["owner"] == intent["job_owner"]
+            and intent["idempotency_key"] == f"ai-edit-v2:{job_id}:delivery"
+            and intent["cos_key"] == expected_key
+            and isinstance(intent["source_size_bytes"], int)
+            and not isinstance(intent["source_size_bytes"], bool)
+            and intent["source_size_bytes"] > 0
+            and isinstance(intent["source_sha256"], str)
+            and len(intent["source_sha256"]) == 64
+            and all(char in "0123456789abcdef" for char in intent["source_sha256"])
+            and isinstance(intent["actual_cost"], int)
+            and not isinstance(intent["actual_cost"], bool)
+            and 0 <= intent["actual_cost"] <= int(intent["held_points"])
+            and intent["status"] in _INTENT_STATUSES
+            and isinstance(intent.get("canonical_digest"), str)
+            and intent["canonical_digest"] == _intent_digest(intent)
+        )
+    except (KeyError, TypeError, ValueError, DeliveryError):
+        valid = False
+    if not valid:
+        raise DeliveryError("delivery_intent_conflict")
+    intent.pop("job_owner", None)
+    intent.pop("held_points", None)
+    return intent
+
+
 def _load(job_id: str, db_path: str | None) -> dict[str, Any]:
     with closing(store.open_store(store._db_path(db_path))) as conn:
         row = conn.execute("SELECT * FROM edit_v2_jobs WHERE id=?", (job_id,)).fetchone()
@@ -124,13 +181,32 @@ def _prepare_intent(job: dict[str, Any], output_path: str, report: QualityReport
     owner_hash = hashlib.sha256(job["owner"].encode("utf-8")).hexdigest()[:16]
     key = f"ai-edit-v2/{owner_hash}/{job['id']}/delivery/final.mp4"
     with closing(store.open_store(store._db_path(db_path))) as conn:
-        existing = conn.execute(
-            "SELECT * FROM edit_v2_delivery_intents WHERE job_id=?", (job["id"],)
-        ).fetchone()
-    if existing is not None:
-        return dict(existing)
-    size, digest = _file_identity(output_path)
+        exists = conn.execute(
+            "SELECT 1 FROM edit_v2_delivery_intents WHERE job_id=?", (job["id"],)
+        ).fetchone() is not None
+    size, digest = _file_identity(output_path) if output_path else (None, None)
     quality_json = _strict_json(report.as_dict())
+    if exists:
+        intent = load_validated_intent(job["id"], db_path=db_path)
+        if (
+            intent["owner"] != job["owner"] or int(intent["actual_cost"]) != actual_cost
+            or intent["quality_json"] != quality_json
+            or (size is not None and (
+                int(intent["source_size_bytes"]) != size
+                or intent["source_sha256"] != digest
+            ))
+        ):
+            raise DeliveryError("delivery_intent_conflict")
+        return intent
+    if size is None or digest is None:
+        raise DeliveryError("delivery_intent_missing")
+    candidate = {
+        "job_id": job["id"], "owner": job["owner"],
+        "idempotency_key": f"ai-edit-v2:{job['id']}:delivery", "cos_key": key,
+        "source_size_bytes": size, "source_sha256": digest,
+        "quality_json": quality_json, "actual_cost": actual_cost,
+    }
+    canonical_digest = _intent_digest(candidate)
     with closing(store.open_store(store._db_path(db_path))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -142,10 +218,11 @@ def _prepare_intent(job: dict[str, Any], output_path: str, report: QualityReport
             conn.execute(
                 """INSERT OR IGNORE INTO edit_v2_delivery_intents(
                        job_id,owner,idempotency_key,cos_key,source_size_bytes,
-                       source_sha256,quality_json,actual_cost,status,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?, 'prepared',?,?)""",
+                       source_sha256,quality_json,actual_cost,canonical_digest,
+                       status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?, 'prepared',?,?)""",
                 (job["id"], job["owner"], f"ai-edit-v2:{job['id']}:delivery",
-                 key, size, digest, quality_json, actual_cost, now, now),
+                 key, size, digest, quality_json, actual_cost, canonical_digest, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM edit_v2_delivery_intents WHERE job_id=?", (job["id"],)
@@ -154,12 +231,7 @@ def _prepare_intent(job: dict[str, Any], output_path: str, report: QualityReport
         except Exception:
             conn.rollback()
             raise
-    if (
-        row["owner"] != job["owner"] or row["cos_key"] != key
-        or int(row["actual_cost"]) != actual_cost or row["quality_json"] != quality_json
-    ):
-        raise DeliveryError("delivery_intent_conflict")
-    return dict(row)
+    return load_validated_intent(job["id"], db_path=db_path)
 
 
 def _verified_head(intent: dict[str, Any], cos_api: Any) -> dict[str, Any] | None:
@@ -421,19 +493,52 @@ def resume_delivery(job_id: str, *, db_path: str | None = None,
                     asset_db_path: str | None = None,
                     points_client: Any = None) -> dict[str, Any]:
     """Resume settling solely from the persisted, canonical delivery intent."""
-    with closing(store.open_store(store._db_path(db_path))) as conn:
-        row = conn.execute(
-            "SELECT * FROM edit_v2_delivery_intents WHERE job_id=?", (job_id,)
-        ).fetchone()
-    if row is None:
-        raise DeliveryError("delivery_intent_missing")
-    intent = dict(row)
+    intent = load_validated_intent(job_id, db_path=db_path)
     report = _quality_report_from_intent(intent)
     return deliver(
         job_id, "", report, int(intent["actual_cost"]), db_path=db_path,
         worker_id=worker_id, lease_seconds=lease_seconds, now_fn=now_fn,
         cos_api=cos_api, asset_db_path=asset_db_path, points_client=points_client,
     )
+
+
+def _outbox_due(job_id: str, now: int, db_path: str | None) -> bool:
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        row = conn.execute(
+            "SELECT status,retry_at,dead_letter_at FROM edit_v2_delivery_outbox WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    return row is None or (
+        row["status"] == "pending" and row["dead_letter_at"] is None
+        and (row["retry_at"] is None or int(row["retry_at"]) <= now)
+    )
+
+
+def _record_outbox_failure(job_id: str, exc: Exception, now: int,
+                           db_path: str | None) -> None:
+    code = getattr(exc, "code", None) or "delivery_reconcile_failed"
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT attempt_count FROM edit_v2_delivery_outbox WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if row is not None:
+                attempts = int(row["attempt_count"] or 0) + 1
+                dead_at = now if attempts >= 3 else None
+                retry_at = None if dead_at is not None else now + min(3600, 2 ** attempts)
+                conn.execute(
+                    """UPDATE edit_v2_delivery_outbox
+                       SET status=?,attempt_count=?,error_code=?,retry_at=?,dead_letter_at=?,updated_at=?
+                       WHERE job_id=? AND status='pending'""",
+                    ("dead_letter" if dead_at is not None else "pending", attempts,
+                     str(code), retry_at, dead_at, now, job_id),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None = None,
@@ -447,8 +552,13 @@ def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None 
         rows = conn.execute(
             """SELECT j.id FROM edit_v2_jobs j
                JOIN edit_v2_delivery_intents d ON d.job_id=j.id
+               LEFT JOIN edit_v2_delivery_outbox o ON o.job_id=j.id
                WHERE j.status='settling' AND (j.lease_until IS NULL OR j.lease_until<=?)
-               ORDER BY j.created_at,j.id""", (now,),
+                 AND (o.id IS NULL OR (
+                     o.status='pending' AND o.dead_letter_at IS NULL
+                     AND (o.retry_at IS NULL OR o.retry_at<=?)
+                 ))
+               ORDER BY j.created_at,j.id""", (now, now),
         ).fetchall()
     completed = 0
     for row in rows:
@@ -457,6 +567,9 @@ def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None 
             row["id"], owner, lease_seconds, now, db_path=db_path,
         )
         if claimed is None:
+            continue
+        if not _outbox_due(row["id"], now, db_path):
+            store.release_job_lease(row["id"], owner, db_path=db_path)
             continue
         try:
             result = resume_delivery(
@@ -467,7 +580,14 @@ def reconcile_pending_deliveries(now: int | None = None, *, db_path: str | None 
             )
             if result.get("state") == "completed":
                 completed += 1
-        except Exception:
-            store.release_job_lease(row["id"], owner, db_path=db_path)
-            raise
+        except Exception as exc:
+            try:
+                _record_outbox_failure(row["id"], exc, now, db_path)
+            except Exception:
+                pass
+            try:
+                store.release_job_lease(row["id"], owner, db_path=db_path)
+            except Exception:
+                pass
+            continue
     return completed

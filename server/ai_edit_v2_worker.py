@@ -83,20 +83,33 @@ def run_worker(
 ) -> None:
     config = dict(config or worker_config())
     store.init_db(config["db_path"])
+    dependencies = handlers or runtime.production_dependencies(config["db_path"])
+
+    def reconcile_once() -> None:
+        billing.reconcile_pending_precharges(
+            int(time.time()), db_path=config["db_path"]
+        )
+        pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+        services = runtime.option(dependencies, "services")
+        delivery.reconcile_pending_deliveries(
+            int(time.time()), db_path=config["db_path"],
+            lease_seconds=config["lease_seconds"],
+            cos_api=getattr(services, "cos", None),
+            asset_db_path=(runtime.option(dependencies, "asset_db_path")
+                           or delivery._asset_db_path()),
+            points_client=runtime.option(dependencies, "points_client", billing.points),
+        )
+
     if not config["enabled"]:
         LOG.warning("[ai-edit-v2] submissions disabled; reconciliation-only mode")
         while not stop_event.is_set():
             try:
-                billing.reconcile_pending_precharges(
-                    int(time.time()), db_path=config["db_path"]
-                )
-                pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
+                reconcile_once()
             except Exception:
-                LOG.exception("[ai-edit-v2] billing reconciliation failed")
+                LOG.exception("[ai-edit-v2] reconciliation failed")
             stop_event.wait(config["poll_seconds"])
         return
     worker_id = f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
-    dependencies = handlers or runtime.production_dependencies(config["db_path"])
     runtime.assert_production_ready(dependencies)
     active: set[Future] = set()
     with ThreadPoolExecutor(
@@ -104,18 +117,7 @@ def run_worker(
     ) as executor:
         while not stop_event.is_set():
             try:
-                billing.reconcile_pending_precharges(
-                    int(time.time()), db_path=config["db_path"]
-                )
-                pipeline.reconcile_terminal_refunds(db_path=config["db_path"])
-                services = runtime.option(dependencies, "services")
-                delivery.reconcile_pending_deliveries(
-                    int(time.time()), db_path=config["db_path"],
-                    lease_seconds=config["lease_seconds"],
-                    cos_api=getattr(services, "cos", None),
-                    asset_db_path=runtime.option(dependencies, "asset_db_path"),
-                    points_client=runtime.option(dependencies, "points_client"),
-                )
+                reconcile_once()
             except Exception:
                 LOG.exception("[ai-edit-v2] reconciliation failed")
             finished = {future for future in active if future.done()}

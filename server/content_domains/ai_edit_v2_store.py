@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 DEFAULT_DB_NAME = "ai_edit_v2.db"
 WORKER_STATES = tuple(
     state
@@ -251,6 +251,7 @@ def init_db(db_path: str | None = None) -> None:
                 etag TEXT,
                 quality_json TEXT NOT NULL,
                 actual_cost INTEGER NOT NULL,
+                canonical_digest TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -263,6 +264,10 @@ def init_db(db_path: str | None = None) -> None:
                 payload_json TEXT NOT NULL,
                 status TEXT NOT NULL,
                 asset_id INTEGER,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                retry_at INTEGER,
+                dead_letter_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -364,6 +369,49 @@ def init_db(db_path: str | None = None) -> None:
                    END
                    WHERE source='gpt_image' AND generation_state IS NULL"""
             )
+            intent_columns = {
+                row["name"] for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_delivery_intents)"
+                )
+            }
+            if "canonical_digest" not in intent_columns:
+                conn.execute(
+                    "ALTER TABLE edit_v2_delivery_intents ADD COLUMN canonical_digest TEXT"
+                )
+            for intent in conn.execute(
+                """SELECT job_id,owner,idempotency_key,cos_key,source_size_bytes,
+                          source_sha256,actual_cost,quality_json
+                   FROM edit_v2_delivery_intents WHERE canonical_digest IS NULL"""
+            ).fetchall():
+                canonical = {
+                    key: intent[key] for key in (
+                        "job_id", "owner", "idempotency_key", "cos_key",
+                        "source_size_bytes", "source_sha256", "actual_cost", "quality_json",
+                    )
+                }
+                digest = hashlib.sha256(json.dumps(
+                    canonical, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), allow_nan=False,
+                ).encode("utf-8")).hexdigest()
+                conn.execute(
+                    "UPDATE edit_v2_delivery_intents SET canonical_digest=? WHERE job_id=?",
+                    (digest, intent["job_id"]),
+                )
+            outbox_columns = {
+                row["name"] for row in conn.execute(
+                    "PRAGMA table_info(edit_v2_delivery_outbox)"
+                )
+            }
+            for column, definition in {
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "error_code": "TEXT",
+                "retry_at": "INTEGER",
+                "dead_letter_at": "INTEGER",
+            }.items():
+                if column not in outbox_columns:
+                    conn.execute(
+                        f"ALTER TABLE edit_v2_delivery_outbox ADD COLUMN {column} {definition}"
+                    )
             conn.execute(
                 """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
                    VALUES(1,?,0)

@@ -22,6 +22,13 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 - Repair time is `min(configured_seconds, 900)` and the same absolute deadline covers submission/reconciliation, repair, and reinspection.
 - Existing `video_assets` rows are reusable only when job ID, owner, mode, private video key, ratio, and status all match. Any mismatch raises `asset_idempotency_conflict`; coverage uses the production-compatible `job_id INTEGER UNIQUE` schema.
 
+## Round 3 fixes
+
+- Delivery intents now carry a canonical digest and are loaded through one validator for both first-run reuse and restart recovery. Owner, job ID, idempotency key, deterministic COS key, source size/SHA-256, actual cost, canonical quality report, and allowed status are all checked; any mutation fails closed as `delivery_intent_conflict`.
+- Delivery outbox failures are isolated per job. Each poison row releases its lease, records a stable error, retry count and backoff, dead-letters on the third failure, and does not prevent later jobs from completing. Concurrent reconcilers re-check due state after claiming to prevent duplicate attempts.
+- Final-MP4 analyzer readiness now requires five explicit capabilities: caption OCR, glyph inspection, material coverage, transcript/fact comparison, and audio analysis. A bare callable, partial mapping, exception, or any value other than literal `True` is not ready.
+- Enabled and disabled/reconciliation-only workers use the same reconciliation cycle and pass the configured COS client, real asset database path, and points client into delivery recovery.
+
 ## Added adversarial coverage
 
 - `NaN` and `+/-Infinity` quality evidence fails closed.
@@ -36,6 +43,8 @@ Implemented Task 8 and Round 1 blocking fixes only on `codex/ai-edit-v2-stable-r
 - Task 8 + runtime/store/pipeline targeted suite: 93 tests, with one expectation updated for the new fail-closed production quality boundary; rerun of the corrected case and runtime/store suite passed.
 - Round 2 Task 8 + runtime/store/pipeline targeted suite: **101 tests passed** in 24.979s, including heartbeat timing tests.
 - Round 2 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **295 tests passed** in 28.774s.
+- Round 3 Task 8 + runtime/store/pipeline targeted suite: **106 tests passed** in 23.718s, including heartbeat timing and concurrent poison-outbox coverage.
+- Round 3 `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **300 tests passed** in 29.817s.
 - `python -m unittest discover -s tests -p 'test_ai_edit_v2*.py'`: **287 tests passed** in 28.191s.
 - `git diff --check`: clean.
 

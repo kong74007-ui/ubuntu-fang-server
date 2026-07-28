@@ -38,6 +38,15 @@ _TERMINAL_CODES = frozenset({
     "inspection_incomplete", "video_unplayable", "required_material_missing",
     "caption_source_mismatch", "caption_facts_mismatch",
 })
+_ANALYZER_CAPABILITIES = (
+    "captions_ocr", "glyphs", "materials", "transcript_facts", "audio",
+)
+_CHECK_CAPABILITIES = {
+    "captions": ("captions_ocr", "glyphs"),
+    "materials": ("materials",),
+    "transcript": ("transcript_facts",),
+    "audio": ("audio",),
+}
 
 
 def _reject_constant(value: str) -> None:
@@ -85,9 +94,18 @@ class LocalQualityRunner:
 
     def readiness_errors(self) -> list[str]:
         errors = [name for name in ("ffprobe", "ffmpeg") if self.binary_finder(name) is None]
-        available = getattr(self.analyzer, "available", None)
-        if self.analyzer is None or (callable(available) and not available()):
-            errors.append("final_media_analyzer")
+        capabilities_fn = getattr(self.analyzer, "capabilities", None)
+        try:
+            capabilities = capabilities_fn() if callable(capabilities_fn) else {}
+        except Exception:
+            capabilities = {}
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        errors.extend(
+            f"final_media_analyzer_{name}"
+            for name in _ANALYZER_CAPABILITIES
+            if capabilities.get(name) is not True
+        )
         return errors
 
     @staticmethod
@@ -107,6 +125,12 @@ class LocalQualityRunner:
     def _analyze(self, check: str, path: str, plan: dict[str, Any]) -> dict[str, Any]:
         if self.analyzer is None:
             raise RuntimeError("final media analyzer unavailable")
+        capabilities_fn = getattr(self.analyzer, "capabilities", None)
+        capabilities = capabilities_fn() if callable(capabilities_fn) else {}
+        if not isinstance(capabilities, dict) or any(
+            capabilities.get(name) is not True for name in _CHECK_CAPABILITIES[check]
+        ):
+            raise RuntimeError("final media analyzer capability unavailable")
         value = self.analyzer(check, path=path, expected=self._expected(plan, check))
         if not isinstance(value, dict):
             raise ValueError("final media analysis invalid")

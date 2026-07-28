@@ -264,11 +264,104 @@ class DeliveryTests(unittest.TestCase):
                 "UPDATE edit_v2_delivery_intents SET quality_json=? WHERE job_id=?",
                 ('{"passed":true,"error_codes":[],"failing_layers":[],"repairable":false,"terminal":NaN}', self.job_id),
             )
-        with self.assertRaisesRegex(delivery.DeliveryError, "delivery_quality_report_invalid"):
-            delivery.reconcile_pending_deliveries(
-                11, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
-            )
+        self.assertEqual(delivery.reconcile_pending_deliveries(
+            11, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
+        ), 0)
         self.assertEqual(delivery._load(self.job_id, self.db)["status"], "settling")
+        with closing(store.open_store(self.db)) as conn:
+            outbox = conn.execute(
+                "SELECT attempt_count,error_code FROM edit_v2_delivery_outbox WHERE job_id=?",
+                (self.job_id,),
+            ).fetchone()
+        self.assertEqual((outbox["attempt_count"], outbox["error_code"]),
+                         (1, "delivery_intent_conflict"))
+
+    def test_canonical_intent_rejects_every_tampered_field(self):
+        fake_cos = FakeCos()
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", self.points), \
+             patch.object(delivery, "_dispatch_and_complete", side_effect=BaseException("crash")):
+            with self.assertRaises(BaseException):
+                delivery.deliver(self.job_id, self.video, PASS_REPORT, 42,
+                                 db_path=self.db, now_fn=lambda: 10)
+        with closing(store.open_store(self.db)) as conn:
+            original = dict(conn.execute(
+                "SELECT * FROM edit_v2_delivery_intents WHERE job_id=?", (self.job_id,)
+            ).fetchone())
+        changes = {
+            "owner": "mallory", "idempotency_key": "forged", "cos_key": "private/forged.mp4",
+            "source_size_bytes": original["source_size_bytes"] + 1,
+            "source_sha256": "0" * 64, "actual_cost": 41,
+            "quality_json": '{"passed":true}', "status": "forged",
+        }
+        for field, changed in changes.items():
+            with self.subTest(field=field), closing(store.open_store(self.db)) as conn:
+                conn.execute(f"UPDATE edit_v2_delivery_intents SET {field}=? WHERE job_id=?",
+                             (changed, self.job_id))
+            with self.assertRaisesRegex(delivery.DeliveryError, "delivery_intent_conflict"):
+                delivery.load_validated_intent(self.job_id, db_path=self.db)
+            with closing(store.open_store(self.db)) as conn:
+                conn.execute(f"UPDATE edit_v2_delivery_intents SET {field}=? WHERE job_id=?",
+                             (original[field], self.job_id))
+
+    def test_poison_outbox_does_not_starve_good_job_under_concurrent_reconcilers(self):
+        second = str(uuid.uuid4())
+        with closing(store.open_store(self.db)) as conn:
+            conn.execute(
+                "INSERT INTO edit_v2_jobs(id,owner,idempotency_key,quote_id,status,payload_json,checkpoint_json,created_at,updated_at) VALUES(?,?,?,?,?,'{}','[]',2,2)",
+                (second, "bob", "request-2", "quote-2", "quality_check"),
+            )
+            conn.execute(
+                "INSERT INTO edit_v2_billing(job_id,transaction_key,operation,amount,status,created_at,updated_at) VALUES(?,?,'hold',100,'held',2,2)",
+                (second, f"ai-edit-v2:{second}:hold"),
+            )
+        second_video = os.path.join(self.temp.name, "second.mp4")
+        Path(second_video).write_bytes(b"second-playable-final")
+        fake_cos = FakeCos()
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", self.points), \
+             patch.object(delivery, "_dispatch_and_complete", side_effect=BaseException("crash")):
+            for job_id, path in ((self.job_id, self.video), (second, second_video)):
+                with self.assertRaises(BaseException):
+                    delivery.deliver(job_id, path, PASS_REPORT, 42,
+                                     db_path=self.db, now_fn=lambda: 10)
+        with closing(store.open_store(self.db)) as conn:
+            conn.execute("UPDATE edit_v2_delivery_outbox SET payload_json='{}' WHERE job_id=?",
+                         (self.job_id,))
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", self.points):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                counts = list(executor.map(
+                    lambda _: delivery.reconcile_pending_deliveries(
+                        11, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
+                    ), range(2),
+                ))
+        self.assertEqual(sum(counts), 1)
+        with closing(store.open_store(self.db)) as conn:
+            poison = conn.execute(
+                "SELECT status,attempt_count,error_code,retry_at,dead_letter_at FROM edit_v2_delivery_outbox WHERE job_id=?",
+                (self.job_id,),
+            ).fetchone()
+            good = conn.execute("SELECT status FROM edit_v2_jobs WHERE id=?", (second,)).fetchone()[0]
+            lease = conn.execute("SELECT lease_owner FROM edit_v2_jobs WHERE id=?", (self.job_id,)).fetchone()[0]
+        self.assertEqual(good, "completed")
+        self.assertEqual(poison["status"], "pending")
+        self.assertEqual(poison["attempt_count"], 1)
+        self.assertEqual(poison["error_code"], "delivery_reconcile_failed")
+        self.assertGreater(poison["retry_at"], 11)
+        self.assertIsNone(poison["dead_letter_at"])
+        self.assertIsNone(lease)
+        with patch.object(delivery, "cos", fake_cos), patch.object(billing, "points", self.points):
+            self.assertEqual(delivery.reconcile_pending_deliveries(
+                13, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
+            ), 0)
+            self.assertEqual(delivery.reconcile_pending_deliveries(
+                17, db_path=self.db, asset_db_path=self.assets_db, cos_api=fake_cos,
+            ), 0)
+        with closing(store.open_store(self.db)) as conn:
+            dead = conn.execute(
+                "SELECT status,attempt_count,dead_letter_at FROM edit_v2_delivery_outbox WHERE job_id=?",
+                (self.job_id,),
+            ).fetchone()
+        self.assertEqual((dead["status"], dead["attempt_count"], dead["dead_letter_at"]),
+                         ("dead_letter", 3, 17))
 
 
 if __name__ == "__main__":
