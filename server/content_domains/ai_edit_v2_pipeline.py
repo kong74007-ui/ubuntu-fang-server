@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import threading
 import time
+import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -13,6 +16,7 @@ from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_store as store
 from . import points
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
+from .ai_edit_v2_providers.base import RetryableProviderError
 
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], "StageResult"]
@@ -30,6 +34,10 @@ class PipelineError(RuntimeError):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+class RetryableStageError(PipelineError):
+    """A provider stage may be retried twice with its durable identity intact."""
 
 
 _FAILURE_BY_STAGE = {
@@ -428,6 +436,400 @@ def run_stage(
         job_id, expected_state, result, now,
         db_path=db_path, points_client=points_client,
     )
+
+
+def _stable_input(job: dict[str, Any], stage: str, previous: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = json.loads(job.get("payload_json") or "{}")
+    except (TypeError, ValueError):
+        raise PipelineError("job_payload_invalid")
+    if not isinstance(payload, dict):
+        raise PipelineError("job_payload_invalid")
+    return {"stage": stage, "payload": payload, "previous": previous}
+
+
+def _fingerprint(value: dict[str, Any]) -> str:
+    serialized = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _completed_pipeline_outputs(job_id: str, db_path: str | None) -> dict[str, dict[str, Any]]:
+    with closing(store.open_store(store._db_path(db_path))) as conn:
+        rows = conn.execute(
+            """SELECT stage,output_json FROM edit_v2_pipeline_checkpoints
+               WHERE job_id=? AND status='completed'""",
+            (job_id,),
+        ).fetchall()
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            output = json.loads(row["output_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(output, dict):
+            result[row["stage"]] = output
+    return result
+
+
+def _previous_output(job_id: str, stage: str, db_path: str | None) -> dict[str, Any]:
+    from . import ai_edit_v2_runtime as runtime
+
+    completed = _completed_pipeline_outputs(job_id, db_path)
+    index = runtime.STABLE_STAGE_SEQUENCE.index(stage)
+    for previous_stage in reversed(runtime.STABLE_STAGE_SEQUENCE[:index]):
+        if previous_stage in completed:
+            return completed[previous_stage]
+    return {}
+
+
+def _artifact_reusable(
+    dependencies: Any, stage: str, output: dict[str, Any]
+) -> bool:
+    from . import ai_edit_v2_runtime as runtime
+
+    artifacts: list[Any] = []
+    if "artifact" in output:
+        artifacts.append(output["artifact"])
+    value = output.get("artifacts")
+    if isinstance(value, list):
+        artifacts.extend(value)
+    elif value is not None:
+        artifacts.append(value)
+    if not artifacts:
+        return True
+    verifier = runtime.option(dependencies, "verify_artifact")
+    if not callable(verifier):
+        return False
+    try:
+        return all(verifier(stage, artifact) is True for artifact in artifacts)
+    except Exception:
+        return False
+
+
+def _ensure_stable_attempt(
+    job_id: str,
+    state: str,
+    input_fingerprint: str,
+    now: int,
+    db_path: str | None,
+) -> int:
+    attempt = _latest_attempt(job_id, state, db_path)
+    if attempt is not None:
+        try:
+            summary = json.loads(attempt["input_summary_json"] or "{}")
+        except (TypeError, ValueError):
+            summary = {}
+        if summary.get("pipeline_input_fingerprint") == input_fingerprint:
+            return int(attempt["id"])
+        attempt_no = int(attempt["attempt"]) + 1
+    else:
+        attempt_no = 1
+    return store.record_stage_attempt(
+        job_id,
+        state,
+        attempt_no,
+        "running",
+        int(now),
+        input_summary={"pipeline_input_fingerprint": input_fingerprint},
+        db_path=db_path,
+    )
+
+
+class _LeaseHeartbeat:
+    def __init__(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        db_path: str | None,
+        now_fn: Callable[[], int],
+    ) -> None:
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.lease_seconds = lease_seconds
+        self.db_path = db_path
+        self.now_fn = now_fn
+        self.finished = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        interval = max(0.1, self.lease_seconds / 3)
+        while not self.finished.wait(interval):
+            if not store.renew_lease(
+                self.job_id,
+                self.worker_id,
+                self.lease_seconds,
+                int(self.now_fn()),
+                db_path=self.db_path,
+            ):
+                return
+
+    def __enter__(self) -> "_LeaseHeartbeat":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.finished.set()
+        self.thread.join(timeout=2)
+
+
+def _stable_failure(
+    job_id: str,
+    state: str,
+    code: str,
+    now: int,
+    *,
+    worker_id: str,
+    lease_seconds: int,
+    db_path: str | None,
+    points_client: Any,
+) -> dict[str, Any]:
+    target = _FAILURE_BY_STAGE.get(state, "quality_failed")
+    if not store.transition_leased(
+        job_id,
+        state,
+        target,
+        {"stage": state, "error_code": code},
+        now,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+        db_path=db_path,
+    ):
+        raise PipelineError("stage_compare_and_swap_failed")
+    billing.refund_failure(job_id, now, points_client=points_client, db_path=db_path)
+    return {"job_id": job_id, "state": target, "error_code": code}
+
+
+def run_job(
+    job_id: str, dependencies: Any, db_path: str | None = None
+) -> dict[str, Any]:
+    """Run the stable pipeline through the Task 8 quality-check boundary.
+
+    Durable fingerprints guard checkpoint reuse.  A provider identity saved before a
+    crash is sent only to a reconciler; the submit handler is never called first.
+    """
+
+    from . import ai_edit_v2_runtime as runtime
+
+    now_fn = runtime.option(dependencies, "now", lambda: int(time.time()))
+    if not callable(now_fn):
+        raise PipelineError("pipeline_clock_invalid")
+    lease_seconds = max(1, int(runtime.option(dependencies, "lease_seconds", 180)))
+    worker_base = str(runtime.option(dependencies, "worker_id", "run-job"))
+    worker_id = f"{worker_base}:{uuid.uuid4().hex}"
+    now = int(now_fn())
+    job = _load_job(job_id, db_path)
+    if job["status"] in TERMINAL_STATES or job["status"] == "quality_check":
+        return {"job_id": job_id, "state": runtime.public_state(job["status"])}
+    claimed = store.claim_job(
+        job_id, worker_id, lease_seconds, now, db_path=db_path
+    )
+    if claimed is None:
+        current = _load_job(job_id, db_path)
+        return {
+            "job_id": job_id,
+            "state": runtime.public_state(current["status"]),
+            "claimed": False,
+        }
+    points_client = runtime.option(dependencies, "points_client", points)
+
+    with _LeaseHeartbeat(job_id, worker_id, lease_seconds, db_path, now_fn):
+        while True:
+            now = int(now_fn())
+            job = _load_job(job_id, db_path)
+            state = str(job["status"])
+            if state == "quality_check" or state in TERMINAL_STATES:
+                store.release_job_lease(job_id, worker_id, db_path=db_path)
+                return {"job_id": job_id, "state": runtime.public_state(state)}
+            if state == "queued":
+                if not store.transition_leased(
+                    job_id,
+                    "queued",
+                    "normalizing",
+                    {"processing_started_at": now},
+                    now,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    db_path=db_path,
+                ):
+                    raise PipelineError("stage_compare_and_swap_failed")
+                continue
+            if state in {"designing_audio", "routing_render"}:
+                target = "routing_render" if state == "designing_audio" else "rendering"
+                if not store.transition_leased(
+                    job_id,
+                    state,
+                    target,
+                    {"aggregated_stage": "generating_media"},
+                    now,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    db_path=db_path,
+                ):
+                    raise PipelineError("stage_compare_and_swap_failed")
+                continue
+            stage = runtime.STATE_TO_STAGE.get(state)
+            if stage is None:
+                store.release_job_lease(job_id, worker_id, db_path=db_path)
+                return {"job_id": job_id, "state": runtime.public_state(state)}
+
+            checkpoints = _checkpoints(job)
+            started = _state_started(checkpoints, "normalizing") or now
+            deadline_at = started + _normal_budget()
+            if now > deadline_at:
+                return _stable_failure(
+                    job_id,
+                    state,
+                    "normal_budget_exceeded",
+                    now,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                    db_path=db_path,
+                    points_client=points_client,
+                )
+
+            stage_input = _stable_input(
+                job, stage, _previous_output(job_id, stage, db_path)
+            )
+            input_fingerprint = _fingerprint(stage_input)
+            checkpoint = store.prepare_pipeline_checkpoint(
+                job_id, stage, input_fingerprint, now, db_path=db_path
+            )
+            output: dict[str, Any] | None = None
+            if checkpoint["status"] == "completed":
+                try:
+                    saved = json.loads(checkpoint["output_json"] or "{}")
+                except (TypeError, ValueError):
+                    saved = None
+                if isinstance(saved, dict) and _artifact_reusable(
+                    dependencies, stage, saved
+                ):
+                    output = saved
+                else:
+                    store.invalidate_pipeline_checkpoint(
+                        int(checkpoint["id"]), now, db_path=db_path
+                    )
+                    checkpoint["status"] = "running"
+
+            attempt_id = _ensure_stable_attempt(
+                job_id, state, input_fingerprint, now, db_path
+            )
+            if output is None:
+                handler = runtime.dependency_callable(dependencies, "handlers", stage)
+                if handler is None:
+                    return _stable_failure(
+                        job_id,
+                        state,
+                        "stage_handler_missing",
+                        now,
+                        worker_id=worker_id,
+                        lease_seconds=lease_seconds,
+                        db_path=db_path,
+                        points_client=points_client,
+                    )
+                provider_stage = stage in runtime.PROVIDER_STAGES
+                max_calls = 3 if provider_stage else 1
+                last_code = "stage_execution_failed"
+                remaining_calls = (
+                    max(0, max_calls - int(checkpoint["attempt_count"]))
+                    if provider_stage
+                    else 1
+                )
+                if remaining_calls == 0:
+                    last_code = "provider_retry_exhausted"
+                for _ in range(remaining_calls):
+                    checkpoint = store.increment_pipeline_attempt(
+                        int(checkpoint["id"]), int(now_fn()), db_path=db_path
+                    )
+                    context = {
+                        "attempt_id": attempt_id,
+                        "input_fingerprint": input_fingerprint,
+                        "provider_task_id": checkpoint.get("provider_task_id"),
+                        "provider_reference": checkpoint.get("provider_reference"),
+                        "deadline_at": deadline_at,
+                        "renew_lease": lambda: store.renew_lease(
+                            job_id,
+                            worker_id,
+                            lease_seconds,
+                            int(now_fn()),
+                            db_path=db_path,
+                        ),
+                        "save_provider_task_id": lambda value: (
+                            _save_provider_task_id(attempt_id, value, db_path),
+                            store.save_pipeline_provider_identity(
+                                int(checkpoint["id"]),
+                                provider_task_id=value,
+                                now=int(now_fn()),
+                                db_path=db_path,
+                            ),
+                        )[-1],
+                        "save_provider_reference": lambda value: store.save_pipeline_provider_identity(
+                            int(checkpoint["id"]),
+                            provider_reference=value,
+                            now=int(now_fn()),
+                            db_path=db_path,
+                        ),
+                    }
+                    has_identity = bool(
+                        context["provider_task_id"] or context["provider_reference"]
+                    )
+                    callback = handler
+                    if has_identity:
+                        callback = runtime.dependency_callable(
+                            dependencies, "reconcilers", stage
+                        )
+                        if callback is None:
+                            last_code = "provider_reconciliation_required"
+                            break
+                    try:
+                        value = callback(job, context, stage_input)
+                        if isinstance(value, StageResult):
+                            value = value.checkpoint
+                        if not isinstance(value, dict):
+                            raise PipelineError("stage_result_invalid")
+                        output = value
+                        break
+                    except (RetryableStageError, RetryableProviderError) as exc:
+                        last_code = getattr(exc, "code", None) or str(exc) or "provider_unavailable"
+                        continue
+                    except Exception as exc:
+                        last_code = getattr(exc, "code", None) or "stage_execution_failed"
+                        break
+                if output is None:
+                    return _stable_failure(
+                        job_id,
+                        state,
+                        last_code,
+                        int(now_fn()),
+                        worker_id=worker_id,
+                        lease_seconds=lease_seconds,
+                        db_path=db_path,
+                        points_client=points_client,
+                    )
+                store.complete_pipeline_checkpoint(
+                    int(checkpoint["id"]), output, int(now_fn()), db_path=db_path
+                )
+                _finish_attempt(
+                    attempt_id,
+                    StageResult(runtime.STAGE_TO_NEXT_STATE[stage], output),
+                    int(now_fn()),
+                    db_path,
+                )
+
+            target = runtime.STAGE_TO_NEXT_STATE[stage]
+            if not store.transition_leased(
+                job_id,
+                state,
+                target,
+                {"stage": stage, "input_fingerprint": input_fingerprint, "output": output},
+                int(now_fn()),
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                db_path=db_path,
+            ):
+                raise PipelineError("stage_compare_and_swap_failed")
 
 
 def reconcile_terminal_refunds(

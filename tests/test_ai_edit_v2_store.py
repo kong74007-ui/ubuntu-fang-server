@@ -23,6 +23,7 @@ EXPECTED_TABLES = {
     "edit_v2_quotes",
     "edit_v2_billing",
     "edit_v2_render_artifacts",
+    "edit_v2_pipeline_checkpoints",
     "edit_v2_schema_meta",
 }
 
@@ -174,7 +175,7 @@ class StoreTests(unittest.TestCase):
 
         self.assertIn("lease_owner", columns)
         self.assertIn("lease_until", columns)
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
 
     def test_provider_event_mutations_require_a_lease_owner(self):
         claim_parameters = inspect.signature(
@@ -205,7 +206,7 @@ class StoreTests(unittest.TestCase):
                 "SELECT version FROM edit_v2_schema_meta WHERE id=1"
             ).fetchone()["version"]
         self.assertIn("predecessor_job_id", columns)
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
 
     def test_concurrent_init_db_serializes_the_schema_migration(self):
         for scenario in ("new", "delete_v1", "wal_v1"):
@@ -239,7 +240,7 @@ class StoreTests(unittest.TestCase):
                         "SELECT version FROM edit_v2_schema_meta WHERE id=1"
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
-                self.assertEqual(version, 5)
+                self.assertEqual(version, 6)
 
     def test_v2_generated_rows_upgrade_with_safe_ready_pending_and_failed_semantics(self):
         legacy_path = os.path.join(self.temp_dir.name, "legacy-v2-materials.db")

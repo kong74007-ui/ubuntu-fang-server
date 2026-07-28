@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -11,6 +12,7 @@ from pathlib import Path
 from server.content_domains import ai_edit_v2_billing as billing
 from server.content_domains import ai_edit_v2_asr as asr
 from server.content_domains import ai_edit_v2_pipeline as pipeline
+from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains import ai_edit_v2_store as store
 from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
 
@@ -87,11 +89,11 @@ class PipelineTests(unittest.TestCase):
 
     def _precharged_job(self, job_id="job-1"):
         quote = billing.create_quote(
-            "alice", draft(), 100, uuid_factory=lambda: "quote-1",
+            "alice", draft(), 100, uuid_factory=lambda: f"quote-{job_id}",
             db_path=self.db_path, pricing_db_path=self.pricing_path,
         )
         return billing.precharge_and_create_job(
-            "alice", {"draft": draft()}, quote["id"], "request-1", 101,
+            "alice", {"draft": draft()}, quote["id"], f"request-{job_id}", 101,
             points_client=self.points, uuid_factory=lambda: job_id,
             db_path=self.db_path,
         )["job"]
@@ -518,6 +520,225 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(attempt["provider_task_id"], "fake-asr-task-1")
         self.assertEqual(submitted, ["fake-asr-task-1"])
         self.assertTrue(checkpoints[-1]["data"]["aligned_transcript"]["monotonic"])
+
+
+class StableRunJobTests(PipelineTests):
+    def _dependencies(self, calls, *, render_started=None, render_release=None):
+        def handler(name):
+            def run(_job, context, stage_input):
+                calls.append(name)
+                if name == "resolving_materials":
+                    context["save_provider_task_id"]("openai-image-1")
+                elif name == "generating_media":
+                    context["save_provider_task_id"]("elevenlabs-1")
+                elif name == "rendering":
+                    context["save_provider_task_id"]("shotstack-1")
+                    if render_started is not None:
+                        render_started.set()
+                    if render_release is not None:
+                        render_release.wait(5)
+                return {
+                    "stage": name,
+                    "artifact": {"cos_key": f"private/{name}.json", "etag": name},
+                    "input_stage": stage_input.get("stage"),
+                }
+            return run
+
+        return {
+            "handlers": {name: handler(name) for name in runtime.STABLE_STAGE_SEQUENCE},
+            "verify_artifact": lambda _stage, _artifact: True,
+            "worker_id": "stable-worker",
+            "lease_seconds": 30,
+            "now": lambda: 200,
+            "points_client": self.points,
+        }
+
+    def test_platform_job_reaches_quality_checking_once(self):
+        job = self._precharged_job()
+        calls = []
+
+        result = pipeline.run_job(
+            job["id"], self._dependencies(calls), db_path=self.db_path
+        )
+
+        self.assertEqual(result["state"], "quality_checking")
+        self.assertEqual(calls, list(runtime.STABLE_STAGE_SEQUENCE))
+        with closing(store.open_store(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT status FROM edit_v2_jobs WHERE id=?", (job["id"],)
+                ).fetchone()[0],
+                "quality_check",
+            )
+
+    def test_duplicate_workers_submit_each_billable_provider_once(self):
+        job = self._precharged_job()
+        calls = []
+        render_started = threading.Event()
+        render_release = threading.Event()
+        dependencies = self._dependencies(
+            calls, render_started=render_started, render_release=render_release
+        )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                pipeline.run_job, job["id"], dependencies, db_path=self.db_path
+            )
+            self.assertTrue(render_started.wait(5))
+            second = executor.submit(
+                pipeline.run_job, job["id"], dependencies, db_path=self.db_path
+            )
+            second.result(timeout=5)
+            render_release.set()
+            first.result(timeout=5)
+
+        self.assertEqual(calls.count("resolving_materials"), 1)
+        self.assertEqual(calls.count("generating_media"), 1)
+        self.assertEqual(calls.count("rendering"), 1)
+
+    def test_restart_reconciles_saved_provider_id_before_any_resubmit(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+
+        class Crash(BaseException):
+            pass
+
+        original_render = dependencies["handlers"]["rendering"]
+
+        def crash_after_submit(current_job, context, stage_input):
+            original_render(current_job, context, stage_input)
+            raise Crash()
+
+        dependencies["handlers"]["rendering"] = crash_after_submit
+        with self.assertRaises(Crash):
+            pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        reconciled = []
+
+        def reconcile_render(_job, context, _stage_input):
+            reconciled.append(context["provider_task_id"])
+            return {
+                "stage": "rendering",
+                "artifact": {"cos_key": "private/render.mp4", "etag": "render"},
+            }
+
+        dependencies["reconcilers"] = {"rendering": reconcile_render}
+        dependencies["handlers"]["rendering"] = lambda *_args: self.fail(
+            "a durable provider id must be reconciled before submit"
+        )
+        dependencies["now"] = lambda: 231
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "quality_checking")
+        self.assertEqual(reconciled, ["shotstack-1"])
+        self.assertEqual(calls.count("resolving_materials"), 1)
+        self.assertEqual(calls.count("generating_media"), 1)
+        self.assertEqual(calls.count("rendering"), 1)
+
+    def test_completed_checkpoint_reuse_requires_matching_fingerprint_and_artifact(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        original_transition = store.transition_leased
+        crashed = False
+
+        def crash_before_normalizing_transition(*args, **kwargs):
+            nonlocal crashed
+            if not crashed and args[1] == "normalizing":
+                crashed = True
+                raise RuntimeError("crash after checkpoint persistence")
+            return original_transition(*args, **kwargs)
+
+        with patch.object(store, "transition_leased", side_effect=crash_before_normalizing_transition):
+            with self.assertRaisesRegex(RuntimeError, "checkpoint persistence"):
+                pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        self.assertEqual(calls.count("normalizing"), 1)
+
+        dependencies["now"] = lambda: 231
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        self.assertEqual(calls.count("normalizing"), 1)
+
+        second = self._precharged_job("job-2")
+        dependencies = self._dependencies(calls)
+        crashed = False
+        with patch.object(store, "transition_leased", side_effect=crash_before_normalizing_transition):
+            with self.assertRaisesRegex(RuntimeError, "checkpoint persistence"):
+                pipeline.run_job(second["id"], dependencies, db_path=self.db_path)
+        dependencies["verify_artifact"] = lambda _stage, _artifact: False
+        dependencies["now"] = lambda: 231
+        pipeline.run_job(second["id"], dependencies, db_path=self.db_path)
+        self.assertEqual(calls.count("normalizing"), 3)
+
+    def test_provider_stage_stops_after_two_retries(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        attempts = []
+
+        def unavailable(*_args):
+            attempts.append(1)
+            raise pipeline.RetryableStageError("provider_unavailable")
+
+        dependencies["handlers"]["transcribing"] = unavailable
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(result["state"], "transcription_failed")
+
+    def test_provider_retry_budget_survives_process_restart(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        attempts = []
+
+        class Crash(BaseException):
+            pass
+
+        def exhaust_then_crash(*_args):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise pipeline.RetryableStageError("provider_unavailable")
+            raise Crash()
+
+        dependencies["handlers"]["transcribing"] = exhaust_then_crash
+        with self.assertRaises(Crash):
+            pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        dependencies["now"] = lambda: 231
+        dependencies["handlers"]["transcribing"] = lambda *_args: attempts.append(1) or {}
+
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "transcription_failed")
+        self.assertEqual(result["error_code"], "provider_retry_exhausted")
+        self.assertEqual(len(attempts), 3)
+
+    def test_long_provider_polling_renews_the_job_lease(self):
+        job = self._precharged_job()
+        calls = []
+        dependencies = self._dependencies(calls)
+        dependencies["now"] = lambda: int(time.time())
+        dependencies["lease_seconds"] = 3
+        entered = threading.Event()
+        release = threading.Event()
+        original = dependencies["handlers"]["normalizing"]
+
+        def long_poll(current_job, context, stage_input):
+            entered.set()
+            release.wait(3)
+            return original(current_job, context, stage_input)
+
+        dependencies["handlers"]["normalizing"] = long_poll
+        with patch.object(store, "renew_lease", wraps=store.renew_lease) as renew:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    pipeline.run_job, job["id"], dependencies, db_path=self.db_path
+                )
+                self.assertTrue(entered.wait(2))
+                threading.Event().wait(1.2)
+                release.set()
+                future.result(timeout=5)
+            self.assertGreaterEqual(renew.call_count, 1)
 
 
 if __name__ == "__main__":
