@@ -1,9 +1,11 @@
 """OpenAI image generation with bounded download and COS-first persistence.
 
 Recovery deliberately does not invent a provider task-query API.  Once a request may
-have crossed the network boundary, recovery depends on replaying the exact canonical
-body with the same OpenAI ``Idempotency-Key`` so the provider treats it as one logical
-submission.  The store persists the body digest and rejects changed-body replay.
+have crossed the network boundary, recovery would replay the exact canonical body
+with the same OpenAI ``Idempotency-Key``.  Public provider documentation does not yet
+establish that this is one logical submission, so Task 11 must pass a real acceptance
+probe before live generation is enabled.  The store persists the body digest and
+rejects changed-body replay.
 """
 
 from __future__ import annotations
@@ -27,6 +29,17 @@ from .base import ProviderError, ProviderResult, RetryableProviderError
 _ENDPOINT = "https://api.openai.com/v1/images/generations"
 _ALLOWED_CONTENT_TYPES = frozenset({"image/png"})
 _MAX_IMAGE_BYTES = 15 * 1024 * 1024
+# Task 11 owns this gate and may set it only after a live same-key/body replay probe.
+_ACCEPTANCE_ENV = "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED"
+
+
+def _env_enabled(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class OpenAIImageProvider:
@@ -46,6 +59,7 @@ class OpenAIImageProvider:
         timeout_seconds: int = 60,
         lease_seconds: int = 180,
         retry_backoff_seconds: int = 30,
+        acceptance_probe_passed: bool | None = None,
         db_path: str | None = None,
         model: str | None = None,
     ) -> None:
@@ -70,6 +84,11 @@ class OpenAIImageProvider:
             int(lease_seconds), (2 * self.timeout_seconds) + 30
         )
         self.retry_backoff_seconds = int(retry_backoff_seconds)
+        self.acceptance_probe_passed = (
+            _env_enabled(_ACCEPTANCE_ENV)
+            if acceptance_probe_passed is None
+            else acceptance_probe_passed is True
+        )
         self.db_path = db_path
         self.model = model or os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
         self.max_download_bytes = _MAX_IMAGE_BYTES
@@ -91,6 +110,29 @@ class OpenAIImageProvider:
             separators=(",", ":"),
         ).encode("utf-8")
         request_digest = hashlib.sha256(body).hexdigest()
+        if not self.acceptance_probe_passed:
+            existing = self.asset_store.find_generated_material(
+                self.owner,
+                self.job_id,
+                idempotency_key,
+                db_path=self.db_path,
+            )
+            if existing is not None and existing.get("status") == "ready":
+                persisted_digest = existing.get("generation_request_digest")
+                if (
+                    persisted_digest is not None
+                    and persisted_digest != request_digest
+                ):
+                    raise ProviderError("openai_image_request_conflict")
+                return ProviderResult(
+                    provider="openai",
+                    capability="image_generation",
+                    request_id="idempotent-replay",
+                    payload=self._existing_payload(existing),
+                    cost_units=0,
+                    elapsed_ms=0,
+                )
+            raise ProviderError("openai_image_idempotency_acceptance_required")
         object_id = uuid.uuid5(uuid.UUID(self.job_id), idempotency_key)
         owner_hash = hashlib.sha256(self.owner.encode("utf-8")).hexdigest()[:16]
         cos_key = f"ai-edit-v2/{owner_hash}/{self.job_id}/generated/{object_id}.png"

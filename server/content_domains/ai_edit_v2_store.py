@@ -271,6 +271,16 @@ def init_db(db_path: str | None = None) -> None:
                    ) WHERE source='gpt_image'"""
             )
             conn.execute(
+                """UPDATE edit_v2_materials
+                   SET generation_state=CASE status
+                       WHEN 'ready' THEN 'ready'
+                       WHEN 'pending' THEN 'unknown_submission'
+                       WHEN 'failed' THEN 'terminal_failed'
+                       ELSE 'legacy_reconciliation_required'
+                   END
+                   WHERE source='gpt_image' AND generation_state IS NULL"""
+            )
+            conn.execute(
                 """INSERT INTO edit_v2_schema_meta(id,version,updated_at)
                    VALUES(1,?,0)
                    ON CONFLICT(id) DO UPDATE SET version=excluded.version""",
@@ -507,15 +517,49 @@ def reserve_generated_material(
                 ).fetchone()
                 reason = "claimed"
             else:
-                if row["generation_request_digest"] != request_digest:
-                    raise ValueError("generated_request_conflict")
                 if row["cos_key"] != cos_key:
                     raise ValueError("generated_material_idempotency_conflict")
                 state = row["generation_state"]
                 if row["status"] == "ready" or state == "ready":
+                    if (
+                        row["generation_request_digest"] is not None
+                        and row["generation_request_digest"] != request_digest
+                    ):
+                        raise ValueError("generated_request_conflict")
                     reason = "ready"
                 elif row["status"] == "failed" or state == "terminal_failed":
                     reason = "terminal_failed"
+                elif row["generation_request_digest"] is None:
+                    if state != "unknown_submission" or row["status"] != "pending":
+                        raise ValueError(
+                            "generated_legacy_material_requires_reconciliation"
+                        )
+                    changed = conn.execute(
+                        """UPDATE edit_v2_materials
+                           SET generation_job_id=?,generation_idempotency_key=?,
+                               generation_request_digest=?,
+                               generation_lease_owner=?,generation_lease_until=?,
+                               generation_retry_at=NULL,updated_at=?
+                           WHERE id=? AND status='pending'
+                             AND generation_state='unknown_submission'
+                             AND generation_request_digest IS NULL""",
+                        (
+                            job_id,
+                            idempotency_key,
+                            request_digest,
+                            lease_owner,
+                            lease_until,
+                            now,
+                            row["id"],
+                        ),
+                    ).rowcount
+                    claimed = changed == 1
+                    reason = "claimed" if claimed else "in_progress"
+                    row = conn.execute(
+                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                    ).fetchone()
+                elif row["generation_request_digest"] != request_digest:
+                    raise ValueError("generated_request_conflict")
                 elif (
                     row["generation_lease_owner"] is not None
                     and row["generation_lease_until"] is not None

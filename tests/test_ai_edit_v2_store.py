@@ -9,6 +9,7 @@ from contextlib import closing
 from unittest.mock import patch
 
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains.ai_edit_v2_providers.openai_image import OpenAIImageProvider
 
 
 EXPECTED_TABLES = {
@@ -63,6 +64,75 @@ class StoreTests(unittest.TestCase):
                        UNIQUE(owner,idempotency_key)
                    )"""
             )
+
+    def _create_v2_generated_materials(self, path):
+        job_id = "123e4567-e89b-12d3-a456-426614174000"
+        owner = "user-a"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(
+                """CREATE TABLE edit_v2_schema_meta(
+                       id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL,
+                       updated_at INTEGER NOT NULL
+                   );
+                   CREATE TABLE edit_v2_jobs(
+                       id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                       idempotency_key TEXT NOT NULL, quote_id TEXT NOT NULL,
+                       predecessor_job_id TEXT REFERENCES edit_v2_jobs(id),
+                       status TEXT NOT NULL, payload_json TEXT NOT NULL,
+                       director_plan_json TEXT,
+                       checkpoint_json TEXT NOT NULL DEFAULT '[]',
+                       lease_owner TEXT, lease_until INTEGER, error_code TEXT,
+                       output_cos_key TEXT,
+                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                       UNIQUE(owner,idempotency_key)
+                   );
+                   CREATE TABLE edit_v2_materials(
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       upload_id TEXT UNIQUE, owner TEXT NOT NULL, kind TEXT NOT NULL,
+                       purpose TEXT NOT NULL, reference_mode TEXT,
+                       semantic_label TEXT, source TEXT, cos_key TEXT NOT NULL,
+                       filename TEXT, declared_content_type TEXT, mime_type TEXT,
+                       etag TEXT, size_bytes INTEGER, duration_ms INTEGER,
+                       width INTEGER, height INTEGER, reference_analysis_json TEXT,
+                       status TEXT NOT NULL DEFAULT 'ready',
+                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                   );
+                   CREATE UNIQUE INDEX idx_edit_v2_generated_idempotency
+                       ON edit_v2_materials(owner,semantic_label)
+                       WHERE source='gpt_image';"""
+            )
+            conn.execute(
+                "INSERT INTO edit_v2_schema_meta(id,version,updated_at) VALUES(1,2,1)"
+            )
+            conn.execute(
+                """INSERT INTO edit_v2_jobs(
+                       id,owner,idempotency_key,quote_id,status,payload_json,
+                       created_at,updated_at
+                   ) VALUES(?,?,?,'quote-1','resolving_assets','{}',1,1)""",
+                (job_id, owner, "job-key"),
+            )
+            for material_id, key, status in (
+                (1, "legacy-ready", "ready"),
+                (2, "legacy-pending", "pending"),
+                (3, "legacy-failed", "failed"),
+            ):
+                conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           id,owner,kind,purpose,semantic_label,source,cos_key,
+                           mime_type,etag,size_bytes,width,height,status,
+                           created_at,updated_at
+                       ) VALUES(?,?,'image','generated',?,'gpt_image',?,
+                                'image/png','etag-v2',8,1536,1024,?,1,1)""",
+                    (
+                        material_id,
+                        owner,
+                        store._generation_label(job_id, key),
+                        f"ai-edit-v2/fc95297aa4f56781/{job_id}/generated/{key}.png",
+                        status,
+                    ),
+                )
+            conn.commit()
+        return owner, job_id
 
     def _queue(self, job_id):
         with closing(store.open_store(self.db_path)) as conn:
@@ -136,6 +206,70 @@ class StoreTests(unittest.TestCase):
                     ).fetchone()["version"]
                 self.assertEqual(columns.count("predecessor_job_id"), 1)
                 self.assertEqual(version, 3)
+
+    def test_v2_generated_rows_upgrade_with_safe_ready_pending_and_failed_semantics(self):
+        legacy_path = os.path.join(self.temp_dir.name, "legacy-v2-materials.db")
+        owner, job_id = self._create_v2_generated_materials(legacy_path)
+
+        store.init_db(legacy_path)
+
+        legacy_ready_replay = OpenAIImageProvider(
+            owner=owner,
+            job_id=job_id,
+            api_key="",
+            asset_store=store,
+            http_request=lambda *args: self.fail("ready replay must not call provider"),
+            acceptance_probe_passed=False,
+            db_path=legacy_path,
+        ).generate(
+            {"semantic_query": "legacy ready", "ratio": "16:9"},
+            "legacy-ready",
+        )
+        self.assertEqual(legacy_ready_replay.payload["asset_id"], 1)
+
+        def reserve(key, digest, worker, now):
+            return store.reserve_generated_material(
+                owner=owner,
+                job_id=job_id,
+                idempotency_key=key,
+                cos_key=(
+                    f"ai-edit-v2/fc95297aa4f56781/{job_id}/generated/{key}.png"
+                ),
+                request_digest=digest,
+                lease_owner=worker,
+                lease_seconds=10,
+                now=now,
+                db_path=legacy_path,
+            )
+
+        ready = reserve("legacy-ready", "ready-body", "worker-a", 100)
+        pending = reserve("legacy-pending", "pending-body", "worker-a", 100)
+        failed = reserve("legacy-failed", "failed-body", "worker-a", 100)
+
+        self.assertFalse(ready["claimed"])
+        self.assertEqual(ready["reason"], "ready")
+        self.assertEqual(ready["material"]["generation_state"], "ready")
+        self.assertTrue(pending["claimed"])
+        self.assertEqual(
+            pending["material"]["generation_state"], "unknown_submission"
+        )
+        self.assertEqual(
+            pending["material"]["generation_request_digest"], "pending-body"
+        )
+        self.assertEqual(pending["material"]["generation_job_id"], job_id)
+        self.assertEqual(
+            pending["material"]["generation_idempotency_key"], "legacy-pending"
+        )
+        self.assertFalse(failed["claimed"])
+        self.assertEqual(failed["reason"], "terminal_failed")
+        self.assertEqual(failed["material"]["generation_state"], "terminal_failed")
+
+        with self.assertRaisesRegex(ValueError, "generated_request_conflict"):
+            reserve("legacy-pending", "changed-body", "worker-b", 111)
+
+        replay = reserve("legacy-pending", "pending-body", "worker-b", 111)
+        self.assertTrue(replay["claimed"])
+        self.assertEqual(replay["material"]["id"], pending["material"]["id"])
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:
