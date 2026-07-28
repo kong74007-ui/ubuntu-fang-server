@@ -83,6 +83,7 @@ def transcribe(
     mark_submission_unknown: Callable[[str], None] | None = None,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
+    poll_guard: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     task_id = provider_task_id
     if not task_id:
@@ -121,7 +122,10 @@ def transcribe(
             save_provider_task_id(task_id)
 
     while True:
-        if now_fn() >= deadline_at:
+        if poll_guard is not None:
+            poll_guard()
+        polled_at = now_fn()
+        if polled_at >= deadline_at:
             raise AsrError("asr_timeout")
         try:
             if hasattr(client, "query_asr"):
@@ -144,4 +148,7 @@ def transcribe(
             raise AsrError("asr_provider_failed")
         if status not in {"queued", "pending", "running", "processing"}:
             raise AsrError("asr_result_invalid")
-        sleep_fn(1.0)
+        remaining = deadline_at - polled_at
+        if remaining <= 0:
+            raise AsrError("asr_timeout")
+        sleep_fn(min(1.0, remaining))

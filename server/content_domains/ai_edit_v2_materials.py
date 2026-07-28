@@ -405,7 +405,7 @@ def _generated_payload(
     expected_prefix = f"ai-edit-v2/{owner_hash}/{job_id}/generated/"
     if not payload["cos_key"].startswith(expected_prefix):
         raise MaterialResolutionError("image_generation_result_invalid")
-    return copy.deepcopy(payload)
+    return {**copy.deepcopy(payload), "kind": "image"}
 
 
 def _safe_asset(candidate: dict[str, Any]) -> dict[str, Any]:

@@ -497,7 +497,7 @@ class ShotstackClient:
         output_url = value.get("url")
         if status == "succeeded" and (
             not isinstance(output_url, str)
-            or not output_url.startswith(("http://", "https://"))
+            or not output_url.startswith("https://")
         ):
             raise ProviderError("shotstack_output_invalid")
         if status != "succeeded":

@@ -5,18 +5,20 @@ import threading
 from unittest.mock import patch
 
 from server.content_domains import ai_edit_v2_runtime as runtime
+from tests.test_ai_edit_v2_director import VALID_PLAN
 
 
 class RuntimeTests(unittest.TestCase):
     def test_each_stage_schema_rejects_missing_field_and_wrong_type(self):
         artifact = {"cos_key": "k", "etag": "e", "size_bytes": 1}
+        item = {"text": "x", "start_ms": 0, "end_ms": 1}
         valid = {
             "normalizing": {"normalized_media": {"cos_key": "k", "media_type": "video", "metadata": {"duration_ms": 1}}, "artifact": artifact},
-            "transcribing": {"asr_result": {"provider_task_id": "p", "duration_ms": 1, "words": [{}], "sentences": [{}]}},
-            "aligning": {"text_timeline": {"text": "x", "words": [{}], "sentences": [{}], "alignment_status": "aligned", "duration_ms": 1}},
-            "directing": {"edit_plan": {"version": "2.0", "duration_ms": 1, "scenes": [{}]}},
-            "resolving_materials": {"resolved_plan": {"materials": {}, "scenes": [{}], "duration_ms": 1}},
-            "generating_media": {"resolved_plan": {}, "audio_plan": {}, "generated_audio": {}},
+            "transcribing": {"asr_result": {"provider_task_id": "p", "duration_ms": 1, "words": [item], "sentences": [item]}},
+            "aligning": {"text_timeline": {"text": "x", "words": [item], "sentences": [item], "alignment_status": "aligned", "duration_ms": 1}},
+            "directing": {"edit_plan": copy.deepcopy(VALID_PLAN)},
+            "resolving_materials": {"resolved_plan": {"materials": {}, "scenes": [{"start_ms": 0, "end_ms": 1}], "duration_ms": 1}},
+            "generating_media": {"resolved_plan": {}, "audio_plan": {"bgm": None, "sfx": [], "degradations": []}, "generated_audio": {"bgm": None, "sfx": [], "degradations": []}},
             "rendering": {"provider_task_id": "p", "provider_status": "succeeded", "render_url": "https://x/y.mp4"},
             "postprocessing": {"artifact": artifact, "output_available": True},
         }
@@ -31,6 +33,18 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(runtime.validate_stage_output("transcribing", {"garbage": 1}, None)[1], "stage_output_schema_invalid")
         self.assertEqual(runtime.validate_stage_output("normalizing", {"artifact": artifact}, lambda *_: True)[1], "stage_output_schema_invalid")
+
+    def test_nested_semantics_and_every_artifact_boundary_fail_closed(self):
+        base = {"asr_result": {"provider_task_id": "p", "duration_ms": 10,
+                "words": [{"text": "x", "start_ms": 0, "end_ms": 10}],
+                "sentences": [{"text": "x", "start_ms": 0, "end_ms": 10}]}}
+        for malformed in (None, "key", [], {"cos_key": "k"}):
+            output = copy.deepcopy(base); output["nested"] = {"artifact": malformed}
+            self.assertEqual(runtime.validate_stage_output("transcribing", output, lambda *_: True)[1], "stage_artifact_metadata_invalid")
+        output = copy.deepcopy(base); output["nested"] = {"artifacts": ["bad"]}
+        self.assertEqual(runtime.validate_stage_output("transcribing", output, lambda *_: True)[1], "stage_artifact_metadata_invalid")
+        garbage = copy.deepcopy(base); garbage["asr_result"]["words"] = [{}]
+        self.assertEqual(runtime.validate_stage_output("transcribing", garbage, None)[1], "stage_output_schema_invalid")
     def test_stable_sequence_stops_before_task_8_quality_implementation(self):
         self.assertEqual(
             runtime.STABLE_STAGE_SEQUENCE,

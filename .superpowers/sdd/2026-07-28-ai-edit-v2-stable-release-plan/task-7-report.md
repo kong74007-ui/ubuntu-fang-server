@@ -1,5 +1,14 @@
 # Task 7 实施报告
 
+## Fix Round 3
+
+- ASR and Shotstack polling now use real clocks, bounded sleeps, deadline checks, and a lease/active guard on every poll.
+- Generated ElevenLabs music/SFX is downloaded from private COS, mastered by Task 5 `mix_audio`, uploaded as a verified `mastered_audio` artifact, and injected into the resolved render plan. The worker integration exercises OpenAI image and ElevenLabs exactly once each.
+- Stage schemas recursively validate timed words, sentences, scenes, resolved material records, audio plans, and generated media; the director plan reuses `validate_edit_plan`. Empty placeholder structures fail closed.
+- Every nested `artifact`/`artifacts` boundary rejects non-records and incomplete metadata, including in stages where artifacts are optional.
+- Missing target duration is derived from the aligned source duration. Shotstack output and runtime contracts both require HTTPS.
+- Verification: targeted 77/77; full AI Edit V2 266/266; static compilation and diff checks passed. No deployment, restart, Task 8, or live provider call.
+
 ## Fix Round 2
 
 - `production_dependencies()` now constructs `ProductionServices` with eight concrete stage methods. The enabled worker calls `assert_production_ready()` before the first job claim, so missing provider, callback, webhook, or private COS configuration fails startup explicitly.

@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+import copy
 import threading
 import tempfile
 import time
@@ -16,6 +17,8 @@ from server.content_domains import ai_edit_v2_pipeline as pipeline
 from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains import ai_edit_v2_store as store
 from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
+from tests.test_ai_edit_v2_director import VALID_PLAN
+from tests.test_ai_edit_v2_openai_image import png_bytes
 
 
 def draft():
@@ -530,23 +533,31 @@ class StableRunJobTests(PipelineTests):
         job_id = str(uuid.uuid4())
         job = self._precharged_job(job_id)
         payload = json.loads(job["payload_json"])
-        payload["draft"].update({"target_duration_ms": 1800, "style_text": "clean editorial"})
-        payload["draft"]["main_input"].update({"cos_key": "ai-edit-v2/source/input.mp4", "duration_ms": 1800})
+        payload["draft"].update({"target_duration_ms": 3000, "style_text": "clean editorial"})
+        payload["draft"]["main_input"].update({"cos_key": "ai-edit-v2/source/input.mp4", "duration_ms": 3000})
         with closing(store.open_store(self.db_path)) as conn:
             conn.execute("UPDATE edit_v2_jobs SET payload_json=? WHERE id=?", (json.dumps(payload), job_id))
 
         class FakeCos:
-            def __init__(self): self.objects = {"ai-edit-v2/source/input.mp4": b"source"}
+            def __init__(self): self.objects = {"ai-edit-v2/source/input.mp4": b"source"}; self.types = {"ai-edit-v2/source/input.mp4": "video/mp4"}
             def enabled(self): return True
             def download_file(self, key, path): Path(path).write_bytes(self.objects[key])
-            def put_bytes(self, content, key, _content_type, private=True): self.objects[key] = content
-            def put_file(self, path, key, _content_type, private=True): self.objects[key] = Path(path).read_bytes()
-            def head_object(self, key): return {"content_length": len(self.objects[key]), "etag": "etag-" + str(len(self.objects[key]))}
+            def put_bytes(self, content, key, content_type, private=True): self.objects[key] = content; self.types[key] = content_type
+            def put_file(self, path, key, content_type, private=True): self.objects[key] = Path(path).read_bytes(); self.types[key] = content_type
+            def head_object(self, key): return {"content_length": len(self.objects[key]), "etag": "etag-" + str(len(self.objects[key])), "content_type": self.types[key]}
             def presign_get(self, key, expires=300): return "https://cos.test/" + key
 
         transcript = json.loads((Path(__file__).parent / "fixtures/ai_edit_v2/provider_responses/fun_asr_success.json").read_text(encoding="utf-8"))
+        transcript["properties"]["original_duration_in_milliseconds"] = 3000
         plan = json.loads(json.loads((Path(__file__).parent / "fixtures/ai_edit_v2/provider_responses/qwen_edit_plan_success.json").read_text(encoding="utf-8"))["output"]["choices"][0]["message"]["content"])
-        plan["audio_plan"].update({"music_policy": "none", "sfx_policy": "none"})
+        plan["scenes"][0]["material_slots"] = ["slot_1"]
+        plan["duration_ms"] = plan["target_duration_ms"] = 3000
+        plan["scenes"][0]["end_ms"] = 3000
+        plan["audio_plan"].update({"music_policy": "duck_under_speech", "sfx_policy": "semantic_only"})
+        calls = {"openai": 0, "elevenlabs": 0}
+        def openai_http(*_args): calls["openai"] += 1; return {"id": "img-1", "data": [{"url": "https://image.test/x.png"}], "usage": {"total_tokens": 1}}
+        def openai_download(*_args): return {"content": png_bytes(), "content_type": "image/png"}
+        def eleven_http(*_args): calls["elevenlabs"] += 1; return {"content": b"ID3-audio", "content_type": "audio/mpeg", "headers": {"request-id": "audio-1", "character-cost": "1", "song-id": "song-1"}}
 
         def dashscope_http(method, url, _headers, body, _timeout):
             if "text-generation" in url:
@@ -562,22 +573,30 @@ class StableRunJobTests(PipelineTests):
                 return {"success": True, "response": {"id": "render-1", "status": "queued"}}
             return {"success": True, "response": {"id": "render-1", "status": "done", "url": "https://render.test/final.mp4"}}
 
-        probe = {"format": {"duration": "1.8", "format_name": "mov,mp4"}, "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30/1"}, {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 2}]}
-        runner = lambda *_a, **_kw: type("Completed", (), {"returncode": 0, "stdout": json.dumps(probe), "stderr": b""})()
+        probe = {"format": {"duration": "3.0", "format_name": "mov,mp4"}, "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30/1"}, {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000", "channels": 2}]}
+        def runner(command, **_kw):
+            if command[0] == "ffprobe": return type("Completed", (), {"returncode": 0, "stdout": json.dumps(probe), "stderr": b""})()
+            if command[-1] != "NUL": Path(command[-1]).write_bytes(b"mastered-audio")
+            loudness = b'{"input_i":"-20","input_tp":"-2","input_lra":"5","input_thresh":"-30","target_offset":"0"}'
+            return type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": loudness})()
         fake_cos = FakeCos()
         services = runtime.ProductionServices(self.db_path, cos_api=fake_cos, runner=runner,
                                               dashscope_http=dashscope_http, shotstack_http=shotstack_http,
+                                              openai_http=openai_http, openai_downloader=openai_download,
+                                              elevenlabs_http=eleven_http,
                                               downloader=lambda _url: b"rendered-mp4")
         dependencies = runtime.production_dependencies(self.db_path, services=services)
         dependencies["points_client"] = self.points
-        dependencies["now"] = lambda: 200
+        current_time = int(time.time())
+        dependencies["now"] = lambda: current_time
         config = {"db_path": self.db_path, "lease_seconds": 180}
-        claimed = store.claim_job(job_id, "integration-lease", 180, 200, db_path=self.db_path)
+        claimed = store.claim_job(job_id, "integration-lease", 180, current_time, db_path=self.db_path)
         with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
             runtime.assert_production_ready(dependencies)
             result = worker._process_claimed(claimed, "integration-lease", config, dependencies)
-        self.assertEqual(result["state"], "quality_checking")
+        self.assertEqual(result["state"], "quality_checking", result)
         self.assertIn(b"rendered-mp4", fake_cos.objects.values())
+        self.assertEqual(calls, {"openai": 1, "elevenlabs": 1})
 
     def _dependencies(self, calls, *, render_started=None, render_release=None):
         def handler(name):
@@ -598,15 +617,16 @@ class StableRunJobTests(PipelineTests):
                         "etag": name,
                         "size_bytes": 10,
                 }
-                timeline = {"text": "ok", "words": [{}], "sentences": [{}],
+                item = {"text": "ok", "start_ms": 0, "end_ms": 1000}
+                timeline = {"text": "ok", "words": [item], "sentences": [item],
                             "alignment_status": "aligned", "duration_ms": 1000}
                 outputs = {
                     "normalizing": {"normalized_media": {"cos_key": "private/source.mp4", "media_type": "video", "metadata": {"duration_ms": 1000}}, "artifact": artifact},
-                    "transcribing": {"asr_result": {"provider_task_id": "asr-1", "duration_ms": 1000, "words": [{}], "sentences": [{}]}},
+                    "transcribing": {"asr_result": {"provider_task_id": "asr-1", "duration_ms": 1000, "words": [item], "sentences": [item]}},
                     "aligning": {"text_timeline": timeline},
-                    "directing": {"edit_plan": {"version": "2.0", "duration_ms": 1000, "scenes": [{}]}},
-                    "resolving_materials": {"resolved_plan": {"duration_ms": 1000, "scenes": [{}], "materials": {}}},
-                    "generating_media": {"resolved_plan": {}, "audio_plan": {}, "generated_audio": {}},
+                    "directing": {"edit_plan": copy.deepcopy(VALID_PLAN)},
+                    "resolving_materials": {"resolved_plan": {"duration_ms": 1000, "scenes": [{"start_ms": 0, "end_ms": 1000}], "materials": {}}},
+                    "generating_media": {"resolved_plan": {}, "audio_plan": {"bgm": None, "sfx": [], "degradations": []}, "generated_audio": {"bgm": None, "sfx": [], "degradations": []}},
                     "rendering": {"provider_task_id": "shotstack-1", "provider_status": "succeeded", "render_url": "https://render.test/final.mp4"},
                     "postprocessing": {"artifact": artifact, "output_available": True},
                 }

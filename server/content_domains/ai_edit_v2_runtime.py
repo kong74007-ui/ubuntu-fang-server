@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
+import time
 import urllib.request
 from contextlib import closing
 from typing import Any, Callable
@@ -122,6 +124,19 @@ def extract_artifacts(value: Any) -> list[dict[str, Any]]:
     return found
 
 
+def _artifact_boundaries_valid(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "artifact":
+                if not isinstance(child, dict) or "cos_key" not in child: return False
+            elif key == "artifacts":
+                if not isinstance(child, list) or not all(isinstance(item, dict) and "cos_key" in item for item in child): return False
+            if not _artifact_boundaries_valid(child): return False
+    elif isinstance(value, list):
+        return all(_artifact_boundaries_valid(item) for item in value)
+    return True
+
+
 def validate_stage_output(
     stage: str, output: Any, verifier: Callable[[str, dict[str, Any]], bool] | None
 ) -> tuple[bool, str | None]:
@@ -129,6 +144,8 @@ def validate_stage_output(
         return False, "stage_output_invalid"
     if not _semantic_output_valid(stage, output):
         return False, "stage_output_schema_invalid"
+    if not _artifact_boundaries_valid(output):
+        return False, "stage_artifact_metadata_invalid"
     artifacts = extract_artifacts(output)
     if stage in ARTIFACT_REQUIRED_STAGES and not artifacts:
         return False, "stage_artifact_missing"
@@ -156,11 +173,22 @@ def _timeline(value: Any) -> bool:
     return (
         isinstance(value, dict)
         and isinstance(value.get("text"), str) and bool(value["text"])
-        and isinstance(value.get("words"), list) and bool(value["words"])
-        and isinstance(value.get("sentences"), list) and bool(value["sentences"])
+        and _timed_items(value.get("words")) and _timed_items(value.get("sentences"))
         and value.get("alignment_status") == "aligned"
         and _int(value.get("duration_ms"), positive=True)
     )
+
+
+def _timed_items(value: Any) -> bool:
+    if not isinstance(value, list) or not value: return False
+    previous = -1
+    for item in value:
+        if (not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"]
+                or not _int(item.get("start_ms")) or not _int(item.get("end_ms"), positive=True)
+                or item["end_ms"] < item["start_ms"] or item["start_ms"] < previous):
+            return False
+        previous = item["start_ms"]
+    return True
 
 
 def _semantic_output_valid(stage: str, output: dict[str, Any]) -> bool:
@@ -175,24 +203,31 @@ def _semantic_output_valid(stage: str, output: dict[str, Any]) -> bool:
         value = output.get("asr_result")
         return (isinstance(value, dict) and isinstance(value.get("provider_task_id"), str)
                 and bool(value["provider_task_id"]) and _int(value.get("duration_ms"), positive=True)
-                and isinstance(value.get("words"), list) and bool(value["words"])
-                and isinstance(value.get("sentences"), list) and bool(value["sentences"]))
+                and _timed_items(value.get("words")) and _timed_items(value.get("sentences")))
     if stage == "aligning":
         return _timeline(output.get("text_timeline"))
     if stage == "directing":
         value = output.get("edit_plan")
-        return (isinstance(value, dict) and value.get("version") == "2.0"
-                and isinstance(value.get("scenes"), list) and bool(value["scenes"])
-                and _int(value.get("duration_ms"), positive=True))
+        if not isinstance(value, dict): return False
+        try:
+            from .ai_edit_v2_schema import validate_edit_plan
+            validate_edit_plan(value)
+            return True
+        except (TypeError, ValueError): return False
     if stage == "resolving_materials":
         value = output.get("resolved_plan")
         return (isinstance(value, dict) and isinstance(value.get("materials"), dict)
+                and all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("cos_key"), str) for k,v in value["materials"].items())
                 and isinstance(value.get("scenes"), list) and bool(value["scenes"])
+                and all(isinstance(x, dict) and _int(x.get("start_ms")) and _int(x.get("end_ms"), positive=True) for x in value["scenes"])
                 and _int(value.get("duration_ms"), positive=True))
     if stage == "generating_media":
+        audio, generated = output.get("audio_plan"), output.get("generated_audio")
         return (isinstance(output.get("resolved_plan"), dict)
-                and isinstance(output.get("audio_plan"), dict)
-                and isinstance(output.get("generated_audio"), dict))
+                and isinstance(audio, dict) and set(("bgm","sfx","degradations")).issubset(audio)
+                and isinstance(audio["sfx"], list) and isinstance(audio["degradations"], list)
+                and isinstance(generated, dict) and set(("bgm","sfx","degradations")).issubset(generated)
+                and isinstance(generated["sfx"], list) and isinstance(generated["degradations"], list))
     if stage == "rendering":
         return (isinstance(output.get("provider_task_id"), str) and bool(output["provider_task_id"])
                 and output.get("provider_status") == "succeeded"
@@ -254,6 +289,8 @@ class ProductionServices:
     def __init__(self, db_path: str, *, cos_api: Any = None, runner: Callable[..., Any] = subprocess.run,
                  dashscope_http: Callable[..., Any] | None = None,
                  shotstack_http: Callable[..., Any] | None = None,
+                 openai_http: Callable[..., Any] | None = None, openai_downloader: Callable[..., Any] | None = None,
+                 elevenlabs_http: Callable[..., Any] | None = None,
                  downloader: Callable[[str], bytes] | None = None) -> None:
         from . import ai_edit_v2_cos
         self.db_path = db_path
@@ -261,6 +298,8 @@ class ProductionServices:
         self.runner = runner
         self.dashscope_http = dashscope_http
         self.shotstack_http = shotstack_http
+        self.openai_http, self.openai_downloader = openai_http, openai_downloader
+        self.elevenlabs_http = elevenlabs_http
         self.downloader = downloader or self._download
 
     def readiness_errors(self) -> list[str]:
@@ -324,7 +363,7 @@ class ProductionServices:
         signed = self.cos.presign_get(media["cos_key"])
         result = transcribe(signed, client, context["deadline_at"], provider_task_id=context.get("provider_task_id"),
                             reference=media["cos_key"], save_provider_task_id=context["save_provider_task_id"],
-                            now_fn=lambda: 0, sleep_fn=lambda _n: None)
+                            now_fn=time.time, sleep_fn=time.sleep, poll_guard=context["assert_active"])
         return {"normalized_media": media, "asr_result": result}
 
     def aligning(self, _job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
@@ -341,7 +380,7 @@ class ProductionServices:
         previous, draft = stage_input["previous"], self._draft(stage_input)
         client = DashScopeClient(http_request=self.dashscope_http) if self.dashscope_http else DashScopeClient()
         director_context = {"creation_mode": draft["creation_mode"], "text_timeline": previous["text_timeline"],
-                            "aspect_ratio": draft["aspect_ratio"], "target_duration_ms": draft["target_duration_ms"]}
+                            "aspect_ratio": draft["aspect_ratio"], "target_duration_ms": (draft.get("target_duration_ms") or previous["text_timeline"]["duration_ms"])}
         if draft["creation_mode"] == "platform_template":
             director_context.update({"template_id": draft["template_id"], "template_version": draft["template_version"]})
         else:
@@ -354,25 +393,53 @@ class ProductionServices:
         from .ai_edit_v2_providers.openai_image import OpenAIImageProvider
         previous = stage_input["previous"]
         provider = OpenAIImageProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos,
-                                       db_path=self.db_path, worker_id=str(context["attempt_id"]))
+                                       db_path=self.db_path, worker_id=str(context["attempt_id"]),
+                                       http_request=self.openai_http, downloader=self.openai_downloader)
         plan = resolve_materials(job["id"], previous["edit_plan"], _MaterialRepositories(self.db_path, job["owner"]), provider)
         plan.update({"text_timeline": previous["text_timeline"], "primary_video": previous["normalized_media"]})
         return {"resolved_plan": plan}
 
     def generating_media(self, job: dict[str, Any], _context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
-        from .ai_edit_v2_audio import build_audio_plan, generate_audio_assets
+        from .ai_edit_v2_audio import build_audio_plan, generate_audio_assets, mix_audio
         from .ai_edit_v2_providers.elevenlabs import ElevenLabsProvider
         plan = stage_input["previous"]["resolved_plan"]
         audio_plan = build_audio_plan(plan, plan["text_timeline"])
-        provider = ElevenLabsProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos, db_path=self.db_path)
+        provider = ElevenLabsProvider(owner=job["owner"], job_id=job["id"], cos_api=self.cos, db_path=self.db_path,
+                                      http_request=self.elevenlabs_http)
         generated = generate_audio_assets(job["id"], audio_plan, provider)
-        return {"resolved_plan": plan, "audio_plan": audio_plan, "generated_audio": generated}
+        for item in ([generated.get("bgm")] if generated.get("bgm") else []) + list(generated.get("sfx") or []):
+            item.pop("provider_result", None)
+        artifacts: list[dict[str, Any]] = []
+        if generated.get("bgm") or generated.get("sfx"):
+            owner_hash = hashlib.sha256(str(job["owner"]).encode()).hexdigest()[:16]
+            master_key = f"ai-edit-v2/{owner_hash}/{job['id']}/audio/master.m4a"
+            with tempfile.TemporaryDirectory(prefix="ai-edit-v2-audio-") as directory:
+                voice = os.path.join(directory, "voice.mp4")
+                self.cos.download_file(plan["primary_video"]["cos_key"], voice)
+                bgm_path = None
+                if generated.get("bgm"):
+                    bgm_path = os.path.join(directory, "bgm.mp3")
+                    self.cos.download_file(generated["bgm"]["cos_key"], bgm_path)
+                sfx = []
+                for index, cue in enumerate(generated.get("sfx") or []):
+                    path = os.path.join(directory, f"sfx-{index}.mp3")
+                    self.cos.download_file(cue["cos_key"], path)
+                    sfx.append({**cue, "path": path})
+                output = os.path.join(directory, "master.m4a")
+                mix_audio(voice, voice, bgm_path, sfx, output, self.runner)
+                self.cos.put_file(output, master_key, "audio/mp4", private=True)
+            master = {"source": "mix_audio", "cos_key": master_key, **self._artifact(master_key)}
+            plan = dict(plan); plan["mastered_audio"] = master
+            artifacts.append(self._artifact(master_key))
+        return {"resolved_plan": plan, "audio_plan": audio_plan, "generated_audio": generated, "artifacts": artifacts}
 
     def rendering(self, job: dict[str, Any], context: dict[str, Any], stage_input: dict[str, Any]) -> dict[str, Any]:
         from .ai_edit_v2_schema import BUNDLED_NOTO_SANS_SC_URL
         from .ai_edit_v2_shotstack import ShotstackClient, build_render_graph
         plan = stage_input["previous"]["resolved_plan"]
         keys = [plan["primary_video"]["cos_key"]] + [v["cos_key"] for v in plan["materials"].values()]
+        if plan.get("mastered_audio"):
+            keys.append(plan["mastered_audio"]["cos_key"])
         graph = build_render_graph(plan, {key: self.cos.presign_get(key) for key in keys}, BUNDLED_NOTO_SANS_SC_URL)
         client = ShotstackClient(job_id=job["id"], attempt_id=context["attempt_id"], db_path=self.db_path,
                                  http_request=self.shotstack_http) if self.shotstack_http else ShotstackClient(job_id=job["id"], attempt_id=context["attempt_id"], db_path=self.db_path)
@@ -382,6 +449,10 @@ class ProductionServices:
         if not saved:
             context["save_provider_task_id"](task_id)
         while result.payload["status"] == "pending":
+            context["assert_active"]()
+            if time.time() >= context["deadline_at"]:
+                raise RuntimeError("render_timeout")
+            time.sleep(min(1.0, max(0.0, context["deadline_at"] - time.time())))
             result = client.reconcile(provider_task_id=task_id)
         return {"provider_task_id": task_id, "provider_status": result.payload["status"], "render_url": result.payload["output_url"]}
 
