@@ -15,6 +15,7 @@ from .base import ProviderError, ProviderResult, RetryableProviderError, Unknown
 
 _BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 _ASR_PATH = "/services/audio/asr/transcription"
+_TEXT_GENERATION_PATH = "/services/aigc/text-generation/generation"
 
 
 class DashScopeClient:
@@ -75,6 +76,47 @@ class DashScopeClient:
             elapsed_ms=max(0, self._clock_ms() - started_at),
         )
 
+    def generate_edit_plan(self, system_prompt: str, user_prompt: str) -> ProviderResult:
+        """Call stable Qwen text generation through the shared DashScope transport."""
+
+        if not isinstance(system_prompt, str) or not system_prompt.strip():
+            raise ProviderError("dashscope_director_prompt_invalid")
+        if not isinstance(user_prompt, str) or not user_prompt.strip():
+            raise ProviderError("dashscope_director_prompt_invalid")
+        started_at = self._clock_ms()
+        body = json.dumps(
+            {
+                "model": os.environ.get("DASHSCOPE_QWEN_MODEL", "qwen-plus"),
+                "input": {
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                },
+                "parameters": {"result_format": "message"},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        try:
+            response = self._request(
+                "POST",
+                f"{self._base_url()}{_TEXT_GENERATION_PATH}",
+                self._authorization_headers({"Content-Type": "application/json"}),
+                body,
+                capability="director",
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            raise RetryableProviderError("dashscope_director_unavailable") from exc
+        request_id, content, cost_units = self._director_output(response)
+        return ProviderResult(
+            provider="dashscope",
+            capability="director",
+            request_id=request_id,
+            payload={"content": content},
+            cost_units=cost_units,
+            elapsed_ms=max(0, self._clock_ms() - started_at),
+        )
+
     def query_asr(self, provider_task_id: str) -> ProviderResult:
         if not isinstance(provider_task_id, str) or not provider_task_id:
             raise ProviderError("dashscope_asr_task_id_invalid")
@@ -129,6 +171,39 @@ class DashScopeClient:
         return request_id, output
 
     @staticmethod
+    def _director_output(response: Any) -> tuple[str, str, int]:
+        if not isinstance(response, dict):
+            raise ProviderError("dashscope_director_response_invalid")
+        request_id = response.get("request_id")
+        output = response.get("output")
+        usage = response.get("usage", {})
+        if not isinstance(request_id, str) or not request_id or not isinstance(output, dict):
+            raise ProviderError("dashscope_director_response_invalid")
+        choices = output.get("choices")
+        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+            raise ProviderError("dashscope_director_response_invalid")
+        message = choices[0].get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            raise ProviderError("dashscope_director_response_invalid")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ProviderError("dashscope_director_response_invalid")
+        if not isinstance(usage, dict):
+            raise ProviderError("dashscope_director_response_invalid")
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        if (
+            not isinstance(input_tokens, int)
+            or isinstance(input_tokens, bool)
+            or input_tokens < 0
+            or not isinstance(output_tokens, int)
+            or isinstance(output_tokens, bool)
+            or output_tokens < 0
+        ):
+            raise ProviderError("dashscope_director_response_invalid")
+        return request_id, content, input_tokens + output_tokens
+
+    @staticmethod
     def _transcript_url(output: dict[str, Any]) -> str:
         results = output.get("results")
         if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
@@ -149,7 +224,13 @@ class DashScopeClient:
         return {"Authorization": f"Bearer {api_key}", **headers}
 
     def _request(
-        self, method: str, url: str, headers: dict[str, str], body: bytes | None
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        *,
+        capability: str = "asr",
     ) -> dict[str, Any]:
         try:
             return self._http_request(method, url, headers, body, self._timeout_seconds)
@@ -158,8 +239,8 @@ class DashScopeClient:
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             status = getattr(exc, "code", None)
             if status is None or status == 408 or status == 429 or int(status) >= 500:
-                raise RetryableProviderError("dashscope_asr_unavailable") from exc
-            raise ProviderError("dashscope_asr_request_rejected") from exc
+                raise RetryableProviderError(f"dashscope_{capability}_unavailable") from exc
+            raise ProviderError(f"dashscope_{capability}_request_rejected") from exc
 
     @staticmethod
     def _stdlib_request(

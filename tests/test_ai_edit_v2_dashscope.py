@@ -10,6 +10,13 @@ from server.content_domains.ai_edit_v2_providers.dashscope import DashScopeClien
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ai_edit_v2" / "provider_responses" / "fun_asr_success.json"
+QWEN_FIXTURE_PATH = (
+    Path(__file__).parent
+    / "fixtures"
+    / "ai_edit_v2"
+    / "provider_responses"
+    / "qwen_edit_plan_success.json"
+)
 
 
 class RecordedDashScope:
@@ -42,6 +49,33 @@ class RecordedDashScope:
 
 
 class DashScopeClientTests(unittest.TestCase):
+    def test_qwen_director_reuses_dashscope_transport_and_normalizes_message(self):
+        response = json.loads(QWEN_FIXTURE_PATH.read_text(encoding="utf-8"))
+        requests = []
+
+        def recorded(method, url, headers, body, timeout):
+            requests.append((method, url, headers, body, timeout))
+            return response
+
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-dashscope-key"}, clear=False):
+            result = DashScopeClient(http_request=recorded, clock_ms=lambda: 100).generate_edit_plan(
+                "system constraints", "safe context"
+            )
+
+        request_body = json.loads(requests[0][3].decode("utf-8"))
+        self.assertEqual(result.provider, "dashscope")
+        self.assertEqual(result.capability, "director")
+        self.assertEqual(result.request_id, "qwen-request-1")
+        self.assertTrue(result.payload["content"].startswith('{"version":"2.0"'))
+        self.assertEqual(request_body["model"], "qwen-plus")
+        self.assertEqual(
+            request_body["input"]["messages"],
+            [
+                {"role": "system", "content": "system constraints"},
+                {"role": "user", "content": "safe context"},
+            ],
+        )
+
     def test_submit_and_query_normalize_fun_asr_words_and_sentences(self):
         transcript = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
         recorded = RecordedDashScope(transcript)

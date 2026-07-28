@@ -1,0 +1,17 @@
+{
+  "request_id": "qwen-request-1",
+  "output": {
+    "choices": [
+      {
+        "message": {
+          "role": "assistant",
+          "content": "{\"version\":\"2.0\",\"creation_mode\":\"natural_brief\",\"duration_ms\":1800,\"target_duration_ms\":1800,\"aspect_ratio\":\"16:9\",\"language\":\"zh-CN\",\"style_system\":{\"component_family\":\"editorial_business\"},\"scenes\":[{\"id\":\"scene_01\",\"start_ms\":0,\"end_ms\":1800,\"intent\":\"突出价格信息\",\"layout\":\"speaker_focus\",\"visual_type\":\"talking_head\",\"headline\":\"价格信息一目了然\",\"material_slots\":[],\"transition\":\"cut\"}],\"caption_plan\":{\"source\":\"text_timeline\",\"style\":\"clean\"},\"audio_plan\":{\"speech_policy\":\"preserve_source\",\"music_policy\":\"duck_under_speech\",\"sfx_policy\":\"semantic_only\"}}"
+        }
+      }
+    ]
+  },
+  "usage": {
+    "input_tokens": 321,
+    "output_tokens": 187
+  }
+}
