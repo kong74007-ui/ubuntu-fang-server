@@ -120,6 +120,34 @@ test('platform gallery stays in one horizontal row', () => {
   assert.match(cardRule, /flex:0 0 142px/);
 });
 
+test('template mode uses compact image preview cards instead of a dropdown', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  assert.match(page, /id="templateGallery"/);
+  assert.doesNotMatch(page, /id="templateSelect"/);
+  assert.match(page, /function renderTemplates\(/);
+  assert.match(page, /function selectTemplate\(/);
+  assert.match(page, /\.template-card\{[^}]*flex:0 0 110px/);
+  assert.match(page, /\.template-card-media\{[^}]*aspect-ratio:9\/16/);
+
+  const source = page.match(/function templateCard\(item\)\{[^\n]+\}/)?.[0];
+  assert.ok(source, 'templateCard must be present');
+  const templateCard = Function(
+    'state', 'escapeHtml', `${source}; return templateCard;`
+  )(
+    {selectedTemplate: null},
+    (value) => String(value ?? ''),
+  );
+  const html = templateCard({
+    id: 'business_diagnostic',
+    name: '商业诊断',
+    version: '1.0',
+    preview_image_url: '/assets/ai-edit-v2/templates/business-diagnostic.svg',
+  });
+
+  assert.match(html, /<img[^>]+loading="lazy"[^>]+src="\/assets\/ai-edit-v2\/templates\/business-diagnostic\.svg"/);
+  assert.doesNotMatch(html, /<video\b/);
+});
+
 test('legacy video workflow keeps its controls and links to the stable editor', () => {
   const video = fs.readFileSync(videoPath, 'utf8');
   assert.match(video, /data-function="talking"/);
@@ -188,12 +216,12 @@ test('page initialization loads capability and asset sources only once', async (
   assert.notEqual(start, -1, 'page initialization must be present');
   assert.notEqual(end, -1, 'page initialization must terminate');
   const initialization = page.slice(start, end);
-  const calls = {capability: 0, platformAssets: 0, templates: 0};
+  const calls = {capability: 0, platformAssets: 0, templates: 0, templateRenders: 0};
   const state = {acceptsSubmissions: false};
 
   const run = Function(
     'state', 'setSubmissionEnabled', 'restorePendingJob', 'loadCapability',
-    'loadPlatformAssets', 'loadMaterials', 'api',
+    'loadPlatformAssets', 'loadMaterials', 'api', 'renderTemplates',
     `${initialization}; return Promise.resolve().then(() => Promise.resolve());`
   );
   await run(
@@ -204,7 +232,8 @@ test('page initialization loads capability and asset sources only once', async (
     async () => { calls.platformAssets += 1; },
     async () => {},
     async (path) => { if (path.endsWith('/templates')) calls.templates += 1; return {items: []}; },
+    () => { calls.templateRenders += 1; },
   );
 
-  assert.deepEqual(calls, {capability: 1, platformAssets: 1, templates: 1});
+  assert.deepEqual(calls, {capability: 1, platformAssets: 1, templates: 1, templateRenders: 1});
 });
