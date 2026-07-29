@@ -30,8 +30,8 @@ VALID_PLAN = {
     "caption_plan": {"source": "text_timeline", "style": "clean"},
     "audio_plan": {
         "speech_policy": "preserve_source",
-        "music_policy": "none",
-        "sfx_policy": "none",
+        "music_policy": "duck_under_speech",
+        "sfx_policy": "semantic_only",
     },
 }
 
@@ -128,20 +128,6 @@ class DirectorTests(unittest.TestCase):
         self.assertIn("previous_response", repair_prompt)
         self.assertNotIn("must-not-leak", repair_prompt)
 
-    def test_director_repairs_optional_audio_requests_to_none(self):
-        wrong = copy.deepcopy(VALID_PLAN)
-        wrong["audio_plan"]["music_policy"] = "duck_under_speech"
-        wrong["audio_plan"]["sfx_policy"] = "semantic_only"
-        client = FakeQwen(
-            [json.dumps(wrong, ensure_ascii=False), json.dumps(VALID_PLAN, ensure_ascii=False)]
-        )
-
-        plan = generate_edit_plan(CONTEXT, client)
-
-        self.assertEqual(plan["audio_plan"]["music_policy"], "none")
-        self.assertEqual(plan["audio_plan"]["sfx_policy"], "none")
-        self.assertEqual(len(client.calls), 2)
-
     def test_director_enforces_published_template_visual_and_sound_policy(self):
         context = {
             **CONTEXT,
@@ -159,7 +145,7 @@ class DirectorTests(unittest.TestCase):
         }
         wrong = copy.deepcopy(correct)
         wrong["style_system"]["component_family"] = "documentary_modern"
-        wrong["audio_plan"]["sfx_policy"] = "semantic_only"
+        wrong["audio_plan"]["sfx_policy"] = "none"
         client = FakeQwen(
             [json.dumps(wrong, ensure_ascii=False), json.dumps(correct, ensure_ascii=False)]
         )

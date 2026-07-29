@@ -31,8 +31,8 @@ _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
         },
         "motion_intensity": "measured",
         "sound_policy": {
-            "music_policy": "none",
-            "sfx_policy": "none",
+            "music_policy": "duck_under_speech",
+            "sfx_policy": "semantic_only",
         },
     },
     {
@@ -53,7 +53,7 @@ _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
         },
         "motion_intensity": "restrained",
         "sound_policy": {
-            "music_policy": "none",
+            "music_policy": "duck_under_speech",
             "sfx_policy": "none",
         },
     },
