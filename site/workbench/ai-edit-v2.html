@@ -66,7 +66,7 @@
   var state={mode:'natural_brief',main:null,required:[],reference:[],quote:null,jobRequestKey:null,jobId:null,pollTimer:null,acceptsSubmissions:false};
   var $=function(id){return document.getElementById(id)};
   function escapeHtml(value){return String(value==null?'':value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-  function setSubmissionEnabled(enabled){state.acceptsSubmissions=!!enabled;document.querySelectorAll('input,select,textarea,button').forEach(function(el){if(!el.closest('.hq-aside')&&!el.closest('.hq-topbar'))el.disabled=!enabled});if(!enabled)$('formMessage').textContent='功能尚未开放'}
+  function setSubmissionEnabled(enabled){state.acceptsSubmissions=!!enabled;document.querySelectorAll('input,select,textarea,button').forEach(function(el){if(!el.closest('.hq-aside')&&!el.closest('.hq-topbar'))el.disabled=!enabled});$('formMessage').textContent=enabled?'':'功能尚未开放'}
   async function loadCapability(){try{var d=await api('/api/v2/edit/capabilities');setSubmissionEnabled(!!d.accepts_submissions)}catch(_error){setSubmissionEnabled(false)}}
   async function api(path,options){var response=await fetch(path,Object.assign({credentials:'include',headers:{'Content-Type':'application/json'}},options||{}));var data=await response.json().catch(function(){return {}});if(!response.ok)throw new Error(data.detail||('请求失败 '+response.status));return data}
   function fileKind(file){if(file.type.indexOf('video/')===0)return 'video';if(file.type.indexOf('audio/')===0)return 'audio';if(file.type.indexOf('image/')===0)return 'image';throw new Error('不支持的文件类型')}

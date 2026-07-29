@@ -111,3 +111,24 @@ test('shared shell exposes AI edit only after the server capability allows it', 
   assert.match(page, /loadCapability/);
   assert.match(page, /功能尚未开放/);
 });
+
+test('successful capability check clears the initial closed-state message', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const source = page.match(/function setSubmissionEnabled\(enabled\)\{[^\n]+\}/)?.[0];
+  assert.ok(source, 'setSubmissionEnabled must be present');
+
+  const formMessage = {textContent: '功能尚未开放'};
+  const controls = [{disabled: true, closest: () => null}];
+  const document = {querySelectorAll: () => controls};
+  const state = {acceptsSubmissions: false};
+  const $ = () => formMessage;
+  const setSubmissionEnabled = Function(
+    'state', 'document', '$', `${source}; return setSubmissionEnabled;`
+  )(state, document, $);
+
+  setSubmissionEnabled(true);
+
+  assert.equal(state.acceptsSubmissions, true);
+  assert.equal(controls[0].disabled, false);
+  assert.equal(formMessage.textContent, '');
+});
