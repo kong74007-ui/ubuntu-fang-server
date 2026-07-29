@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ai_edit_v2_store as store
+from .ai_edit_v2_audio import BGM_MIX_VOLUME, SFX_MIX_VOLUME
 from .ai_edit_v2_providers.base import ProviderError
 
 
@@ -53,6 +54,17 @@ def _strict_object(raw: Any, code: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProviderError(code)
     return value
+
+
+def _unwrap_single_json_fence(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    match = re.fullmatch(
+        r"\s*```(?:json)?[ \t]*\r?\n(?P<body>[\s\S]*?)\r?\n```\s*",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    return match.group("body") if match else raw
 
 
 class DashScopeFinalMediaAnalyzer:
@@ -98,6 +110,8 @@ class DashScopeFinalMediaAnalyzer:
         return configured or name
 
     def __call__(self, check: str, *, path: str, expected: dict[str, Any]) -> dict[str, Any]:
+        if check == "materials" and not (expected.get("required_asset_ids") or []):
+            return {"covered_asset_ids": []}
         capability = {
             "captions": "captions_ocr", "materials": "materials",
             "transcript": "transcript_facts", "audio": "audio",
@@ -192,7 +206,10 @@ class DashScopeFinalMediaAnalyzer:
                 if len(texts) != 1:
                     raise ValueError
                 content = texts[0]
-            value = _strict_object(content, "quality_qwen_response_invalid")
+            value = _strict_object(
+                _unwrap_single_json_fence(content),
+                "quality_qwen_response_invalid",
+            )
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ProviderError("quality_qwen_response_invalid") from exc
         valid = False
@@ -246,10 +263,11 @@ class DashScopeFinalMediaAnalyzer:
         bgm = generated.get("bgm")
         sfx = generated.get("sfx") or []
         bgm_ratio = 200.0 if not bgm else dialogue_loudness - self._source_loudness(
-            bgm, sidechain=dialogue
+            bgm, sidechain=dialogue, volume=BGM_MIX_VOLUME
         )
         sfx_ratio = 200.0 if not sfx else min(
-            dialogue_loudness - self._source_loudness(item) for item in sfx
+            dialogue_loudness - self._source_loudness(item, volume=SFX_MIX_VOLUME)
+            for item in sfx
         )
         return {
             "silence_ratio": min(1.0, silence / duration),
@@ -258,7 +276,9 @@ class DashScopeFinalMediaAnalyzer:
             "dialogue_to_sfx_db": sfx_ratio,
         }
 
-    def _source_loudness(self, source: Any, *, sidechain: Any = None) -> float:
+    def _source_loudness(
+        self, source: Any, *, sidechain: Any = None, volume: float = 1.0
+    ) -> float:
         if not isinstance(source, dict) or not isinstance(source.get("cos_key"), str):
             raise ProviderError("quality_audio_source_missing")
         if not callable(getattr(self.cos, "download_file", None)):
@@ -271,7 +291,10 @@ class DashScopeFinalMediaAnalyzer:
                 "-i", path,
             ]
             if sidechain is None:
-                command.extend(["-vn", "-af", "ebur128=peak=true", "-f", "null", "-"])
+                audio_filter = "ebur128=peak=true"
+                if volume != 1.0:
+                    audio_filter = f"volume={volume:.2f},{audio_filter}"
+                command.extend(["-vn", "-af", audio_filter, "-f", "null", "-"])
             else:
                 if not isinstance(sidechain, dict) or not isinstance(sidechain.get("cos_key"), str):
                     raise ProviderError("quality_audio_source_missing")
@@ -280,7 +303,7 @@ class DashScopeFinalMediaAnalyzer:
                 command.extend([
                     "-i", voice, "-filter_complex",
                     "[0:a][1:a]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];"
-                    "[ducked]ebur128=peak=true[out]",
+                    f"[ducked]volume={volume:.2f},ebur128=peak=true[out]",
                     "-map", "[out]", "-f", "null", "-",
                 ])
             result = self._run(command)

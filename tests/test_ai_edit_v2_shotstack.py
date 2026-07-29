@@ -103,6 +103,27 @@ class RenderGraphTests(unittest.TestCase):
             {"basic_caption", "basic_card", "broll_image", "broll_video", "standard_transition", "audio_bed"},
         )
 
+    def test_compiler_places_overlays_and_materials_above_primary_video(self):
+        graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
+
+        edit = _compile_shotstack_edit(graph, "https://callback.example.invalid")
+        assets = [track["clips"][0]["asset"] for track in edit["timeline"]["tracks"]]
+        primary_index = next(
+            index for index, asset in enumerate(assets)
+            if asset.get("src") == SIGNED_ASSETS["private/main.mp4"]
+        )
+        material_index = next(
+            index for index, asset in enumerate(assets)
+            if asset.get("src") == SIGNED_ASSETS["private/broll.png"]
+        )
+        overlay_indices = [
+            index for index, asset in enumerate(assets) if asset["type"] == "rich-text"
+        ]
+
+        self.assertTrue(overlay_indices)
+        self.assertTrue(all(index < material_index for index in overlay_indices))
+        self.assertLess(material_index, primary_index)
+
     def test_render_graph_rejects_free_code_and_advanced_components(self):
         for component in (
             {"type": "free_code_mg", "code": "return <Widget />"},
