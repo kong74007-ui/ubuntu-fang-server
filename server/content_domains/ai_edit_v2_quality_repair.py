@@ -120,7 +120,9 @@ class DashScopeFinalMediaAnalyzer:
         prompt = self._prompt(check, expected)
         content.append({"text": prompt})
         body = json.dumps({
-            "model": os.environ.get("DASHSCOPE_QWEN_VL_MODEL", "qwen-vl-max-latest"),
+            "model": os.environ.get(
+                "DASHSCOPE_QWEN_VL_MODEL", "qwen3.7-max-2026-06-08"
+            ),
             "input": {"messages": [{"role": "user", "content": content}]},
             "parameters": {"result_format": "message"},
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

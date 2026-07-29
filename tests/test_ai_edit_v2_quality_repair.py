@@ -110,6 +110,7 @@ class QualityRepairProviderTests(unittest.TestCase):
             "safe_area": True, "tofu_count": 0, "missing_glyphs": [],
         })
         self.assertTrue(calls[0][1].endswith("/services/aigc/multimodal-generation/generation"))
+        self.assertEqual(calls[0][3]["model"], "qwen3.7-max-2026-06-08")
         content = calls[0][3]["input"]["messages"][0]["content"]
         self.assertEqual(content[0], {"video": "https://cos.example/final.mp4"})
 
