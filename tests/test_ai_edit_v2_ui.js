@@ -84,6 +84,32 @@ test('page implements subject cards candidate uploads quote creation and job pol
   assert.match(page, /HQTasks\.upsert/);
 });
 
+test('platform cards render lightweight covers without loading video sources', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const source = page.match(/function platformCard\(item\)\{[^\n]+\}/)?.[0];
+  assert.ok(source, 'platformCard must be present');
+
+  const platformCard = Function(
+    'state', 'escapeHtml', 'formatDate', `${source}; return platformCard;`
+  )(
+    {platformSelectedId: null},
+    (value) => String(value ?? ''),
+    () => '2026-07-29',
+  );
+  const html = platformCard({
+    reference_id: '31',
+    filename: 'talking.mp4',
+    summary: '平台口播',
+    preview_url: '/api/gen/file/talking.mp4',
+    thumbnail_url: '/api/gen/file/image/cover.jpg',
+    created_at: 1,
+  });
+
+  assert.match(html, /<img[^>]+src="\/api\/gen\/file\/image\/cover\.jpg"/);
+  assert.doesNotMatch(html, /<video\b/);
+  assert.doesNotMatch(html, /src="\/api\/gen\/file\/talking\.mp4"/);
+});
+
 test('legacy video workflow keeps its controls and links to the stable editor', () => {
   const video = fs.readFileSync(videoPath, 'utf8');
   assert.match(video, /data-function="talking"/);
