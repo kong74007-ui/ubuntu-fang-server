@@ -53,6 +53,11 @@ class TemplateTests(unittest.TestCase):
             [(item["id"], item["version"]) for item in templates],
             sorted((item["id"], item["version"]) for item in templates),
         )
+        for item in templates:
+            self.assertRegex(
+                item["preview_image_url"],
+                r"^/assets/ai-edit-v2/templates/[a-z0-9-]+\.svg$",
+            )
 
         templates[0]["typography"]["heading"] = "mutated"
         fresh = get_published_template(templates[0]["id"], templates[0]["version"])
