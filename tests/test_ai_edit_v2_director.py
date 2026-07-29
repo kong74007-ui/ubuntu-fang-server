@@ -128,6 +128,26 @@ class DirectorTests(unittest.TestCase):
         self.assertIn("previous_response", repair_prompt)
         self.assertNotIn("must-not-leak", repair_prompt)
 
+    def test_director_prompts_keep_the_exact_contract_and_original_request_during_repair(self):
+        client = FakeQwen(["{}", json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan, VALID_PLAN)
+        initial_request = json.loads(client.calls[0][1])
+        contract = initial_request["output_contract"]
+        self.assertEqual(contract["top_level_fields"], list(VALID_PLAN))
+        self.assertEqual(contract["scene_fields"], list(VALID_PLAN["scenes"][0]))
+        self.assertEqual(contract["caption_plan_fields"], ["source", "style"])
+        self.assertEqual(
+            contract["audio_plan_fields"],
+            ["speech_policy", "music_policy", "sfx_policy"],
+        )
+        repair_request = json.loads(client.calls[1][1])
+        self.assertEqual(repair_request["original_request"], initial_request)
+        self.assertIn("schema_errors", repair_request)
+        self.assertIn("previous_response", repair_request)
+
     def test_director_enforces_published_template_visual_and_sound_policy(self):
         context = {
             **CONTEXT,
