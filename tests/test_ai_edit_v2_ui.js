@@ -148,6 +148,14 @@ test('template mode uses compact image preview cards instead of a dropdown', () 
   assert.doesNotMatch(html, /<video\b/);
 });
 
+test('narrow screens keep summary values beside their labels and readable', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const narrowRules = page.match(/@media\(max-width:700px\)\{([^\n]+)\}/)?.[1] || '';
+
+  assert.match(narrowRules, /\.summary-row\{[^}]*grid-template-columns:72px minmax\(0,1fr\)/);
+  assert.match(narrowRules, /\.summary-row b\{[^}]*-webkit-line-clamp:2/);
+});
+
 test('legacy video workflow keeps its controls and links to the stable editor', () => {
   const video = fs.readFileSync(videoPath, 'utf8');
   assert.match(video, /data-function="talking"/);
