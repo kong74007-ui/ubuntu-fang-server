@@ -476,7 +476,7 @@ class ProductionServices:
         self.repair_handler = loaded_repair
         self.repair_reconciler_handler = loaded_reconciler
         from .ai_edit_v2_quality import LocalQualityRunner
-        self._quality_video_urls: dict[str, str] = {}
+        self._quality_video_keys: dict[str, str] = {}
         loaded_analyzer = quality_analyzer if quality_analyzer is not None else _load_production_injection(
             "AI_EDIT_V2_QUALITY_ANALYZER_FACTORY", db_path
         )
@@ -537,16 +537,21 @@ class ProductionServices:
         self.cos.download_file(key, path)
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
             raise RuntimeError("quality_output_missing")
-        url = self.cos.presign_get(key)
-        if not isinstance(url, str) or not url.startswith("https://"):
-            raise RuntimeError("quality_output_url_invalid")
-        self._quality_video_urls[os.path.abspath(path)] = url
+        self.register_quality_output(path, key)
         return path
 
+    def register_quality_output(self, path: str, cos_key: str) -> None:
+        if not isinstance(path, str) or not path or not isinstance(cos_key, str) or not cos_key:
+            raise RuntimeError("quality_output_registration_invalid")
+        self._quality_video_keys[os.path.abspath(os.fspath(path))] = cos_key
+
     def _quality_video_url(self, path: str) -> str:
-        value = self._quality_video_urls.get(os.path.abspath(os.fspath(path)))
-        if not value:
+        key = self._quality_video_keys.get(os.path.abspath(os.fspath(path)))
+        if not key:
             raise RuntimeError("quality_output_url_missing")
+        value = self.cos.presign_get(key, expires=300)
+        if not isinstance(value, str) or not value.startswith("https://"):
+            raise RuntimeError("quality_output_url_invalid")
         return value
 
     def actual_cost(self, job: dict[str, Any], _outputs: dict[str, Any]) -> int:
@@ -834,6 +839,7 @@ def production_dependencies(db_path: str, *, services: Any = None) -> dict[str, 
         "verify_artifact": verify,
         "quality_runner": service.quality_runner,
         "quality_output_path": service.resolve_quality_output,
+        "register_quality_output": service.register_quality_output,
         "actual_cost": service.actual_cost,
         "repair_layer": service.repair_layer,
         "repair_reconciler": service.repair_reconciler,

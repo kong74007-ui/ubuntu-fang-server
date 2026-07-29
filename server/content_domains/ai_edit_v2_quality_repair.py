@@ -27,6 +27,18 @@ _LOCAL_REPAIR_CODES = frozenset({
     "output_dimensions_invalid", "output_rotation_invalid",
     "output_duration_mismatch", "audio_clipping_detected",
 })
+_REPAIR_CODE_LAYERS = {
+    "caption_invalid": "captions",
+    "caption_out_of_safe_area": "captions",
+    "caption_tofu_detected": "captions",
+    "caption_glyph_missing": "captions",
+    "black_frames_detected": "video",
+    "blank_frames_detected": "video",
+    "output_dimensions_invalid": "video",
+    "output_rotation_invalid": "video",
+    "output_duration_mismatch": "assembly",
+    "audio_clipping_detected": "audio",
+}
 
 
 def _configured(name: str) -> bool:
@@ -336,8 +348,11 @@ class ProductionRepairProvider:
 
     def submit(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         codes = self._codes(context)
+        layers = self._layers(context)
         if not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES):
             raise ProviderError("repair_layer_unsupported")
+        if any(_REPAIR_CODE_LAYERS.get(code) not in layers for code in codes):
+            raise ProviderError("repair_layer_mismatch")
         if not codes.intersection(_SHOTSTACK_REPAIR_CODES):
             return self._local(job, context, codes)
         from .ai_edit_v2_schema import BUNDLED_NOTO_SANS_SC_URL
@@ -352,18 +367,68 @@ class ProductionRepairProvider:
             plan, {key: self.cos.presign_get(key) for key in keys},
             BUNDLED_NOTO_SANS_SC_URL,
         )
+        graph = self._targeted_graph(graph, codes, layers)
         client = self._client(job, context)
         result = client.submit(graph, context["idempotency_key"])
         task_id = result.payload["provider_task_id"]
         context["save_provider_task_id"](task_id)
-        return self._wait(job, context, client, result)
+        return self._complete_shotstack(job, context, client, result, codes)
 
     def reconcile(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         task_id = context.get("provider_task_id")
         if not isinstance(task_id, str) or not task_id:
             raise ProviderError("repair_provider_task_id_missing")
+        codes = self._codes(context)
+        layers = self._layers(context)
+        if not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES):
+            raise ProviderError("repair_layer_unsupported")
+        if any(_REPAIR_CODE_LAYERS.get(code) not in layers for code in codes):
+            raise ProviderError("repair_layer_mismatch")
         client = self._client(job, context)
-        return self._wait(job, context, client, client.reconcile(provider_task_id=task_id))
+        return self._complete_shotstack(
+            job, context, client,
+            client.reconcile(provider_task_id=task_id), codes,
+        )
+
+    def _complete_shotstack(
+        self, job: dict[str, Any], context: dict[str, Any], client: Any,
+        result: Any, codes: frozenset[str],
+    ) -> dict[str, Any]:
+        rendered = self._wait(job, context, client, result)
+        local_codes = codes.intersection(_LOCAL_REPAIR_CODES)
+        if not local_codes:
+            return rendered
+        local = self._local(
+            job, context, local_codes, source_key=rendered["cos_key"]
+        )
+        return {
+            **rendered,
+            "cos_key": local["cos_key"],
+            "output_path": local["output_path"],
+        }
+
+    @staticmethod
+    def _targeted_graph(
+        graph: dict[str, Any], codes: frozenset[str], layers: frozenset[str]
+    ) -> dict[str, Any]:
+        from .ai_edit_v2_schema import validate_render_graph
+
+        original = json.dumps(graph, sort_keys=True, separators=(",", ":"))
+        if "captions" in layers and codes.intersection(_SHOTSTACK_REPAIR_CODES):
+            for component in graph.get("components") or []:
+                if component.get("type") == "basic_caption":
+                    component.update({"font_size": 44, "width": 1440, "height": 180})
+        if "video" in layers and codes.intersection(
+            {"black_frames_detected", "blank_frames_detected"}
+        ):
+            graph["components"] = [
+                component for component in graph.get("components") or []
+                if component.get("type") != "standard_transition"
+            ]
+        validate_render_graph(graph)
+        if json.dumps(graph, sort_keys=True, separators=(",", ":")) == original:
+            raise ProviderError("repair_render_graph_unchanged")
+        return graph
 
     def _client(self, job: dict[str, Any], context: dict[str, Any]) -> Any:
         from .ai_edit_v2_shotstack import ShotstackClient
@@ -392,8 +457,8 @@ class ProductionRepairProvider:
         })
 
     def _local(self, job: dict[str, Any], context: dict[str, Any],
-               codes: frozenset[str]) -> dict[str, Any]:
-        source_key = self._postprocessing_key(str(job["id"]))
+               codes: frozenset[str], *, source_key: str | None = None) -> dict[str, Any]:
+        source_key = source_key or self._postprocessing_key(str(job["id"]))
         plan = self._resolved_plan(str(job["id"]))
         directory = self._directory(str(job["id"]))
         source, output = os.path.join(directory, "source.mp4"), os.path.join(directory, "final.mp4")
@@ -466,6 +531,15 @@ class ProductionRepairProvider:
         values = context.get("error_codes")
         if not isinstance(values, (tuple, list)) or not values or not all(isinstance(v, str) for v in values):
             raise ProviderError("repair_error_codes_invalid")
+        return frozenset(values)
+
+    @staticmethod
+    def _layers(context: dict[str, Any]) -> frozenset[str]:
+        values = context.get("failing_layers")
+        if not isinstance(values, (tuple, list)) or not values or not all(
+            isinstance(value, str) and value for value in values
+        ):
+            raise ProviderError("repair_failing_layers_invalid")
         return frozenset(values)
 
     @staticmethod

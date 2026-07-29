@@ -797,6 +797,14 @@ def _quality_and_delivery(
             downloader(value["cos_key"], output_path)
             if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
                 raise PipelineError("repair_output_unavailable")
+        repair_cos_key = value.get("cos_key") if isinstance(value, dict) else None
+        if isinstance(repair_cos_key, str) and repair_cos_key:
+            register_quality_output = runtime.option(
+                dependencies, "register_quality_output"
+            )
+            if not callable(register_quality_output):
+                raise PipelineError("quality_output_registration_required")
+            register_quality_output(output_path, repair_cos_key)
         finished = int(now_fn())
         if finished > deadline_at:
             return _stable_failure(

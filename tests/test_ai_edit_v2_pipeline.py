@@ -774,6 +774,107 @@ class StableRunJobTests(PipelineTests):
         self.assertEqual(repaired[0]["deadline_at"], now + 900)
         self.assertEqual(probe_count[0], 2)
 
+    def test_rehydrated_repair_refreshes_qwen_url_inside_repair_budget(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        dependencies = self._dependencies([])
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        clock = [100]
+
+        class RepairCos:
+            def __init__(self):
+                self.objects = {
+                    "private/postprocessing.json": b"original-final",
+                    "private/repaired.mp4": b"rehydrated-repair",
+                }
+                self.presigns = []
+
+            def download_file(self, key, path):
+                Path(path).write_bytes(self.objects[key])
+
+            def presign_get(self, key, expires=300):
+                self.presigns.append((key, expires, clock[0]))
+                return (
+                    f"https://cos.test/{key}?expires_at={clock[0] + expires}"
+                    f"&nonce={len(self.presigns)}"
+                )
+
+            def put_file(self, path, key, _content_type, private=True):
+                self.objects[key] = Path(path).read_bytes()
+                return {"ETag": '"uploaded"'}
+
+            def head_object(self, key):
+                return {
+                    "content_length": len(self.objects[key]),
+                    "content_type": "video/mp4",
+                    "etag": "uploaded",
+                }
+
+        analyzer = lambda *_args, **_kwargs: {}
+        analyzer.capabilities = lambda: {
+            "captions_ocr": True, "glyphs": True, "materials": True,
+            "transcript_facts": True, "audio": True,
+        }
+        repair_cos = RepairCos()
+        services = runtime.ProductionServices(
+            self.db_path, cos_api=repair_cos,
+            repair_handler=lambda *_args: {},
+            repair_reconciler=lambda *_args: {},
+            quality_analyzer=analyzer,
+            quality_binary_finder=lambda name: name,
+        )
+        production = runtime.production_dependencies(self.db_path, services=services)
+        semantic_urls = []
+        evidence = passing_evidence()
+        evidence["probe"]["duration_ms"] = 1_000
+        probe_count = [0]
+
+        def runner(check, *, path, resolved_plan):
+            del resolved_plan
+            if check == "probe":
+                probe_count[0] += 1
+            if check in {"captions", "materials", "transcript"}:
+                url = services._quality_video_url(path)
+                expires_at = int(url.split("expires_at=", 1)[1].split("&", 1)[0])
+                if expires_at <= clock[0]:
+                    raise RuntimeError("quality URL expired")
+                semantic_urls.append((Path(path).parent.name, url))
+            if check == "captions" and probe_count[0] == 1:
+                return {"safe_area": False, "tofu_count": 0, "missing_glyphs": []}
+            return evidence[check]
+
+        missing_path = os.path.join(self.temp_dir.name, "missing-repair.mp4")
+
+        def repair(_job, _context):
+            clock[0] = 500  # Original 300-second URL is expired; repair budget is not.
+            return {"cos_key": "private/repaired.mp4", "output_path": missing_path}
+
+        dependencies.update({
+            "quality_runner": runner,
+            "quality_output_path": services.resolve_quality_output,
+            "repair_layer": repair,
+            "actual_cost": 20,
+            "now": lambda: clock[0],
+            "lease_seconds": 1_000,
+            "services": services,
+        })
+        if callable(production.get("register_quality_output")):
+            dependencies["register_quality_output"] = production["register_quality_output"]
+
+        with patch.object(delivery, "cos", DeliveryCos()), patch.object(
+            billing, "points", self.points
+        ):
+            result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "completed", result)
+        self.assertEqual(probe_count[0], 2)
+        self.assertEqual([item[0] for item in repair_cos.presigns], [
+            "private/postprocessing.json", "private/postprocessing.json",
+            "private/postprocessing.json", "private/repaired.mp4",
+            "private/repaired.mp4", "private/repaired.mp4",
+        ])
+        self.assertTrue(all(expires == 300 for _key, expires, _at in repair_cos.presigns))
+        self.assertEqual(len({url for _directory, url in semantic_urls}), 6)
+
     def test_repair_lost_response_reconciles_saved_provider_id_without_resubmit(self):
         class LostResponse(BaseException):
             pass

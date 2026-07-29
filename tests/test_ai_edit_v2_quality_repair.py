@@ -140,6 +140,7 @@ class QualityRepairProviderTests(unittest.TestCase):
             context = {
                 "attempt_id": attempt_id,
                 "error_codes": ("black_frames_detected",),
+                "failing_layers": ("video",),
                 "idempotency_key": "ai-edit-v2:job-repair-provider:repair:1",
                 "deadline_at": 100,
                 "assert_active": lambda: None,
@@ -164,6 +165,100 @@ class QualityRepairProviderTests(unittest.TestCase):
             self.assertEqual(replay["provider_task_id"], "repair-task-1")
             self.assertEqual(sum(method == "POST" for method, _url in calls), 1)
             self.assertGreaterEqual(sum(method == "GET" for method, _url in calls), 2)
+
+    def test_shotstack_targeted_repair_changes_graph_and_keeps_mixed_local_fix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            store.init_db(db_path)
+            draft = {
+                "creation_mode": "natural_brief", "brief": "x", "language": "zh-CN",
+                "aspect_ratio": "16:9", "target_duration_ms": 1800,
+                "input_mode": "external_video",
+                "main_input": {"asset_id": "m", "kind": "video", "size_bytes": 1,
+                               "duration_ms": 1800},
+                "required_materials": [], "reference_materials": [],
+            }
+            quote = billing.create_quote("alice", draft, 1, db_path=db_path)
+            job = store.create_job(
+                "alice", {"draft": draft}, quote["id"], "targeted-repair", 2,
+                uuid_factory=lambda: "job-targeted-repair", db_path=db_path,
+            )
+            attempt_id = store.record_stage_attempt(
+                job["id"], "repairing", 1, "running", 2, db_path=db_path,
+            )
+            with closing(store.open_store(db_path)) as conn:
+                conn.execute(
+                    """INSERT INTO edit_v2_pipeline_checkpoints(
+                           job_id,stage,input_fingerprint,status,output_json,attempt_count,updated_at
+                       ) VALUES(?, 'resolving_materials', 'plan', 'completed', ?, 1, 2)""",
+                    (job["id"], json.dumps({"resolved_plan": _resolved_plan()})),
+                )
+
+            submitted_payloads = []
+
+            def transport(method, _url, _headers, body, _timeout):
+                if method == "POST":
+                    submitted_payloads.append(json.loads(body))
+                    return {"success": True, "response": {
+                        "id": "repair-task-mixed", "status": "done",
+                        "url": "https://shotstack.example/repaired.mp4",
+                    }, "request_id": "repair-request-mixed"}
+                raise AssertionError("completed submit must not poll")
+
+            class Cos:
+                def __init__(self): self.objects = {}
+                @staticmethod
+                def presign_get(key, expires=300):
+                    return f"https://cos.example/{key}?expires={expires}"
+                def put_bytes(self, data, key, _content_type, private=True):
+                    self.objects[key] = data
+                def download_file(self, key, path):
+                    Path(path).write_bytes(self.objects[key])
+                def put_file(self, path, key, _content_type, private=True):
+                    self.objects[key] = Path(path).read_bytes()
+
+            ffmpeg_commands = []
+
+            def process_runner(command, **_kwargs):
+                ffmpeg_commands.append(command)
+                Path(command[-1]).write_bytes(b"shotstack-then-local")
+                return type("Completed", (), {"returncode": 0})()
+
+            context = {
+                "attempt_id": attempt_id,
+                "error_codes": ("caption_out_of_safe_area", "audio_clipping_detected"),
+                "failing_layers": ("captions", "audio"),
+                "idempotency_key": "ai-edit-v2:job-targeted-repair:repair:1",
+                "deadline_at": 100,
+                "assert_active": lambda: None,
+                "save_provider_task_id": lambda _value: None,
+            }
+            provider = ProductionRepairProvider(
+                db_path=db_path, cos_api=Cos(), shotstack_http=transport,
+                process_runner=process_runner,
+                downloader=lambda _url: b"shotstack-output", now_fn=lambda: 10,
+                sleep_fn=lambda _seconds: None,
+            )
+            configured = {
+                "SHOTSTACK_API_KEY": "test-shotstack-key",
+                "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://example.test/shotstack",
+                "AI_EDIT_V2_WEBHOOK_SECRET": "test-secret",
+            }
+            with patch.dict(os.environ, configured, clear=True):
+                result = provider.submit(job, context)
+
+            clips = [
+                clip for track in submitted_payloads[0]["timeline"]["tracks"]
+                for clip in track["clips"]
+            ]
+            caption = next(clip for clip in clips if clip["asset"]["type"] == "rich-text")
+            with self.subTest("caption graph is deterministically corrected"):
+                self.assertEqual(caption["asset"]["font"]["size"], 44)
+                self.assertEqual((caption["width"], caption["height"]), (1440, 180))
+            with self.subTest("local defect is retained after Shotstack repair"):
+                self.assertEqual(len(ffmpeg_commands), 1)
+                self.assertIn("loudnorm=I=-16:TP=-1.5:LRA=11", ffmpeg_commands[0])
+                self.assertEqual(Path(result["output_path"]).read_bytes(), b"shotstack-then-local")
 
 
 if __name__ == "__main__":

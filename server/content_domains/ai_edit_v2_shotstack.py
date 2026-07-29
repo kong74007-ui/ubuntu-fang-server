@@ -229,7 +229,7 @@ def _compile_shotstack_edit(
                 "text": component["text"],
                 "font": {
                     "family": "NotoSansSC-Regular",
-                    "size": 52 if kind == "basic_caption" else 64,
+                    "size": component.get("font_size", 52) if kind == "basic_caption" else 64,
                     "weight": "600",
                     "color": "#ffffff",
                 },
@@ -254,7 +254,11 @@ def _compile_shotstack_edit(
         if transition is not None and kind != "audio_bed":
             clip["transition"] = {"in": transition_names[transition]}
         if kind == "basic_caption":
-            clip.update({"position": "bottom", "width": 1720, "height": 240})
+            clip.update({
+                "position": "bottom",
+                "width": component.get("width", 1720),
+                "height": component.get("height", 240),
+            })
         elif kind == "basic_card":
             clip.update({"position": "center", "width": 1500, "height": 360})
         tracks.append({"clips": [clip]})
