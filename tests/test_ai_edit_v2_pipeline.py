@@ -718,6 +718,34 @@ class PipelineTests(unittest.TestCase):
 
 
 class StableRunJobTests(PipelineTests):
+    def test_unknown_shotstack_status_closes_render_attempt_with_safe_status(self):
+        class DetailedShotstackFailure(ProviderError):
+            def __init__(self):
+                self.detail = "archiving"
+                super().__init__("shotstack_status_invalid")
+
+        job = self._precharged_job(str(uuid.uuid4()))
+        dependencies = self._dependencies([])
+        dependencies["handlers"]["rendering"] = lambda *_args: (_ for _ in ()).throw(
+            DetailedShotstackFailure()
+        )
+
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "render_failed")
+        with closing(store.open_store(self.db_path)) as conn:
+            attempt = conn.execute(
+                """SELECT status,error_code,output_summary_json
+                   FROM edit_v2_stage_attempts WHERE job_id=? AND stage='rendering'""",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(attempt["status"], "failed")
+        self.assertEqual(attempt["error_code"], "shotstack_status_invalid")
+        self.assertEqual(
+            json.loads(attempt["output_summary_json"]),
+            {"stage": "rendering", "provider_status": "archiving"},
+        )
+
     def test_schema_failure_closes_stage_attempt_and_persists_safe_detail(self):
         class DetailedDirectorFailure(RuntimeError):
             code = "director_schema_invalid"

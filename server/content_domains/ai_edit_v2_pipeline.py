@@ -1023,6 +1023,7 @@ def run_job(
                 max_calls = 3 if provider_stage else 1
                 last_code = "stage_execution_failed"
                 last_detail: str | None = None
+                last_detail_key: str | None = None
                 remaining_calls = (
                     max(0, max_calls - int(checkpoint["attempt_count"]))
                     if provider_stage
@@ -1128,6 +1129,10 @@ def run_job(
                         continue
                     except ProviderError as exc:
                         last_code = str(exc) or "provider_failed"
+                        detail = getattr(exc, "detail", None)
+                        if last_code == "shotstack_status_invalid" and isinstance(detail, str):
+                            last_detail = detail[:64]
+                            last_detail_key = "provider_status"
                         break
                     except PipelineError as exc:
                         if exc.code == "job_lease_lost":
@@ -1139,11 +1144,12 @@ def run_job(
                         detail = getattr(exc, "detail", None)
                         if last_code == "director_schema_invalid" and isinstance(detail, str):
                             last_detail = detail[:1_000]
+                            last_detail_key = "schema_error"
                         break
                 if output is None:
                     failure_summary = {"stage": stage}
-                    if last_detail:
-                        failure_summary["schema_error"] = last_detail
+                    if last_detail and last_detail_key:
+                        failure_summary[last_detail_key] = last_detail
                     _finish_attempt(
                         attempt_id,
                         StageResult(

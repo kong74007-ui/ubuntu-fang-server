@@ -177,6 +177,27 @@ class ShotstackClientTests(unittest.TestCase):
         query = parse_qs(urlparse(callback).query)
         return int(query["attempt_id"][0]), query["token"][0]
 
+    def test_official_preprocessing_and_saving_statuses_remain_pending(self):
+        for raw_status in ("preprocessing", "saving"):
+            with self.subTest(raw_status=raw_status):
+                task_id, status, output_url, _request_id = ShotstackClient._parse_response({
+                    "success": True,
+                    "response": {"id": "render-123", "status": raw_status},
+                })
+                self.assertEqual(task_id, "render-123")
+                self.assertEqual(status, "pending")
+                self.assertIsNone(output_url)
+
+    def test_unknown_status_exposes_only_the_safe_status_token(self):
+        with self.assertRaises(ProviderError) as caught:
+            ShotstackClient._parse_response({
+                "success": True,
+                "response": {"id": "render-123", "status": "archiving"},
+            })
+
+        self.assertEqual(str(caught.exception), "shotstack_status_invalid")
+        self.assertEqual(caught.exception.detail, "archiving")
+
     def test_submit_compiles_official_edit_api_json_before_transport(self):
         bodies = []
 
