@@ -10,6 +10,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from . import ai_edit_v2_delivery as delivery
 from . import ai_edit_v2_store as store
@@ -57,6 +58,15 @@ def _source_path(value: str) -> Path:
     return candidate
 
 
+def _preview_url(value: str | None) -> str | None:
+    rel = str(value or "").replace("\\", "/").lstrip("/")
+    parts = rel.split("/")
+    if (not rel or ":" in rel or "?" in rel or "#" in rel
+            or any(part in ("", ".", "..") for part in parts)):
+        return None
+    return "/api/gen/file/" + quote(rel, safe="/")
+
+
 def _authoritative_text(row: sqlite3.Row) -> str:
     text = str(row["text"] or "").strip()
     if text:
@@ -93,18 +103,29 @@ def _owned_row(owner: str, asset_id: int) -> sqlite3.Row | None:
 def list_assets(owner: str, limit: int = 100) -> list[dict[str, Any]]:
     with closing(_connect(_asset_db_path())) as conn:
         rows = conn.execute(
-            """SELECT id,video_file,ratio,status FROM video_assets
+            """SELECT id,image_file,video_file,text,ratio,status,created_at
+               FROM video_assets
                WHERE username=? AND mode IN ('text','audio')
                  AND status IN ('done','ready','completed','succeeded')
                  AND video_file IS NOT NULL AND TRIM(video_file)!=''
                ORDER BY updated_at DESC,id DESC LIMIT ?""",
             (owner, max(1, min(100, int(limit)))),
         ).fetchall()
-    return [{
-        "id": int(row["id"]), "reference_id": str(row["id"]),
-        "filename": os.path.basename(str(row["video_file"])),
-        "ratio": row["ratio"], "status": row["status"],
-    } for row in rows]
+    items = []
+    for row in rows:
+        preview_url = _preview_url(row["video_file"])
+        if preview_url is None:
+            continue
+        items.append({
+            "id": int(row["id"]), "reference_id": str(row["id"]),
+            "filename": os.path.basename(str(row["video_file"])),
+            "summary": " ".join(str(row["text"] or "").split())[:120],
+            "ratio": row["ratio"], "status": row["status"],
+            "created_at": int(row["created_at"] or 0),
+            "preview_url": preview_url,
+            "thumbnail_url": _preview_url(row["image_file"]),
+        })
+    return items
 
 
 def import_asset(

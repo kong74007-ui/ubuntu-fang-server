@@ -202,14 +202,16 @@ class ApiTests(unittest.TestCase):
         with closing(sqlite3.connect(asset_db)) as conn:
             conn.execute("""CREATE TABLE video_assets(
                 id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
-                video_file TEXT,text TEXT,ratio TEXT,status TEXT,created_at INTEGER,
-                updated_at INTEGER)""")
+                image_file TEXT,video_file TEXT,text TEXT,ratio TEXT,status TEXT,
+                created_at INTEGER,updated_at INTEGER)""")
             conn.executemany(
-                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [
-                    (31, "source-job-31", "alice", "text", source,
+                    (31, "source-job-31", "alice", "text", "image/cover 31.jpg",
+                     "platform-video.mp4",
                      "authoritative script 29", "16:9", "done", 1, 2),
-                    (32, "source-job-32", "bob", "text", source,
+                    (32, "source-job-32", "bob", "text", "image/cover-32.jpg",
+                     "platform-video.mp4",
                      "other owner secret", "16:9", "done", 1, 2),
                 ],
             )
@@ -223,9 +225,15 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(listed["items"], [{
                 "id": 31, "reference_id": "31", "filename": "platform-video.mp4",
-                "ratio": "16:9", "status": "done",
+                "summary": "authoritative script 29", "ratio": "16:9",
+                "status": "done", "created_at": 1,
+                "preview_url": "/api/gen/file/platform-video.mp4",
+                "thumbnail_url": "/api/gen/file/image/cover%2031.jpg",
             }])
-            self.assertNotIn("original_text", listed["items"][0])
+            for private_field in (
+                "original_text", "username", "video_file", "image_file", "cos_key"
+            ):
+                self.assertNotIn(private_field, listed["items"][0])
             status, imported = self._dispatch(
                 "POST", "/api/v2/edit/platform-assets/31/import",
                 {"original_text": "forged client text", "source": "platform_video"},
