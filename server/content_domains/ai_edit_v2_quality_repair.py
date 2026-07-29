@@ -140,10 +140,40 @@ class DashScopeFinalMediaAnalyzer:
             "input": {"messages": [{"role": "user", "content": content}]},
             "parameters": {"result_format": "message"},
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        response = self.http_request(
-            "POST", self._base_url() + _QWEN_PATH, self._headers(), body, 120,
+        def request_once() -> dict[str, Any]:
+            response = self.http_request(
+                "POST", self._base_url() + _QWEN_PATH, self._headers(), body, 120,
+            )
+            return self._parse_qwen(check, response)
+
+        first = request_once()
+        if check != "captions" or self._captions_clean(first):
+            return first
+        return self._caption_consensus([first, request_once(), request_once()])
+
+    @staticmethod
+    def _captions_clean(value: dict[str, Any]) -> bool:
+        return (
+            value.get("safe_area") is True
+            and value.get("tofu_count") == 0
+            and value.get("missing_glyphs") == []
         )
-        return self._parse_qwen(check, response)
+
+    @staticmethod
+    def _caption_consensus(values: list[dict[str, Any]]) -> dict[str, Any]:
+        safe_votes = sum(value["safe_area"] is True for value in values)
+        tofu_counts = sorted(int(value["tofu_count"]) for value in values)
+        glyph_votes: dict[str, int] = {}
+        for value in values:
+            for glyph in set(value["missing_glyphs"]):
+                glyph_votes[glyph] = glyph_votes.get(glyph, 0) + 1
+        return {
+            "safe_area": safe_votes >= 2,
+            "tofu_count": tofu_counts[1],
+            "missing_glyphs": sorted(
+                glyph for glyph, count in glyph_votes.items() if count >= 2
+            ),
+        }
 
     def _material_references(self, expected: dict[str, Any]) -> list[dict[str, str]]:
         required = {str(value) for value in expected.get("required_asset_ids") or []}
