@@ -48,6 +48,42 @@ audio policy：speech_policy={speech}; music_policy 可选 {music}; sfx_policy �
 )
 _MAX_REPAIR_RESPONSE_CHARS: Final = 8_000
 _MAX_REPAIR_ERROR_CHARS: Final = 1_000
+_OUTPUT_CONTRACT: Final = {
+    "top_level_fields": [
+        "version",
+        "creation_mode",
+        "duration_ms",
+        "target_duration_ms",
+        "aspect_ratio",
+        "language",
+        "style_system",
+        "scenes",
+        "caption_plan",
+        "audio_plan",
+    ],
+    "scene_fields": [
+        "id",
+        "start_ms",
+        "end_ms",
+        "intent",
+        "layout",
+        "visual_type",
+        "headline",
+        "material_slots",
+        "transition",
+    ],
+    "caption_plan_fields": ["source", "style"],
+    "audio_plan_fields": ["speech_policy", "music_policy", "sfx_policy"],
+    "rules": {
+        "version": "2.0",
+        "language": "zh-CN",
+        "duration": "duration_ms and target_duration_ms must equal context.target_duration_ms",
+        "scenes": "start at 0, remain contiguous without overlap, and end at duration_ms",
+        "style_system": "use only component_family unless context contains a published template",
+        "caption_source": "text_timeline",
+        "material_slot_id": "slot_ followed by lowercase letters, digits, underscores, or hyphens",
+    },
+}
 _SENSITIVE_KEY_RE: Final = re.compile(
     r"(?i)(?:api[_-]?key|access[_-]?(?:key|token)|token|secret|password|credential|authorization|cookie)"
 )
@@ -219,6 +255,7 @@ def _initial_prompt(safe_context: dict[str, Any]) -> str:
             "task": "generate_semantic_edit_plan_v2",
             "required_version": "2.0",
             "context": safe_context,
+            "output_contract": _OUTPUT_CONTRACT,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -260,9 +297,12 @@ def _sanitize_previous_response(previous_response: str) -> str:
     return sanitized[:_MAX_REPAIR_RESPONSE_CHARS]
 
 
-def _repair_prompt(error: ValueError, previous_response: str) -> str:
+def _repair_prompt(error: ValueError, previous_response: str, original_request: str) -> str:
     return json.dumps(
         {
+            "task": "repair_semantic_edit_plan_v2",
+            "instruction": "根据原始请求和字段级错误，只返回修复后的完整 JSON 对象。",
+            "original_request": json.loads(original_request),
             "schema_errors": _redact_sensitive_text(str(error))[:_MAX_REPAIR_ERROR_CHARS],
             "previous_response": _sanitize_previous_response(previous_response),
         },
@@ -278,7 +318,8 @@ def generate_edit_plan(context: dict[str, Any], client: Any, max_repairs: int = 
         raise DirectorError("director_context_invalid")
     repair_limit = min(max_repairs, 2)
     safe_context = _safe_context(context)
-    user_prompt = _initial_prompt(safe_context)
+    original_request = _initial_prompt(safe_context)
+    user_prompt = original_request
     for attempt in range(repair_limit + 1):
         content = ""
         try:
@@ -298,5 +339,5 @@ def generate_edit_plan(context: dict[str, Any], client: Any, max_repairs: int = 
             if attempt == repair_limit:
                 raise DirectorError("director_schema_invalid") from exc
             error = exc if isinstance(exc, ValueError) else ValueError(exc.code)
-            user_prompt = _repair_prompt(error, content)
+            user_prompt = _repair_prompt(error, content, original_request)
     raise DirectorError("director_schema_invalid")
