@@ -827,10 +827,32 @@ def list_video_assets(username, limit=120):
         except Exception:
             pass
     try:
+        from . import ai_edit_v2_cos
+        for item in items:
+            if (
+                item.get("mode") == "ai_edit_v2"
+                and item.get("status") == "done"
+                and item.get("phase") == "completed"
+                and item.get("video_file")
+            ):
+                item["video_url"] = None
+                try:
+                    item["video_url"] = ai_edit_v2_cos.presign_get(
+                        item["video_file"], expires=300
+                    )
+                except Exception as e:
+                    print("[video-assets] V2 COS playback signing failed: %s" % e, flush=True)
+    except Exception as e:
+        print("[video-assets] V2 COS adapter unavailable: %s" % e, flush=True)
+    try:
         from . import cos
         if cos.enabled():
             for item in items:
-                if item.get("video_file") and str(item.get("video_url") or "").startswith("http"):
+                if (
+                    item.get("mode") != "ai_edit_v2"
+                    and item.get("video_file")
+                    and str(item.get("video_url") or "").startswith("http")
+                ):
                     item["video_url"] = cos.object_url(item["video_file"], private=True)
     except Exception as e:
         print("[video-assets] COS 签名刷新失败: %s" % e, flush=True)
