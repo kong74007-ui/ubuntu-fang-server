@@ -465,6 +465,64 @@ class ProviderSmokeCLITests(unittest.TestCase):
     def _module(self):
         return importlib.import_module("scripts.ai_edit_v2_provider_smoke")
 
+    def test_elevenlabs_smoke_uses_valid_uuid_job_scope(self):
+        smoke = self._module()
+        from server.content_domains.ai_edit_v2_providers.elevenlabs import (
+            ElevenLabsProvider,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            provider = ElevenLabsProvider(
+                owner="provider-smoke",
+                job_id=smoke.SMOKE_JOB_ID,
+                db_path=str(Path(directory) / "provider.db"),
+                api_key="test-placeholder",
+            )
+        self.assertEqual(provider.job_id, smoke.SMOKE_JOB_ID)
+
+    def test_provider_import_falls_back_to_deployed_server_layout(self):
+        smoke = self._module()
+        deployed_module = object()
+        missing_server_package = ModuleNotFoundError(
+            "No module named 'server'", name="server"
+        )
+
+        with patch.object(
+            smoke.importlib,
+            "import_module",
+            side_effect=[missing_server_package, deployed_module],
+        ) as importer:
+            result = smoke._import_provider_module(
+                "content_domains.ai_edit_v2_providers.elevenlabs"
+            )
+
+        self.assertIs(result, deployed_module)
+        self.assertEqual(
+            importer.call_args_list,
+            [
+                unittest.mock.call(
+                    "server.content_domains.ai_edit_v2_providers.elevenlabs"
+                ),
+                unittest.mock.call(
+                    "content_domains.ai_edit_v2_providers.elevenlabs"
+                ),
+            ],
+        )
+
+    def test_shotstack_smoke_reports_provider_task_id_instead_of_created_message(self):
+        smoke = self._module()
+
+        class Result:
+            request_id = "Created"
+            payload = {
+                "provider_task_id": "22222222-2222-4222-8222-222222222222"
+            }
+
+        self.assertEqual(
+            smoke._request_id(Result()),
+            "22222222-2222-4222-8222-222222222222",
+        )
+
     def test_no_provider_never_calls_network_and_has_stable_usage_exit(self):
         completed = subprocess.run(
             [sys.executable, str(SMOKE_SCRIPT)],

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -60,6 +61,7 @@ _REQUIRED_ENV = {
     "cos": _COS_ENV + ("AI_EDIT_V2_SMOKE_COS_KEY",),
 }
 _RESULT_PREFIX = "AI_EDIT_V2_SMOKE_RESULT="
+SMOKE_JOB_ID = "00000000-0000-4000-8000-000000000001"
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,10 @@ def _request_id(value: Any) -> str | None:
     if isinstance(value, dict):
         candidate = value.get("request_id") or value.get("id")
     else:
-        candidate = getattr(value, "request_id", None)
+        payload = getattr(value, "payload", None)
+        if isinstance(payload, dict):
+            candidate = payload.get("provider_task_id")
+        candidate = candidate or getattr(value, "request_id", None)
     if not isinstance(candidate, str):
         return None
     safe = "".join(re.findall(r"[A-Za-z0-9_-]", candidate))
@@ -94,6 +99,15 @@ def _redacted_request_id(value: str | None) -> str:
 
 def format_result(result: SmokeResult) -> str:
     return f"stage={result.stage} request_id={_redacted_request_id(result.request_id)}"
+
+
+def _import_provider_module(module_name: str) -> Any:
+    try:
+        return importlib.import_module("server." + module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != "server":
+            raise
+        return importlib.import_module(module_name)
 
 
 def run_smoke(
@@ -154,7 +168,9 @@ def _run_child(provider: str, timeout_seconds: float) -> int:
 
 def _run_provider(provider: str, environ: Mapping[str, str], timeout: float) -> Any:
     if provider.startswith("dashscope-"):
-        from server.content_domains.ai_edit_v2_providers.dashscope import DashScopeClient
+        DashScopeClient = _import_provider_module(
+            "content_domains.ai_edit_v2_providers.dashscope"
+        ).DashScopeClient
 
         client = DashScopeClient(timeout_seconds=max(1, round(timeout)))
         if provider == "dashscope-asr":
@@ -186,12 +202,14 @@ def _run_provider(provider: str, environ: Mapping[str, str], timeout: float) -> 
             value = json.loads(response.read().decode("utf-8"))
         return {"request_id": value.get("id") or response.headers.get("x-request-id")}
     if provider.startswith("elevenlabs-"):
-        from server.content_domains.ai_edit_v2_providers.elevenlabs import ElevenLabsProvider
+        ElevenLabsProvider = _import_provider_module(
+            "content_domains.ai_edit_v2_providers.elevenlabs"
+        ).ElevenLabsProvider
 
         with tempfile.TemporaryDirectory(prefix="ai-edit-v2-smoke-") as directory:
             adapter = ElevenLabsProvider(
                 owner="provider-smoke",
-                job_id="provider-smoke",
+                job_id=SMOKE_JOB_ID,
                 db_path=str(Path(directory) / "provider.db"),
                 timeout_seconds=max(1, round(timeout)),
             )
@@ -199,8 +217,10 @@ def _run_provider(provider: str, environ: Mapping[str, str], timeout: float) -> 
                 return adapter.generate_music("brief neutral instrumental sting", 3_000, "provider-smoke-music")
             return adapter.generate_sfx("soft click", 500, "provider-smoke-sfx")
     if provider == "shotstack":
-        from server.content_domains import ai_edit_v2_store as store
-        from server.content_domains.ai_edit_v2_shotstack import ShotstackClient
+        store = _import_provider_module("content_domains.ai_edit_v2_store")
+        ShotstackClient = _import_provider_module(
+            "content_domains.ai_edit_v2_shotstack"
+        ).ShotstackClient
 
         with tempfile.TemporaryDirectory(prefix="ai-edit-v2-smoke-") as directory:
             db_path = str(Path(directory) / "provider.db")
@@ -232,7 +252,7 @@ def _run_provider(provider: str, environ: Mapping[str, str], timeout: float) -> 
                 timeout_seconds=max(1, round(timeout)),
             ).submit(graph, "provider-smoke-render")
     if provider == "cos":
-        from server.content_domains import ai_edit_v2_cos
+        ai_edit_v2_cos = _import_provider_module("content_domains.ai_edit_v2_cos")
 
         metadata = ai_edit_v2_cos.head_object(environ["AI_EDIT_V2_SMOKE_COS_KEY"])
         return {"request_id": metadata.get("etag")}
