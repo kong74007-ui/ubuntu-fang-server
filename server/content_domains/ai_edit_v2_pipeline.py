@@ -1001,6 +1001,14 @@ def run_job(
             if output is None:
                 handler = runtime.dependency_callable(dependencies, "handlers", stage)
                 if handler is None:
+                    failure = StageResult(
+                        _FAILURE_BY_STAGE.get(state, "quality_failed"),
+                        {"stage": stage},
+                        error_code="stage_handler_missing",
+                    )
+                    _finish_attempt(
+                        attempt_id, failure, now, db_path, lease_owner=worker_id
+                    )
                     return _stable_failure(
                         job_id,
                         state,
@@ -1014,6 +1022,7 @@ def run_job(
                 provider_stage = stage in runtime.PROVIDER_STAGES
                 max_calls = 3 if provider_stage else 1
                 last_code = "stage_execution_failed"
+                last_detail: str | None = None
                 remaining_calls = (
                     max(0, max_calls - int(checkpoint["attempt_count"]))
                     if provider_stage
@@ -1127,8 +1136,25 @@ def run_job(
                         break
                     except Exception as exc:
                         last_code = getattr(exc, "code", None) or "stage_execution_failed"
+                        detail = getattr(exc, "detail", None)
+                        if last_code == "director_schema_invalid" and isinstance(detail, str):
+                            last_detail = detail[:1_000]
                         break
                 if output is None:
+                    failure_summary = {"stage": stage}
+                    if last_detail:
+                        failure_summary["schema_error"] = last_detail
+                    _finish_attempt(
+                        attempt_id,
+                        StageResult(
+                            _FAILURE_BY_STAGE.get(state, "quality_failed"),
+                            failure_summary,
+                            error_code=last_code,
+                        ),
+                        int(now_fn()),
+                        db_path,
+                        lease_owner=worker_id,
+                    )
                     return _stable_failure(
                         job_id,
                         state,

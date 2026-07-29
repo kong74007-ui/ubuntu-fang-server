@@ -77,6 +77,47 @@ class FakeQwen:
 
 
 class DirectorTests(unittest.TestCase):
+    def test_director_normalizes_only_safe_structural_fields_before_validation(self):
+        structurally_wrong = copy.deepcopy(VALID_PLAN)
+        structurally_wrong["style_system"] = "editorial_business"
+        structurally_wrong["scenes"][0]["id"] = ""
+        client = FakeQwen([json.dumps(structurally_wrong, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan["style_system"], {"component_family": "editorial_business"})
+        self.assertEqual(plan["scenes"][0]["id"], "scene_01")
+
+    def test_director_initial_request_contains_a_context_valid_output_example(self):
+        class ExampleEchoQwen:
+            def generate_edit_plan(self, _system_prompt, user_prompt):
+                request = json.loads(user_prompt)
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="director",
+                    request_id="example-echo",
+                    payload={"content": json.dumps(request["output_example"], ensure_ascii=False)},
+                    cost_units=1,
+                    elapsed_ms=1,
+                )
+
+        plan = generate_edit_plan(CONTEXT, ExampleEchoQwen())
+
+        self.assertEqual(plan["duration_ms"], 1800)
+        self.assertEqual(plan["aspect_ratio"], "16:9")
+        self.assertEqual(plan["scenes"][0]["id"], "scene_01")
+
+    def test_final_schema_failure_exposes_only_a_safe_validation_detail(self):
+        invalid = copy.deepcopy(VALID_PLAN)
+        invalid["style_system"] = "unknown-family"
+        client = FakeQwen([json.dumps(invalid, ensure_ascii=False)] * 3)
+
+        with self.assertRaises(DirectorError) as caught:
+            generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(caught.exception.code, "director_schema_invalid")
+        self.assertEqual(caught.exception.detail, "style_system必须是对象")
+
     def test_director_returns_semantic_plan_without_provider_or_render_fields(self):
         client = FakeQwen([json.dumps(VALID_PLAN, ensure_ascii=False)])
 
