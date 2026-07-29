@@ -45,6 +45,76 @@ def _resolved_plan(duration_ms=1800):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_runtime_treats_the_primary_binding_as_the_main_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            pricing_path = os.path.join(directory, "pricing.db")
+            store.init_db(db_path)
+            draft = {
+                "creation_mode": "open_generation",
+                "language": "zh-CN",
+                "aspect_ratio": "9:16",
+                "target_duration_ms": None,
+                "input_mode": "platform_video",
+                "main_input": {
+                    "asset_id": "1", "kind": "video", "size_bytes": 100,
+                    "duration_ms": 1000,
+                },
+                "required_materials": [],
+                "reference_materials": [],
+                "original_text": "platform script",
+            }
+            with closing(store.open_store(db_path)) as conn:
+                cursor = conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           owner,kind,purpose,source,cos_key,filename,mime_type,
+                           size_bytes,duration_ms,width,height,status,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("alice", "video", "primary", "platform_video",
+                     "ai-edit-v2/owner/platform/31/source.mp4", "source.mp4",
+                     "video/mp4", 100, 1000, 1080, 1920, "ready", 1, 1),
+                )
+                material_id = cursor.lastrowid
+                conn.commit()
+            draft["main_input"]["asset_id"] = str(material_id)
+            quote = billing.create_quote(
+                "alice", draft, 1, db_path=db_path, pricing_db_path=pricing_path
+            )
+            job = store.create_job(
+                "alice", {"draft": draft}, quote["id"], "primary-binding", 2,
+                uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174001",
+                db_path=db_path,
+                material_bindings=[{"material_id": material_id, "purpose": "primary"}],
+            )
+
+            class Cos:
+                @staticmethod
+                def head_object(_key):
+                    return {"content_length": 101, "etag": "normalized-etag"}
+
+            normalized_key = (
+                "ai-edit-v2/2bd806c97f0e00af/"
+                "123e4567-e89b-42d3-a456-426614174001/normalized/main.mp4"
+            )
+            with patch(
+                "server.content_domains.ai_edit_v2_media.prepare_cos_media",
+                return_value={
+                    "cos_key": normalized_key,
+                    "metadata": {"duration_ms": 1000},
+                },
+            ) as prepare:
+                output = runtime.ProductionServices(db_path, cos_api=Cos()).normalizing(
+                    job, {}, {"payload": {"draft": draft}}
+                )
+
+            self.assertEqual(output["normalized_media"]["cos_key"], normalized_key)
+            self.assertEqual(
+                prepare.call_args.args[0],
+                "ai-edit-v2/owner/platform/31/source.mp4",
+            )
+            repositories = runtime._MaterialRepositories(db_path, "alice")
+            self.assertEqual(repositories.search("current_upload", job["id"], {}), [])
+
     def test_audio_only_always_masters_original_voice_when_optional_audio_is_none_or_degraded(self):
         class Cos:
             def __init__(self): self.objects = {}

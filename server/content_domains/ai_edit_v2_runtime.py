@@ -428,7 +428,7 @@ class _MaterialRepositories:
 
     def search(self, source: str, job_id: str, _slot: dict[str, Any]) -> list[dict[str, Any]]:
         if source == "current_upload":
-            return [self._asset(row) for row in self._rows(job_id) if row.get("bound_purpose") != "main_input"]
+            return [self._asset(row) for row in self._rows(job_id) if row.get("bound_purpose") != "primary"]
         if source == "user_history":
             return [self._asset(row) for row in self._rows() if row.get("source") != "platform_public"]
         if source == "platform_public":
@@ -644,7 +644,7 @@ class ProductionServices:
             with closing(store.open_store(self.db_path)) as conn:
                 row = conn.execute("""SELECT m.cos_key,m.kind FROM edit_v2_materials m
                     JOIN edit_v2_job_materials jm ON jm.material_id=m.id
-                    WHERE jm.job_id=? AND jm.purpose='main_input' AND m.status='ready'""", (job["id"],)).fetchone()
+                    WHERE jm.job_id=? AND jm.purpose='primary' AND m.status='ready'""", (job["id"],)).fetchone()
             if row is not None:
                 cos_key, source = row["cos_key"], {**source, "kind": row["kind"]}
         if not isinstance(cos_key, str) or not cos_key:
