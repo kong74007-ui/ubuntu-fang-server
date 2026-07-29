@@ -17,7 +17,7 @@ from . import ai_edit_v2_billing as billing
 from . import ai_edit_v2_store as store
 from . import points
 from .ai_edit_v2_schema import FAILURE_STATES, STATE_TRANSITIONS, TERMINAL_STATES
-from .ai_edit_v2_providers.base import RetryableProviderError
+from .ai_edit_v2_providers.base import ProviderError, RetryableProviderError
 
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], "StageResult"]
@@ -1101,7 +1101,25 @@ def run_job(
                         break
                     except (RetryableStageError, RetryableProviderError) as exc:
                         last_code = getattr(exc, "code", None) or str(exc) or "provider_unavailable"
+                        retry_after = max(
+                            0, int(getattr(exc, "retry_after_seconds", 0) or 0)
+                        )
+                        if retry_after:
+                            if int(now_fn()) + retry_after > deadline_at:
+                                last_code = "normal_budget_exceeded"
+                                break
+                            sleeper = runtime.option(
+                                dependencies, "retry_sleep", time.sleep
+                            )
+                            if not callable(sleeper):
+                                last_code = "retry_sleep_invalid"
+                                break
+                            sleeper(retry_after)
+                            heartbeat.assert_active()
                         continue
+                    except ProviderError as exc:
+                        last_code = str(exc) or "provider_failed"
+                        break
                     except PipelineError as exc:
                         if exc.code == "job_lease_lost":
                             raise

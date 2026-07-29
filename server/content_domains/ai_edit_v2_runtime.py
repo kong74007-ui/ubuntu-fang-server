@@ -505,8 +505,6 @@ class ProductionServices:
             errors.append("SHOTSTACK_API_KEY")
         if not configured("OPENAI_API_KEY"):
             errors.append("OPENAI_API_KEY")
-        if os.environ.get("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED") != "1":
-            errors.append("AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED")
         if not configured("ELEVENLABS_API_KEY"):
             errors.append("ELEVENLABS_API_KEY")
         callback = str(os.environ.get("AI_EDIT_V2_SHOTSTACK_CALLBACK_URL") or "").strip()

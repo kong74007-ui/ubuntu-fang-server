@@ -128,11 +128,6 @@ class FakeAssetStore:
 
 
 class OpenAIImageProviderTests(unittest.TestCase):
-    def setUp(self):
-        self.acceptance_env = patch.dict(os.environ, {ACCEPTANCE_ENV: "1"})
-        self.acceptance_env.start()
-        self.addCleanup(self.acceptance_env.stop)
-
     def _provider(self, response=None, downloaded=None, *, head=None):
         events = []
         response = response or {
@@ -202,27 +197,11 @@ class OpenAIImageProviderTests(unittest.TestCase):
         self.assertEqual(request[4]["model"], "gpt-image-2")
         self.assertEqual(request[4]["size"], "1536x1024")
 
-    def test_live_generation_is_blocked_until_task11_idempotency_probe_passes(self):
-        for value in (None, "0", "true", "yes", "on"):
-            with self.subTest(value=value):
-                environment = {} if value is None else {ACCEPTANCE_ENV: value}
-                with patch.dict(os.environ, environment, clear=True):
-                    provider, store, events = self._provider()
-
-                    with self.assertRaisesRegex(
-                        ProviderError,
-                        "openai_image_idempotency_acceptance_required",
-                    ):
-                        provider.generate(SLOT, "blocked-before-acceptance")
-
-                self.assertIsNone(store.saved)
-                self.assertEqual([event[0] for event in events], ["find"])
-
-    def test_exact_one_acceptance_environment_enables_live_generation(self):
-        with patch.dict(os.environ, {ACCEPTANCE_ENV: "1"}, clear=True):
+    def test_live_generation_uses_no_replay_policy_without_acceptance_flag(self):
+        with patch.dict(os.environ, {ACCEPTANCE_ENV: "0"}, clear=True):
             provider, _, events = self._provider()
 
-            provider.generate(SLOT, "accepted-by-server-environment")
+            provider.generate(SLOT, "no-provider-idempotency-required")
 
         self.assertIn("request", [event[0] for event in events])
 
@@ -235,25 +214,24 @@ class OpenAIImageProviderTests(unittest.TestCase):
                     acceptance_probe_passed=True,
                 )
 
-    def test_ready_asset_replays_while_live_generation_acceptance_is_blocked(self):
+    def test_ready_asset_replays_without_external_resubmission(self):
         provider, store, events = self._provider()
         first = provider.generate(SLOT, "ready-before-gate")
         events.clear()
 
-        with patch.dict(os.environ, {}, clear=True):
-            blocked_provider = OpenAIImageProvider(
-                owner="user-a",
-                job_id=JOB,
-                api_key="test-key",
-                asset_store=store,
-                http_request=lambda *args: self.fail(
-                    "ready replay must not call the provider"
-                ),
-            )
-            replay = blocked_provider.generate(SLOT, "ready-before-gate")
+        blocked_provider = OpenAIImageProvider(
+            owner="user-a",
+            job_id=JOB,
+            api_key="test-key",
+            asset_store=store,
+            http_request=lambda *args: self.fail(
+                "ready replay must not call the provider"
+            ),
+        )
+        replay = blocked_provider.generate(SLOT, "ready-before-gate")
 
         self.assertEqual(replay.payload, first.payload)
-        self.assertEqual([event[0] for event in events], ["find"])
+        self.assertEqual([event[0] for event in events], ["reserve"])
 
     def test_retry_returns_existing_asset_without_external_resubmission(self):
         provider, store, events = self._provider()
@@ -331,8 +309,8 @@ class OpenAIImageProviderTests(unittest.TestCase):
             provider.generate(SLOT, "mime-spoof")
 
         self.assertNotIn("put", [event[0] for event in events])
-        self.assertEqual(store.saved["status"], "pending")
-        self.assertEqual(store.saved["generation_state"], "provider_confirmed")
+        self.assertEqual(store.saved["status"], "failed")
+        self.assertEqual(store.saved["generation_state"], "terminal_failed")
 
     def test_rejects_truncated_png_before_cos_write(self):
         provider, _, events = self._provider(
@@ -379,8 +357,8 @@ class OpenAIImageProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "image_cos_verification_failed"):
             provider.generate(SLOT, "bad-head")
 
-        self.assertEqual(store.saved["status"], "pending")
-        self.assertEqual(store.saved["generation_state"], "provider_confirmed")
+        self.assertEqual(store.saved["status"], "failed")
+        self.assertEqual(store.saved["generation_state"], "terminal_failed")
         self.assertNotIn("complete", [event[0] for event in events])
 
     def test_rejects_cross_scope_existing_asset(self):
@@ -402,7 +380,7 @@ class OpenAIImageProviderTests(unittest.TestCase):
 
         self.assertEqual([event[0] for event in events], ["reserve"])
 
-    def test_unknown_submission_restarts_with_same_key_and_byte_identical_body(self):
+    def test_unknown_submission_is_terminal_and_restart_never_resubmits(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = os.path.join(temp_dir, "ai-edit-v2.db")
             store.init_db(db_path)
@@ -424,13 +402,16 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 downloader=lambda *args: None, now_seconds=lambda: 100,
                 worker_id="worker-first", db_path=db_path,
             )
-            with self.assertRaises(RetryableProviderError):
+            with self.assertRaisesRegex(
+                ProviderError, "openai_image_submission_unknown"
+            ) as caught:
                 first.generate(SLOT, "same-provider-key")
+            self.assertNotIsInstance(caught.exception, RetryableProviderError)
 
             persisted = store.find_generated_material(
                 "user-a", job["id"], "same-provider-key", db_path=db_path
             )
-            self.assertEqual(persisted["generation_state"], "unknown_submission")
+            self.assertEqual(persisted["generation_state"], "terminal_failed")
 
             def replay_request(method, url, headers, body, timeout):
                 attempts.append((headers["Idempotency-Key"], body))
@@ -447,16 +428,73 @@ class OpenAIImageProviderTests(unittest.TestCase):
                 },
                 now_seconds=lambda: 131, worker_id="worker-second", db_path=db_path,
             )
-            result = second.generate(SLOT, "same-provider-key")
+            with self.assertRaisesRegex(
+                ProviderError, "openai_image_generation_failed"
+            ):
+                second.generate(SLOT, "same-provider-key")
 
-            self.assertEqual(result.request_id, "request-replayed")
-            self.assertEqual(len(attempts), 2)
-            self.assertEqual(attempts[0], attempts[1])
+            self.assertEqual(len(attempts), 1)
             with store._connection(db_path) as conn:
                 logical_rows = conn.execute(
                     "SELECT COUNT(*) FROM edit_v2_materials WHERE source='gpt_image'"
                 ).fetchone()[0]
             self.assertEqual(logical_rows, 1)
+
+    def test_process_exit_after_submit_is_terminal_after_lease_expiry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "ai-edit-v2.db")
+            store.init_db(db_path)
+            job = store.create_job(
+                "user-a", {"brief": "image"}, "quote-1", "job-key", 1,
+                db_path=db_path,
+            )
+            attempts = []
+
+            def process_exit(method, url, headers, body, timeout):
+                attempts.append((headers["Idempotency-Key"], body))
+                raise SystemExit("worker exited after submit")
+
+            first = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                asset_store=store, http_request=process_exit,
+                now_seconds=lambda: 100, worker_id="worker-first", db_path=db_path,
+            )
+            with self.assertRaises(SystemExit):
+                first.generate(SLOT, "crash-key")
+
+            second = OpenAIImageProvider(
+                owner="user-a", job_id=job["id"], api_key="test-key",
+                asset_store=store,
+                http_request=lambda *args: self.fail("restart must not resubmit"),
+                now_seconds=lambda: 281, worker_id="worker-second", db_path=db_path,
+            )
+            with self.assertRaisesRegex(
+                ProviderError, "openai_image_generation_failed"
+            ):
+                second.generate(SLOT, "crash-key")
+
+            self.assertEqual(len(attempts), 1)
+            persisted = store.find_generated_material(
+                "user-a", job["id"], "crash-key", db_path=db_path
+            )
+            self.assertEqual(persisted["generation_state"], "terminal_failed")
+
+    def test_ambiguous_http_failures_are_terminal_and_never_retryable(self):
+        for status in (408, 500, 503):
+            with self.subTest(status=status):
+                provider, store, events = self._provider()
+                provider.http_request = lambda *args, code=status: (
+                    _ for _ in ()
+                ).throw(urllib.error.HTTPError(args[1], code, "ambiguous", {}, None))
+
+                with self.assertRaisesRegex(
+                    ProviderError, "openai_image_submission_unknown"
+                ) as caught:
+                    provider.generate(SLOT, f"ambiguous-{status}")
+
+                self.assertNotIsInstance(caught.exception, RetryableProviderError)
+                self.assertEqual(store.saved["generation_state"], "terminal_failed")
+                self.assertEqual([event[0] for event in events].count("request"), 0)
 
     def test_retryable_response_is_recoverable_after_backoff(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -485,7 +523,7 @@ class OpenAIImageProviderTests(unittest.TestCase):
             persisted = store.find_generated_material(
                 "user-a", job["id"], "rate-limit-key", db_path=db_path
             )
-            self.assertEqual(persisted["generation_state"], "retryable")
+            self.assertEqual(persisted["generation_state"], "rate_limited")
 
             during_backoff = OpenAIImageProvider(
                 owner="user-a", job_id=job["id"], api_key="test-key",

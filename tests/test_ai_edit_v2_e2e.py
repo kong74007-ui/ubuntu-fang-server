@@ -316,7 +316,6 @@ def _execute_fixture(fixture, *, restart_after_submit=False):
             "DASHSCOPE_API_KEY": "test-placeholder",
             "SHOTSTACK_API_KEY": "test-placeholder",
             "OPENAI_API_KEY": "test-placeholder",
-            "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1",
             "ELEVENLABS_API_KEY": "test-placeholder",
             "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.invalid/v2",
             "AI_EDIT_V2_WEBHOOK_SECRET": "test-placeholder",

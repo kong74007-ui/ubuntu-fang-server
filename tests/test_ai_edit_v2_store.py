@@ -435,23 +435,19 @@ class StoreTests(unittest.TestCase):
 
         store.init_db(legacy_path)
 
-        with patch.dict(
-            os.environ,
-            {"AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "0"},
-        ):
-            legacy_ready_replay = OpenAIImageProvider(
-                owner=owner,
-                job_id=job_id,
-                api_key="",
-                asset_store=store,
-                http_request=lambda *args: self.fail(
-                    "ready replay must not call provider"
-                ),
-                db_path=legacy_path,
-            ).generate(
-                {"semantic_query": "legacy ready", "ratio": "16:9"},
-                "legacy-ready",
-            )
+        legacy_ready_replay = OpenAIImageProvider(
+            owner=owner,
+            job_id=job_id,
+            api_key="",
+            asset_store=store,
+            http_request=lambda *args: self.fail(
+                "ready replay must not call provider"
+            ),
+            db_path=legacy_path,
+        ).generate(
+            {"semantic_query": "legacy ready", "ratio": "16:9"},
+            "legacy-ready",
+        )
         self.assertEqual(legacy_ready_replay.payload["asset_id"], 1)
 
         def reserve(key, digest, worker, now):
@@ -476,27 +472,21 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(ready["claimed"])
         self.assertEqual(ready["reason"], "ready")
         self.assertEqual(ready["material"]["generation_state"], "ready")
-        self.assertTrue(pending["claimed"])
+        self.assertFalse(pending["claimed"])
+        self.assertEqual(pending["reason"], "terminal_failed")
         self.assertEqual(
-            pending["material"]["generation_state"], "unknown_submission"
-        )
-        self.assertEqual(
-            pending["material"]["generation_request_digest"], "pending-body"
-        )
-        self.assertEqual(pending["material"]["generation_job_id"], job_id)
-        self.assertEqual(
-            pending["material"]["generation_idempotency_key"], "legacy-pending"
+            pending["material"]["generation_state"], "terminal_failed"
         )
         self.assertFalse(failed["claimed"])
         self.assertEqual(failed["reason"], "terminal_failed")
         self.assertEqual(failed["material"]["generation_state"], "terminal_failed")
 
-        with self.assertRaisesRegex(ValueError, "generated_request_conflict"):
-            reserve("legacy-pending", "changed-body", "worker-b", 111)
-
+        changed = reserve("legacy-pending", "changed-body", "worker-b", 111)
         replay = reserve("legacy-pending", "pending-body", "worker-b", 111)
-        self.assertTrue(replay["claimed"])
-        self.assertEqual(replay["material"]["id"], pending["material"]["id"])
+        self.assertFalse(changed["claimed"])
+        self.assertFalse(replay["claimed"])
+        self.assertEqual(changed["reason"], "terminal_failed")
+        self.assertEqual(replay["reason"], "terminal_failed")
 
     def test_open_store_enables_wal_foreign_keys_and_busy_timeout(self):
         with closing(store.open_store(self.db_path)) as conn:
@@ -1013,7 +1003,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(reclaimed["material"]["generation_state"], "pre_submit")
         self.assertEqual(reclaimed["material"]["generation_lease_owner"], "worker-b")
 
-    def test_generated_retryable_state_obeys_backoff_then_reclaims(self):
+    def test_generated_rate_limited_state_obeys_backoff_then_reclaims(self):
         job = self._create_job()
         fields = {
             "owner": "user-a",
@@ -1033,7 +1023,7 @@ class StoreTests(unittest.TestCase):
             store.mark_generated_material_recoverable(
                 owner="user-a", job_id=job["id"],
                 idempotency_key="retryable-image", lease_owner="worker-a",
-                state="retryable", retry_at=110, now=102, db_path=self.db_path,
+                state="rate_limited", retry_at=110, now=102, db_path=self.db_path,
             )
         )
 
@@ -1047,9 +1037,42 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(backing_off["claimed"])
         self.assertEqual(backing_off["reason"], "retry_backoff")
         self.assertTrue(recovered["claimed"])
-        self.assertEqual(recovered["material"]["generation_state"], "retryable")
+        self.assertEqual(recovered["material"]["generation_state"], "rate_limited")
 
-    def test_expired_submitting_lease_is_reclassified_as_unknown_submission(self):
+    def test_legacy_retryable_state_is_terminal_and_never_reclaimed(self):
+        job = self._create_job()
+        fields = {
+            "owner": "user-a",
+            "job_id": job["id"],
+            "idempotency_key": "legacy-ambiguous-retryable",
+            "cos_key": f"ai-edit-v2/fc95297aa4f56781/{job['id']}/generated/image.png",
+            "request_digest": "legacy-ambiguous-digest",
+            "lease_seconds": 10,
+            "db_path": self.db_path,
+        }
+        store.reserve_generated_material(
+            **fields, lease_owner="worker-a", now=100
+        )
+        with store._connection(self.db_path) as conn:
+            conn.execute(
+                """UPDATE edit_v2_materials
+                   SET generation_state='retryable',generation_retry_at=110,
+                       generation_lease_owner=NULL,generation_lease_until=NULL
+                   WHERE generation_job_id=?""",
+                (job["id"],),
+            )
+
+        recovered = store.reserve_generated_material(
+            **fields, lease_owner="worker-b", now=110
+        )
+
+        self.assertFalse(recovered["claimed"])
+        self.assertEqual(recovered["reason"], "terminal_failed")
+        self.assertEqual(
+            recovered["material"]["generation_state"], "terminal_failed"
+        )
+
+    def test_expired_submitting_lease_is_terminal_and_never_reclaimed(self):
         job = self._create_job()
         fields = {
             "owner": "user-a",
@@ -1073,13 +1096,12 @@ class StoreTests(unittest.TestCase):
             **fields, lease_owner="worker-b", now=110
         )
 
-        self.assertTrue(recovered["claimed"])
+        self.assertFalse(recovered["claimed"])
+        self.assertEqual(recovered["reason"], "terminal_failed")
         self.assertEqual(
-            recovered["material"]["generation_state"], "unknown_submission"
+            recovered["material"]["generation_state"], "terminal_failed"
         )
-        self.assertEqual(
-            recovered["material"]["generation_lease_owner"], "worker-b"
-        )
+        self.assertIsNone(recovered["material"]["generation_lease_owner"])
 
     def test_generated_idempotency_key_rejects_a_changed_canonical_body(self):
         job = self._create_job()
