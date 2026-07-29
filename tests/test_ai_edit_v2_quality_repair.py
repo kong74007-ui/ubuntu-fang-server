@@ -161,6 +161,53 @@ class QualityRepairProviderTests(unittest.TestCase):
             {"covered_asset_ids": []},
         )
 
+    def test_caption_analyzer_confirms_a_negative_result_by_majority(self):
+        results = iter((
+            {"safe_area": False, "tofu_count": 1, "missing_glyphs": ["黄"]},
+            {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+            {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+        ))
+        calls = []
+
+        def transport(*args):
+            calls.append(args)
+            return {"output": {"choices": [{"message": {
+                "content": json.dumps(next(results), ensure_ascii=False),
+            }}]}}
+
+        analyzer = DashScopeFinalMediaAnalyzer(
+            cos_api=object(),
+            video_url=lambda _path: "https://cos.example/final.mp4",
+            http_request=transport,
+            binary_finder=lambda name: name,
+        )
+
+        self.assertEqual(
+            analyzer("captions", path="final.mp4", expected={}),
+            {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+        )
+        self.assertEqual(len(calls), 3)
+
+    def test_caption_analyzer_keeps_majority_confirmed_defects(self):
+        results = iter((
+            {"safe_area": False, "tofu_count": 1, "missing_glyphs": ["黄"]},
+            {"safe_area": False, "tofu_count": 2, "missing_glyphs": ["黄"]},
+            {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+        ))
+        analyzer = DashScopeFinalMediaAnalyzer(
+            cos_api=object(),
+            video_url=lambda _path: "https://cos.example/final.mp4",
+            http_request=lambda *_args: {"output": {"choices": [{"message": {
+                "content": json.dumps(next(results), ensure_ascii=False),
+            }}]}},
+            binary_finder=lambda name: name,
+        )
+
+        self.assertEqual(
+            analyzer("captions", path="final.mp4", expected={}),
+            {"safe_area": False, "tofu_count": 1, "missing_glyphs": ["黄"]},
+        )
+
     def test_audio_analyzer_measures_master_and_sidechain_processed_sources(self):
         class Result:
             def __init__(self, *, stdout=b"", stderr=b""):
