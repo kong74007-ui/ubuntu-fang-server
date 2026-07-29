@@ -65,3 +65,35 @@ No test made a real provider call. Provider HTTP, COS, process execution, clocks
 2. This change deliberately performs only the existing single repair attempt. If the targeted result still fails hard quality, the job fails and refunds rather than entering an unbounded repair loop.
 3. OpenAI image acceptance and all test-environment enablement gates remain unchanged and must stay disabled until separately accepted.
 4. The local `origin` fetch refspec still targets the removed `codex/ai-edit-v2-stable-release` branch, so `git fetch origin --prune` failed before work began. No remote configuration was changed.
+
+## Fix round 1 addendum: glyph defects fail closed
+
+### Remaining Important finding
+
+The original safe-caption Shotstack repair changed only font size and frame dimensions. That is a real targeted correction for `caption_out_of_safe_area`, but it cannot supply a glyph missing from the bundled font or change tofu while preserving exact source text. Treating `caption_tofu_detected` and `caption_glyph_missing` as repairable could therefore spend points on a render that cannot correct the defect.
+
+### RED-to-GREEN evidence
+
+The new quality regression first failed for both defects because the reports returned `terminal=False`. The direct-provider regression first failed because both codes passed the repair allowlist and reached plan loading (`repair_plan_missing`) instead of being rejected before any Shotstack work.
+
+The minimal implementation now:
+
+- classifies `caption_tofu_detected` and `caption_glyph_missing` as terminal and not repairable;
+- removes both codes from the Shotstack repair allowlist and code-to-layer map;
+- rejects either code before plan lookup or provider submission;
+- permits the generic `caption_invalid` repair code only when accompanied by the explicit repairable `caption_out_of_safe_area` code;
+- leaves the existing deterministic safe-area layout repair unchanged.
+
+### Additional adversarial coverage
+
+- Both black-frame and blank-frame codes remove standard transitions from the repaired graph.
+- A black/blank request against a graph with no transitions is rejected with `repair_render_graph_unchanged`; no original graph can be resubmitted merely to satisfy a repair request.
+- A restart test now creates one `ProductionServices` instance, persists a repair `provider_task_id`, simulates process loss, constructs a new `ProductionServices` instance, reconciles only the saved ID, rehydrates the missing local repair file from private COS, registers that new path, and obtains three fresh 300-second URLs for the second Qwen-VL inspection. Submit is observed exactly once.
+
+### Fix-round verification
+
+- Focused new and affected regressions: **6 tests passed** in 1.227s.
+- Targeted quality/repair/Shotstack/pipeline/runtime suite: **105 tests passed** in 24.572s.
+- Full AI Edit V2 suite (`test_ai_edit_v2*.py`): **373 tests passed** in 55.772s.
+
+No real provider call, deployment, restart, secret/configuration change, OpenAI acceptance change, V1 change, or feature-flag change was performed in this round.

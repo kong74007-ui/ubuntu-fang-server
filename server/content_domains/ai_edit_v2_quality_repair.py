@@ -20,8 +20,8 @@ from .ai_edit_v2_providers.base import ProviderError
 
 _QWEN_PATH = "/services/aigc/multimodal-generation/generation"
 _SHOTSTACK_REPAIR_CODES = frozenset({
-    "caption_invalid", "caption_out_of_safe_area", "caption_tofu_detected",
-    "caption_glyph_missing", "black_frames_detected", "blank_frames_detected",
+    "caption_invalid", "caption_out_of_safe_area", "black_frames_detected",
+    "blank_frames_detected",
 })
 _LOCAL_REPAIR_CODES = frozenset({
     "output_dimensions_invalid", "output_rotation_invalid",
@@ -30,8 +30,6 @@ _LOCAL_REPAIR_CODES = frozenset({
 _REPAIR_CODE_LAYERS = {
     "caption_invalid": "captions",
     "caption_out_of_safe_area": "captions",
-    "caption_tofu_detected": "captions",
-    "caption_glyph_missing": "captions",
     "black_frames_detected": "video",
     "blank_frames_detected": "video",
     "output_dimensions_invalid": "video",
@@ -349,7 +347,13 @@ class ProductionRepairProvider:
     def submit(self, job: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         codes = self._codes(context)
         layers = self._layers(context)
-        if not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES):
+        if (
+            not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES)
+            or (
+                "caption_invalid" in codes
+                and "caption_out_of_safe_area" not in codes
+            )
+        ):
             raise ProviderError("repair_layer_unsupported")
         if any(_REPAIR_CODE_LAYERS.get(code) not in layers for code in codes):
             raise ProviderError("repair_layer_mismatch")
@@ -380,7 +384,13 @@ class ProductionRepairProvider:
             raise ProviderError("repair_provider_task_id_missing")
         codes = self._codes(context)
         layers = self._layers(context)
-        if not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES):
+        if (
+            not codes.issubset(_LOCAL_REPAIR_CODES | _SHOTSTACK_REPAIR_CODES)
+            or (
+                "caption_invalid" in codes
+                and "caption_out_of_safe_area" not in codes
+            )
+        ):
             raise ProviderError("repair_layer_unsupported")
         if any(_REPAIR_CODE_LAYERS.get(code) not in layers for code in codes):
             raise ProviderError("repair_layer_mismatch")

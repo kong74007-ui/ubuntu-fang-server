@@ -38,6 +38,7 @@ _TERMINAL_CODES = frozenset({
     "inspection_incomplete", "video_unplayable", "required_material_missing",
     "caption_source_mismatch", "caption_facts_mismatch", "audio_unplayable",
     "audio_silence_detected", "dialogue_bgm_imbalance", "dialogue_sfx_imbalance",
+    "caption_tofu_detected", "caption_glyph_missing",
 })
 _ANALYZER_CAPABILITIES = (
     "captions_ocr", "glyphs", "materials", "transcript_facts", "audio",

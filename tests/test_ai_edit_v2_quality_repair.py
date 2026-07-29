@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import tempfile
@@ -13,10 +14,81 @@ from server.content_domains.ai_edit_v2_quality_repair import (
     DashScopeFinalMediaAnalyzer,
     ProductionRepairProvider,
 )
+from server.content_domains.ai_edit_v2_schema import BUNDLED_NOTO_SANS_SC_URL
+from server.content_domains.ai_edit_v2_shotstack import build_render_graph
 from tests.test_ai_edit_v2_runtime import _resolved_plan
 
 
 class QualityRepairProviderTests(unittest.TestCase):
+    def test_tofu_and_missing_glyph_are_rejected_before_shotstack_submit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            store.init_db(db_path)
+            calls = []
+            provider = ProductionRepairProvider(
+                db_path=db_path, cos_api=object(),
+                shotstack_http=lambda *args: calls.append(args),
+            )
+            for code in ("caption_tofu_detected", "caption_glyph_missing"):
+                with self.subTest(code=code):
+                    context = {
+                        "attempt_id": 1,
+                        "error_codes": (code,),
+                        "failing_layers": ("captions",),
+                        "idempotency_key": f"repair:{code}",
+                        "deadline_at": 100,
+                        "assert_active": lambda: None,
+                        "save_provider_task_id": lambda _value: None,
+                    }
+                    with self.assertRaisesRegex(
+                        ProviderError, "repair_layer_unsupported"
+                    ):
+                        provider.submit(
+                            {"id": "job-glyph", "owner": "alice"}, context
+                        )
+            self.assertEqual(calls, [])
+
+    def test_black_and_blank_repairs_remove_transitions_and_unchanged_fails_closed(self):
+        plan = _resolved_plan()
+        keys = {
+            value["cos_key"] for value in (plan.get("materials") or {}).values()
+        }
+        for name in ("primary_video", "mastered_audio"):
+            value = plan.get(name)
+            if isinstance(value, dict) and isinstance(value.get("cos_key"), str):
+                keys.add(value["cos_key"])
+        signed = {key: f"https://cos.example/{key}" for key in keys}
+
+        for code in ("black_frames_detected", "blank_frames_detected"):
+            with self.subTest(code=code):
+                graph = build_render_graph(
+                    copy.deepcopy(plan), signed, BUNDLED_NOTO_SANS_SC_URL
+                )
+                self.assertTrue(any(
+                    item["type"] == "standard_transition"
+                    for item in graph["components"]
+                ))
+                repaired = ProductionRepairProvider._targeted_graph(
+                    graph, frozenset({code}), frozenset({"video"})
+                )
+                self.assertFalse(any(
+                    item["type"] == "standard_transition"
+                    for item in repaired["components"]
+                ))
+
+        no_transitions = copy.deepcopy(plan)
+        for scene in no_transitions["scenes"]:
+            scene["transition"] = None
+        unchanged = build_render_graph(
+            no_transitions, signed, BUNDLED_NOTO_SANS_SC_URL
+        )
+        with self.assertRaisesRegex(ProviderError, "repair_render_graph_unchanged"):
+            ProductionRepairProvider._targeted_graph(
+                unchanged,
+                frozenset({"black_frames_detected"}),
+                frozenset({"video"}),
+            )
+
     def test_qwen_analyzer_sends_actual_video_and_strictly_validates_evidence(self):
         calls = []
 
