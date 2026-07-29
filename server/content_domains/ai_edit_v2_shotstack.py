@@ -40,6 +40,15 @@ class _DeterministicRequestRejected(ProviderError):
     pass
 
 
+class _ShotstackStatusError(ProviderError):
+    def __init__(self, raw_status: str):
+        safe = raw_status.strip().lower()[:64]
+        if not safe.isascii() or not safe.replace("_", "").replace("-", "").isalnum():
+            safe = "invalid"
+        self.detail = safe
+        super().__init__("shotstack_status_invalid")
+
+
 def build_render_graph(
     resolved_plan: dict[str, Any],
     signed_assets: dict[str, str],
@@ -490,14 +499,17 @@ class ShotstackClient:
         if expected_task_id is not None and task_id != expected_task_id:
             raise ProviderError("shotstack_response_identity_mismatch")
         raw_status = str(value.get("status") or "queued").lower()
-        if raw_status in {"queued", "pending", "rendering", "processing", "fetching"}:
+        if raw_status in {
+            "queued", "pending", "rendering", "processing", "fetching",
+            "preprocessing", "saving",
+        }:
             status = "pending"
         elif raw_status in {"done", "completed", "succeeded"}:
             status = "succeeded"
         elif raw_status in {"failed", "cancelled", "canceled"}:
             status = "failed"
         else:
-            raise ProviderError("shotstack_status_invalid")
+            raise _ShotstackStatusError(raw_status)
         output_url = value.get("url")
         if status == "succeeded" and (
             not isinstance(output_url, str)
