@@ -110,6 +110,16 @@ test('platform cards render lightweight covers without loading video sources', (
   assert.doesNotMatch(html, /src="\/api\/gen\/file\/talking\.mp4"/);
 });
 
+test('platform gallery stays in one horizontal row', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const rule = page.match(/\.platform-gallery\{([^}]*)\}/)?.[1] || '';
+  assert.match(rule, /display:flex/);
+  assert.match(rule, /overflow-x:auto/);
+  assert.match(rule, /flex-wrap:nowrap/);
+  const cardRule = page.match(/\.platform-card\{([^}]*)\}/)?.[1] || '';
+  assert.match(cardRule, /flex:0 0 142px/);
+});
+
 test('legacy video workflow keeps its controls and links to the stable editor', () => {
   const video = fs.readFileSync(videoPath, 'utf8');
   assert.match(video, /data-function="talking"/);
