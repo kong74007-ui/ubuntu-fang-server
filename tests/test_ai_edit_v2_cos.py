@@ -11,6 +11,7 @@ VALID_KEY = (
     "ai-edit-v2/0123456789abcdef/"
     "123e4567-e89b-12d3-a456-426614174000/source/main.mp4"
 )
+PLATFORM_KEY = "ai-edit-v2/0123456789abcdef/platform/102/source.mp4"
 
 
 class FakeCosClient:
@@ -98,6 +99,18 @@ class V2CosTests(unittest.TestCase):
             ),
         )
 
+    def test_platform_asset_key_is_allowed_inside_the_owner_scope(self):
+        metadata = cos.head_object(PLATFORM_KEY)
+
+        self.assertEqual(metadata["content_length"], 12345)
+        self.assertEqual(
+            self.client.calls[-1],
+            (
+                "head",
+                {"Bucket": "private-bucket-123", "Key": "huangque/" + PLATFORM_KEY},
+            ),
+        )
+
     def test_download_and_delete_use_the_private_object_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             destination = os.path.join(temp_dir, "source.mp4")
@@ -145,6 +158,8 @@ class V2CosTests(unittest.TestCase):
             "video/public.mp4",
             "ai-edit-v2/not-a-hash/123e4567-e89b-12d3-a456-426614174000/a.mp4",
             "ai-edit-v2/0123456789abcdef/not-a-uuid/a.mp4",
+            "ai-edit-v2/0123456789abcdef/platform/not-an-id/source.mp4",
+            "ai-edit-v2/0123456789abcdef/platform/102/other.mp4",
         )
 
         for rel_key in invalid_keys:

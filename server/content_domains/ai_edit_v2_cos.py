@@ -12,6 +12,9 @@ _BUCKET = os.environ.get("AI_EDIT_V2_COS_BUCKET", "").strip()
 _PREFIX = os.environ.get("AI_EDIT_V2_COS_PREFIX", "").strip().strip("/")
 _client_singleton = None
 _REL_KEY_RE = re.compile(r"^ai-edit-v2/[0-9a-f]{16,64}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/[A-Za-z0-9._/-]+$")
+_PLATFORM_KEY_RE = re.compile(
+    r"^ai-edit-v2/[0-9a-f]{16,64}/platform/[1-9][0-9]*/source\.mp4$"
+)
 _CONTENT_TYPE_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
@@ -32,7 +35,7 @@ def _object_key(rel_key: str) -> str:
     if (not isinstance(rel_key, str) or rel_key.startswith(("/", "\\")) or "\\" in rel_key
             or "?" in rel_key or "#" in rel_key or ":" in rel_key
             or any(part in ("", ".", "..") for part in rel_key.split("/"))
-            or not _REL_KEY_RE.fullmatch(rel_key)):
+            or not (_REL_KEY_RE.fullmatch(rel_key) or _PLATFORM_KEY_RE.fullmatch(rel_key))):
         raise ValueError("COS object key is outside the AI Edit V2 scope")
     return f"{_PREFIX}/{rel_key}" if _PREFIX else rel_key
 
