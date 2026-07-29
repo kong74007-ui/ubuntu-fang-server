@@ -9,26 +9,39 @@ const videoPath = path.join(root, 'site/workbench/video.html');
 const shellPath = path.join(root, 'site/workbench/cloud-shell.js');
 const tasksPath = path.join(root, 'site/workbench/tasks.js');
 
-test('AI edit page exposes the frozen Phase A task flow', () => {
+test('creation workspace presents the confirmed five-step layout', () => {
   assert.equal(fs.existsSync(pagePath), true, 'site/workbench/ai-edit-v2.html must exist');
   const page = fs.readFileSync(pagePath, 'utf8');
   assert.match(page, /data-active="ai_edit_v2"/);
+  const headings = [...page.matchAll(/<h2>([^<]+)<\/h2>/g)].map((match) => match[1]);
+  assert.deepEqual(headings.slice(0, 5), [
+    '1. 选择主体视频或音频',
+    '2. 选择剪辑方式',
+    '3. 上传补充素材（可选）',
+    '4. 选择画面比例',
+    '5. 报价并开始创作',
+  ]);
   for (const mode of ['natural_brief', 'platform_template', 'open_generation']) {
     assert.match(page, new RegExp(`data-creation-mode="${mode}"`));
   }
-  assert.match(page, /id="mainInput"[^>]*accept="video\/\*,audio\/\*"/);
-  assert.match(page, /id="requiredInput"[^>]*multiple[^>]*accept="image\/\*,video\/\*,audio\/\*"/);
-  assert.match(page, /id="referenceInput"[^>]*multiple[^>]*accept="image\/\*,video\/\*,audio\/\*"/);
-  assert.match(page, /最多 10 个/);
-  assert.match(page, /value="direct_use"/);
-  assert.match(page, /value="style_only"/);
+  assert.match(page, /id="platformGallery"/);
+  assert.match(page, /id="platformCount"/);
+  assert.match(page, /id="platformReload"/);
+  assert.match(page, /id="videoSubjectInput"[^>]*accept="video\/\*"/);
+  assert.match(page, /id="audioSubjectInput"[^>]*accept="audio\/\*"/);
+  assert.match(page, /id="candidateInput"[^>]*multiple[^>]*accept="image\/\*,video\/\*,audio\/\*"/);
+  assert.match(page, /id="candidateGrid"/);
+  assert.match(page, /\.platform-card-media\{[^}]*aspect-ratio:9\/16/);
+  assert.match(page, /\.candidate-add\{[^}]*aspect-ratio:1/);
+  assert.match(page, /\.workspace-panel\{[^}]*position:sticky/);
   assert.match(page, /value="16:9"/);
   assert.match(page, /value="9:16"/);
-  assert.match(page, /id="targetDuration"/);
   assert.match(page, /id="quoteMin"/);
   assert.match(page, /id="quoteMax"/);
-  assert.match(page, /按价格上限预扣/);
-  assert.match(page, /id="confirmPrecharge"/);
+  assert.match(page, /失败全额退款/);
+  assert.doesNotMatch(page, /id="confirmPrecharge"/);
+  assert.doesNotMatch(page, /id="targetDuration"|id="requiredInput"|id="referenceInput"|id="mainAssetSelect"/);
+  assert.doesNotMatch(page, /必须使用|参考使用/);
   for (const id of ['queueTime', 'processingTime', 'repairTime', 'resultVideo', 'downloadResult']) {
     assert.match(page, new RegExp(`id="${id}"`));
   }
@@ -37,9 +50,9 @@ test('AI edit page exposes the frozen Phase A task flow', () => {
   }
 });
 
-test('page implements draft quote confirmation upload retry and job polling', () => {
+test('page implements subject cards candidate uploads quote creation and job polling', () => {
   const page = fs.readFileSync(pagePath, 'utf8');
-  for (const name of ['buildDraft', 'requestQuote', 'confirmJob', 'pollJob', 'uploadFiles', 'retryUpload', 'retryJob']) {
+  for (const name of ['buildDraft', 'requestQuote', 'confirmJob', 'pollJob', 'setMainSubject', 'selectEditMode', 'renderPlatformAssets', 'renderCandidates', 'renderWorkspacePanel', 'retryUpload', 'retryJob']) {
     assert.match(page, new RegExp(`function ${name}\\(`), name);
   }
   for (const endpoint of ['/api/v2/edit/uploads', '/api/v2/edit/quote', '/api/v2/edit/jobs']) {
@@ -53,15 +66,14 @@ test('page implements draft quote confirmation upload retry and job polling', ()
   assert.match(page, /sessionStorage\.getItem\(retryStorageKey\)/);
   assert.match(page, /sessionStorage\.removeItem\(retryStorageKey\)/);
   assert.match(page, /billing_pending/);
-  assert.match(page, /id="inputMode"/);
-  for (const mode of ['platform_video', 'external_video', 'audio_only']) {
-    assert.match(page, new RegExp(`value="${mode}"`));
-  }
+  assert.match(page, /target_duration_ms:null/);
+  assert.match(page, /required_materials:\[\]/);
+  assert.match(page, /reference_mode:'direct_use'/);
   assert.match(page, /template_id/);
   assert.match(page, /template_version/);
   assert.match(page, /function loadPlatformAssets\(/);
   assert.match(page, /\/api\/v2\/edit\/platform-assets/);
-  assert.match(page, /data-platform-reference/);
+  assert.match(page, /data-platform-id/);
   assert.doesNotMatch(page, /original_text/);
   assert.match(page, /data\.degradations/);
   assert.match(page, /data\.quality/);
