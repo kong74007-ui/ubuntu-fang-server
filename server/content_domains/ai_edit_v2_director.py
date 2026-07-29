@@ -43,8 +43,8 @@ audio policy：speech_policy={speech}; music_policy 可选 {music}; sfx_policy �
     families=", ".join(sorted(COMPONENT_FAMILIES)),
     caption_styles=", ".join(sorted(CAPTION_STYLES)),
     speech=", ".join(sorted(SPEECH_POLICIES)),
-    music=", ".join(sorted(MUSIC_POLICIES)),
-    sfx=", ".join(sorted(SFX_POLICIES)),
+    music="none",
+    sfx="none",
 )
 _MAX_REPAIR_RESPONSE_CHARS: Final = 8_000
 _MAX_REPAIR_ERROR_CHARS: Final = 1_000
@@ -196,6 +196,11 @@ def _decode_and_validate(content: str, safe_context: dict[str, Any]) -> dict[str
         raise ValueError("target_duration_ms与请求不一致")
     if plan["duration_ms"] != safe_context["target_duration_ms"]:
         raise ValueError("duration_ms与目标时长不一致")
+    audio_plan = plan["audio_plan"]
+    if audio_plan["music_policy"] != "none":
+        raise ValueError("stable_v1_music_policy_must_be_none")
+    if audio_plan["sfx_policy"] != "none":
+        raise ValueError("stable_v1_sfx_policy_must_be_none")
     template = safe_context.get("template")
     if template is not None:
         expected_style = {

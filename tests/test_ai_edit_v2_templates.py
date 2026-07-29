@@ -18,6 +18,14 @@ def nested_keys(value):
 
 
 class TemplateTests(unittest.TestCase):
+    def test_all_stable_templates_disable_optional_audio(self):
+        for template in list_published_templates():
+            with self.subTest(template=template["id"]):
+                self.assertEqual(
+                    template["sound_policy"],
+                    {"music_policy": "none", "sfx_policy": "none"},
+                )
+
     def test_template_fixes_visual_language_not_scene_content_or_coordinates(self):
         template = get_published_template("business_diagnostic")
 
