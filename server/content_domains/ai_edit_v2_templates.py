@@ -18,6 +18,7 @@ _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
         "name": "商业诊断",
         "version": "1.0",
         "status": "published",
+        "preview_image_url": "/assets/ai-edit-v2/templates/business-diagnostic.svg",
         "component_family": "editorial_business",
         "typography": {
             "heading": "bold_sans",
@@ -40,6 +41,7 @@ _PUBLISHED_TEMPLATES: Final[tuple[dict[str, Any], ...]] = (
         "name": "现代纪实",
         "version": "1.0",
         "status": "published",
+        "preview_image_url": "/assets/ai-edit-v2/templates/modern-documentary.svg",
         "component_family": "documentary_modern",
         "typography": {
             "heading": "condensed_sans",

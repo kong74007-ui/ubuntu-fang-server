@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1600" role="img" aria-labelledby="title desc">
+  <title id="title">现代纪实模板预览</title>
+  <desc id="desc">中性纪实风格，使用冷青强调色、时间地点标签和克制字幕。</desc>
+  <defs>
+    <linearGradient id="scene" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5c6b6c"/>
+      <stop offset=".42" stop-color="#273738"/>
+      <stop offset="1" stop-color="#0a1113"/>
+    </linearGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c8e0dc" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#5ac7c0" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="1600" fill="#0a1012"/>
+  <rect width="900" height="1090" fill="url(#scene)"/>
+  <circle cx="690" cy="350" r="240" fill="url(#mist)"/>
+  <path d="M0 820L230 610 390 750 590 500 900 790V1090H0Z" fill="#172526"/>
+  <path d="M0 900L270 730 470 900 670 690 900 850V1090H0Z" fill="#0d191b"/>
+  <rect x="55" y="55" width="790" height="980" fill="none" stroke="#dce7e5" stroke-opacity=".22" stroke-width="3"/>
+  <g stroke="#83d5cf" stroke-width="8">
+    <path d="M55 165V55H165"/><path d="M735 55H845V165"/><path d="M55 925V1035H165"/><path d="M735 1035H845V925"/>
+  </g>
+  <rect x="82" y="98" width="242" height="54" rx="5" fill="#071011" fill-opacity=".72"/>
+  <text x="110" y="135" fill="#8ddbd5" font-family="Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="4">DOCUMENTARY</text>
+  <text x="82" y="880" fill="#f5f7f6" font-family="Arial, sans-serif" font-size="78" font-weight="800">现代纪实</text>
+  <text x="84" y="940" fill="#d5dfde" font-family="Arial, sans-serif" font-size="27" letter-spacing="3">真实场景中的克制表达</text>
+  <rect x="82" y="978" width="380" height="4" fill="#77d0ca"/>
+  <rect x="0" y="1090" width="900" height="510" fill="#0a1012"/>
+  <g font-family="Arial, sans-serif">
+    <text x="70" y="1180" fill="#79d2cb" font-size="23" font-weight="700" letter-spacing="4">2026.07.29 / 18:30</text>
+    <text x="70" y="1248" fill="#778586" font-size="23">CHENGDU · CHINA</text>
+    <rect x="70" y="1318" width="760" height="132" rx="10" fill="#f2f5f4"/>
+    <text x="104" y="1372" fill="#263132" font-size="24">人物原声</text>
+    <text x="104" y="1422" fill="#101718" font-size="34" font-weight="700">让内容保持真实，也保持重点。</text>
+    <text x="70" y="1530" fill="#657173" font-size="22" letter-spacing="5">MODERN DOCUMENTARY SYSTEM</text>
+  </g>
+</svg>
