@@ -176,6 +176,8 @@ class QualityRepairProviderTests(unittest.TestCase):
                 return Result(stderr=b"silence_duration: 1.0\nPeak: -1.5 dBFS\n")
             if "-filter_complex" in command:
                 return Result(stderr=b"I: -24.0 LUFS\n")
+            if "volume=0.04,ebur128=peak=true" in command:
+                return Result(stderr=b"I: -24.0 LUFS\n")
             return Result(stderr=b"I: -16.0 LUFS\n")
 
         class Cos:
@@ -191,14 +193,15 @@ class QualityRepairProviderTests(unittest.TestCase):
             "quality_sources": {
                 "primary_media": {"cos_key": "private/dialogue.m4a"},
                 "generated_audio": {
-                    "bgm": {"cos_key": "private/bgm.mp3"}, "sfx": [],
+                    "bgm": {"cos_key": "private/bgm.mp3"},
+                    "sfx": [{"cos_key": "private/hit.mp3"}],
                 },
             },
         })
 
         self.assertEqual(value, {
             "silence_ratio": 0.1, "true_peak_dbfs": -1.5,
-            "dialogue_to_bgm_db": 8.0, "dialogue_to_sfx_db": 200.0,
+            "dialogue_to_bgm_db": 8.0, "dialogue_to_sfx_db": 8.0,
         })
         sidechain = next(command for command in commands if "-filter_complex" in command)
         self.assertIn(
@@ -209,6 +212,8 @@ class QualityRepairProviderTests(unittest.TestCase):
             "volume=0.18",
             sidechain[sidechain.index("-filter_complex") + 1],
         )
+        sfx = next(command for command in commands if "volume=0.04,ebur128=peak=true" in command)
+        self.assertIn("volume=0.04,ebur128=peak=true", sfx)
 
     def test_shotstack_repair_persists_task_identity_and_reconciles_without_resubmit(self):
         with tempfile.TemporaryDirectory() as directory:
