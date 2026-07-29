@@ -487,7 +487,21 @@ def validate_render_graph(graph: dict[str, Any]) -> dict[str, Any]:
         _require(isinstance(component, dict), f"{path}必须是对象")
         kind = component.get("type")
         _require(kind in STABLE_RENDER_COMPONENTS, f"{path}.type不受支持")
-        _require(set(component) == allowed_fields[kind], f"{path}字段不受支持")
+        fields = set(component)
+        if kind == "basic_caption" and fields != allowed_fields[kind]:
+            repair_fields = {"font_size", "width", "height"}
+            _require(
+                fields == allowed_fields[kind] | repair_fields,
+                f"{path}字段不受支持",
+            )
+            _require(
+                component.get("font_size") == 44
+                and component.get("width") == 1440
+                and component.get("height") == 180,
+                f"{path}修复布局不受支持",
+            )
+        else:
+            _require(fields == allowed_fields[kind], f"{path}字段不受支持")
         start = component.get("start")
         length = component.get("length")
         _require(

@@ -192,20 +192,41 @@ class QualityTests(unittest.TestCase):
             "materials", "transcript", "audio",
         })
 
-    def test_caption_tofu_or_out_of_bounds_fails_quality(self):
+    def test_caption_out_of_bounds_is_repairable(self):
         evidence = passing_evidence()
         evidence["captions"] = {
-            "safe_area": False, "tofu_count": 2, "missing_glyphs": ["雀"]
+            "safe_area": False, "tofu_count": 0, "missing_glyphs": []
         }
         report = inspect_output("bad-caption.mp4", PLAN, EvidenceRunner(evidence))
 
         self.assertFalse(report.passed)
         self.assertIn("caption_invalid", report.error_codes)
         self.assertIn("caption_out_of_safe_area", report.error_codes)
-        self.assertIn("caption_tofu_detected", report.error_codes)
-        self.assertIn("caption_glyph_missing", report.error_codes)
         self.assertTrue(report.repairable)
+        self.assertFalse(report.terminal)
         self.assertEqual(report.failing_layers, ("captions",))
+
+    def test_caption_tofu_or_missing_glyph_is_terminal(self):
+        cases = (
+            ({"safe_area": True, "tofu_count": 2, "missing_glyphs": []},
+             "caption_tofu_detected"),
+            ({"safe_area": True, "tofu_count": 0, "missing_glyphs": ["雀"]},
+             "caption_glyph_missing"),
+        )
+        for captions, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                evidence = passing_evidence()
+                evidence["captions"] = captions
+                report = inspect_output(
+                    "bad-glyph.mp4", PLAN, EvidenceRunner(evidence)
+                )
+
+                self.assertFalse(report.passed)
+                self.assertIn("caption_invalid", report.error_codes)
+                self.assertIn(expected_code, report.error_codes)
+                self.assertTrue(report.terminal)
+                self.assertFalse(report.repairable)
+                self.assertEqual(report.failing_layers, ("captions",))
 
     def test_unplayable_video_is_terminal(self):
         evidence = passing_evidence()

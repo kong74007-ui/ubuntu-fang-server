@@ -743,7 +743,7 @@ class StableRunJobTests(PipelineTests):
         Path(output).write_bytes(b"playable-final-mp4")
         evidence = passing_evidence()
         evidence["probe"]["duration_ms"] = 1_000
-        bad_captions = {"safe_area": False, "tofu_count": 1, "missing_glyphs": []}
+        bad_captions = {"safe_area": False, "tofu_count": 0, "missing_glyphs": []}
         probe_count = [0]
 
         def runner(check, **_kwargs):
@@ -773,6 +773,263 @@ class StableRunJobTests(PipelineTests):
         self.assertEqual(repaired[0]["failing_layers"], ("captions",))
         self.assertEqual(repaired[0]["deadline_at"], now + 900)
         self.assertEqual(probe_count[0], 2)
+
+    def test_rehydrated_repair_refreshes_qwen_url_inside_repair_budget(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        dependencies = self._dependencies([])
+        pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+        clock = [100]
+
+        class RepairCos:
+            def __init__(self):
+                self.objects = {
+                    "private/postprocessing.json": b"original-final",
+                    "private/repaired.mp4": b"rehydrated-repair",
+                }
+                self.presigns = []
+
+            def download_file(self, key, path):
+                Path(path).write_bytes(self.objects[key])
+
+            def presign_get(self, key, expires=300):
+                self.presigns.append((key, expires, clock[0]))
+                return (
+                    f"https://cos.test/{key}?expires_at={clock[0] + expires}"
+                    f"&nonce={len(self.presigns)}"
+                )
+
+            def put_file(self, path, key, _content_type, private=True):
+                self.objects[key] = Path(path).read_bytes()
+                return {"ETag": '"uploaded"'}
+
+            def head_object(self, key):
+                return {
+                    "content_length": len(self.objects[key]),
+                    "content_type": "video/mp4",
+                    "etag": "uploaded",
+                }
+
+        analyzer = lambda *_args, **_kwargs: {}
+        analyzer.capabilities = lambda: {
+            "captions_ocr": True, "glyphs": True, "materials": True,
+            "transcript_facts": True, "audio": True,
+        }
+        repair_cos = RepairCos()
+        services = runtime.ProductionServices(
+            self.db_path, cos_api=repair_cos,
+            repair_handler=lambda *_args: {},
+            repair_reconciler=lambda *_args: {},
+            quality_analyzer=analyzer,
+            quality_binary_finder=lambda name: name,
+        )
+        production = runtime.production_dependencies(self.db_path, services=services)
+        semantic_urls = []
+        evidence = passing_evidence()
+        evidence["probe"]["duration_ms"] = 1_000
+        probe_count = [0]
+
+        def runner(check, *, path, resolved_plan):
+            del resolved_plan
+            if check == "probe":
+                probe_count[0] += 1
+            if check in {"captions", "materials", "transcript"}:
+                url = services._quality_video_url(path)
+                expires_at = int(url.split("expires_at=", 1)[1].split("&", 1)[0])
+                if expires_at <= clock[0]:
+                    raise RuntimeError("quality URL expired")
+                semantic_urls.append((Path(path).parent.name, url))
+            if check == "captions" and probe_count[0] == 1:
+                return {"safe_area": False, "tofu_count": 0, "missing_glyphs": []}
+            return evidence[check]
+
+        missing_path = os.path.join(self.temp_dir.name, "missing-repair.mp4")
+
+        def repair(_job, _context):
+            clock[0] = 500  # Original 300-second URL is expired; repair budget is not.
+            return {"cos_key": "private/repaired.mp4", "output_path": missing_path}
+
+        dependencies.update({
+            "quality_runner": runner,
+            "quality_output_path": services.resolve_quality_output,
+            "repair_layer": repair,
+            "actual_cost": 20,
+            "now": lambda: clock[0],
+            "lease_seconds": 1_000,
+            "services": services,
+        })
+        if callable(production.get("register_quality_output")):
+            dependencies["register_quality_output"] = production["register_quality_output"]
+
+        with patch.object(delivery, "cos", DeliveryCos()), patch.object(
+            billing, "points", self.points
+        ):
+            result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "completed", result)
+        self.assertEqual(probe_count[0], 2)
+        self.assertEqual([item[0] for item in repair_cos.presigns], [
+            "private/postprocessing.json", "private/postprocessing.json",
+            "private/postprocessing.json", "private/repaired.mp4",
+            "private/repaired.mp4", "private/repaired.mp4",
+        ])
+        self.assertTrue(all(expires == 300 for _key, expires, _at in repair_cos.presigns))
+        self.assertEqual(len({url for _directory, url in semantic_urls}), 6)
+
+    def test_restart_rebuilds_services_and_rehydrates_saved_repair_for_qwen(self):
+        class LostResponse(BaseException):
+            pass
+
+        job = self._precharged_job(str(uuid.uuid4()))
+        base = self._dependencies([])
+        pipeline.run_job(job["id"], base, db_path=self.db_path)
+
+        class RestartCos:
+            def __init__(self):
+                self.objects = {
+                    "private/postprocessing.json": b"original-final",
+                    "private/restart-repair.mp4": b"restart-repair",
+                }
+                self.presigns = []
+
+            def download_file(self, key, path):
+                Path(path).write_bytes(self.objects[key])
+
+            def presign_get(self, key, expires=300):
+                self.presigns.append((key, expires))
+                return (
+                    f"https://cos.test/{key}?expires={expires}"
+                    f"&nonce={len(self.presigns)}"
+                )
+
+            def put_file(self, path, key, _content_type, private=True):
+                self.objects[key] = Path(path).read_bytes()
+                return {"ETag": '"uploaded"'}
+
+            def head_object(self, key):
+                return {
+                    "content_length": len(self.objects[key]),
+                    "content_type": "video/mp4",
+                    "etag": "uploaded",
+                }
+
+        analyzer = lambda *_args, **_kwargs: {}
+        analyzer.capabilities = lambda: {
+            "captions_ocr": True, "glyphs": True, "materials": True,
+            "transcript_facts": True, "audio": True,
+        }
+        restart_cos = RestartCos()
+        evidence = passing_evidence()
+        evidence["probe"]["duration_ms"] = 1_000
+
+        def quality_runner(services, *, bad_captions):
+            def run(check, *, path, resolved_plan):
+                del resolved_plan
+                if check in {"captions", "materials", "transcript"}:
+                    services._quality_video_url(path)
+                if check == "captions" and bad_captions:
+                    return {
+                        "safe_area": False,
+                        "tofu_count": 0,
+                        "missing_glyphs": [],
+                    }
+                return evidence[check]
+            return run
+
+        submitted = []
+
+        def submit(_job, context):
+            submitted.append(context["idempotency_key"])
+            context["save_provider_task_id"]("restart-repair-task-1")
+            raise LostResponse("provider accepted before process restart")
+
+        services_before = runtime.ProductionServices(
+            self.db_path, cos_api=restart_cos,
+            repair_handler=submit,
+            repair_reconciler=lambda *_args: self.fail(
+                "first process must not reconcile"
+            ),
+            quality_analyzer=analyzer,
+            quality_binary_finder=lambda name: name,
+        )
+        dependencies_before = {
+            **base,
+            **runtime.production_dependencies(
+                self.db_path, services=services_before
+            ),
+            "quality_runner": quality_runner(
+                services_before, bad_captions=True
+            ),
+            "actual_cost": 20,
+            "points_client": self.points,
+        }
+        with self.assertRaises(LostResponse):
+            pipeline.run_job(
+                job["id"], dependencies_before, db_path=self.db_path
+            )
+
+        with closing(store.open_store(self.db_path)) as conn:
+            attempt = conn.execute(
+                """SELECT status,provider_task_id FROM edit_v2_stage_attempts
+                   WHERE job_id=? AND stage='repairing'""",
+                (job["id"],),
+            ).fetchone()
+            conn.execute(
+                "UPDATE edit_v2_jobs SET lease_until=0 WHERE id=?",
+                (job["id"],),
+            )
+        self.assertEqual(
+            (attempt["status"], attempt["provider_task_id"]),
+            ("running", "restart-repair-task-1"),
+        )
+        restart_cos.presigns.clear()
+        reconciled = []
+        missing_path = os.path.join(
+            self.temp_dir.name, "restart-missing-repair.mp4"
+        )
+
+        def reconcile(_job, context):
+            reconciled.append(context["provider_task_id"])
+            return {
+                "provider": "shotstack",
+                "provider_task_id": context["provider_task_id"],
+                "request_id": "restart-repair-request-1",
+                "cost_units": 1,
+                "cos_key": "private/restart-repair.mp4",
+                "output_path": missing_path,
+            }
+
+        services_after = runtime.ProductionServices(
+            self.db_path, cos_api=restart_cos,
+            repair_handler=lambda *_args: self.fail(
+                "restart must reconcile the saved provider id"
+            ),
+            repair_reconciler=reconcile,
+            quality_analyzer=analyzer,
+            quality_binary_finder=lambda name: name,
+        )
+        dependencies_after = {
+            **base,
+            **runtime.production_dependencies(
+                self.db_path, services=services_after
+            ),
+            "quality_runner": quality_runner(
+                services_after, bad_captions=False
+            ),
+            "actual_cost": 20,
+            "points_client": self.points,
+        }
+        result = pipeline.run_job(
+            job["id"], dependencies_after, db_path=self.db_path
+        )
+
+        self.assertEqual(result["state"], "completed", result)
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(reconciled, ["restart-repair-task-1"])
+        self.assertEqual(restart_cos.presigns, [
+            ("private/restart-repair.mp4", 300),
+            ("private/restart-repair.mp4", 300),
+            ("private/restart-repair.mp4", 300),
+        ])
 
     def test_repair_lost_response_reconciles_saved_provider_id_without_resubmit(self):
         class LostResponse(BaseException):
