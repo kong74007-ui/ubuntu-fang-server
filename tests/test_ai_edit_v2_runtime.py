@@ -363,8 +363,37 @@ class RuntimeTests(unittest.TestCase):
         for name in ("quality_runner", "quality_output_path", "actual_cost",
                      "repair_layer", "repair_reconciler"):
             self.assertTrue(callable(bundle[name]), name)
-        self.assertIn("AI_EDIT_V2_REPAIR_PROVIDER", bundle["readiness_errors"]())
+        self.assertNotIn("AI_EDIT_V2_REPAIR_PROVIDER", bundle["readiness_errors"]())
         self.assertIn("AI_EDIT_V2_QUALITY_FINAL_MEDIA_ANALYZER_CAPTIONS_OCR", bundle["readiness_errors"]())
+
+    def test_production_bundle_builds_real_quality_and_repair_factories(self):
+        class Cos:
+            @staticmethod
+            def enabled(): return True
+            @staticmethod
+            def presign_get(key): return f"https://cos.example/{key}"
+            @staticmethod
+            def download_file(_key, _path): return None
+
+        transport = lambda *_args, **_kwargs: {}
+        with patch.dict(os.environ, {}, clear=True):
+            service = runtime.ProductionServices(
+                "v2.db", cos_api=Cos(), dashscope_http=transport,
+                shotstack_http=transport, quality_binary_finder=lambda name: name,
+            )
+            errors = service.readiness_errors()
+
+        self.assertTrue(callable(service.repair_handler))
+        self.assertTrue(callable(service.repair_reconciler_handler))
+        self.assertEqual(service.quality_runner.analyzer.capabilities(), {
+            "captions_ocr": True, "glyphs": True, "materials": True,
+            "transcript_facts": True, "audio": True,
+        })
+        self.assertFalse(any(
+            error == "AI_EDIT_V2_REPAIR_PROVIDER"
+            or error.startswith("AI_EDIT_V2_QUALITY_FINAL_MEDIA_ANALYZER_")
+            for error in errors
+        ), errors)
 
     def test_enabled_worker_fails_readiness_before_claiming(self):
         from server import ai_edit_v2_worker as worker

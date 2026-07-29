@@ -460,19 +460,36 @@ class ProductionServices:
         self.openai_http, self.openai_downloader = openai_http, openai_downloader
         self.elevenlabs_http = elevenlabs_http
         self.downloader = downloader or self._download
-        self.repair_handler = repair_handler or _load_production_injection(
+        loaded_repair = repair_handler if repair_handler is not None else _load_production_injection(
             "AI_EDIT_V2_REPAIR_HANDLER_FACTORY", db_path
         )
-        self.repair_reconciler_handler = repair_reconciler or _load_production_injection(
+        loaded_reconciler = repair_reconciler if repair_reconciler is not None else _load_production_injection(
             "AI_EDIT_V2_REPAIR_RECONCILER_FACTORY", db_path
         )
+        if loaded_repair is None and loaded_reconciler is None:
+            from .ai_edit_v2_quality_repair import create_repair_provider
+            repair_provider = create_repair_provider(
+                db_path=db_path, cos_api=self.cos, shotstack_http=shotstack_http,
+                process_runner=runner, downloader=self.downloader,
+            )
+            loaded_repair, loaded_reconciler = repair_provider.submit, repair_provider.reconcile
+        self.repair_handler = loaded_repair
+        self.repair_reconciler_handler = loaded_reconciler
         from .ai_edit_v2_quality import LocalQualityRunner
-        quality_analyzer = quality_analyzer or _load_production_injection(
+        self._quality_video_urls: dict[str, str] = {}
+        loaded_analyzer = quality_analyzer if quality_analyzer is not None else _load_production_injection(
             "AI_EDIT_V2_QUALITY_ANALYZER_FACTORY", db_path
         )
+        if loaded_analyzer is None:
+            from .ai_edit_v2_quality_repair import create_quality_analyzer
+            loaded_analyzer = create_quality_analyzer(
+                cos_api=self.cos, video_url=self._quality_video_url,
+                http_request=dashscope_http, process_runner=runner,
+                binary_finder=quality_binary_finder,
+            )
         self.quality_runner = LocalQualityRunner(
             runner,
-            analyzer=quality_analyzer,
+            analyzer=loaded_analyzer,
             binary_finder=quality_binary_finder,
         )
 
@@ -520,7 +537,17 @@ class ProductionServices:
         self.cos.download_file(key, path)
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
             raise RuntimeError("quality_output_missing")
+        url = self.cos.presign_get(key)
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise RuntimeError("quality_output_url_invalid")
+        self._quality_video_urls[os.path.abspath(path)] = url
         return path
+
+    def _quality_video_url(self, path: str) -> str:
+        value = self._quality_video_urls.get(os.path.abspath(os.fspath(path)))
+        if not value:
+            raise RuntimeError("quality_output_url_missing")
+        return value
 
     def actual_cost(self, job: dict[str, Any], _outputs: dict[str, Any]) -> int:
         from . import ai_edit_v2_billing as billing

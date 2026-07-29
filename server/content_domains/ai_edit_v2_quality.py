@@ -36,7 +36,8 @@ _CHECKS = (
 )
 _TERMINAL_CODES = frozenset({
     "inspection_incomplete", "video_unplayable", "required_material_missing",
-    "caption_source_mismatch", "caption_facts_mismatch",
+    "caption_source_mismatch", "caption_facts_mismatch", "audio_unplayable",
+    "audio_silence_detected", "dialogue_bgm_imbalance", "dialogue_sfx_imbalance",
 })
 _ANALYZER_CAPABILITIES = (
     "captions_ocr", "glyphs", "materials", "transcript_facts", "audio",
@@ -132,7 +133,10 @@ class LocalQualityRunner:
         if check == "transcript":
             return {"text_timeline": plan.get("text_timeline")}
         if check == "audio":
-            return {"audio_plan": plan.get("audio_plan")}
+            return {
+                "audio_plan": plan.get("audio_plan"),
+                "quality_sources": plan.get("_quality_audio_sources"),
+            }
         raise ValueError("semantic quality check unsupported")
 
     def _analyze(self, check: str, path: str, plan: dict[str, Any]) -> dict[str, Any]:

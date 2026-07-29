@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import threading
 import time
 import uuid
@@ -669,7 +670,13 @@ def _quality_and_delivery(
             worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
             points_client=points_client,
         )
-    report = quality.inspect_output(output_path, resolved_plan, runner) if job["status"] == "quality_check" else None
+    inspection_plan = dict(resolved_plan)
+    generated_output = outputs.get("generating_media") or {}
+    inspection_plan["_quality_audio_sources"] = {
+        "primary_media": resolved_plan.get("primary_media") or resolved_plan.get("primary_video"),
+        "generated_audio": generated_output.get("generated_audio"),
+    }
+    report = quality.inspect_output(output_path, inspection_plan, runner) if job["status"] == "quality_check" else None
     if report is not None and not report.passed:
         now = int(now_fn())
         if not report.repairable:
@@ -776,6 +783,20 @@ def _quality_and_delivery(
             value = saved_output
         if isinstance(value, dict) and value.get("output_path"):
             output_path = value["output_path"]
+        if isinstance(value, dict) and isinstance(value.get("cos_key"), str) and (
+            not isinstance(output_path, str) or not os.path.isfile(output_path)
+        ):
+            services = runtime.option(dependencies, "services")
+            cos_api = getattr(services, "cos", None)
+            downloader = getattr(cos_api, "download_file", None)
+            if not callable(downloader):
+                raise PipelineError("repair_output_unavailable")
+            directory = os.path.join(tempfile.gettempdir(), "ai-edit-v2-repair", str(job["id"]))
+            os.makedirs(directory, exist_ok=True)
+            output_path = os.path.join(directory, "final.mp4")
+            downloader(value["cos_key"], output_path)
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+                raise PipelineError("repair_output_unavailable")
         finished = int(now_fn())
         if finished > deadline_at:
             return _stable_failure(
@@ -783,7 +804,7 @@ def _quality_and_delivery(
                 worker_id=worker_id, lease_seconds=lease_seconds, db_path=db_path,
                 points_client=points_client,
             )
-        report = quality.inspect_output(output_path, resolved_plan, runner)
+        report = quality.inspect_output(output_path, inspection_plan, runner)
         finished = int(now_fn())
         if finished > deadline_at:
             return _stable_failure(
