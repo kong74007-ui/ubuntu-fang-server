@@ -22,6 +22,8 @@ _PROTECTED_TEXT = re.compile(
     r"(?:\d|品牌|产品|商品|价格|价钱|售价|元|块|折|￥|¥|RMB|USD)", re.IGNORECASE
 )
 _CUE_PRIORITY = {"camera_cut": 1, "semantic_turn": 2, "emphasis": 3}
+BGM_MIX_VOLUME = 0.18
+SFX_MIX_VOLUME = 0.20
 
 
 def build_audio_plan(edit_plan: dict[str, Any], text_timeline: dict[str, Any]) -> dict[str, Any]:
@@ -204,7 +206,7 @@ def _mix_filter(
     if bgm_index is not None:
         filters.append(
             f"[{bgm_index}:a][0:a]sidechaincompress=threshold=0.03:ratio=8:"
-            "attack=20:release=300[ducked]"
+            f"attack=20:release=300[ducked_raw];[ducked_raw]volume={BGM_MIX_VOLUME:.2f}[ducked]"
         )
         labels.append("[ducked]")
     for number, (input_index, cue) in enumerate(sfx_indices):
@@ -213,7 +215,8 @@ def _mix_filter(
         label = f"sfx{number}"
         filters.append(
             f"[{input_index}:a]atrim=duration={duration_seconds:g},"
-            f"asetpts=PTS-STARTPTS,adelay={delay}|{delay}[{label}]"
+            f"asetpts=PTS-STARTPTS,adelay={delay}|{delay},"
+            f"volume={SFX_MIX_VOLUME:.2f}[{label}]"
         )
         labels.append(f"[{label}]")
     if len(labels) == 1:

@@ -198,6 +198,8 @@ class MixAudioTests(unittest.TestCase):
             first_filter = runner.calls[0][0][runner.calls[0][0].index("-filter_complex") + 1]
             second_filter = runner.calls[1][0][runner.calls[1][0].index("-filter_complex") + 1]
             self.assertIn("sidechaincompress", first_filter)
+            self.assertIn("volume=0.18", first_filter)
+            self.assertIn("volume=0.20", first_filter)
             self.assertIn("loudnorm=I=-16", first_filter)
             self.assertIn("print_format=json", first_filter)
             self.assertIn("atrim=duration=0.5", first_filter)

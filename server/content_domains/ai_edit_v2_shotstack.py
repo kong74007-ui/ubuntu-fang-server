@@ -218,8 +218,23 @@ def _compile_shotstack_edit(
         "fade": "fade",
         "wipe": "wipeLeft",
     }
+    primary_component = None
+    if components and components[0]["type"] == "broll_video":
+        candidate = components[0]
+        if candidate["start"] == 0 and candidate["length"] == render_graph["duration_ms"] / 1000:
+            primary_component = candidate
+
+    def visual_order(component: dict[str, Any]) -> int:
+        if component["type"] in {"basic_caption", "basic_card"}:
+            return 0
+        if component is primary_component:
+            return 2
+        if component["type"] in {"broll_image", "broll_video"}:
+            return 1
+        return 3
+
     tracks: list[dict[str, Any]] = []
-    for component in components:
+    for component in sorted(components, key=visual_order):
         kind = component["type"]
         if kind == "standard_transition":
             continue

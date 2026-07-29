@@ -120,6 +120,47 @@ class QualityRepairProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "quality_qwen_evidence_invalid"):
             analyzer("captions", path="final.mp4", expected={})
 
+    def test_qwen_analyzer_accepts_one_json_fence_but_rejects_extra_text(self):
+        response = {
+            "output": {"choices": [{"message": {"content": [{"text": (
+                "```json\n"
+                '{"safe_area":true,"tofu_count":0,"missing_glyphs":[]}\n'
+                "```"
+            )}]}}]}
+        }
+        analyzer = DashScopeFinalMediaAnalyzer(
+            cos_api=object(),
+            video_url=lambda _path: "https://cos.example/final.mp4",
+            http_request=lambda *_args: response,
+            binary_finder=lambda name: name,
+        )
+
+        self.assertEqual(
+            analyzer("captions", path="final.mp4", expected={}),
+            {"safe_area": True, "tofu_count": 0, "missing_glyphs": []},
+        )
+
+        response["output"]["choices"][0]["message"]["content"][0]["text"] = (
+            "Result:\n```json\n"
+            '{"safe_area":true,"tofu_count":0,"missing_glyphs":[]}\n'
+            "```"
+        )
+        with self.assertRaisesRegex(ProviderError, "quality_qwen_response_invalid"):
+            analyzer("captions", path="final.mp4", expected={})
+
+    def test_material_check_without_required_assets_is_deterministic(self):
+        analyzer = DashScopeFinalMediaAnalyzer(
+            cos_api=type("Cos", (), {"presign_get": staticmethod(lambda key: key)})(),
+            video_url=lambda _path: "https://cos.example/final.mp4",
+            http_request=lambda *_args: self.fail("Qwen must not run without required assets"),
+            binary_finder=lambda name: name,
+        )
+
+        self.assertEqual(
+            analyzer("materials", path="final.mp4", expected={"required_asset_ids": []}),
+            {"covered_asset_ids": []},
+        )
+
     def test_audio_analyzer_measures_master_and_sidechain_processed_sources(self):
         class Result:
             def __init__(self, *, stdout=b"", stderr=b""):
@@ -162,6 +203,10 @@ class QualityRepairProviderTests(unittest.TestCase):
         sidechain = next(command for command in commands if "-filter_complex" in command)
         self.assertIn(
             "sidechaincompress=threshold=0.03:ratio=8",
+            sidechain[sidechain.index("-filter_complex") + 1],
+        )
+        self.assertIn(
+            "volume=0.18",
             sidechain[sidechain.index("-filter_complex") + 1],
         )
 
