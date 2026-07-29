@@ -1,11 +1,9 @@
 """OpenAI image generation with bounded download and COS-first persistence.
 
-Recovery deliberately does not invent a provider task-query API.  Once a request may
-have crossed the network boundary, recovery would replay the exact canonical body
-with the same OpenAI ``Idempotency-Key``.  Public provider documentation does not yet
-establish that this is one logical submission, so Task 11 must pass a real acceptance
-probe before live generation is enabled.  The store persists the body digest and
-rejects changed-body replay.
+Recovery deliberately does not invent a provider task-query API or rely on the
+advisory OpenAI ``Idempotency-Key``.  Once a request may have crossed the network
+boundary, any unknown result becomes terminal and is never submitted again.  The
+job fails and refunds the user while preserving the durable material audit record.
 """
 
 from __future__ import annotations
@@ -29,12 +27,6 @@ from .base import ProviderError, ProviderResult, RetryableProviderError
 _ENDPOINT = "https://api.openai.com/v1/images/generations"
 _ALLOWED_CONTENT_TYPES = frozenset({"image/png"})
 _MAX_IMAGE_BYTES = 15 * 1024 * 1024
-# Task 11 owns this gate and may set it only after a live same-key/body replay probe.
-_ACCEPTANCE_ENV = "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED"
-
-
-def _env_enabled(name: str) -> bool:
-    return str(os.environ.get(name, "")).strip() == "1"
 
 
 class OpenAIImageProvider:
@@ -99,32 +91,10 @@ class OpenAIImageProvider:
             separators=(",", ":"),
         ).encode("utf-8")
         request_digest = hashlib.sha256(body).hexdigest()
-        if not _env_enabled(_ACCEPTANCE_ENV):
-            existing = self.asset_store.find_generated_material(
-                self.owner,
-                self.job_id,
-                idempotency_key,
-                db_path=self.db_path,
-            )
-            if existing is not None and existing.get("status") == "ready":
-                persisted_digest = existing.get("generation_request_digest")
-                if (
-                    persisted_digest is not None
-                    and persisted_digest != request_digest
-                ):
-                    raise ProviderError("openai_image_request_conflict")
-                return ProviderResult(
-                    provider="openai",
-                    capability="image_generation",
-                    request_id="idempotent-replay",
-                    payload=self._existing_payload(existing),
-                    cost_units=0,
-                    elapsed_ms=0,
-                )
-            raise ProviderError("openai_image_idempotency_acceptance_required")
         object_id = uuid.uuid5(uuid.UUID(self.job_id), idempotency_key)
         owner_hash = hashlib.sha256(self.owner.encode("utf-8")).hexdigest()[:16]
         cos_key = f"ai-edit-v2/{owner_hash}/{self.job_id}/generated/{object_id}.png"
+        reservation_now = self.now_seconds()
         reservation = self.asset_store.reserve_generated_material(
             owner=self.owner,
             job_id=self.job_id,
@@ -133,7 +103,7 @@ class OpenAIImageProvider:
             request_digest=request_digest,
             lease_owner=self.worker_id,
             lease_seconds=self.lease_seconds,
-            now=self.now_seconds(),
+            now=reservation_now,
             db_path=self.db_path,
         )
         material = reservation["material"]
@@ -149,13 +119,17 @@ class OpenAIImageProvider:
                     elapsed_ms=0,
                 )
             if reservation.get("reason") == "retry_backoff":
-                raise RetryableProviderError("openai_image_retry_backoff")
+                retry_at = int(material.get("generation_retry_at") or reservation_now)
+                raise RetryableProviderError(
+                    "openai_image_retry_backoff",
+                    retry_after_seconds=max(1, retry_at - reservation_now),
+                )
             if reservation.get("reason") == "in_progress":
                 raise ProviderError("openai_image_generation_in_progress")
             raise ProviderError("openai_image_generation_failed")
         started_at = self.clock_ms()
         if not self.api_key:
-            self._mark_recoverable(idempotency_key, "retryable")
+            self._fail_reservation(idempotency_key)
             raise ProviderError("openai_image_not_configured")
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -176,14 +150,20 @@ class OpenAIImageProvider:
                 "POST", _ENDPOINT, headers, body, self.timeout_seconds
             )
         except urllib.error.HTTPError as exc:
-            if exc.code in (408, 429) or exc.code >= 500:
-                self._mark_recoverable(idempotency_key, "retryable")
-                raise RetryableProviderError("openai_image_unavailable") from exc
+            if exc.code == 429:
+                self._mark_recoverable(idempotency_key, "rate_limited")
+                raise RetryableProviderError(
+                    "openai_image_unavailable",
+                    retry_after_seconds=self.retry_backoff_seconds,
+                ) from exc
+            if exc.code == 408 or exc.code >= 500:
+                self._fail_reservation(idempotency_key)
+                raise ProviderError("openai_image_submission_unknown") from exc
             self._fail_reservation(idempotency_key)
             raise ProviderError("openai_image_request_rejected") from exc
         except (TimeoutError, urllib.error.URLError, OSError) as exc:
-            self._mark_recoverable(idempotency_key, "unknown_submission")
-            raise RetryableProviderError("openai_image_unavailable") from exc
+            self._fail_reservation(idempotency_key)
+            raise ProviderError("openai_image_submission_unknown") from exc
 
         provider_request_id = self._response_request_id(response)
         if not self.asset_store.mark_generated_material_provider_confirmed(
@@ -226,7 +206,7 @@ class OpenAIImageProvider:
                 db_path=self.db_path,
             )
         except Exception:
-            self._mark_recoverable(idempotency_key, "provider_confirmed")
+            self._fail_reservation(idempotency_key)
             raise
         payload = self._existing_payload(material)
         return ProviderResult(

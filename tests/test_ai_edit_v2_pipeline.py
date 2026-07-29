@@ -20,7 +20,11 @@ from server.content_domains import ai_edit_v2_store as store
 from server.content_domains import ai_edit_v2_delivery as delivery
 from tests.test_ai_edit_v2_delivery import FakeCos as DeliveryCos
 from tests.test_ai_edit_v2_quality import EvidenceRunner, passing_evidence
-from server.content_domains.ai_edit_v2_providers.base import UnknownSubmissionError
+from server.content_domains.ai_edit_v2_providers.base import (
+    ProviderError,
+    RetryableProviderError,
+    UnknownSubmissionError,
+)
 from server.content_domains.ai_edit_v2_schema import TERMINAL_STATES
 from tests.test_ai_edit_v2_director import VALID_PLAN
 from tests.test_ai_edit_v2_openai_image import png_bytes
@@ -714,6 +718,48 @@ class PipelineTests(unittest.TestCase):
 
 
 class StableRunJobTests(PipelineTests):
+    def test_retryable_provider_waits_for_backoff_before_retrying(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        calls = []
+        dependencies = self._dependencies(calls)
+        attempts = []
+        sleeps = []
+        original = dependencies["handlers"]["resolving_materials"]
+
+        def rate_limited_once(job_row, context, stage_input):
+            attempts.append("openai-image")
+            if len(attempts) == 1:
+                raise RetryableProviderError(
+                    "openai_image_unavailable", retry_after_seconds=2
+                )
+            return original(job_row, context, stage_input)
+
+        dependencies["handlers"]["resolving_materials"] = rate_limited_once
+        dependencies["retry_sleep"] = sleeps.append
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "quality_checking")
+        self.assertEqual(attempts, ["openai-image", "openai-image"])
+        self.assertEqual(sleeps, [2])
+
+    def test_unknown_openai_image_submission_fails_once_and_refunds_full_hold(self):
+        job = self._precharged_job(str(uuid.uuid4()))
+        calls = []
+        dependencies = self._dependencies(calls)
+        provider_calls = []
+
+        def fail_unknown(_job, _context, _stage_input):
+            provider_calls.append("openai-image")
+            raise ProviderError("openai_image_submission_unknown")
+
+        dependencies["handlers"]["resolving_materials"] = fail_unknown
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "asset_failed")
+        self.assertEqual(result["error_code"], "openai_image_submission_unknown")
+        self.assertEqual(provider_calls, ["openai-image"])
+        self.assertEqual(self.points.balance, 1_000)
+
     def test_quality_boundary_delivers_after_task7_quality_checking(self):
         job = self._precharged_job(str(uuid.uuid4()))
         calls = []
@@ -1166,7 +1212,7 @@ class StableRunJobTests(PipelineTests):
         dependencies["now"] = lambda: current_time
         config = {"db_path": self.db_path, "lease_seconds": 180}
         claimed = store.claim_job(job_id, "integration-lease", 180, current_time, db_path=self.db_path)
-        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "AI_EDIT_V2_OPENAI_IMAGE_IDEMPOTENCY_ACCEPTED": "1", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "fake", "SHOTSTACK_API_KEY": "fake", "OPENAI_API_KEY": "fake", "ELEVENLABS_API_KEY": "fake", "AI_EDIT_V2_SHOTSTACK_CALLBACK_URL": "https://callback.test/v2", "AI_EDIT_V2_WEBHOOK_SECRET": "fake-secret"}, clear=False):
             runtime.assert_production_ready(dependencies)
             result = worker._process_claimed(claimed, "integration-lease", config, dependencies)
         self.assertEqual(result["state"], "completed", (result, calls))

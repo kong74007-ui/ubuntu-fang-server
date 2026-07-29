@@ -789,8 +789,6 @@ def reserve_generated_material(
                 ).fetchone()
                 reason = "claimed"
             else:
-                if row["cos_key"] != cos_key:
-                    raise ValueError("generated_material_idempotency_conflict")
                 state = row["generation_state"]
                 if row["status"] == "ready" or state == "ready":
                     if (
@@ -799,90 +797,95 @@ def reserve_generated_material(
                     ):
                         raise ValueError("generated_request_conflict")
                     reason = "ready"
-                elif row["status"] == "failed" or state == "terminal_failed":
-                    reason = "terminal_failed"
-                elif row["generation_request_digest"] is None:
-                    if state != "unknown_submission" or row["status"] != "pending":
-                        raise ValueError(
-                            "generated_legacy_material_requires_reconciliation"
-                        )
-                    changed = conn.execute(
-                        """UPDATE edit_v2_materials
-                           SET generation_job_id=?,generation_idempotency_key=?,
-                               generation_request_digest=?,
-                               generation_lease_owner=?,generation_lease_until=?,
-                               generation_retry_at=NULL,updated_at=?
-                           WHERE id=? AND status='pending'
-                             AND generation_state='unknown_submission'
-                             AND generation_request_digest IS NULL""",
-                        (
-                            job_id,
-                            idempotency_key,
-                            request_digest,
-                            lease_owner,
-                            lease_until,
-                            now,
-                            row["id"],
-                        ),
-                    ).rowcount
-                    claimed = changed == 1
-                    reason = "claimed" if claimed else "in_progress"
-                    row = conn.execute(
-                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
-                    ).fetchone()
-                elif row["generation_request_digest"] != request_digest:
-                    raise ValueError("generated_request_conflict")
-                elif (
-                    row["generation_lease_owner"] is not None
-                    and row["generation_lease_until"] is not None
-                    and int(row["generation_lease_until"]) > now
-                ):
-                    reason = "in_progress"
-                elif (
-                    row["generation_retry_at"] is not None
-                    and int(row["generation_retry_at"]) > now
-                ):
-                    reason = "retry_backoff"
-                elif state in {
-                    "pre_submit",
-                    "submitting",
-                    "unknown_submission",
-                    "retryable",
-                    "provider_confirmed",
-                }:
-                    changed = conn.execute(
-                        """UPDATE edit_v2_materials
-                           SET generation_lease_owner=?,generation_lease_until=?,
-                               generation_retry_at=NULL,
-                               generation_state=CASE
-                                   WHEN generation_state='submitting'
-                                   THEN 'unknown_submission'
-                                   ELSE generation_state
-                               END,
-                               updated_at=?
-                           WHERE id=? AND status='pending'
-                             AND generation_request_digest=?
-                             AND (generation_lease_until IS NULL
-                                  OR generation_lease_until<=?)
-                             AND (generation_retry_at IS NULL
-                                  OR generation_retry_at<=?)""",
-                        (
-                            lease_owner,
-                            lease_until,
-                            now,
-                            row["id"],
-                            request_digest,
-                            now,
-                            now,
-                        ),
-                    ).rowcount
-                    claimed = changed == 1
-                    reason = "claimed" if claimed else "in_progress"
-                    row = conn.execute(
-                        "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
-                    ).fetchone()
                 else:
-                    reason = "terminal_failed"
+                    if row["cos_key"] != cos_key:
+                        raise ValueError("generated_material_idempotency_conflict")
+                    if row["status"] == "failed" or state == "terminal_failed":
+                        reason = "terminal_failed"
+                    elif row["generation_request_digest"] is None:
+                        if state != "unknown_submission" or row["status"] != "pending":
+                            raise ValueError(
+                                "generated_legacy_material_requires_reconciliation"
+                            )
+                        conn.execute(
+                            """UPDATE edit_v2_materials
+                               SET status='failed',generation_state='terminal_failed',
+                                   generation_lease_owner=NULL,
+                                   generation_lease_until=NULL,
+                                   generation_retry_at=NULL,updated_at=?
+                               WHERE id=? AND status='pending'
+                                 AND generation_state='unknown_submission'
+                                 AND generation_request_digest IS NULL""",
+                            (now, row["id"]),
+                        )
+                        claimed = False
+                        reason = "terminal_failed"
+                        row = conn.execute(
+                            "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                        ).fetchone()
+                    elif row["generation_request_digest"] != request_digest:
+                        raise ValueError("generated_request_conflict")
+                    elif (
+                        row["generation_lease_owner"] is not None
+                        and row["generation_lease_until"] is not None
+                        and int(row["generation_lease_until"]) > now
+                    ):
+                        reason = "in_progress"
+                    elif state in {
+                        "submitting",
+                        "unknown_submission",
+                        "provider_confirmed",
+                        "retryable",
+                    }:
+                        conn.execute(
+                            """UPDATE edit_v2_materials
+                               SET status='failed',generation_state='terminal_failed',
+                                   generation_lease_owner=NULL,
+                                   generation_lease_until=NULL,
+                                   generation_retry_at=NULL,updated_at=?
+                               WHERE id=? AND status='pending'
+                                 AND generation_request_digest=?""",
+                            (now, row["id"], request_digest),
+                        )
+                        claimed = False
+                        reason = "terminal_failed"
+                        row = conn.execute(
+                            "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                        ).fetchone()
+                    elif (
+                        row["generation_retry_at"] is not None
+                        and int(row["generation_retry_at"]) > now
+                    ):
+                        reason = "retry_backoff"
+                    elif state in {"pre_submit", "rate_limited"}:
+                        changed = conn.execute(
+                            """UPDATE edit_v2_materials
+                               SET generation_lease_owner=?,generation_lease_until=?,
+                                   generation_retry_at=NULL,
+                                   updated_at=?
+                               WHERE id=? AND status='pending'
+                                 AND generation_request_digest=?
+                                 AND (generation_lease_until IS NULL
+                                      OR generation_lease_until<=?)
+                                 AND (generation_retry_at IS NULL
+                                      OR generation_retry_at<=?)""",
+                            (
+                                lease_owner,
+                                lease_until,
+                                now,
+                                row["id"],
+                                request_digest,
+                                now,
+                                now,
+                            ),
+                        ).rowcount
+                        claimed = changed == 1
+                        reason = "claimed" if claimed else "in_progress"
+                        row = conn.execute(
+                            "SELECT * FROM edit_v2_materials WHERE id=?", (row["id"],)
+                        ).fetchone()
+                    else:
+                        reason = "terminal_failed"
             conn.commit()
             return {
                 "claimed": claimed,
@@ -960,10 +963,7 @@ def mark_generated_material_submitting(
         lease_owner=lease_owner,
         from_states=(
             "pre_submit",
-            "submitting",
-            "unknown_submission",
-            "retryable",
-            "provider_confirmed",
+            "rate_limited",
         ),
         to_state="submitting",
         now=now,
@@ -1006,9 +1006,7 @@ def mark_generated_material_recoverable(
     db_path: str | None = None,
 ) -> bool:
     allowed_from = {
-        "unknown_submission": ("submitting",),
-        "retryable": ("pre_submit", "submitting"),
-        "provider_confirmed": ("provider_confirmed",),
+        "rate_limited": ("submitting",),
     }
     if state not in allowed_from:
         raise ValueError("generated_recovery_state_invalid")
@@ -1119,7 +1117,10 @@ def fail_generated_material(
                    generation_retry_at=NULL,updated_at=?
                WHERE owner=? AND source='gpt_image' AND semantic_label=?
                  AND status='pending' AND generation_lease_owner=?
-                 AND generation_state IN ('pre_submit','submitting')""",
+                 AND generation_state IN (
+                     'pre_submit','submitting','unknown_submission',
+                     'provider_confirmed'
+                 )""",
             (int(now), owner, label, lease_owner),
         ).rowcount
         return changed == 1

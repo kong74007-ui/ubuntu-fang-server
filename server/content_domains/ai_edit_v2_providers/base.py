@@ -21,7 +21,9 @@ class ProviderError(RuntimeError):
 
 
 class RetryableProviderError(ProviderError):
-    pass
+    def __init__(self, message: str, *, retry_after_seconds: int = 0):
+        super().__init__(message)
+        self.retry_after_seconds = max(0, int(retry_after_seconds))
 
 
 class UnknownSubmissionError(ProviderError):
