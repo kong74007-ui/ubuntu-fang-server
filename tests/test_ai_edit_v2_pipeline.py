@@ -718,6 +718,35 @@ class PipelineTests(unittest.TestCase):
 
 
 class StableRunJobTests(PipelineTests):
+    def test_schema_failure_closes_stage_attempt_and_persists_safe_detail(self):
+        class DetailedDirectorFailure(RuntimeError):
+            code = "director_schema_invalid"
+            detail = "scenes[0].id不能为空"
+
+        job = self._precharged_job(str(uuid.uuid4()))
+        dependencies = self._dependencies([])
+        dependencies["handlers"]["directing"] = lambda *_args: (_ for _ in ()).throw(
+            DetailedDirectorFailure()
+        )
+
+        result = pipeline.run_job(job["id"], dependencies, db_path=self.db_path)
+
+        self.assertEqual(result["state"], "director_failed")
+        self.assertEqual(result["error_code"], "director_schema_invalid")
+        with closing(store.open_store(self.db_path)) as conn:
+            attempt = conn.execute(
+                """SELECT status,error_code,output_summary_json,finished_at
+                   FROM edit_v2_stage_attempts WHERE job_id=? AND stage='directing'""",
+                (job["id"],),
+            ).fetchone()
+        self.assertEqual(attempt["status"], "failed")
+        self.assertEqual(attempt["error_code"], "director_schema_invalid")
+        self.assertEqual(
+            json.loads(attempt["output_summary_json"]),
+            {"stage": "directing", "schema_error": "scenes[0].id不能为空"},
+        )
+        self.assertIsNotNone(attempt["finished_at"])
+
     def test_retryable_provider_waits_for_backoff_before_retrying(self):
         job = self._precharged_job(str(uuid.uuid4()))
         calls = []

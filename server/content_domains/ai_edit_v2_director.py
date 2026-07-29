@@ -74,6 +74,22 @@ _OUTPUT_CONTRACT: Final = {
     ],
     "caption_plan_fields": ["source", "style"],
     "audio_plan_fields": ["speech_policy", "music_policy", "sfx_policy"],
+    "field_types": {
+        "version": "string",
+        "creation_mode": "string",
+        "duration_ms": "positive integer",
+        "target_duration_ms": "positive integer",
+        "aspect_ratio": "string",
+        "language": "string",
+        "style_system": "object",
+        "scenes": "non-empty array",
+        "caption_plan": "object",
+        "audio_plan": "object",
+        "scene.id": "non-empty string",
+        "scene.start_ms": "non-negative integer",
+        "scene.end_ms": "positive integer",
+        "scene.material_slots": "array of slot IDs",
+    },
     "rules": {
         "version": "2.0",
         "language": "zh-CN",
@@ -107,8 +123,9 @@ _SECRET_TOKEN_RE: Final = re.compile(
 
 
 class DirectorError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, detail: str | None = None):
         self.code = code
+        self.detail = detail
         super().__init__(code)
 
 
@@ -218,11 +235,37 @@ def _response_content(result: Any) -> str:
     return content
 
 
+def _normalize_structural_fields(plan: Any) -> Any:
+    """Repair only deterministic identifiers and wrapper shapes, never semantics."""
+
+    if not isinstance(plan, dict):
+        return plan
+    normalized = dict(plan)
+    style_system = normalized.get("style_system")
+    if isinstance(style_system, str) and style_system in COMPONENT_FAMILIES:
+        normalized["style_system"] = {"component_family": style_system}
+    scenes = normalized.get("scenes")
+    if isinstance(scenes, list):
+        normalized_scenes = []
+        for index, scene in enumerate(scenes):
+            if not isinstance(scene, dict):
+                normalized_scenes.append(scene)
+                continue
+            normalized_scene = dict(scene)
+            scene_id = normalized_scene.get("id")
+            if scene_id is None or (isinstance(scene_id, str) and not scene_id.strip()):
+                normalized_scene["id"] = f"scene_{index + 1:02d}"
+            normalized_scenes.append(normalized_scene)
+        normalized["scenes"] = normalized_scenes
+    return normalized
+
+
 def _decode_and_validate(content: str, safe_context: dict[str, Any]) -> dict[str, Any]:
     try:
         plan = json.loads(content)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ValueError("响应不是合法JSON对象") from exc
+    plan = _normalize_structural_fields(plan)
     validate_edit_plan(plan)
     if plan["creation_mode"] != safe_context["creation_mode"]:
         raise ValueError("creation_mode与请求不一致")
@@ -256,10 +299,54 @@ def _initial_prompt(safe_context: dict[str, Any]) -> str:
             "required_version": "2.0",
             "context": safe_context,
             "output_contract": _OUTPUT_CONTRACT,
+            "output_example": _output_example(safe_context),
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _output_example(safe_context: dict[str, Any]) -> dict[str, Any]:
+    duration_ms = safe_context["target_duration_ms"]
+    template = safe_context.get("template")
+    if template is None:
+        style_system = {"component_family": "editorial_business"}
+        music_policy = "duck_under_speech"
+        sfx_policy = "semantic_only"
+    else:
+        style_system = {
+            "template_id": template["id"],
+            "template_version": template["version"],
+            "component_family": template["component_family"],
+        }
+        music_policy = template["sound_policy"]["music_policy"]
+        sfx_policy = template["sound_policy"]["sfx_policy"]
+    return {
+        "version": "2.0",
+        "creation_mode": safe_context["creation_mode"],
+        "duration_ms": duration_ms,
+        "target_duration_ms": duration_ms,
+        "aspect_ratio": safe_context["aspect_ratio"],
+        "language": "zh-CN",
+        "style_system": style_system,
+        "scenes": [{
+            "id": "scene_01",
+            "start_ms": 0,
+            "end_ms": duration_ms,
+            "intent": "概括本场景的表达目的",
+            "layout": "speaker_focus",
+            "visual_type": "talking_head",
+            "headline": "非空中文重点标题",
+            "material_slots": [],
+            "transition": "cut",
+        }],
+        "caption_plan": {"source": "text_timeline", "style": "clean"},
+        "audio_plan": {
+            "speech_policy": "preserve_source",
+            "music_policy": music_policy,
+            "sfx_policy": sfx_policy,
+        },
+    }
 
 
 def _redact_sensitive_json(value: Any) -> Any:
@@ -301,7 +388,7 @@ def _repair_prompt(error: ValueError, previous_response: str, original_request: 
     return json.dumps(
         {
             "task": "repair_semantic_edit_plan_v2",
-            "instruction": "根据原始请求和字段级错误，只返回修复后的完整 JSON 对象。",
+            "instruction": "只修复 schema_errors 指向的字段，其他已经合规的字段和值必须原样保留；返回完整 JSON 对象，所有字符串必填字段不得为空。",
             "original_request": json.loads(original_request),
             "schema_errors": _redact_sensitive_text(str(error))[:_MAX_REPAIR_ERROR_CHARS],
             "previous_response": _sanitize_previous_response(previous_response),
@@ -337,7 +424,8 @@ def generate_edit_plan(context: dict[str, Any], client: Any, max_repairs: int = 
             if isinstance(exc, DirectorError) and exc.code == "director_provider_failed":
                 raise
             if attempt == repair_limit:
-                raise DirectorError("director_schema_invalid") from exc
+                detail = _redact_sensitive_text(str(exc))[:_MAX_REPAIR_ERROR_CHARS]
+                raise DirectorError("director_schema_invalid", detail) from exc
             error = exc if isinstance(exc, ValueError) else ValueError(exc.code)
             user_prompt = _repair_prompt(error, content, original_request)
     raise DirectorError("director_schema_invalid")
