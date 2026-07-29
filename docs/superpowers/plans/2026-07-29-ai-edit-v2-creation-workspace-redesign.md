@@ -17,6 +17,7 @@
 - The user interface must not show “必须使用” or “参考使用”.
 - Output ratio remains selectable as `16:9` or `9:16`.
 - `target_duration_ms` is always `null`; duration is AI-adaptive.
+- Do not show a precharge confirmation checkbox; clicking the priced start button is the explicit submission action.
 - Desktop uses a left configuration column and sticky right preview/status panel; mobile uses one column.
 - Do not expose filesystem paths, COS object keys, signed provider URLs, provider names, or editable timelines.
 - Do not change protocol version, billing semantics, queue ownership, renderer selection, or quality state transitions.
@@ -433,10 +434,10 @@ renderWorkspacePanel();
 assert.equal(primaryAction.textContent, '获取价格区间');
 
 state.quote = {held_points: 30, minimum_points: 20, maximum_points: 30};
-confirmPrecharge.checked = true;
 renderWorkspacePanel();
-assert.equal(primaryAction.textContent, '确认并开始创作 · 30点');
+assert.equal(primaryAction.textContent, '开始创作 · 30点');
 assert.equal(materialCount.textContent, '2个');
+assert.doesNotMatch(page, /id="confirmPrecharge"/);
 ```
 
 Add stage mapping assertions for `queued`, `transcribing`, `planning`, `resolving_materials`, `rendering`, `quality_check`, `repairing`, `completed`, and a `_failed` status.
@@ -463,7 +464,7 @@ Expected: FAIL because quote and task status are separate cards and no subject p
 - `priceSummary`
 - `primaryAction`
 
-Before quote, `primaryAction.onclick=requestQuote`; after quote plus confirmation, it becomes `confirmJob`. Disable it while imports/uploads/requests are pending.
+Before quote, `primaryAction.onclick=requestQuote`; after quote, it becomes `confirmJob` and displays the held-point ceiling. Clicking that priced button is the explicit precharge acceptance. Do not render `confirmPrecharge`. Disable the action while imports/uploads/requests are pending.
 
 - [ ] **Step 4: Merge task status into the same panel**
 
