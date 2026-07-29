@@ -132,3 +132,31 @@ test('successful capability check clears the initial closed-state message', () =
   assert.equal(controls[0].disabled, false);
   assert.equal(formMessage.textContent, '');
 });
+
+test('page initialization loads capability and asset sources only once', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const start = page.lastIndexOf('setSubmissionEnabled(false);');
+  const end = page.indexOf('\n})();', start);
+  assert.notEqual(start, -1, 'page initialization must be present');
+  assert.notEqual(end, -1, 'page initialization must terminate');
+  const initialization = page.slice(start, end);
+  const calls = {capability: 0, platformAssets: 0, templates: 0};
+  const state = {acceptsSubmissions: false};
+
+  const run = Function(
+    'state', 'setSubmissionEnabled', 'restorePendingJob', 'loadCapability',
+    'loadPlatformAssets', 'loadMaterials', 'api',
+    `${initialization}; return Promise.resolve().then(() => Promise.resolve());`
+  );
+  await run(
+    state,
+    () => {},
+    () => {},
+    async () => { calls.capability += 1; state.acceptsSubmissions = true; },
+    async () => { calls.platformAssets += 1; },
+    async () => {},
+    async (path) => { if (path.endsWith('/templates')) calls.templates += 1; return {items: []}; },
+  );
+
+  assert.deepEqual(calls, {capability: 1, platformAssets: 1, templates: 1});
+});
