@@ -23,7 +23,7 @@ _PROTECTED_TEXT = re.compile(
 )
 _CUE_PRIORITY = {"camera_cut": 1, "semantic_turn": 2, "emphasis": 3}
 BGM_MIX_VOLUME = 0.18
-SFX_MIX_VOLUME = 0.20
+SFX_MIX_VOLUME = 0.04
 
 
 def build_audio_plan(edit_plan: dict[str, Any], text_timeline: dict[str, Any]) -> dict[str, Any]:
