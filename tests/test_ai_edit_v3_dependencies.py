@@ -6,6 +6,7 @@ from jsonschema import Draft202012Validator
 
 
 REQUIREMENTS = Path(__file__).resolve().parents[1] / "deploy" / "requirements-ai-edit-v3.txt"
+CI_WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 EXPECTED = (
     "attrs==25.4.0",
     "jsonschema==4.26.0",
@@ -30,3 +31,14 @@ class V3DependencyManifestTests(unittest.TestCase):
         self.assertEqual(importlib.metadata.version("jsonschema"), "4.26.0")
         schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}
         Draft202012Validator.check_schema(schema)
+
+
+class V3CiDependencyTests(unittest.TestCase):
+    def test_ci_installs_v3_pins_before_validation_and_tests(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        install = workflow.index(
+            "python -m pip install --disable-pip-version-check --no-input --no-deps "
+            "--requirement deploy/requirements-ai-edit-v3.txt"
+        )
+        self.assertLess(install, workflow.index("python scripts/ci_validate.py"))
+        self.assertLess(install, workflow.index("python -m unittest discover -s tests -v"))
