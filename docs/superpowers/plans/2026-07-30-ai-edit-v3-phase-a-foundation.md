@@ -364,7 +364,7 @@ Schema v1 创建以下表并仅通过 `store.py` 访问：
 Schema v1 同时冻结以下最低约束与索引：
 
 - `jobs` 唯一 `(environment, owner_id, idempotency_key)`，分页索引 `(environment, owner_id, created_at DESC, job_id DESC)`，claim 索引 `(state, lease_until, queued_at, job_id)`，`repair_count IN (0,1)`，状态只能来自本节冻结状态全集。
-- `stage_attempts` 唯一 `(job_id, stage, attempt)`，并以 partial unique 保证一个 job 只有一个 `status='running'` 的 attempt。
+- `stage_attempts` 唯一 `(job_id, stage, attempt)`，并以 partial unique 保证一个 job 只有一个 `status='running'` 的 attempt；Schema v1 的状态全集冻结为 `running`、`completed`、`failed`、`skipped`、`aborted_lease_lost`，其中租约丢失清理必须写入 `aborted_lease_lost`，不得遗留永久 `running` 记录。
 - `checkpoints` 唯一 `(job_id, stage, version)` 和 `(job_id, stage, input_sha256)`。
 - `uploads.object_key` 唯一；`materials.cos_key` 唯一且非空 `upload_id` 唯一；`job_materials` 唯一 `(job_id, material_id)` 和 `(job_id, purpose, ordinal)`。
 - `pricing_versions` 至多一个 `published`；`template_versions` 唯一 `(template_id, version)`，每个模板至多一个 `published`。

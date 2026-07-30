@@ -1052,7 +1052,7 @@ failed_reconciliation_pending(full_refund_target_reached) -> refunded
 `ai_edit_v3.db` 使用 SQLite WAL、外键、busy timeout 和版本化迁移。至少包含以下职责表：
 
 - `edit_v3_jobs`：任务、owner、输入、状态、时限、结果和错误。
-- `edit_v3_stage_attempts`：阶段尝试、租约、输入指纹、开始和结束时间。
+- `edit_v3_stage_attempts`：阶段尝试、租约、输入指纹、开始和结束时间；Schema v1 状态只允许 `running`、`completed`、`failed`、`skipped`、`aborted_lease_lost`，租约丢失清理使用最后一种状态。
 - `edit_v3_checkpoints`：不可变阶段结果版本。
 - `edit_v3_uploads`：上传意图、对象键、MIME、大小和完成状态。
 - `edit_v3_materials`：本次任务图片和 AI 图片元数据。
