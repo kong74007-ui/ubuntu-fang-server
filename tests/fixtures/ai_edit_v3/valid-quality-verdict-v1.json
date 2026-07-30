@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "schema_sha256": "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e",
+  "model_request_id": "quality_request_01",
+  "checks": [
+    {
+      "check_id": "caption_fact_accuracy",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "字幕与准确文本一致",
+      "evidence": [
+        {
+          "frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "timestamp_ms": 1000
+        }
+      ]
+    }
+  ]
+}
