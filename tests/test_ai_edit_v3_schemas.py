@@ -566,6 +566,34 @@ class EditPlanValidatorTests(unittest.TestCase):
                 ):
                     validate_edit_plan(self.plan, timeline=timeline)
 
+    def test_undocumented_capability_aliases_always_fail_closed(self):
+        aliases = (
+            ("layout_capabilities", "layout_ids"),
+            ("overlay_capabilities", "overlay_ids"),
+            ("animation_capabilities", "animation_ids"),
+            ("transition_capabilities", "transition_ids"),
+        )
+        for primary, alternate in aliases:
+            with self.subTest(primary=primary, shape="alternate_only"):
+                timeline = copy.deepcopy(self.timeline)
+                timeline[alternate] = timeline.pop(primary)
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "timeline_capability_invalid",
+                ) as caught:
+                    validate_edit_plan(self.plan, timeline=timeline)
+                self.assertEqual(caught.exception.field_path, alternate)
+
+            with self.subTest(primary=primary, shape="primary_and_alternate"):
+                timeline = copy.deepcopy(self.timeline)
+                timeline[alternate] = [[]]
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "timeline_capability_invalid",
+                ) as caught:
+                    validate_edit_plan(self.plan, timeline=timeline)
+                self.assertEqual(caught.exception.field_path, alternate)
+
     def test_edit_plan_rejects_unpublished_layout_variant(self):
         self.plan["scenes"][0]["layout_variant"] = "balanced_b"
 
@@ -607,6 +635,36 @@ class EditPlanValidatorTests(unittest.TestCase):
             "material_request_timeline_invalid",
         ):
             validate_edit_plan(out_of_bounds, timeline=self.timeline)
+
+    def test_material_slot_ids_are_unique_within_one_scene(self):
+        same_scene = load_fixture("valid-edit-plan-2.0.json")
+        same_scene["scenes"][0]["material_slots"].append(
+            copy.deepcopy(same_scene["scenes"][0]["material_slots"][0])
+        )
+        with self.assertRaisesRegex(
+            ContractError,
+            "director_id_duplicate",
+        ) as caught:
+            validate_edit_plan(same_scene, timeline=self.timeline)
+        self.assertEqual(
+            caught.exception.field_path,
+            "scenes[0].material_slots[1].id",
+        )
+
+    def test_material_slot_ids_are_unique_across_scenes(self):
+        cross_scene = load_fixture("valid-edit-plan-2.0.json")
+        cross_scene["scenes"][1]["material_slots"].append(
+            copy.deepcopy(cross_scene["scenes"][0]["material_slots"][0])
+        )
+        with self.assertRaisesRegex(
+            ContractError,
+            "director_id_duplicate",
+        ) as caught:
+            validate_edit_plan(cross_scene, timeline=self.timeline)
+        self.assertEqual(
+            caught.exception.field_path,
+            "scenes[1].material_slots[0].id",
+        )
 
     def test_rejects_lone_surrogates_in_preparsed_edit_plan(self):
         self.plan["creative_concept"] = "unsafe\ud800concept"

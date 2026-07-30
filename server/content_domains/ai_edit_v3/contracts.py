@@ -198,6 +198,12 @@ _TRANSITION_IDS = frozenset(
         "card_match_cut",
     }
 )
+_UNDOCUMENTED_TIMELINE_CAPABILITY_KEYS = (
+    "layout_ids",
+    "overlay_ids",
+    "animation_ids",
+    "transition_ids",
+)
 _THEME_CAPABILITIES = {
     "palette_id": frozenset({"midnight_gold"}),
     "typography_id": frozenset({"editorial_sans"}),
@@ -741,13 +747,10 @@ def _ensure_unique_ids(
 def _timeline_capability(
     timeline: Mapping[str, Any],
     primary: str,
-    alternate: str,
     default: frozenset[str],
 ) -> frozenset[str]:
     if primary in timeline:
         configured = timeline[primary]
-    elif alternate in timeline:
-        configured = timeline[alternate]
     else:
         _raise(
             "timeline_capability_missing",
@@ -808,6 +811,13 @@ def validate_edit_plan(
     _validate_schema(plan, "edit-plan-2.0.schema.json", "director_schema_invalid")
     if not isinstance(timeline, Mapping):
         _raise("timeline_invalid", "timeline", "timeline must be an object")
+    for key in _UNDOCUMENTED_TIMELINE_CAPABILITY_KEYS:
+        if key in timeline:
+            _raise(
+                "timeline_capability_invalid",
+                key,
+                "undocumented capability aliases are forbidden",
+            )
     duration_ms = plan["duration_ms"]
     timeline_duration = timeline.get("duration_ms")
     if (
@@ -830,6 +840,17 @@ def validate_edit_plan(
     ):
         _ensure_unique_ids(plan[field], field=field)
     _ensure_unique_ids(plan["materials"], field="materials", key="request_id")
+    material_slot_ids: set[str] = set()
+    for scene_index, scene in enumerate(plan["scenes"]):
+        for slot_index, slot in enumerate(scene["material_slots"]):
+            slot_id = slot["id"]
+            if slot_id in material_slot_ids:
+                _raise(
+                    "director_id_duplicate",
+                    f"scenes[{scene_index}].material_slots[{slot_index}].id",
+                    "material slot IDs must be globally unique",
+                )
+            material_slot_ids.add(slot_id)
 
     accurate_values = timeline.get(
         "accurate_captions",
@@ -921,25 +942,21 @@ def validate_edit_plan(
     layout_ids = _timeline_capability(
         timeline,
         "layout_capabilities",
-        "layout_ids",
         _LAYOUT_IDS,
     )
     overlay_ids = _timeline_capability(
         timeline,
         "overlay_capabilities",
-        "overlay_ids",
         _OVERLAY_IDS,
     )
     animation_ids = _timeline_capability(
         timeline,
         "animation_capabilities",
-        "animation_ids",
         _ANIMATION_IDS,
     )
     transition_ids = _timeline_capability(
         timeline,
         "transition_capabilities",
-        "transition_ids",
         _TRANSITION_IDS,
     )
     caption_index = {
