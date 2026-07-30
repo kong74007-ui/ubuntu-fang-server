@@ -29,6 +29,8 @@ test('creation workspace presents the confirmed five-step layout', () => {
   assert.match(page, /id="platformReload"/);
   assert.match(page, /id="videoSubjectInput"[^>]*accept="video\/\*"/);
   assert.match(page, /id="audioSubjectInput"[^>]*accept="audio\/\*"/);
+  assert.match(page, /\$\('videoSubjectInput'\)\.onchange=function\(\)\{uploadSubject\(this\.files&&this\.files\[0\],'video'\)/);
+  assert.match(page, /\$\('audioSubjectInput'\)\.onchange=function\(\)\{uploadSubject\(this\.files&&this\.files\[0\],'audio'\)/);
   assert.match(page, /id="candidateInput"[^>]*multiple[^>]*accept="image\/\*,video\/\*,audio\/\*"/);
   assert.match(page, /id="candidateGrid"/);
   assert.match(page, /\.platform-card-media\{[^}]*aspect-ratio:9\/16/);
@@ -250,10 +252,14 @@ test('an active platform preview is not recreated and an old player error cannot
   const previewBox = {
     get innerHTML() { return html; },
     set innerHTML(value) { assignments += 1; html = value; },
-    querySelector: (selector) => html.includes('<video')
-      && (selector === 'video' || selector.startsWith('video[data-preview-revision='))
-      ? videoElement
-      : null,
+    querySelector: (selector) => {
+      if (!html.includes('<video')) return null;
+      if (selector === 'video') return videoElement;
+      const revision = selector.match(/^video\[data-preview-revision="(\d+)"\]$/)?.[1];
+      return revision && html.includes(`data-preview-revision="${revision}"`)
+        ? videoElement
+        : null;
+    },
   };
   const state = {
     main: {name: '平台口播 A', kind: 'video', input_mode: 'platform_video', platform_id: '31'},
@@ -271,6 +277,7 @@ test('an active platform preview is not recreated and an old player error cannot
 
   renderSubjectPreview();
   const oldError = videoElement.onerror;
+  assert.match(previewBox.innerHTML, /data-preview-revision="1"/);
   renderSubjectPreview();
 
   assert.equal(assignments, 1, 're-rendering the panel must reuse the active player');
@@ -346,6 +353,7 @@ test('switching subjects resets lazy preview state and preserves uploaded-video 
   assert.equal(state.mainPreviewActivated, false);
   assert.equal(state.mainPreviewError, '');
   assert.equal(state.mainPosterUrl, '/media/new-cover.jpg');
+  assert.equal(state.subjectIntentRevision, 1);
   assert.deepEqual(ratios, ['9:16']);
   assert.equal(selectionRefreshes, 1);
   assert.equal(galleryRebuilds, 0);
@@ -358,6 +366,7 @@ test('switching subjects resets lazy preview state and preserves uploaded-video 
     '/media/unknown-cover.jpg',
   );
   assert.deepEqual(ratios, ['16:9']);
+  assert.equal(state.subjectIntentRevision, 2);
 
   const playButton = {};
   const renderedPreviewBox = {
@@ -587,9 +596,14 @@ test('a quote response cannot be applied after the edit configuration changes', 
 
 test('a quote finishing while a new subject uploads cannot unlock or restore the old quote', async () => {
   const page = fs.readFileSync(pagePath, 'utf8');
+  const beginSource = page.match(/function beginBusy\(\)\{[^\n]+\}/)?.[0];
+  const endSource = page.match(/function endBusy\(\)\{[^\n]+\}/)?.[0];
   const quoteSource = page.match(/async function requestQuote\(\)\{[^\n]+\}/)?.[0];
   const uploadSource = page.match(/async function uploadSubject\(file,expectedKind\)\{[^\n]+\}/)?.[0];
-  assert.ok(quoteSource && uploadSource, 'quote and subject upload functions must be present');
+  assert.ok(
+    beginSource && endSource && quoteSource && uploadSource,
+    'busy, quote and subject upload functions must be present',
+  );
   let resolveQuote;
   let resolveUpload;
   const quoteResult = new Promise((resolve) => { resolveQuote = resolve; });
@@ -614,14 +628,10 @@ test('a quote finishing while a new subject uploads cannot unlock or restore the
     quoteMin: {textContent: ''},
     quoteMax: {textContent: ''},
   };
-  const beginBusy = () => {
-    state.busyCount += 1;
-    state.busy = true;
-  };
-  const endBusy = () => {
-    state.busyCount = Math.max(0, state.busyCount - 1);
-    state.busy = state.busyCount > 0;
-  };
+  const busyHelpers = Function(
+    'state',
+    `${beginSource}; ${endSource}; return {beginBusy, endBusy};`,
+  )(state);
   const requestQuote = Function(
     'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel',
     'ensureMainAsset', 'beginBusy', 'endBusy',
@@ -633,8 +643,8 @@ test('a quote finishing while a new subject uploads cannot unlock or restore the
     () => ({main_input: state.main.asset, aspect_ratio: '9:16'}),
     () => {},
     async () => state.main.asset,
-    beginBusy,
-    endBusy,
+    busyHelpers.beginBusy,
+    busyHelpers.endBusy,
   );
   const selected = [];
   const revoked = [];
@@ -663,8 +673,8 @@ test('a quote finishing while a new subject uploads cannot unlock or restore the
       state.quote = null;
       state.jobRequestKey = null;
     },
-    beginBusy,
-    endBusy,
+    busyHelpers.beginBusy,
+    busyHelpers.endBusy,
   );
 
   const pendingQuote = requestQuote();
@@ -686,10 +696,39 @@ test('a quote finishing while a new subject uploads cannot unlock or restore the
   assert.deepEqual(revoked, []);
 });
 
+test('production busy helpers keep overlapping operations locked until both finish', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const beginSource = page.match(/function beginBusy\(\)\{[^\n]+\}/)?.[0];
+  const endSource = page.match(/function endBusy\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(beginSource && endSource, 'production busy helpers must be present');
+  const state = {busy: false, busyCount: 0};
+  const helpers = Function(
+    'state',
+    `${beginSource}; ${endSource}; return {beginBusy, endBusy};`,
+  )(state);
+
+  helpers.beginBusy();
+  helpers.beginBusy();
+  helpers.endBusy();
+
+  assert.equal(state.busyCount, 1);
+  assert.equal(state.busy, true);
+
+  helpers.endBusy();
+  assert.equal(state.busyCount, 0);
+  assert.equal(state.busy, false);
+
+  helpers.endBusy();
+  assert.equal(state.busyCount, 0);
+  assert.equal(state.busy, false);
+});
+
 test('a late subject upload cannot overwrite a platform subject selected afterward', async () => {
   const page = fs.readFileSync(pagePath, 'utf8');
+  const stopSource = page.match(/function stopSubjectPreview\(\)\{[^\n]+\}/)?.[0];
+  const setSource = page.match(/function setMainSubject\(subject,previewUrl,ownsPreview,posterUrl\)\{[^\n]+\}/)?.[0];
   const uploadSource = page.match(/async function uploadSubject\(file,expectedKind\)\{[^\n]+\}/)?.[0];
-  assert.ok(uploadSource, 'uploadSubject must be present');
+  assert.ok(stopSource && setSource && uploadSource, 'subject selection and upload functions must be present');
   let resolveUpload;
   const uploadResult = new Promise((resolve) => { resolveUpload = resolve; });
   const platformMain = {
@@ -717,6 +756,20 @@ test('a late subject upload cannot overwrite a platform subject selected afterwa
     state.busyCount = Math.max(0, state.busyCount - 1);
     state.busy = state.busyCount > 0;
   };
+  const previewBox = {querySelector: () => null};
+  const invalidateQuote = () => { state.quote = null; };
+  const setMainSubject = Function(
+    'state', 'URL', 'setAspectRatio', 'refreshPlatformSelection',
+    'invalidateQuote', '$',
+    `${stopSource}; ${setSource}; return setMainSubject;`,
+  )(
+    state,
+    {revokeObjectURL: (url) => revoked.push(url)},
+    () => {},
+    () => {},
+    invalidateQuote,
+    () => previewBox,
+  );
   const uploadSubject = Function(
     'state', '$', 'fileKind', 'URL', 'renderWorkspacePanel', 'uploadToPrivateStore',
     'setMainSubject', 'invalidateQuote', 'beginBusy', 'endBusy',
@@ -734,19 +787,18 @@ test('a late subject upload cannot overwrite a platform subject selected afterwa
       await uploadResult;
       item.asset = {asset_id: 'B', kind: 'video', width: 1080, height: 1920};
     },
-    (subject) => {
+    (subject, previewUrl, ownsPreview, posterUrl) => {
       selected.push(subject);
-      state.main = subject;
+      setMainSubject(subject, previewUrl, ownsPreview, posterUrl);
     },
-    () => { state.quote = null; },
+    invalidateQuote,
     beginBusy,
     endBusy,
   );
 
   const pendingUpload = uploadSubject({name: 'subject-b.mp4', type: 'video/mp4'}, 'video');
   await Promise.resolve();
-  state.subjectIntentRevision += 1;
-  state.main = platformMain;
+  setMainSubject(platformMain, '/media/c.mp4', false, '/media/c.jpg');
   resolveUpload();
   await pendingUpload;
 
@@ -818,6 +870,96 @@ test('confirming a quote never posts a job when the current draft no longer matc
   assert.equal(state.jobId, null);
   assert.equal(state.quote, null);
   assert.equal(elements.formMessage.textContent, '剪辑配置已变更，请重新获取价格');
+});
+
+test('a successful quote fingerprint is accepted by confirmJob for the unchanged draft', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const beginSource = page.match(/function beginBusy\(\)\{[^\n]+\}/)?.[0];
+  const endSource = page.match(/function endBusy\(\)\{[^\n]+\}/)?.[0];
+  const ensureSource = page.match(/async function ensureMainAsset\(\)\{[^\n]+\}/)?.[0];
+  const quoteSource = page.match(/async function requestQuote\(\)\{[^\n]+\}/)?.[0];
+  const confirmSource = page.match(/async function confirmJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(
+    beginSource && endSource && ensureSource && quoteSource && confirmSource,
+    'quote-to-confirm production functions must be present',
+  );
+  const draft = {
+    creation_mode: 'open_generation',
+    aspect_ratio: '9:16',
+    main_input: {asset_id: '31', kind: 'video', size_bytes: 100, duration_ms: 1000},
+  };
+  const state = {
+    main: {
+      name: '主体 A',
+      kind: 'video',
+      input_mode: 'platform_video',
+      platform_id: '31',
+      asset: draft.main_input,
+    },
+    subjectIntentRevision: 1,
+    quote: null,
+    quotedDraftFingerprint: null,
+    busy: false,
+    busyCount: 0,
+    jobRequestKey: null,
+    jobId: null,
+    pollTimer: null,
+  };
+  const elements = {
+    formMessage: {textContent: ''},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+    taskDetails: {hidden: true},
+  };
+  const paths = [];
+  const api = async (path, options) => {
+    paths.push(path);
+    if (path === '/api/v2/edit/quote') {
+      assert.deepEqual(JSON.parse(options.body), {draft});
+      return {quote: {id: 'quote-1', minimum_points: 48, maximum_points: 64, held_points: 64}};
+    }
+    assert.equal(path, '/api/v2/edit/jobs');
+    assert.deepEqual(JSON.parse(options.body), {
+      draft,
+      quote_id: 'quote-1',
+      idempotency_key: 'request-1',
+    });
+    return {job_id: 'job-1', status: 'queued', held_points: 64};
+  };
+  const workflow = Function(
+    'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel', 'invalidateQuote',
+    'crypto', 'sessionStorage', 'trackJob', 'setInterval', 'clearInterval', 'pollJob',
+    `${beginSource}; ${endSource}; ${ensureSource}; ${quoteSource}; ${confirmSource}; return {requestQuote, confirmJob};`,
+  )(
+    state,
+    (id) => elements[id],
+    api,
+    () => ({
+      creation_mode: draft.creation_mode,
+      aspect_ratio: draft.aspect_ratio,
+      main_input: draft.main_input,
+    }),
+    () => {},
+    () => {
+      state.quote = null;
+      state.quotedDraftFingerprint = null;
+    },
+    {randomUUID: () => 'request-1'},
+    {setItem: () => {}},
+    () => {},
+    () => 1,
+    () => {},
+    () => {},
+  );
+
+  await workflow.requestQuote();
+  assert.equal(state.quotedDraftFingerprint, JSON.stringify(draft));
+  await workflow.confirmJob();
+
+  assert.deepEqual(paths, ['/api/v2/edit/quote', '/api/v2/edit/jobs']);
+  assert.equal(state.jobId, 'job-1');
+  assert.equal(state.busy, false);
+  assert.equal(state.busyCount, 0);
 });
 
 test('subject carousel only accepts verified digital IP assets', () => {
