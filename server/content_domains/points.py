@@ -162,9 +162,13 @@ def get_points_transaction(username, transaction_key):
         "/api/auth/points/transaction",
         {"username": username, "transaction_key": transaction_key},
     )
-    if not res.get("found"):
+    if isinstance(res, dict) and res.get("found") is False:
         return None
-    return res.get("transaction")
+    if isinstance(res, dict) and res.get("found") is True:
+        transaction = res.get("transaction")
+        if isinstance(transaction, dict) and transaction:
+            return transaction
+    raise AuthPointsError(502, "点数交易查询响应无效", res if isinstance(res, dict) else {})
 
 
 def deduct_points(username, amount, reason="", transaction_key=None):

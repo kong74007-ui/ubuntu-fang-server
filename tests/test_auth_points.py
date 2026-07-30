@@ -507,6 +507,40 @@ class PointsTransactionHttpTests(unittest.TestCase):
                     )
         self.assertEqual(caught.exception.status, 502)
 
+    def test_content_client_rejects_response_missing_found(self):
+        from server.content_domains import points
+
+        with patch.object(points, "_auth_points_request", return_value={}):
+            with self.assertRaises(points.AuthPointsError) as caught:
+                points.get_points_transaction(
+                    "alice", "ai-edit-v3:j1:pre_debit"
+                )
+        self.assertEqual(caught.exception.status, 502)
+
+    def test_content_client_rejects_null_found(self):
+        from server.content_domains import points
+
+        with patch.object(
+            points, "_auth_points_request", return_value={"found": None}
+        ):
+            with self.assertRaises(points.AuthPointsError) as caught:
+                points.get_points_transaction(
+                    "alice", "ai-edit-v3:j1:pre_debit"
+                )
+        self.assertEqual(caught.exception.status, 502)
+
+    def test_content_client_rejects_found_without_transaction(self):
+        from server.content_domains import points
+
+        with patch.object(
+            points, "_auth_points_request", return_value={"found": True}
+        ):
+            with self.assertRaises(points.AuthPointsError) as caught:
+                points.get_points_transaction(
+                    "alice", "ai-edit-v3:j1:pre_debit"
+                )
+        self.assertEqual(caught.exception.status, 502)
+
 
 if __name__ == "__main__":
     unittest.main()
