@@ -5,11 +5,11 @@ import hashlib
 import json
 import math
 import os
-import re
 import stat
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -205,7 +205,7 @@ _THEME_CAPABILITIES = {
     "motion_energy": frozenset({"low", "medium", "high"}),
     "image_fit": frozenset({"contain", "cover", "smart_crop"}),
 }
-_QUALITY_BLOCKING = {
+_QUALITY_BLOCKING = MappingProxyType({
     "media_decode_codec_dimensions": True,
     "av_duration_sync": True,
     "black_frames": True,
@@ -218,47 +218,8 @@ _QUALITY_BLOCKING = {
     "material_semantic_identity": True,
     "generated_evidence_claim": True,
     "opening_hook_visual_consistency": False,
-}
+})
 _QUALITY_CHECK_IDS = frozenset(_QUALITY_BLOCKING)
-_NEGATION_MARKERS = (
-    "不会",
-    "没有",
-    "不得",
-    "不能",
-    "不再",
-    "未曾",
-    "无需",
-    "并非",
-    "不",
-    "没",
-    "无",
-    "非",
-    "未",
-    "否",
-)
-_CAUSAL_MARKERS = (
-    "之所以",
-    "是因为",
-    "由于",
-    "因为",
-    "所以",
-    "因此",
-    "导致",
-    "从而",
-    "使得",
-    "于是",
-)
-_PROMISE_MARKERS = (
-    "100%",
-    "保证",
-    "承诺",
-    "一定",
-    "必然",
-    "永久",
-    "绝对",
-    "立刻",
-    "马上",
-)
 
 
 def _raise(error_code: str, field_path: str, message: str) -> None:
@@ -535,7 +496,13 @@ def parse_strict_json(
             ) from exc
     elif isinstance(raw, str):
         text = raw
-        raw_bytes = raw.encode("utf-8")
+        if _has_surrogate(text):
+            _raise(
+                "unicode_scalar_invalid",
+                "$",
+                "lone surrogate code points are forbidden",
+            )
+        raw_bytes = text.encode("utf-8")
     else:
         _raise("json_input_invalid", "$", "JSON input must be text or bytes")
     if len(raw_bytes) > max_bytes:
@@ -605,6 +572,12 @@ def parse_strict_json(
             "json_invalid",
             "$",
             "JSON syntax is invalid",
+        ) from exc
+    except ValueError as exc:
+        raise ContractError(
+            "json_invalid",
+            "$",
+            "JSON value is invalid",
         ) from exc
     except RecursionError as exc:
         raise ContractError(
@@ -771,20 +744,30 @@ def _timeline_capability(
     alternate: str,
     default: frozenset[str],
 ) -> frozenset[str]:
-    configured = timeline.get(primary, timeline.get(alternate))
-    if configured is None:
-        return default
+    if primary in timeline:
+        configured = timeline[primary]
+    elif alternate in timeline:
+        configured = timeline[alternate]
+    else:
+        _raise(
+            "timeline_capability_missing",
+            primary,
+            "capability list is required",
+        )
     if not isinstance(configured, (list, tuple, set, frozenset)):
         _raise(
             "timeline_capability_invalid",
             primary,
             "capability list is invalid",
         )
+    if any(not isinstance(item, str) for item in configured):
+        _raise(
+            "timeline_capability_invalid",
+            primary,
+            "capability list members must be strings",
+        )
     configured_set = frozenset(configured)
-    if (
-        any(not isinstance(item, str) for item in configured_set)
-        or not configured_set.issubset(default)
-    ):
+    if not configured_set.issubset(default):
         _raise(
             "timeline_capability_invalid",
             primary,
@@ -793,54 +776,13 @@ def _timeline_capability(
     return configured_set
 
 
-def _marker_sequence(text: str, markers: tuple[str, ...]) -> tuple[str, ...]:
-    pattern = "|".join(
-        re.escape(marker) for marker in sorted(markers, key=len, reverse=True)
-    )
-    return tuple(match.group(0) for match in re.finditer(pattern, text))
-
-
 def _compressed_text_preserves_facts(
     source: str,
     output: str,
-    protected_terms: list[str],
 ) -> bool:
-    source_normalized = "".join(
-        character
-        for character in unicodedata.normalize("NFC", source)
-        if not unicodedata.category(character).startswith(("P", "Z"))
-    )
-    output_normalized = "".join(
-        character
-        for character in unicodedata.normalize("NFC", output)
-        if not unicodedata.category(character).startswith(("P", "Z"))
-    )
-    source_position = 0
-    for character in output_normalized:
-        source_position = source_normalized.find(character, source_position)
-        if source_position < 0:
-            return False
-        source_position += 1
-    for term in protected_terms:
-        if (
-            not isinstance(term, str)
-            or not term
-            or source.count(term) == 0
-            or output.count(term) != source.count(term)
-        ):
-            return False
-    if re.findall(r"\d+(?:\.\d+)?(?:%|元|万|亿)?", source) != re.findall(
-        r"\d+(?:\.\d+)?(?:%|元|万|亿)?",
+    return unicodedata.normalize("NFC", source) == unicodedata.normalize(
+        "NFC",
         output,
-    ):
-        return False
-    return all(
-        _marker_sequence(source, markers) == _marker_sequence(output, markers)
-        for markers in (
-            _NEGATION_MARKERS,
-            _CAUSAL_MARKERS,
-            _PROMISE_MARKERS,
-        )
     )
 
 
@@ -1079,15 +1021,9 @@ def validate_edit_plan(
                         "verbatim visible text changed accurate text",
                     )
             else:
-                protected_terms: list[str] = []
-                for reference in references:
-                    protected_terms.extend(
-                        accurate_by_id[reference].get("protected_terms", [])
-                    )
                 if not _compressed_text_preserves_facts(
                     authoritative,
                     visible["text"],
-                    protected_terms,
                 ):
                     _raise(
                         "visible_text_protected_fact_changed",
@@ -1207,6 +1143,12 @@ def validate_edit_plan(
                 "timeline_capability_invalid",
                 f"theme_capabilities.{field}",
                 "theme capability list is invalid",
+            )
+        if any(not isinstance(item, str) for item in allowed):
+            _raise(
+                "timeline_capability_invalid",
+                f"theme_capabilities.{field}",
+                "theme capability members must be strings",
             )
         allowed_set = frozenset(allowed)
         if not allowed_set or not allowed_set.issubset(frozen):
@@ -1359,6 +1301,12 @@ def _verify_declared_file(
                 )
             digest.update(chunk)
         after_read = os.fstat(stream.fileno())
+        if not stat.S_ISREG(after_read.st_mode) or after_read.st_nlink != 1:
+            _raise(
+                "render_file_not_regular",
+                field_path,
+                "media gained another link while hashing",
+            )
         if not os.path.samestat(opened, after_read) or after_read.st_size != total:
             _raise(
                 "render_file_identity_changed",
@@ -1384,8 +1332,15 @@ def _verify_declared_file(
             field_path,
             "media path disappeared after hashing",
         ) from exc
+    if not stat.S_ISREG(post_open.st_mode) or post_open.st_nlink != 1:
+        _raise(
+            "render_file_not_regular",
+            field_path,
+            "media must remain an ordinary single-link file",
+        )
     if (
         not os.path.samestat(opened, post_open)
+        or post_open.st_size != total
         or post_resolved != resolved
         or not post_resolved.is_relative_to(root)
     ):
@@ -1533,18 +1488,39 @@ def validate_render_manifest(
     segment_output = 0
     previous_source_end = 0
     source_video = manifest["source_video"]
+    master_audio = manifest["master_audio"]
     for index, segment in enumerate(manifest["source_segments"]):
-        if (
-            source_video is None
-            or segment["source_path"] != source_video["path"]
-            or segment["sha256"] != source_video["sha256"]
-            or segment["source_end_ms"] > source_video["duration_ms"]
-        ):
-            _raise(
-                "render_source_video_binding_invalid",
-                f"source_segments[{index}]",
-                "source segment must bind to the declared source video",
-            )
+        if source_video is not None:
+            if (
+                segment["source_path"] != source_video["path"]
+                or segment["sha256"] != source_video["sha256"]
+                or segment["source_end_ms"] > source_video["duration_ms"]
+            ):
+                _raise(
+                    "render_source_video_binding_invalid",
+                    f"source_segments[{index}]",
+                    "source segment must bind to the declared source video",
+                )
+        else:
+            if (
+                segment["source_path"] != master_audio["path"]
+                or segment["sha256"] != master_audio["sha256"]
+                or segment["source_end_ms"] > master_audio["duration_ms"]
+            ):
+                _raise(
+                    "render_source_audio_binding_invalid",
+                    f"source_segments[{index}]",
+                    "audio-only segment must bind to the master audio",
+                )
+            if (
+                segment["source_start_ms"] != segment["output_start_ms"]
+                or segment["source_end_ms"] != segment["output_end_ms"]
+            ):
+                _raise(
+                    "render_source_mapping_invalid",
+                    f"source_segments[{index}]",
+                    "audio-only source mapping must be an identity mapping",
+                )
         if (
             segment["source_start_ms"] < previous_source_end
             or segment["source_end_ms"] <= segment["source_start_ms"]
@@ -1648,7 +1624,10 @@ def validate_quality_verdict(verdict: Any) -> dict[str, Any]:
             if not isinstance(check, Mapping):
                 continue
             check_id = check.get("check_id")
-            if check_id not in _QUALITY_CHECK_IDS:
+            if (
+                not isinstance(check_id, str)
+                or check_id not in _QUALITY_CHECK_IDS
+            ):
                 _raise(
                     "quality_check_unknown",
                     f"checks[{index}].check_id",

@@ -103,10 +103,10 @@
       ],
       "properties": {
         "palette_id": {
-          "$ref": "#/$defs/id"
+          "const": "midnight_gold"
         },
         "typography_id": {
-          "$ref": "#/$defs/id"
+          "const": "editorial_sans"
         },
         "density": {
           "enum": ["airy", "balanced", "dense"]
@@ -437,7 +437,7 @@
           "$ref": "#/$defs/id"
         },
         "layout_variant": {
-          "$ref": "#/$defs/id"
+          "const": "balanced_a"
         },
         "visual_type": {
           "$ref": "#/$defs/id"

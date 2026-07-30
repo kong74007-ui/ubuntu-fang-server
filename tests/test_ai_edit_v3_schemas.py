@@ -172,6 +172,34 @@ class SchemaMetaTests(unittest.TestCase):
                 self.assertEqual(set(schema["properties"]), expected)
                 self.assertEqual(set(schema["required"]), expected)
 
+    def test_phase_a_schemas_freeze_layout_variant_and_theme_identity(self):
+        edit_schema = load_schema("edit-plan-2.0.schema.json")
+        render_schema = load_schema("render-manifest-v1.schema.json")
+
+        for schema, owner in (
+            (edit_schema, "scene"),
+            (render_schema, "composition"),
+        ):
+            with self.subTest(schema=schema["title"]):
+                self.assertEqual(
+                    schema["$defs"][owner]["properties"][
+                        "layout_variant"
+                    ].get("const"),
+                    "balanced_a",
+                )
+                self.assertEqual(
+                    schema["$defs"]["theme"]["properties"][
+                        "palette_id"
+                    ].get("const"),
+                    "midnight_gold",
+                )
+                self.assertEqual(
+                    schema["$defs"]["theme"]["properties"][
+                        "typography_id"
+                    ].get("const"),
+                    "editorial_sans",
+                )
+
     def test_valid_fixtures_conform_to_their_schemas(self):
         for name in SCHEMA_NAMES:
             with self.subTest(name=name):
@@ -198,7 +226,7 @@ class SchemaMetaTests(unittest.TestCase):
 
         self.assertEqual(
             digest,
-            "bf417c6586eb3ecf919da7c9c92a505570ce613ff06880ae00e49d3584e5cf29",
+            "2906e6e542170b7dfdbb6124d388c0e2de71f0576df287d4459bcd0dfe9f2c15",
         )
         Draft202012Validator(
             load_schema("edit-plan-2.0.schema.json")
@@ -341,6 +369,19 @@ class StrictJsonParserTests(unittest.TestCase):
         ):
             self.parse('{"text":"\\ud800"}')
 
+    def test_rejects_python_string_lone_surrogate_stably(self):
+        with self.assertRaisesRegex(
+            ContractError,
+            "unicode_scalar_invalid",
+        ):
+            self.parse('{"text":"\ud800"}')
+
+    def test_rejects_integer_beyond_python_digit_limit_stably(self):
+        raw = '{"value":' + ("9" * 5000) + "}"
+
+        with self.assertRaisesRegex(ContractError, "json_invalid"):
+            self.parse(raw, max_bytes=6000)
+
 
 class EditPlanValidatorTests(unittest.TestCase):
     def setUp(self):
@@ -397,24 +438,16 @@ class EditPlanValidatorTests(unittest.TestCase):
         ):
             validate_edit_plan(self.plan, timeline=self.timeline)
 
-    def test_compressed_text_rejects_polarity_causality_and_promise_changes(self):
+    def test_phase_a_compressed_text_rejects_every_substantive_rewrite(self):
         cases = (
-            ("提升效率", "不提升效率", ["提升效率"]),
-            ("不会降低效率", "会降低效率", ["降低效率"]),
-            (
-                "因为方法正确所以提升效率",
-                "方法正确提升效率",
-                ["方法", "提升效率"],
-            ),
-            (
-                "因为方法正确所以提升效率",
-                "所以方法正确因为提升效率",
-                ["方法", "提升效率"],
-            ),
-            ("提升效率", "提升效率并保证成功", ["提升效率"]),
-            ("真实产品提升效率", "其他产品提升效率", ["真实产品"]),
+            ("not effective", "effective"),
+            ("price $100", "price 100"),
+            ("别购买", "购买"),
+            ("提升源于方法", "提升方法"),
+            ("确保真实结果", "真实结果"),
+            ("真的有效吗？", "真的有效"),
         )
-        for source, compressed, protected_terms in cases:
+        for source, compressed in cases:
             with self.subTest(source=source, compressed=compressed):
                 plan = load_fixture("valid-edit-plan-2.0.json")
                 timeline = valid_timeline()
@@ -422,9 +455,7 @@ class EditPlanValidatorTests(unittest.TestCase):
                 plan["scenes"][1]["headline"]["text"] = source
                 plan["scenes"][1]["highlight"]["text"] = compressed
                 timeline["accurate_captions"][1]["text"] = source
-                timeline["accurate_captions"][1][
-                    "protected_terms"
-                ] = protected_terms
+                timeline["accurate_captions"][1]["protected_terms"] = []
 
                 with self.assertRaisesRegex(
                     ContractError,
@@ -432,13 +463,17 @@ class EditPlanValidatorTests(unittest.TestCase):
                 ):
                     validate_edit_plan(plan, timeline=timeline)
 
-        self.plan = load_fixture("valid-edit-plan-2.0.json")
-        self.plan["scenes"][1]["highlight"]["text"] = "更好"
-        with self.assertRaisesRegex(
-            ContractError,
-            "visible_text_protected_fact_changed",
-        ):
-            validate_edit_plan(self.plan, timeline=self.timeline)
+    def test_phase_a_compressed_text_accepts_nfc_equivalent_caption_text(self):
+        source = "Cafe\u0301"
+        plan = load_fixture("valid-edit-plan-2.0.json")
+        timeline = valid_timeline()
+        plan["captions"][1]["text"] = source
+        plan["scenes"][1]["headline"]["text"] = source
+        plan["scenes"][1]["highlight"]["text"] = "Caf\u00e9"
+        timeline["accurate_captions"][1]["text"] = source
+        timeline["accurate_captions"][1]["protected_terms"] = []
+
+        self.assertEqual(validate_edit_plan(plan, timeline=timeline), plan)
 
     def test_rejects_authoritative_caption_changes_and_segment_discontinuity(self):
         self.plan["captions"][0]["text"] = "篡改方法"
@@ -487,6 +522,55 @@ class EditPlanValidatorTests(unittest.TestCase):
             "timeline_capability_invalid",
         ):
             validate_edit_plan(self.plan, timeline=enlarged_theme)
+
+    def test_primary_capability_lists_are_mandatory_and_null_fails_closed(self):
+        fields = (
+            "layout_capabilities",
+            "overlay_capabilities",
+            "animation_capabilities",
+            "transition_capabilities",
+        )
+        for field in fields:
+            with self.subTest(field=field, value="missing"):
+                timeline = copy.deepcopy(self.timeline)
+                del timeline[field]
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "timeline_capability_missing",
+                ):
+                    validate_edit_plan(self.plan, timeline=timeline)
+            with self.subTest(field=field, value=None):
+                timeline = copy.deepcopy(self.timeline)
+                timeline[field] = None
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "timeline_capability_invalid",
+                ):
+                    validate_edit_plan(self.plan, timeline=timeline)
+
+    def test_unhashable_capability_members_fail_with_contract_error(self):
+        cases = (
+            ("layout_capabilities", None),
+            ("theme_capabilities", "palette_id"),
+        )
+        for field, nested in cases:
+            with self.subTest(field=field, nested=nested):
+                timeline = copy.deepcopy(self.timeline)
+                if nested is None:
+                    timeline[field] = [[]]
+                else:
+                    timeline[field][nested] = [[]]
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "timeline_capability_invalid",
+                ):
+                    validate_edit_plan(self.plan, timeline=timeline)
+
+    def test_edit_plan_rejects_unpublished_layout_variant(self):
+        self.plan["scenes"][0]["layout_variant"] = "balanced_b"
+
+        with self.assertRaisesRegex(ContractError, "director_schema_invalid"):
+            validate_edit_plan(self.plan, timeline=self.timeline)
 
     def test_material_requests_must_exactly_bind_slots_and_time_ranges(self):
         mutations = (
@@ -556,6 +640,16 @@ class RenderManifestValidatorTests(unittest.TestCase):
         (self.sandbox / "media" / "master.wav").write_bytes(b"audio")
         (self.sandbox / "media" / "image.png").write_bytes(b"image")
         self.manifest = load_fixture("valid-render-manifest-v1.json")
+
+    def audio_only_manifest(self):
+        manifest = copy.deepcopy(self.manifest)
+        manifest["source_video"] = None
+        segment = manifest["source_segments"][0]
+        segment["source_path"] = manifest["master_audio"]["path"]
+        segment["sha256"] = manifest["master_audio"]["sha256"]
+        segment["source_start_ms"] = segment["output_start_ms"]
+        segment["source_end_ms"] = segment["output_end_ms"]
+        return manifest
 
     def test_valid_manifest_checks_every_declared_local_file(self):
         original = copy.deepcopy(self.manifest)
@@ -710,6 +804,73 @@ class RenderManifestValidatorTests(unittest.TestCase):
         ):
             validate_render_manifest(overrun, sandbox_root=self.sandbox)
 
+    def test_audio_only_modes_bind_identity_segments_to_master_audio(self):
+        for input_type in (
+            "existing_audio",
+            "uploaded_audio",
+            "script_to_audio_video",
+        ):
+            with self.subTest(input_type=input_type):
+                manifest = self.audio_only_manifest()
+                self.assertEqual(
+                    validate_render_manifest(
+                        manifest,
+                        sandbox_root=self.sandbox,
+                    ),
+                    manifest,
+                )
+
+    def test_audio_only_segments_reject_arbitrary_nonidentity_and_overrun(self):
+        arbitrary = self.audio_only_manifest()
+        segment = arbitrary["source_segments"][0]
+        segment["source_path"] = arbitrary["assets"][0]["path"]
+        segment["sha256"] = arbitrary["assets"][0]["sha256"]
+        with self.assertRaisesRegex(
+            ContractError,
+            "render_source_audio_binding_invalid",
+        ):
+            validate_render_manifest(arbitrary, sandbox_root=self.sandbox)
+
+        nonidentity = self.audio_only_manifest()
+        nonidentity["source_segments"][0]["source_start_ms"] = 1
+        with self.assertRaisesRegex(
+            ContractError,
+            "render_source_mapping_invalid",
+        ):
+            validate_render_manifest(nonidentity, sandbox_root=self.sandbox)
+
+        overrun = self.audio_only_manifest()
+        overrun["source_segments"][0]["source_end_ms"] = 4001
+        with self.assertRaisesRegex(
+            ContractError,
+            "render_source_audio_binding_invalid",
+        ):
+            validate_render_manifest(overrun, sandbox_root=self.sandbox)
+
+    def test_manifest_rejects_unpublished_theme_and_layout_variant(self):
+        mutations = (
+            ("theme.palette_id", "model_palette"),
+            ("theme.typography_id", "model_typography"),
+            ("compositions[0].layout_variant", "balanced_b"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                manifest = copy.deepcopy(self.manifest)
+                if field == "theme.palette_id":
+                    manifest["theme"]["palette_id"] = value
+                elif field == "theme.typography_id":
+                    manifest["theme"]["typography_id"] = value
+                else:
+                    manifest["compositions"][0]["layout_variant"] = value
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "render_schema_invalid",
+                ):
+                    validate_render_manifest(
+                        manifest,
+                        sandbox_root=self.sandbox,
+                    )
+
     def test_schema_validation_precedes_file_traversal_and_errors_are_stable(self):
         malformed = copy.deepcopy(self.manifest)
         malformed["assets"] = None
@@ -760,6 +921,41 @@ class RenderManifestValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ContractError,
                 "render_file_identity_changed",
+            ):
+                validate_render_manifest(
+                    copy.deepcopy(self.manifest),
+                    sandbox_root=self.sandbox,
+                )
+
+    def test_rejects_hardlink_created_during_first_file_read(self):
+        target = self.sandbox / "media" / "source.mp4"
+        hardlink = self.sandbox / "media" / "late-hardlink.mp4"
+        original_open = Path.open
+
+        class LinkingStream:
+            def __init__(self, stream):
+                self.stream = stream
+                self.linked = False
+
+            def read(self, *args, **kwargs):
+                if not self.linked:
+                    os.link(target, hardlink)
+                    self.linked = True
+                return self.stream.read(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+
+        def linking_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            if path == target:
+                return LinkingStream(stream)
+            return stream
+
+        with mock.patch.object(Path, "open", linking_open):
+            with self.assertRaisesRegex(
+                ContractError,
+                "render_file_not_regular",
             ):
                 validate_render_manifest(
                     copy.deepcopy(self.manifest),
@@ -842,6 +1038,35 @@ class QualityVerdictValidatorTests(unittest.TestCase):
             ContractError,
             "quality_check_unknown",
         ):
+            validate_quality_verdict(self.verdict)
+
+    def test_quality_policy_mapping_is_immutable_and_validation_unchanged(self):
+        policy = contracts_module._QUALITY_BLOCKING
+        original = policy["caption_fact_accuracy"]
+        try:
+            with self.assertRaises(TypeError):
+                policy["caption_fact_accuracy"] = not original
+        finally:
+            if policy["caption_fact_accuracy"] != original:
+                policy["caption_fact_accuracy"] = original
+
+        verdict = complete_quality_verdict()
+        caption = next(
+            check
+            for check in verdict["checks"]
+            if check["check_id"] == "caption_fact_accuracy"
+        )
+        caption["blocking"] = False
+        with self.assertRaisesRegex(
+            ContractError,
+            "quality_blocking_mismatch",
+        ):
+            validate_quality_verdict(verdict)
+
+    def test_unhashable_quality_check_id_fails_with_contract_error(self):
+        self.verdict["checks"][0]["check_id"] = []
+
+        with self.assertRaisesRegex(ContractError, "quality_check_unknown"):
             validate_quality_verdict(self.verdict)
 
     def test_requires_complete_frozen_check_set_and_blocking_classification(self):

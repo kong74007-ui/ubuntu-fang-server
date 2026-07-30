@@ -93,7 +93,7 @@
       "end_ms": 4000,
       "intent": "呈现准确结果",
       "layout_id": "speaker_fullscreen",
-      "layout_variant": "balanced_b",
+      "layout_variant": "balanced_a",
       "visual_type": "result_statement",
       "headline": {
         "text": "提升效率",
