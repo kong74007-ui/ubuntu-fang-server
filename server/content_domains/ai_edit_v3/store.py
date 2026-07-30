@@ -5,15 +5,20 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import math
 import os
 import re
 import sqlite3
 import stat
 import sys
+import threading
 import time
+import unicodedata
+from contextlib import suppress
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any, TypeVar
+from urllib.parse import quote
 
 from .contracts import (
     ALLOWED_TRANSITIONS,
@@ -24,27 +29,54 @@ from .contracts import (
 )
 
 
+_LOCAL_FILESYSTEMS = frozenset(
+    {
+        "btrfs",
+        "ext2",
+        "ext3",
+        "ext4",
+        "overlay",
+        "overlayfs",
+        "tmpfs",
+        "windows_fixed",
+        "xfs",
+    }
+)
 _REMOTE_FILESYSTEMS = frozenset(
     {
         "9p",
+        "afs",
+        "azureblob",
+        "beegfs",
         "ceph",
+        "cephfs",
         "cifs",
         "cosfs",
+        "davfs",
+        "davfs2",
         "fuse.cosfs",
+        "fuse.gcsfuse",
+        "fuse.goofys",
+        "fuse.juicefs",
         "fuse.rclone",
         "fuse.s3fs",
         "fuse.sshfs",
         "gcsfuse",
+        "gpfs",
         "glusterfs",
+        "lustre",
         "nfs",
         "nfs4",
         "smb",
         "smb2",
         "smb3",
+        "webdav",
+        "windows_remote",
     }
 )
 _WINDOWS_DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:[^\\/]")
 _MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
+_SQLITE_OPEN_LOCK = threading.RLock()
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -597,6 +629,33 @@ _CREATE_TABLE_SQL = {
     """,
 }
 
+
+def _freeze_table_ddl(statement: str) -> str:
+    """Attach canonical-JSON checks and SQLite STRICT storage to frozen DDL."""
+
+    def json_column(match: re.Match[str]) -> str:
+        indentation, name, required = match.groups()
+        declaration = f"{indentation}{name} TEXT{required or ''}"
+        if required:
+            return f"{declaration} CHECK(edit_v3_is_canonical_json({name})=1)"
+        return (
+            f"{declaration} CHECK({name} IS NULL OR "
+            f"edit_v3_is_canonical_json({name})=1)"
+        )
+
+    frozen = re.sub(
+        r"(?m)^(\s*)([a-z][a-z0-9_]*_json) TEXT( NOT NULL)?(?=,)",
+        json_column,
+        statement,
+    ).rstrip()
+    return re.sub(r"\)\s*$", ") STRICT", frozen)
+
+
+_CREATE_TABLE_SQL = {
+    name: _freeze_table_ddl(statement)
+    for name, statement in _CREATE_TABLE_SQL.items()
+}
+
 _CREATE_INDEX_SQL = {
     "edit_v3_jobs_owner_created_idx": """
         CREATE INDEX edit_v3_jobs_owner_created_idx
@@ -839,7 +898,10 @@ def assert_isolated_db(v3_path: Path, v2_path: Path | None) -> None:
     _assert_no_reparse_components(raw_v3, role="v3")
     resolved_v3, _v3_metadata = _candidate_identity(raw_v3, role="v3")
     if v2_path is None:
-        return
+        raise _configuration_error(
+            "v2_db_path_required",
+            "an explicit absolute V2 database path is required for isolation",
+        )
 
     raw_v2 = _absolute_path(v2_path, role="v2")
     _assert_no_reparse_components(raw_v2, role="v2")
@@ -887,14 +949,10 @@ def _decode_mount_path(value: str) -> str:
     return _MOUNT_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
-def _linux_filesystem_type(path: Path) -> str | None:
-    try:
-        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
+def _parse_linux_mountinfo(text: str, path: Path) -> str | None:
     candidate = os.path.normpath(os.fspath(path))
     best: tuple[int, str] | None = None
-    for line in lines:
+    for line in text.splitlines():
         left, separator, right = line.partition(" - ")
         if not separator:
             return None
@@ -910,9 +968,19 @@ def _linux_filesystem_type(path: Path) -> str | None:
         if common != mount_point:
             continue
         match = (len(mount_point), trailing[0].lower())
-        if best is None or match[0] > best[0]:
+        # Linux mountinfo is ordered bottom-to-top.  For stacked mounts with
+        # the same mountpoint, the final matching entry is authoritative.
+        if best is None or match[0] >= best[0]:
             best = match
     return None if best is None else best[1]
+
+
+def _linux_filesystem_type(path: Path) -> str | None:
+    try:
+        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _parse_linux_mountinfo(text, path)
 
 
 def _windows_filesystem_type(path: Path) -> str | None:
@@ -946,85 +1014,532 @@ def _filesystem_type_for_path(path: Path) -> str | None:
     return None
 
 
-def _is_remote_filesystem(fs_type: str) -> bool:
-    normalized = fs_type.lower()
-    return normalized in _REMOTE_FILESYSTEMS or any(
-        token in normalized
-        for token in (
-            "ceph",
-            "cosfs",
-            "gcsfuse",
-            "gluster",
-            "rclone",
-            "s3fs",
-            "sshfs",
-        )
-    ) or normalized == "windows_remote"
+def _classify_filesystem_type(fs_type: str | None) -> str:
+    if not isinstance(fs_type, str) or not fs_type.strip():
+        return "unknown"
+    normalized = fs_type.strip().lower()
+    if normalized in _LOCAL_FILESYSTEMS:
+        return "local"
+    if normalized in _REMOTE_FILESYSTEMS:
+        return "remote"
+    return "unknown"
 
 
 def _assert_local_filesystem(path: Path) -> None:
-    fs_type = _filesystem_type_for_path(path.parent)
-    if fs_type is None:
-        raise _configuration_error(
-            "v3_db_filesystem_unknown",
-            "V3 database filesystem identity cannot be established",
-        )
-    if _is_remote_filesystem(fs_type):
-        raise _configuration_error(
-            "v3_db_network_filesystem",
-            f"V3 database may not use network filesystem {fs_type}",
-        )
+    candidates = [path.parent]
+    if os.path.lexists(path):
+        candidates.append(path)
+    for candidate in candidates:
+        fs_type = _filesystem_type_for_path(candidate)
+        classification = _classify_filesystem_type(fs_type)
+        if classification == "remote":
+            raise _configuration_error(
+                "v3_db_network_filesystem",
+                f"V3 database may not use network filesystem {fs_type}",
+            )
+        if classification != "local":
+            raise _configuration_error(
+                "v3_db_filesystem_unknown",
+                "V3 database filesystem identity cannot be established",
+            )
 
 
 def _is_sqlite_busy_or_locked(error: sqlite3.OperationalError) -> bool:
     error_code = getattr(error, "sqlite_errorcode", None)
-    if isinstance(error_code, int) and error_code & 0xFF in {
-        sqlite3.SQLITE_BUSY,
-        sqlite3.SQLITE_LOCKED,
-    }:
-        return True
+    if isinstance(error_code, int):
+        return error_code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
     message = str(error).lower()
     return "locked" in message or "busy" in message
 
 
-def open_store(db_path: Path) -> sqlite3.Connection:
-    """Open one connection with per-connection WAL, FK and timeout guarantees."""
+def _negotiate_wal(
+    connection: sqlite3.Connection,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    budget_seconds: float = 10.0,
+) -> None:
+    """Enter WAL while sharing one deadline across SQLite waits and backoff."""
+
+    connection.execute("PRAGMA busy_timeout=10000")
+    deadline = monotonic() + budget_seconds
+    delay = 0.005
+
+    def apply_remaining_timeout() -> None:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise sqlite3.OperationalError(
+                "SQLite WAL negotiation deadline exceeded"
+            )
+        timeout_ms = max(1, min(10_000, math.ceil(remaining * 1000)))
+        connection.execute(f"PRAGMA busy_timeout={timeout_ms}")
+
+    while True:
+        try:
+            apply_remaining_timeout()
+            mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            if mode != "wal":
+                apply_remaining_timeout()
+                mode = str(
+                    connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                ).lower()
+            if mode != "wal":
+                raise StoreMigrationError(
+                    "v3_wal_unavailable",
+                    "SQLite did not enter WAL journal mode",
+                )
+            connection.execute("PRAGMA busy_timeout=10000")
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_busy_or_locked(exc):
+                raise
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise
+            sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.1)
+
+
+class _GuardBundle:
+    """OS resources proving the path identity for one live connection."""
+
+    def release(self) -> None:  # pragma: no cover - abstract cleanup seam
+        raise NotImplementedError
+
+
+class _GuardedConnection(sqlite3.Connection):
+    _identity_guard: _GuardBundle | None = None
+
+    def close(self) -> None:
+        guard = getattr(self, "_identity_guard", None)
+        if guard is None:
+            super().close()
+            return
+        with _SQLITE_OPEN_LOCK:
+            try:
+                super().close()
+            finally:
+                self._identity_guard = None
+                guard.release()
+
+
+class _WindowsGuardBundle(_GuardBundle):
+    def __init__(self, handles: list[int], leaf_identity: tuple[int, int]):
+        self.handles = handles
+        self.leaf_identity = leaf_identity
+
+    def release(self) -> None:
+        if not self.handles:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        while self.handles:
+            close_handle(wintypes.HANDLE(self.handles.pop()))
+
+
+class _LinuxGuardBundle(_GuardBundle):
+    def __init__(
+        self,
+        parent_fd: int,
+        leaf_fd: int,
+        leaf_identity: tuple[int, int],
+    ):
+        self.parent_fd = parent_fd
+        self.leaf_fd = leaf_fd
+        self.leaf_identity = leaf_identity
+
+    def release(self) -> None:
+        for attribute in ("leaf_fd", "parent_fd"):
+            descriptor = getattr(self, attribute, -1)
+            if descriptor >= 0:
+                with suppress(OSError):
+                    os.close(descriptor)
+                setattr(self, attribute, -1)
+
+
+def _resolve_v2_path(v2_db_path: Path | None) -> Path:
+    configured: str | os.PathLike[str] | None = v2_db_path
+    if configured is None:
+        configured = os.environ.get("AI_EDIT_V2_DB")
+    if configured is None:
+        raise _configuration_error(
+            "v2_db_path_required",
+            "an explicit absolute V2 database path is required for isolation",
+        )
+    path = _absolute_path(configured, role="v2")
+    _assert_no_reparse_components(path, role="v2")
+    resolved, _metadata = _candidate_identity(path, role="v2")
+    return resolved
+
+
+def _windows_handle_identity(handle: int) -> tuple[tuple[int, int], int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    information = _ByHandleFileInformation()
+    get_information = ctypes.windll.kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    if not get_information(
+        wintypes.HANDLE(handle), ctypes.byref(information)
+    ):
+        raise ctypes.WinError()
+    identity = (
+        int(information.dwVolumeSerialNumber),
+        (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow),
+    )
+    return identity, int(information.dwFileAttributes), int(information.nNumberOfLinks)
+
+
+def _windows_create_handle(
+    path: Path,
+    *,
+    directory: bool,
+    create_new: bool = False,
+    writable: bool = False,
+) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    desired_access = 0
+    if writable:
+        desired_access = 0x80000000 | 0x40000000  # GENERIC_READ | GENERIC_WRITE
+    creation = 1 if create_new else 3  # CREATE_NEW | OPEN_EXISTING
+    flags = 0x00200000  # FILE_FLAG_OPEN_REPARSE_POINT
+    if directory:
+        flags |= 0x02000000  # FILE_FLAG_BACKUP_SEMANTICS
+    else:
+        flags |= 0x00000080  # FILE_ATTRIBUTE_NORMAL
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        os.fspath(path),
+        desired_access,
+        0x1 | 0x2,  # share read/write, deliberately deny delete/rename
+        None,
+        creation,
+        flags,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        raise ctypes.WinError()
+    return int(handle)
+
+
+def _open_windows_guard(path: Path, v2_path: Path) -> _WindowsGuardBundle:
+    handles: list[int] = []
+    try:
+        current = Path(path.anchor)
+        handles.append(_windows_create_handle(current, directory=True))
+        for part in path.parent.parts[1:]:
+            current /= part
+            handles.append(_windows_create_handle(current, directory=True))
+        existed = os.path.lexists(path)
+        try:
+            leaf_handle = _windows_create_handle(
+                path,
+                directory=False,
+                create_new=not existed,
+                writable=True,
+            )
+        except FileExistsError:
+            if existed:
+                raise
+            # Another verified opener won CREATE_NEW while the process-wide
+            # identity lock was held by the caller.  Reopen that exact leaf;
+            # all reparse, link-count, native-ID and V2 comparisons below are
+            # still mandatory.
+            leaf_handle = _windows_create_handle(
+                path,
+                directory=False,
+                writable=True,
+            )
+        handles.append(leaf_handle)
+        leaf_identity, attributes, link_count = _windows_handle_identity(handles[-1])
+        if attributes & 0x400 or link_count != 1:  # reparse point or hardlink
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "V3 database leaf does not have one stable ordinary-file identity",
+            )
+        if os.path.lexists(v2_path):
+            v2_handle = _windows_create_handle(v2_path, directory=False)
+            handles.append(v2_handle)
+            v2_identity, _attributes, _links = _windows_handle_identity(v2_handle)
+            if leaf_identity == v2_identity:
+                raise _configuration_error(
+                    "v2_v3_db_same_file",
+                    "V2 and V3 database files share one filesystem identity",
+                )
+        return _WindowsGuardBundle(handles, leaf_identity)
+    except Exception:
+        _WindowsGuardBundle(handles, (0, 0)).release()
+        raise
+
+
+def _open_linux_parent(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path.anchor or "/", flags)
+    try:
+        for part in path.parent.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        metadata = os.fstat(descriptor)
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "V3 database parent must be owned by the service user and not writable by others",
+            )
+        return descriptor
+    except Exception:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _open_linux_guard(path: Path, v2_path: Path) -> _LinuxGuardBundle:
+    parent_fd = _open_linux_parent(path)
+    leaf_fd = -1
+    try:
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            leaf_fd = os.open(path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            leaf_fd = os.open(path.name, flags, dir_fd=parent_fd)
+        metadata = os.fstat(leaf_fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "V3 database leaf does not have one stable ordinary-file identity",
+            )
+        leaf_identity = (metadata.st_dev, metadata.st_ino)
+        if os.path.lexists(v2_path):
+            v2_metadata = os.stat(v2_path, follow_symlinks=False)
+            if leaf_identity == (v2_metadata.st_dev, v2_metadata.st_ino):
+                raise _configuration_error(
+                    "v2_v3_db_same_file",
+                    "V2 and V3 database files share one filesystem identity",
+                )
+        return _LinuxGuardBundle(parent_fd, leaf_fd, leaf_identity)
+    except Exception:
+        _LinuxGuardBundle(parent_fd, leaf_fd, (0, 0)).release()
+        raise
+
+
+def _main_database_path(connection: sqlite3.Connection) -> Path:
+    try:
+        rows = connection.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error as exc:
+        raise _configuration_error(
+            "v3_db_main_handle_mismatch",
+            "SQLite main database identity cannot be inspected",
+        ) from exc
+    for row in rows:
+        if len(row) >= 3 and row[1] == "main" and row[2]:
+            return Path(row[2])
+    raise _configuration_error(
+        "v3_db_main_handle_mismatch",
+        "SQLite main database is not bound to the requested file",
+    )
+
+
+def _linux_fd_snapshot() -> set[int]:
+    try:
+        return {int(value) for value in os.listdir("/proc/self/fd")}
+    except (OSError, ValueError) as exc:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "Linux SQLite descriptor identity cannot be inspected",
+        ) from exc
+
+
+def _connect_with_verified_identity(
+    path: Path,
+    v2_path: Path,
+) -> _GuardedConnection:
+    with _SQLITE_OPEN_LOCK:
+        return _connect_with_verified_identity_under_lock(path, v2_path)
+
+
+def _connect_with_verified_identity_under_lock(
+    path: Path,
+    v2_path: Path,
+) -> _GuardedConnection:
+    if os.name == "nt":
+        guard: _GuardBundle = _open_windows_guard(path, v2_path)
+        connect_target: str | Path = path
+        connect_kwargs: dict[str, Any] = {}
+        before_descriptors: set[int] | None = None
+    elif sys.platform.startswith("linux"):
+        linux_guard = _open_linux_guard(path, v2_path)
+        guard = linux_guard
+        connect_target = (
+            f"file:/proc/self/fd/{linux_guard.parent_fd}/{quote(path.name, safe='')}"
+            "?mode=rw&cache=private"
+        )
+        connect_kwargs = {"uri": True}
+        before_descriptors = _linux_fd_snapshot()
+    else:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "this platform cannot prove the SQLite main-file identity",
+        )
+
+    connection: sqlite3.Connection | None = None
+    try:
+        with _SQLITE_OPEN_LOCK:
+            try:
+                connection = sqlite3.connect(
+                    connect_target,
+                    timeout=10.0,
+                    isolation_level=None,
+                    factory=_GuardedConnection,
+                    **connect_kwargs,
+                )
+            except OSError as exc:
+                raise _configuration_error(
+                    "v3_db_identity_changed",
+                    "V3 database path changed while SQLite was opening it",
+                ) from exc
+            if not isinstance(connection, _GuardedConnection):
+                raise _configuration_error(
+                    "v3_db_main_handle_mismatch",
+                    "SQLite returned a connection without the required identity guard",
+                )
+            main_path = _main_database_path(connection)
+            if os.name == "nt":
+                if not _same_path(main_path.resolve(strict=True), path.resolve(strict=True)):
+                    raise _configuration_error(
+                        "v3_db_main_handle_mismatch",
+                        "SQLite main database is not the requested V3 file",
+                    )
+                main_handle = _windows_create_handle(main_path, directory=False)
+                try:
+                    main_identity, _attributes, _links = _windows_handle_identity(main_handle)
+                finally:
+                    _WindowsGuardBundle([main_handle], (0, 0)).release()
+                if main_identity != guard.leaf_identity:
+                    raise _configuration_error(
+                        "v3_db_main_handle_mismatch",
+                        "SQLite main handle does not match the guarded V3 leaf",
+                    )
+            else:
+                assert before_descriptors is not None
+                after_descriptors = _linux_fd_snapshot()
+                matches: list[int] = []
+                for descriptor in after_descriptors - before_descriptors:
+                    try:
+                        metadata = os.fstat(descriptor)
+                    except OSError:
+                        continue
+                    if stat.S_ISREG(metadata.st_mode) and (
+                        metadata.st_dev,
+                        metadata.st_ino,
+                    ) == guard.leaf_identity:
+                        matches.append(descriptor)
+                if len(matches) != 1:
+                    raise _configuration_error(
+                        "v3_db_main_handle_mismatch",
+                        "SQLite main descriptor does not uniquely match the guarded V3 leaf",
+                    )
+            connection._identity_guard = guard
+            return connection
+    except Exception:
+        if connection is not None:
+            connection.close()
+        guard.release()
+        raise
+
+
+def _json_tree_is_nfc(value: Any) -> bool:
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value) == value
+    if isinstance(value, list):
+        return all(_json_tree_is_nfc(item) for item in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str)
+            and unicodedata.normalize("NFC", key) == key
+            and _json_tree_is_nfc(item)
+            for key, item in value.items()
+        )
+    return True
+
+
+def _is_canonical_json_text(value: Any) -> int:
+    if not isinstance(value, str):
+        return 0
+    try:
+        parsed = parse_strict_json(
+            value,
+            max_bytes=4 * 1024 * 1024,
+            max_depth=64,
+            max_items=100_000,
+            max_string_chars=2 * 1024 * 1024,
+        )
+        if not _json_tree_is_nfc(parsed):
+            return 0
+        return int(canonical_json(parsed).decode("utf-8") == value)
+    except (ContractError, UnicodeError, ValueError, TypeError):
+        return 0
+
+
+def _register_connection_functions(connection: sqlite3.Connection) -> None:
+    connection.create_function(
+        "edit_v3_is_canonical_json",
+        1,
+        _is_canonical_json_text,
+        deterministic=True,
+    )
+
+
+def open_store(
+    db_path: Path,
+    *,
+    v2_db_path: Path | None = None,
+) -> sqlite3.Connection:
+    """Open one verified connection with WAL, FK and timeout guarantees."""
 
     path = resolve_db_path(db_path)
+    configured_v2 = _resolve_v2_path(v2_db_path)
+    assert_isolated_db(path, configured_v2)
     _assert_local_filesystem(path)
-    connection = sqlite3.connect(
-        path,
-        timeout=10.0,
-        isolation_level=None,
-    )
+    connection = _connect_with_verified_identity(path, configured_v2)
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=10000")
-        deadline = time.monotonic() + 10.0
-        delay = 0.005
-        while True:
-            try:
-                mode = str(
-                    connection.execute("PRAGMA journal_mode").fetchone()[0]
-                ).lower()
-                if mode != "wal":
-                    mode = str(
-                        connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-                    ).lower()
-                if mode != "wal":
-                    raise StoreMigrationError(
-                        "v3_wal_unavailable",
-                        "SQLite did not enter WAL journal mode",
-                    )
-                break
-            except sqlite3.OperationalError as exc:
-                if not _is_sqlite_busy_or_locked(exc) or time.monotonic() >= deadline:
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                time.sleep(min(delay, remaining))
-                delay = min(delay * 2, 0.1)
+        _register_connection_functions(connection)
+        _negotiate_wal(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
             raise StoreMigrationError(
@@ -1099,6 +1614,28 @@ def _validate_schema_manifest(connection: sqlite3.Connection) -> None:
     tables = _schema_tables(connection)
     if tables != set(_SCHEMA_TABLE_COLUMNS):
         _raise_manifest_mismatch("table set")
+
+    for object_type, name, table_name, sql in connection.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+    ):
+        if object_type == "table" and name in _SCHEMA_TABLE_COLUMNS:
+            continue
+        if object_type == "index" and name in _SCHEMA_INDEXES:
+            continue
+        if (
+            object_type == "index"
+            and sql is None
+            and table_name in _SCHEMA_TABLE_COLUMNS
+            and re.fullmatch(
+                rf"sqlite_autoindex_{re.escape(table_name)}_[1-9][0-9]*",
+                name,
+            )
+        ):
+            continue
+        _raise_manifest_mismatch(
+            f"unregistered {object_type} object {name} on {table_name}"
+        )
+
     for table, expected_columns in _SCHEMA_TABLE_COLUMNS.items():
         columns = tuple(
             row[1] for row in connection.execute(f"PRAGMA table_info({table})")
@@ -1151,6 +1688,21 @@ def _validate_schema_manifest(connection: sqlite3.Connection) -> None:
             _raise_manifest_mismatch(f"shape for {index_name}")
 
 
+def _validate_live_integrity(connection: sqlite3.Connection) -> None:
+    for pragma in ("quick_check", "integrity_check"):
+        rows = connection.execute(f"PRAGMA {pragma}").fetchall()
+        if len(rows) != 1 or str(rows[0][0]).lower() != "ok":
+            raise StoreMigrationError(
+                "v3_integrity_check_failed",
+                f"SQLite {pragma} rejected the live V3 database",
+            )
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise StoreMigrationError(
+            "v3_foreign_key_check_failed",
+            "SQLite foreign_key_check found an orphaned V3 row",
+        )
+
+
 def _migrate_or_validate(connection: sqlite3.Connection) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -1165,6 +1717,7 @@ def _migrate_or_validate(connection: sqlite3.Connection) -> None:
                 (SCHEMA_VERSION, MIGRATION_SHA256, now, now),
             )
             _validate_schema_manifest(connection)
+            _validate_live_integrity(connection)
         else:
             if "edit_v3_schema_meta" not in tables:
                 raise StoreMigrationError(
@@ -1196,6 +1749,7 @@ def _migrate_or_validate(connection: sqlite3.Connection) -> None:
                     "database migration SHA does not match the frozen migration",
                 )
             _validate_schema_manifest(connection)
+            _validate_live_integrity(connection)
         connection.commit()
     except Exception:
         if connection.in_transaction:
@@ -1223,7 +1777,7 @@ def init_db(
     assert_isolated_db(path, configured_v2)
     _assert_local_filesystem(path)
     before = _path_identity(path)
-    connection = open_store(path)
+    connection = open_store(path, v2_db_path=configured_v2)
     try:
         _revalidate_open_identity(path, before, configured_v2)
         _migrate_or_validate(connection)
@@ -1248,9 +1802,19 @@ def _json_sha256(value: Any) -> str:
 
 def _immutable_conflict(identity: str) -> StoreConflictError:
     return StoreConflictError(
-        "immutable_identity_conflict",
+        "idempotency_conflict",
         f"immutable V3 identity {identity} was reused with different data",
     )
+
+
+def _require_integer(name: str, value: Any, *, nullable: bool = False) -> None:
+    if nullable and value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _configuration_error(
+            "integer_argument_invalid",
+            f"{name} must be an integer primitive",
+        )
 
 
 class V3Store:
@@ -1293,7 +1857,7 @@ class V3Store:
         assert_isolated_db(self.db_path, self.v2_db_path)
         _assert_local_filesystem(self.db_path)
         before = _path_identity(self.db_path)
-        connection = open_store(self.db_path)
+        connection = open_store(self.db_path, v2_db_path=self.v2_db_path)
         try:
             _revalidate_open_identity(self.db_path, before, self.v2_db_path)
             return connection
@@ -1339,6 +1903,9 @@ class V3Store:
         published_at: int | None = None,
         retired_at: int | None = None,
     ) -> dict[str, Any]:
+        _require_integer("created_at", created_at)
+        _require_integer("published_at", published_at, nullable=True)
+        _require_integer("retired_at", retired_at, nullable=True)
         parameters_json = _json_text(parameters)
         expected = {
             "version": version,
@@ -1410,6 +1977,10 @@ class V3Store:
         template_version: str | None = None,
         environment: str | None = None,
     ) -> dict[str, Any] | None:
+        _require_integer("min_points", min_points)
+        _require_integer("max_points", max_points)
+        _require_integer("expires_at", expires_at)
+        _require_integer("created_at", created_at)
         environment = self._environment(environment)
         expected = {
             "quote_id": quote_id,
@@ -1492,6 +2063,9 @@ class V3Store:
         created_at: int,
         environment: str | None = None,
     ) -> dict[str, Any] | None:
+        _require_integer("declared_size", declared_size)
+        _require_integer("expires_at", expires_at)
+        _require_integer("created_at", created_at)
         environment = self._environment(environment)
         immutable = {
             "upload_id": upload_id,
@@ -1565,6 +2139,11 @@ class V3Store:
         completed_at: int,
         environment: str | None = None,
     ) -> dict[str, Any] | None:
+        _require_integer("observed_size", observed_size)
+        _require_integer("duration_ms", duration_ms, nullable=True)
+        _require_integer("width", width, nullable=True)
+        _require_integer("height", height, nullable=True)
+        _require_integer("completed_at", completed_at)
         environment = self._environment(environment)
         completion = {
             "observed_mime": observed_mime,
@@ -1634,6 +2213,20 @@ class V3Store:
         source_job_id: str | None = None,
         environment: str | None = None,
     ) -> dict[str, Any] | None:
+        _require_integer("size_bytes", size_bytes)
+        _require_integer("created_at", created_at)
+        if not (
+            (source_kind == "uploaded" and upload_id is not None and source_job_id is None)
+            or (
+                source_kind == "generated"
+                and upload_id is None
+                and source_job_id is not None
+            )
+        ):
+            raise _configuration_error(
+                "material_source_invalid",
+                "material source fields do not form a supported authority union",
+            )
         environment = self._environment(environment)
         expected = {
             "material_id": material_id,
@@ -1651,37 +2244,80 @@ class V3Store:
         }
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            if source_kind == "uploaded":
+                upload = connection.execute(
+                    "SELECT * FROM edit_v3_uploads WHERE upload_id=?",
+                    (upload_id,),
+                ).fetchone()
+                if upload is None or (
+                    upload["environment"] != environment
+                    or upload["owner_id"] != owner_id
+                ):
+                    return None
+                if (
+                    upload["status"] != "completed"
+                    or upload["upload_type"] != "material_image"
+                    or upload["observed_mime"]
+                    not in {"image/jpeg", "image/png", "image/webp"}
+                    or upload["observed_size"] is None
+                    or upload["sha256"] is None
+                ):
+                    raise StoreConflictError(
+                        "material_upload_invalid",
+                        "only a completed, verified material-image upload may be promoted",
+                    )
+                authority = {
+                    "cos_key": upload["object_key"],
+                    "mime_type": upload["observed_mime"],
+                    "size_bytes": upload["observed_size"],
+                    "sha256": upload["sha256"],
+                }
+                if any(expected[key] != value for key, value in authority.items()):
+                    raise StoreConflictError(
+                        "material_upload_metadata_mismatch",
+                        "material metadata must exactly match the completed upload authority",
+                    )
+            else:
+                source_job = connection.execute(
+                    "SELECT environment,owner_id FROM edit_v3_jobs WHERE job_id=?",
+                    (source_job_id,),
+                ).fetchone()
+                if source_job is None or (
+                    source_job["environment"] != environment
+                    or source_job["owner_id"] != owner_id
+                ):
+                    return None
+
             existing = connection.execute(
-                """SELECT * FROM edit_v3_materials
-                   WHERE environment=? AND owner_id=? AND material_id=?""",
-                (environment, owner_id, material_id),
+                "SELECT * FROM edit_v3_materials WHERE material_id=?",
+                (material_id,),
             ).fetchone()
             if existing is not None:
+                if existing["environment"] != environment or existing["owner_id"] != owner_id:
+                    return None
                 if not self._same_values(existing, expected):
                     raise _immutable_conflict(f"material:{material_id}")
                 return dict(existing)
-            hidden_existing = connection.execute(
-                "SELECT 1 FROM edit_v3_materials WHERE material_id=?",
-                (material_id,),
-            ).fetchone()
-            if hidden_existing is not None:
-                return None
-            if upload_id is not None:
-                owned_upload = connection.execute(
-                    """SELECT 1 FROM edit_v3_uploads
-                       WHERE environment=? AND owner_id=? AND upload_id=? AND status='completed'""",
-                    (environment, owner_id, upload_id),
+
+            if source_kind == "uploaded":
+                upload_replay = connection.execute(
+                    "SELECT * FROM edit_v3_materials WHERE upload_id=?",
+                    (upload_id,),
                 ).fetchone()
-                if owned_upload is None:
-                    return None
-            if source_job_id is not None:
-                owned_job = connection.execute(
-                    """SELECT 1 FROM edit_v3_jobs
-                       WHERE environment=? AND owner_id=? AND job_id=?""",
-                    (environment, owner_id, source_job_id),
-                ).fetchone()
-                if owned_job is None:
-                    return None
+                if upload_replay is not None:
+                    if (
+                        upload_replay["environment"] != environment
+                        or upload_replay["owner_id"] != owner_id
+                    ):
+                        return None
+                    replay_expected = {
+                        key: value
+                        for key, value in expected.items()
+                        if key != "material_id"
+                    }
+                    if not self._same_values(upload_replay, replay_expected):
+                        raise _immutable_conflict(f"material-upload:{upload_id}")
+                    return dict(upload_replay)
             try:
                 connection.execute(
                     """INSERT INTO edit_v3_materials(
@@ -1714,6 +2350,7 @@ class V3Store:
         created_at: int,
         environment: str | None = None,
     ) -> list[dict[str, Any]] | None:
+        _require_integer("created_at", created_at)
         environment = self._environment(environment)
         normalized: list[tuple[str, str, int]] = []
         for binding in materials:
@@ -1729,13 +2366,12 @@ class V3Store:
             material_id = binding["material_id"]
             purpose = binding["purpose"]
             ordinal = binding["ordinal"]
+            _require_integer("ordinal", ordinal)
             if (
                 not isinstance(material_id, str)
                 or not material_id
                 or not isinstance(purpose, str)
                 or not purpose
-                or isinstance(ordinal, bool)
-                or not isinstance(ordinal, int)
                 or ordinal < 0
             ):
                 raise _configuration_error(
@@ -1774,7 +2410,11 @@ class V3Store:
                     (job_id, material_id),
                 ).fetchone()
                 if existing is not None:
-                    if existing["purpose"] != purpose or existing["ordinal"] != ordinal:
+                    if (
+                        existing["purpose"] != purpose
+                        or existing["ordinal"] != ordinal
+                        or existing["created_at"] != created_at
+                    ):
                         raise _immutable_conflict(
                             f"job-material:{job_id}:{material_id}"
                         )
@@ -1880,7 +2520,8 @@ class V3Store:
         cursor: str | None = None,
     ) -> dict[str, Any]:
         environment = self._environment(environment)
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        _require_integer("limit", limit)
+        if not 1 <= limit <= 100:
             raise _configuration_error(
                 "job_page_limit_invalid",
                 "job page limit must be from 1 to 100",

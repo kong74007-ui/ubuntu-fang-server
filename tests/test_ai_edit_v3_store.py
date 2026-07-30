@@ -192,7 +192,7 @@ EXPECTED_DECLARED_INDEXES = {
 
 
 EXPECTED_MIGRATION_SHA256 = (
-    "af2f53b9c37aea2ed40cf0ffabef8389541405ff566a30a41216ed299d634f46"
+    "b4a64a576f2d703023f429b706bc1af83d37195fa6d50f73a65257e99c996140"
 )
 
 
@@ -432,7 +432,7 @@ class V3StorePathTests(unittest.TestCase):
             ) as open_v3:
                 with self.assertRaisesRegex(RuntimeError, "stop after isolation"):
                     init_db(v3)
-        open_v3.assert_called_once_with(v3)
+        open_v3.assert_called_once_with(v3, v2_db_path=v2)
         self.assertEqual(v2.read_bytes(), b"not a sqlite database and must stay unopened")
 
 
@@ -471,7 +471,7 @@ class V3StoreSchemaTests(unittest.TestCase):
 
     def test_schema_v1_has_exact_frozen_table_column_fk_and_index_manifest(self):
         self.initialize()
-        connection = open_store(self.db)
+        connection = open_store(self.db, v2_db_path=self.v2)
         self.addCleanup(connection.close)
 
         tables = {
@@ -531,8 +531,8 @@ class V3StoreSchemaTests(unittest.TestCase):
 
     def test_every_connection_has_wal_foreign_keys_busy_timeout_and_mapping_rows(self):
         self.initialize()
-        first = open_store(self.db)
-        second = open_store(self.db)
+        first = open_store(self.db, v2_db_path=self.v2)
+        second = open_store(self.db, v2_db_path=self.v2)
         self.addCleanup(first.close)
         self.addCleanup(second.close)
         for connection in (first, second):
@@ -550,7 +550,7 @@ class V3StoreSchemaTests(unittest.TestCase):
 
     def test_schema_enforces_refund_billing_state_and_foreign_key_constraints(self):
         self.initialize()
-        connection = open_store(self.db)
+        connection = open_store(self.db, v2_db_path=self.v2)
         self.addCleanup(connection.close)
         sha = "a" * 64
         connection.execute(
@@ -612,7 +612,7 @@ class V3StoreSchemaTests(unittest.TestCase):
 
     def test_stage_attempt_status_check_accepts_the_exact_frozen_v1_set(self):
         self.initialize()
-        connection = open_store(self.db)
+        connection = open_store(self.db, v2_db_path=self.v2)
         self.addCleanup(connection.close)
         sha = "a" * 64
         connection.execute(
@@ -731,7 +731,7 @@ class V3StoreSchemaTests(unittest.TestCase):
         initial.close()
         original_identity = self.db.stat()
 
-        def swap_before_return(path):
+        def swap_before_return(path, *, v2_db_path=None):
             moved = self.root / "original.db"
             os.replace(path, moved)
             connection = sqlite3.connect(path, isolation_level=None)
@@ -772,7 +772,7 @@ class V3StoreMigrationRaceTests(unittest.TestCase):
             connection.close()
 
     def snapshot(self, path):
-        connection = open_store(path)
+        connection = open_store(path, v2_db_path=self.v2)
         try:
             tables = tuple(
                 row[0]
@@ -904,7 +904,7 @@ class V3StorePrimitiveTests(unittest.TestCase):
         )
 
     def seed_job(self, job_id, owner, created_at, *, environment="test", quote_id="quote-1"):
-        connection = open_store(self.db)
+        connection = open_store(self.db, v2_db_path=self.v2)
         try:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -964,7 +964,7 @@ class V3StorePrimitiveTests(unittest.TestCase):
                 created_at=100,
                 published_at=101,
             )
-        self.assertEqual(caught.exception.error_code, "immutable_identity_conflict")
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
 
         request = {"z": 2, "a": "汉"}
         quote = self.store.insert_quote(
@@ -1126,7 +1126,7 @@ class V3StorePrimitiveTests(unittest.TestCase):
             "alice",
             "material-1",
             source_kind="uploaded",
-            cos_key="test/ai-edit-v3/alice/material-1.png",
+            cos_key="test/ai-edit-v3/alice/upload-1",
             mime_type="image/png",
             size_bytes=12,
             sha256="a" * 64,
@@ -1140,7 +1140,7 @@ class V3StorePrimitiveTests(unittest.TestCase):
                 "alice",
                 "material-1",
                 source_kind="uploaded",
-                cos_key="test/ai-edit-v3/alice/material-1.png",
+                cos_key="test/ai-edit-v3/alice/upload-1",
                 mime_type="image/png",
                 size_bytes=12,
                 sha256="a" * 64,
@@ -1171,13 +1171,14 @@ class V3StorePrimitiveTests(unittest.TestCase):
         alice = self.store.insert_material(
             "alice",
             "material-1",
-            source_kind="existing",
+            source_kind="generated",
             cos_key="test/ai-edit-v3/alice/material-1.png",
             mime_type="image/png",
             size_bytes=12,
             sha256="a" * 64,
             metadata={},
             created_at=1_200,
+            source_job_id="job-1",
         )
         bound = self.store.bind_job_materials(
             "alice",
@@ -1221,8 +1222,8 @@ class V3StorePrimitiveTests(unittest.TestCase):
         traced = []
         real_open_store = open_store
 
-        def traced_open(path):
-            connection = real_open_store(path)
+        def traced_open(path, *, v2_db_path=None):
+            connection = real_open_store(path, v2_db_path=v2_db_path)
             connection.set_trace_callback(traced.append)
             return connection
 
@@ -1297,6 +1298,963 @@ class V3StorePrimitiveTests(unittest.TestCase):
             with self.subTest(method=method_name):
                 parameters = set(inspect.signature(getattr(V3Store, method_name)).parameters)
                 self.assertTrue(parameters.isdisjoint(forbidden))
+
+
+class V3StoreReviewIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        connection = sqlite3.connect(self.v2, isolation_level=None)
+        try:
+            self.assertEqual(
+                connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0].lower(),
+                "delete",
+            )
+            connection.execute("CREATE TABLE v2_marker(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO v2_marker VALUES('unchanged')")
+        finally:
+            connection.close()
+
+    def assert_code(self, expected, callable_, *args, **kwargs):
+        with self.assertRaises(StoreConfigurationError) as caught:
+            callable_(*args, **kwargs)
+        self.assertEqual(caught.exception.error_code, expected)
+
+    @staticmethod
+    def _sidecars(path):
+        return tuple(
+            sidecar.exists()
+            for sidecar in (
+                Path(f"{path}-wal"),
+                Path(f"{path}-shm"),
+                Path(f"{path}-journal"),
+            )
+        )
+
+    @staticmethod
+    def _journal_mode(path):
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            return connection.execute("PRAGMA journal_mode").fetchone()[0].lower()
+        finally:
+            connection.close()
+
+    def test_assert_and_every_public_open_require_v2_identity_before_connect(self):
+        v3 = self.root / "ai_edit_v3.db"
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assert_code("v2_db_path_required", assert_isolated_db, v3, None)
+            with mock.patch.object(sqlite3, "connect") as connect:
+                self.assert_code("v2_db_path_required", open_store, v3)
+            connect.assert_not_called()
+        self.assertFalse(v3.exists())
+
+    def test_public_open_rejects_the_v2_file_without_mutating_it(self):
+        before = self.v2.read_bytes()
+        before_sidecars = self._sidecars(self.v2)
+        self.assert_code(
+            "v2_v3_db_same_file",
+            open_store,
+            self.v2,
+            v2_db_path=self.v2,
+        )
+        self.assertEqual(self.v2.read_bytes(), before)
+        self.assertEqual(self._journal_mode(self.v2), "delete")
+        self.assertEqual(self._sidecars(self.v2), before_sidecars)
+
+    def test_connection_bound_to_another_database_is_rejected_before_wal_or_schema(self):
+        requested = self.root / "requested.db"
+        other = self.root / "other.db"
+        connection = sqlite3.connect(other, isolation_level=None)
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.close()
+        other_before = other.read_bytes()
+        real_connect = sqlite3.connect
+
+        def wrong_connect(_requested, *args, **kwargs):
+            return real_connect(other, isolation_level=None)
+
+        with mock.patch.object(sqlite3, "connect", side_effect=wrong_connect):
+            self.assert_code(
+                "v3_db_main_handle_mismatch",
+                init_db,
+                requested,
+                v2_db_path=self.v2,
+            )
+
+        self.assertTrue(requested.exists())
+        self.assertEqual(requested.stat().st_size, 0)
+        self.assertEqual(other.read_bytes(), other_before)
+        self.assertEqual(self._journal_mode(other), "delete")
+        self.assertEqual(self._sidecars(other), (False, False, False))
+
+    def _assert_connect_boundary_hardlink_attack_is_rejected(self, *, restore):
+        requested = self.root / ("aba.db" if restore else "swap.db")
+        backup = requested.with_suffix(".original")
+        v2_before = self.v2.read_bytes()
+        real_connect = sqlite3.connect
+        attack = {"attempted": False, "swapped": False}
+
+        def attacking_connect(_requested, *args, **kwargs):
+            attack["attempted"] = True
+            os.replace(requested, backup)
+            os.link(self.v2, requested)
+            attack["swapped"] = True
+            connection = real_connect(requested, isolation_level=None)
+            if restore:
+                requested.unlink()
+                os.replace(backup, requested)
+            return connection
+
+        with mock.patch.object(sqlite3, "connect", side_effect=attacking_connect):
+            with self.assertRaises(StoreConfigurationError) as caught:
+                open_store(requested, v2_db_path=self.v2)
+        self.assertIn(
+            caught.exception.error_code,
+            {"v3_db_identity_changed", "v3_db_main_handle_mismatch"},
+        )
+        self.assertTrue(attack["attempted"])
+        self.assertEqual(self.v2.read_bytes(), v2_before)
+        self.assertEqual(self._journal_mode(self.v2), "delete")
+        self.assertEqual(self._sidecars(self.v2), (False, False, False))
+
+    def test_hardlink_swap_at_connect_boundary_is_rejected_before_v2_mutation(self):
+        self._assert_connect_boundary_hardlink_attack_is_rejected(restore=False)
+
+    def test_aba_hardlink_swap_and_restore_is_rejected_by_actual_handle_identity(self):
+        self._assert_connect_boundary_hardlink_attack_is_rejected(restore=True)
+
+
+class V3StoreFilesystemClassificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+
+    def assert_code(self, expected, callable_, *args, **kwargs):
+        with self.assertRaises(StoreConfigurationError) as caught:
+            callable_(*args, **kwargs)
+        self.assertEqual(caught.exception.error_code, expected)
+
+    def test_filesystem_types_use_an_explicit_local_remote_unknown_classification(self):
+        for fs_type in (
+            "ext2", "ext3", "ext4", "xfs", "btrfs", "tmpfs", "overlay",
+            "overlayfs", "windows_fixed",
+        ):
+            with self.subTest(fs_type=fs_type):
+                self.assertEqual(store_module._classify_filesystem_type(fs_type), "local")
+        for fs_type in (
+            "nfs", "nfs4", "cifs", "smb3", "lustre", "gpfs", "afs",
+            "davfs", "davfs2", "beegfs", "ceph", "cephfs", "glusterfs",
+            "9p", "webdav", "fuse.sshfs", "fuse.cosfs", "fuse.s3fs",
+            "fuse.gcsfuse", "fuse.goofys", "fuse.juicefs", "fuse.rclone",
+            "azureblob", "windows_remote",
+        ):
+            with self.subTest(fs_type=fs_type):
+                self.assertEqual(store_module._classify_filesystem_type(fs_type), "remote")
+        for fs_type in (None, "", "mysteryfs", "fuse.unknown", "windows_ramdisk"):
+            with self.subTest(fs_type=fs_type):
+                self.assertEqual(store_module._classify_filesystem_type(fs_type), "unknown")
+
+    def test_unknown_and_unapproved_fuse_fail_before_any_database_side_effect(self):
+        for fs_type in ("mysteryfs", "fuse.unknown"):
+            target = self.root / f"{fs_type.replace('.', '-')}.db"
+            with self.subTest(fs_type=fs_type):
+                with mock.patch.object(
+                    store_module,
+                    "_filesystem_type_for_path",
+                    return_value=fs_type,
+                ):
+                    self.assert_code(
+                        "v3_db_filesystem_unknown",
+                        init_db,
+                        target,
+                        v2_db_path=self.v2,
+                    )
+                self.assertFalse(target.exists())
+                self.assertEqual(
+                    tuple(Path(f"{target}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal")),
+                    (False, False, False),
+                )
+
+    def test_existing_single_file_mount_is_checked_in_addition_to_parent(self):
+        target = self.root / "single-file-mount.db"
+        target.touch()
+        seen = []
+
+        def classify(path):
+            seen.append(Path(path))
+            return "nfs" if Path(path) == target else "ext4"
+
+        with mock.patch.object(store_module, "_filesystem_type_for_path", side_effect=classify):
+            self.assert_code(
+                "v3_db_network_filesystem",
+                open_store,
+                target,
+                v2_db_path=self.v2,
+            )
+        self.assertIn(target, seen)
+        self.assertIn(target.parent, seen)
+        self.assertEqual(target.stat().st_size, 0)
+
+    def test_mountinfo_uses_decoding_component_boundaries_and_topmost_last_mount(self):
+        text = "\n".join(
+            (
+                "1 0 0:1 / / rw - ext4 /dev/root rw",
+                "2 1 0:2 / /mnt/data rw - nfs server:/data rw",
+                "3 1 0:3 / /mnt/with\\040space rw - xfs /dev/x rw",
+                "4 1 0:4 / /stack rw - ext4 /dev/a rw",
+                "5 1 0:5 / /stack rw - nfs server:/stack rw",
+            )
+        )
+        self.assertEqual(
+            store_module._parse_linux_mountinfo(text, Path("/stack/db.sqlite")),
+            "nfs",
+        )
+        self.assertEqual(
+            store_module._parse_linux_mountinfo(
+                text,
+                Path("/mnt/with space/db.sqlite"),
+            ),
+            "xfs",
+        )
+        self.assertEqual(
+            store_module._parse_linux_mountinfo(text, Path("/mnt/data2/db.sqlite")),
+            "ext4",
+        )
+        self.assertIsNone(store_module._parse_linux_mountinfo("malformed", self.root))
+
+
+class V3StoreLiveIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+
+    def initialize(self, name="ai_edit_v3.db"):
+        path = self.root / name
+        init_db(path, v2_db_path=self.v2)
+        return path
+
+    def connect(self, path):
+        connection = open_store(path, v2_db_path=self.v2)
+        self.addCleanup(connection.close)
+        return connection
+
+    @staticmethod
+    def _seed_minimum(connection, *, job_id="job-1"):
+        sha = "a" * 64
+        connection.execute(
+            """INSERT INTO edit_v3_pricing_versions(
+                   version,status,parameters_json,parameters_sha256,created_at
+               ) VALUES(?,?,?,?,?)""",
+            ("price-v1", "published", "{}", sha, 1),
+        )
+        connection.execute(
+            """INSERT INTO edit_v3_quotes(
+                   quote_id,environment,owner_id,normalized_request_json,request_sha256,
+                   pricing_version,min_points,max_points,breakdown_json,expires_at,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("quote-1", "test", "alice", "{}", sha, "price-v1", 1, 2, "{}", 9, 1),
+        )
+        connection.execute(
+            """INSERT INTO edit_v3_jobs(
+                   job_id,environment,owner_id,state,normalized_request_json,request_sha256,
+                   quote_id,idempotency_key,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, "test", "alice", "created_draft", "{}", sha, "quote-1", "key-1", 1, 1),
+        )
+
+    def test_every_connection_registers_bounded_canonical_json_validation(self):
+        path = self.initialize()
+        connection = self.connect(path)
+        accepted = (
+            "{}",
+            '{"a":1,"b":[true,null,"é"]}',
+        )
+        rejected = (
+            "{",
+            '{"a":1,"a":2}',
+            '{"b":2, "a":1}',
+            '{"a":"\\u0061"}',
+            '{"a":"e\u0301"}',
+            "NaN",
+        )
+        for value in accepted:
+            with self.subTest(accepted=value):
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT edit_v3_is_canonical_json(?)",
+                        (value,),
+                    ).fetchone()[0],
+                    1,
+                )
+        for value in rejected:
+            with self.subTest(rejected=value):
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT edit_v3_is_canonical_json(?)",
+                        (value,),
+                    ).fetchone()[0],
+                    0,
+                )
+
+    def test_json_corruption_is_rejected_on_reinitialization(self):
+        corrupt_values = (
+            ("malformed", "{"),
+            ("duplicate", '{"a":1,"a":2}'),
+            ("whitespace-order", '{"b":2, "a":1}'),
+            ("escape", '{"a":"\\u0061"}'),
+            ("non-nfc", '{"a":"e\u0301"}'),
+        )
+        for label, value in corrupt_values:
+            with self.subTest(label=label):
+                path = self.initialize(f"json-{label}.db")
+                connection = self.connect(path)
+                connection.execute(
+                    """INSERT INTO edit_v3_pricing_versions(
+                           version,status,parameters_json,parameters_sha256,created_at
+                       ) VALUES(?,?,?,?,?)""",
+                    ("price-v1", "published", "{}", "a" * 64, 1),
+                )
+                connection.execute("PRAGMA ignore_check_constraints=ON")
+                connection.execute(
+                    "UPDATE edit_v3_pricing_versions SET parameters_json=?",
+                    (value,),
+                )
+                connection.close()
+                with self.assertRaises(StoreMigrationError) as caught:
+                    init_db(path, v2_db_path=self.v2)
+                self.assertEqual(caught.exception.error_code, "v3_integrity_check_failed")
+
+    def test_orphan_foreign_key_is_rejected_on_reinitialization(self):
+        path = self.initialize("orphan.db")
+        connection = self.connect(path)
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            """INSERT INTO edit_v3_stage_attempts(
+                   id,job_id,stage,attempt,worker_id,fencing_token,status,
+                   input_sha256,started_at
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            ("attempt-1", "missing", "planning", 1, "worker", 1, "running", "a" * 64, 1),
+        )
+        connection.close()
+        with self.assertRaises(StoreMigrationError) as caught:
+            init_db(path, v2_db_path=self.v2)
+        self.assertEqual(caught.exception.error_code, "v3_foreign_key_check_failed")
+
+    def test_check_constraint_corruption_is_rejected_on_reinitialization(self):
+        path = self.initialize("check.db")
+        connection = self.connect(path)
+        self._seed_minimum(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("UPDATE edit_v3_jobs SET repair_count=2 WHERE job_id='job-1'")
+        connection.close()
+        with self.assertRaises(StoreMigrationError) as caught:
+            init_db(path, v2_db_path=self.v2)
+        self.assertEqual(caught.exception.error_code, "v3_integrity_check_failed")
+
+    def test_unregistered_trigger_view_and_indexes_are_rejected(self):
+        objects = (
+            (
+                "trigger",
+                """CREATE TRIGGER evil_trigger AFTER INSERT ON edit_v3_uploads
+                    BEGIN UPDATE edit_v3_uploads SET owner_id='attacker'
+                    WHERE upload_id=NEW.upload_id; END""",
+            ),
+            ("view", "CREATE VIEW evil_view AS SELECT * FROM edit_v3_jobs"),
+            ("index", "CREATE INDEX evil_index ON edit_v3_uploads(owner_id)"),
+            (
+                "unique-index",
+                "CREATE UNIQUE INDEX evil_unique ON edit_v3_uploads(owner_id,upload_id)",
+            ),
+        )
+        for label, statement in objects:
+            with self.subTest(label=label):
+                path = self.initialize(f"object-{label}.db")
+                connection = self.connect(path)
+                connection.execute(statement)
+                connection.close()
+                with self.assertRaises(StoreMigrationError) as caught:
+                    init_db(path, v2_db_path=self.v2)
+                self.assertEqual(
+                    caught.exception.error_code,
+                    "v3_schema_manifest_mismatch",
+                )
+
+    def test_strict_tables_reject_wrong_integer_storage_class_at_write_boundary(self):
+        path = self.initialize("strict.db")
+        connection = self.connect(path)
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                """INSERT INTO edit_v3_pricing_versions(
+                       version,status,parameters_json,parameters_sha256,created_at
+                   ) VALUES(?,?,?,?,?)""",
+                ("price-v1", "draft", "{}", "a" * 64, "not-an-integer"),
+            )
+
+
+class V3StorePromotionReplayTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.db = self.root / "ai_edit_v3.db"
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+        self.store = V3Store(self.db, v2_db_path=self.v2, environment="test")
+
+    def _complete_upload(
+        self,
+        upload_id,
+        *,
+        upload_type="material_image",
+        mime_type="image/png",
+        object_key=None,
+        size=12,
+        sha="a" * 64,
+    ):
+        object_key = object_key or f"test/ai-edit-v3/alice/{upload_id}.png"
+        self.store.insert_upload(
+            "alice",
+            upload_id,
+            upload_type=upload_type,
+            object_key=object_key,
+            declared_mime=mime_type,
+            declared_size=size,
+            expires_at=5_000,
+            created_at=1_000,
+        )
+        return self.store.complete_upload(
+            "alice",
+            upload_id,
+            observed_mime=mime_type,
+            observed_size=size,
+            observed_etag="etag",
+            sha256=sha,
+            duration_ms=None,
+            width=2,
+            height=3,
+            probe={"safe": True},
+            completed_at=1_100,
+        )
+
+    def test_uploaded_material_uses_authoritative_completed_image_metadata(self):
+        upload = self._complete_upload("upload-authority")
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_material(
+                "alice",
+                "material-malicious",
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key="test/ai-edit-v3/alice/other.mp4",
+                mime_type="video/mp4",
+                size_bytes=999,
+                sha256="b" * 64,
+                metadata={},
+                created_at=1_200,
+            )
+        self.assertEqual(caught.exception.error_code, "material_upload_metadata_mismatch")
+
+    def test_upload_promotion_replays_by_upload_id_even_with_new_material_id(self):
+        upload = self._complete_upload("upload-replay")
+        first = self.store.insert_material(
+            "alice",
+            "material-first",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={"role": "evidence"},
+            created_at=1_200,
+        )
+        replay = self.store.insert_material(
+            "alice",
+            "material-new-client-id",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={"role": "evidence"},
+            created_at=1_200,
+        )
+        self.assertEqual(replay["material_id"], first["material_id"])
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_material(
+                "alice",
+                "material-third-id",
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key=upload["object_key"],
+                mime_type=upload["observed_mime"],
+                size_bytes=upload["observed_size"],
+                sha256=upload["sha256"],
+                metadata={"role": "changed"},
+                created_at=1_200,
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+    def test_promotion_rejects_non_material_upload_mime_and_illegal_source_unions(self):
+        video = self._complete_upload(
+            "upload-video",
+            upload_type="main_video",
+            mime_type="video/mp4",
+            object_key="test/ai-edit-v3/alice/upload-video.mp4",
+        )
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_material(
+                "alice",
+                "material-video",
+                source_kind="uploaded",
+                upload_id=video["upload_id"],
+                cos_key=video["object_key"],
+                mime_type=video["observed_mime"],
+                size_bytes=video["observed_size"],
+                sha256=video["sha256"],
+                metadata={},
+                created_at=1_200,
+            )
+        self.assertEqual(caught.exception.error_code, "material_upload_invalid")
+
+        illegal = (
+            {"source_kind": "uploaded", "upload_id": None, "source_job_id": None},
+            {"source_kind": "uploaded", "upload_id": "upload-video", "source_job_id": "job-1"},
+            {"source_kind": "generated", "upload_id": "upload-video", "source_job_id": None},
+            {"source_kind": "generated", "upload_id": None, "source_job_id": None},
+            {"source_kind": "existing", "upload_id": None, "source_job_id": None},
+        )
+        for index, union in enumerate(illegal):
+            with self.subTest(union=union):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    self.store.insert_material(
+                        "alice",
+                        f"illegal-{index}",
+                        cos_key=f"test/ai-edit-v3/alice/illegal-{index}.png",
+                        mime_type="image/png",
+                        size_bytes=1,
+                        sha256="c" * 64,
+                        metadata={},
+                        created_at=1_200,
+                        **union,
+                    )
+                self.assertEqual(caught.exception.error_code, "material_source_invalid")
+
+
+class V3StoreReplayAndIntegerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.db = self.root / "ai_edit_v3.db"
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+        self.store = V3Store(self.db, v2_db_path=self.v2, environment="test")
+        self.store.insert_pricing_version(
+            "price-v1",
+            {"base": 1},
+            status="published",
+            created_at=1,
+            published_at=1,
+        )
+
+    def _insert_quote(self, quote_id="quote-1"):
+        return self.store.insert_quote(
+            "alice",
+            quote_id,
+            {"input_type": "uploaded_video"},
+            pricing_version="price-v1",
+            min_points=1,
+            max_points=2,
+            breakdown={"base": 1},
+            expires_at=100,
+            created_at=2,
+        )
+
+    def _insert_job(self, job_id="job-1"):
+        self._insert_quote()
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                """INSERT INTO edit_v3_jobs(
+                       job_id,environment,owner_id,state,normalized_request_json,request_sha256,
+                       quote_id,idempotency_key,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    "test",
+                    "alice",
+                    "created_draft",
+                    "{}",
+                    request_fingerprint({}),
+                    "quote-1",
+                    f"key-{job_id}",
+                    3,
+                    3,
+                ),
+            )
+        finally:
+            connection.close()
+
+    def _complete_image(self, upload_id):
+        key = f"test/ai-edit-v3/alice/{upload_id}.png"
+        self.store.insert_upload(
+            "alice",
+            upload_id,
+            upload_type="material_image",
+            object_key=key,
+            declared_mime="image/png",
+            declared_size=12,
+            expires_at=100,
+            created_at=4,
+        )
+        return self.store.complete_upload(
+            "alice",
+            upload_id,
+            observed_mime="image/png",
+            observed_size=12,
+            observed_etag="etag",
+            sha256="a" * 64,
+            duration_ms=None,
+            width=2,
+            height=3,
+            probe={},
+            completed_at=5,
+        )
+
+    def assert_idempotency_conflict(self, callable_, *args, **kwargs):
+        with self.assertRaises(StoreConflictError) as caught:
+            callable_(*args, **kwargs)
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+    def test_divergent_immutable_replays_use_one_stable_conflict_code(self):
+        self.assert_idempotency_conflict(
+            self.store.insert_pricing_version,
+            "price-v1",
+            {"base": 2},
+            status="published",
+            created_at=1,
+            published_at=1,
+        )
+        quote = self._insert_quote()
+        self.assert_idempotency_conflict(
+            self.store.insert_quote,
+            "alice",
+            quote["quote_id"],
+            {"input_type": "uploaded_video", "changed": True},
+            pricing_version="price-v1",
+            min_points=1,
+            max_points=2,
+            breakdown={"base": 1},
+            expires_at=100,
+            created_at=2,
+        )
+        self.store.insert_upload(
+            "alice",
+            "upload-replay",
+            upload_type="material_image",
+            object_key="test/ai-edit-v3/alice/upload-replay.png",
+            declared_mime="image/png",
+            declared_size=12,
+            expires_at=100,
+            created_at=4,
+        )
+        self.assert_idempotency_conflict(
+            self.store.insert_upload,
+            "alice",
+            "upload-replay",
+            upload_type="material_image",
+            object_key="test/ai-edit-v3/alice/upload-replay.png",
+            declared_mime="image/png",
+            declared_size=13,
+            expires_at=100,
+            created_at=4,
+        )
+        completed = self._complete_image("upload-completion-replay")
+        self.assert_idempotency_conflict(
+            self.store.complete_upload,
+            "alice",
+            completed["upload_id"],
+            observed_mime="image/png",
+            observed_size=13,
+            observed_etag="changed",
+            sha256="b" * 64,
+            duration_ms=None,
+            width=2,
+            height=3,
+            probe={},
+            completed_at=5,
+        )
+        material = self.store.insert_material(
+            "alice",
+            "material-replay",
+            source_kind="uploaded",
+            upload_id=completed["upload_id"],
+            cos_key=completed["object_key"],
+            mime_type=completed["observed_mime"],
+            size_bytes=completed["observed_size"],
+            sha256=completed["sha256"],
+            metadata={},
+            created_at=6,
+        )
+        self.assert_idempotency_conflict(
+            self.store.insert_material,
+            "alice",
+            material["material_id"],
+            source_kind="uploaded",
+            upload_id=completed["upload_id"],
+            cos_key=completed["object_key"],
+            mime_type=completed["observed_mime"],
+            size_bytes=completed["observed_size"],
+            sha256=completed["sha256"],
+            metadata={"changed": True},
+            created_at=6,
+        )
+
+        self._insert_job()
+        generated = self.store.insert_material(
+            "alice",
+            "generated-1",
+            source_kind="generated",
+            source_job_id="job-1",
+            cos_key="test/ai-edit-v3/alice/generated-1.png",
+            mime_type="image/png",
+            size_bytes=1,
+            sha256="c" * 64,
+            metadata={},
+            created_at=7,
+        )
+        self.store.bind_job_materials(
+            "alice",
+            "job-1",
+            [{"material_id": generated["material_id"], "purpose": "evidence", "ordinal": 0}],
+            created_at=8,
+        )
+        self.assert_idempotency_conflict(
+            self.store.bind_job_materials,
+            "alice",
+            "job-1",
+            [{"material_id": generated["material_id"], "purpose": "evidence", "ordinal": 0}],
+            created_at=9,
+        )
+
+    def test_unrelated_uniqueness_conflict_keeps_its_specific_error(self):
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_pricing_version(
+                "price-v2",
+                {"base": 2},
+                status="published",
+                created_at=2,
+                published_at=2,
+            )
+        self.assertEqual(caught.exception.error_code, "published_pricing_conflict")
+
+    def test_every_frozen_integer_primitive_rejects_bool_float_and_string_before_sqlite(self):
+        pending_ids = iter(f"pending-{index}" for index in range(20))
+
+        def invalid_completion(field, value):
+            upload_id = next(pending_ids)
+            self.store.insert_upload(
+                "alice",
+                upload_id,
+                upload_type="material_image",
+                object_key=f"test/ai-edit-v3/alice/{upload_id}.png",
+                declared_mime="image/png",
+                declared_size=1,
+                expires_at=100,
+                created_at=1,
+            )
+            values = {
+                "observed_mime": "image/png",
+                "observed_size": 1,
+                "observed_etag": "etag",
+                "sha256": "a" * 64,
+                "duration_ms": None,
+                "width": 1,
+                "height": 1,
+                "probe": {},
+                "completed_at": 2,
+            }
+            values[field] = value
+            return self.store.complete_upload("alice", upload_id, **values)
+
+        cases = (
+            ("pricing.created_at", lambda: self.store.insert_pricing_version("bad-p1", {}, status="draft", created_at=True)),
+            ("pricing.published_at", lambda: self.store.insert_pricing_version("bad-p2", {}, status="draft", created_at=1, published_at=1.5)),
+            ("pricing.retired_at", lambda: self.store.insert_pricing_version("bad-p3", {}, status="draft", created_at=1, retired_at="1")),
+            ("quote.min_points", lambda: self.store.insert_quote("alice", "bad-q1", {}, pricing_version="price-v1", min_points=True, max_points=2, breakdown={}, expires_at=3, created_at=1)),
+            ("quote.max_points", lambda: self.store.insert_quote("alice", "bad-q2", {}, pricing_version="price-v1", min_points=1, max_points=2.5, breakdown={}, expires_at=3, created_at=1)),
+            ("quote.expires_at", lambda: self.store.insert_quote("alice", "bad-q3", {}, pricing_version="price-v1", min_points=1, max_points=2, breakdown={}, expires_at="3", created_at=1)),
+            ("quote.created_at", lambda: self.store.insert_quote("alice", "bad-q4", {}, pricing_version="price-v1", min_points=1, max_points=2, breakdown={}, expires_at=3, created_at=True)),
+            ("upload.declared_size", lambda: self.store.insert_upload("alice", "bad-u1", upload_type="material_image", object_key="test/u1", declared_mime="image/png", declared_size=1.5, expires_at=3, created_at=1)),
+            ("upload.expires_at", lambda: self.store.insert_upload("alice", "bad-u2", upload_type="material_image", object_key="test/u2", declared_mime="image/png", declared_size=1, expires_at="3", created_at=1)),
+            ("upload.created_at", lambda: self.store.insert_upload("alice", "bad-u3", upload_type="material_image", object_key="test/u3", declared_mime="image/png", declared_size=1, expires_at=3, created_at=True)),
+            ("completion.observed_size", lambda: invalid_completion("observed_size", True)),
+            ("completion.duration_ms", lambda: invalid_completion("duration_ms", 1.5)),
+            ("completion.width", lambda: invalid_completion("width", "1")),
+            ("completion.height", lambda: invalid_completion("height", True)),
+            ("completion.completed_at", lambda: invalid_completion("completed_at", 1.5)),
+            ("material.size_bytes", lambda: self.store.insert_material("alice", "bad-m1", source_kind="generated", source_job_id=None, cos_key="test/m1", mime_type="image/png", size_bytes=True, sha256="a" * 64, metadata={}, created_at=1)),
+            ("material.created_at", lambda: self.store.insert_material("alice", "bad-m2", source_kind="generated", source_job_id=None, cos_key="test/m2", mime_type="image/png", size_bytes=1, sha256="a" * 64, metadata={}, created_at="1")),
+            ("binding.ordinal", lambda: self.store.bind_job_materials("alice", "missing", [{"material_id": "m", "purpose": "p", "ordinal": 1.5}], created_at=1)),
+            ("binding.created_at", lambda: self.store.bind_job_materials("alice", "missing", [], created_at="1")),
+            ("pagination.limit.float", lambda: self.store.list_jobs_for_owner("alice", limit=1.5)),
+            ("pagination.limit.string", lambda: self.store.list_jobs_for_owner("alice", limit="1")),
+        )
+        for label, operation in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    operation()
+                self.assertEqual(caught.exception.error_code, "integer_argument_invalid")
+
+
+class _WalCursor:
+    def __init__(self, value=None):
+        self.value = value
+
+    def fetchone(self):
+        return self.value
+
+
+class _ControlledClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def monotonic(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.value += seconds
+
+
+class _ControlledWalConnection:
+    def __init__(self, clock, outcomes, *, journal_elapsed=0.0):
+        self.clock = clock
+        self.outcomes = list(outcomes)
+        self.journal_elapsed = journal_elapsed
+        self.busy_timeout = 0
+        self.timeout_history = []
+        self.wal_attempts = 0
+
+    @staticmethod
+    def _error(message, error_code):
+        error = sqlite3.OperationalError(message)
+        error.sqlite_errorcode = error_code
+        return error
+
+    def execute(self, statement):
+        normalized = " ".join(statement.split()).lower()
+        if normalized.startswith("pragma busy_timeout="):
+            self.busy_timeout = int(normalized.rsplit("=", 1)[1])
+            self.timeout_history.append(self.busy_timeout)
+            return _WalCursor()
+        if normalized == "pragma busy_timeout":
+            return _WalCursor((self.busy_timeout,))
+        if normalized == "pragma journal_mode":
+            self.clock.value += self.journal_elapsed
+            return _WalCursor(("delete",))
+        if normalized == "pragma journal_mode=wal":
+            self.wal_attempts += 1
+            outcome = self.outcomes.pop(0)
+            self.clock.value += outcome.get("elapsed", 0.0)
+            if outcome["kind"] == "ok":
+                return _WalCursor(("wal",))
+            raise self._error(outcome.get("message", "database is locked"), outcome["code"])
+        raise AssertionError(f"unexpected statement: {statement}")
+
+
+class V3StoreWalBudgetTests(unittest.TestCase):
+    def test_integer_nonbusy_sqlite_error_code_never_falls_back_to_message_text(self):
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+        self.assertFalse(store_module._is_sqlite_busy_or_locked(error))
+
+    def test_wal_lock_wait_and_backoff_share_one_ten_second_monotonic_budget(self):
+        clock = _ControlledClock()
+        connection = _ControlledWalConnection(
+            clock,
+            (
+                {"kind": "busy", "code": sqlite3.SQLITE_BUSY, "elapsed": 9.8},
+                {"kind": "busy", "code": sqlite3.SQLITE_BUSY, "elapsed": 0.195},
+            ),
+        )
+        with self.assertRaises(sqlite3.OperationalError):
+            store_module._negotiate_wal(
+                connection,
+                monotonic=clock.monotonic,
+                sleep=clock.sleep,
+                budget_seconds=10.0,
+            )
+        self.assertLessEqual(clock.value, 10.001)
+        self.assertEqual(connection.wal_attempts, 2)
+        self.assertEqual(connection.timeout_history[0], 10_000)
+        self.assertLess(connection.timeout_history[-1], 1_000)
+
+    def test_journal_probe_and_wal_write_each_use_only_the_remaining_budget(self):
+        clock = _ControlledClock()
+        connection = _ControlledWalConnection(
+            clock,
+            ({"kind": "ok", "elapsed": 0.1},),
+            journal_elapsed=9.8,
+        )
+        store_module._negotiate_wal(
+            connection,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            budget_seconds=10.0,
+        )
+        self.assertLessEqual(clock.value, 10.001)
+        self.assertEqual(connection.timeout_history[0], 10_000)
+        self.assertLess(connection.timeout_history[-2], 1_000)
+        self.assertEqual(connection.timeout_history[-1], 10_000)
+
+    def test_wal_retries_busy_then_restores_ten_second_timeout_on_success(self):
+        clock = _ControlledClock()
+        connection = _ControlledWalConnection(
+            clock,
+            (
+                {"kind": "busy", "code": sqlite3.SQLITE_LOCKED, "elapsed": 0.1},
+                {"kind": "ok", "elapsed": 0.1},
+            ),
+        )
+        store_module._negotiate_wal(
+            connection,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            budget_seconds=10.0,
+        )
+        self.assertEqual(connection.wal_attempts, 2)
+        self.assertGreaterEqual(connection.busy_timeout, 10_000)
+
+    def test_wal_does_not_retry_nonbusy_operational_error(self):
+        clock = _ControlledClock()
+        connection = _ControlledWalConnection(
+            clock,
+            (
+                {
+                    "kind": "busy",
+                    "code": sqlite3.SQLITE_IOERR,
+                    "elapsed": 0.1,
+                    "message": "database is locked",
+                },
+            ),
+        )
+        with self.assertRaises(sqlite3.OperationalError):
+            store_module._negotiate_wal(
+                connection,
+                monotonic=clock.monotonic,
+                sleep=clock.sleep,
+                budget_seconds=10.0,
+            )
+        self.assertEqual(connection.wal_attempts, 1)
 
 
 if __name__ == "__main__":
