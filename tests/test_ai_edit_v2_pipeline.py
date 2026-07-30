@@ -1211,6 +1211,8 @@ class StableRunJobTests(PipelineTests):
         transcript["properties"]["original_duration_in_milliseconds"] = 3000
         plan = json.loads(json.loads((Path(__file__).parent / "fixtures/ai_edit_v2/provider_responses/qwen_edit_plan_success.json").read_text(encoding="utf-8"))["output"]["choices"][0]["message"]["content"])
         plan["scenes"][0]["material_slots"] = ["slot_1"]
+        plan["scenes"][0]["layout"] = "speaker_product_split"
+        plan["scenes"][0]["visual_type"] = "product_hook"
         plan["duration_ms"] = plan["target_duration_ms"] = 3000
         plan["scenes"][0]["end_ms"] = 3000
         plan["audio_plan"].update({"music_policy": "duck_under_speech", "sfx_policy": "semantic_only"})
