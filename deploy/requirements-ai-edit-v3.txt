@@ -1,0 +1,8 @@
+# Complete Python dependency closure for AI Edit V3 JSON Schema validation.
+# Install with --no-deps so no unpinned transitive package is introduced.
+attrs==25.4.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+referencing==0.37.0
+rpds-py==0.30.0
+typing-extensions==4.15.0; python_version < "3.13"
