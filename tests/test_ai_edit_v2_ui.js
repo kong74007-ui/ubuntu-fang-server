@@ -879,8 +879,9 @@ test('a successful quote fingerprint is accepted by confirmJob for the unchanged
   const ensureSource = page.match(/async function ensureMainAsset\(\)\{[^\n]+\}/)?.[0];
   const quoteSource = page.match(/async function requestQuote\(\)\{[^\n]+\}/)?.[0];
   const confirmSource = page.match(/async function confirmJob\(\)\{[^\n]+\}/)?.[0];
+  const clearQuerySource = page.match(/function clearTaskQuery\(\)\{[^\n]+\}/)?.[0];
   assert.ok(
-    beginSource && endSource && ensureSource && quoteSource && confirmSource,
+    beginSource && endSource && ensureSource && quoteSource && confirmSource && clearQuerySource,
     'quote-to-confirm production functions must be present',
   );
   const draft = {
@@ -912,6 +913,12 @@ test('a successful quote fingerprint is accepted by confirmJob for the unchanged
     taskDetails: {hidden: true},
   };
   const paths = [];
+  const location = {search: '?task=failed-history', pathname: '/workbench/ai-edit-v2', hash: ''};
+  const history = {
+    replaceState(_state, _title, url) {
+      location.search = new URL(url, 'https://example.test').search;
+    },
+  };
   const api = async (path, options) => {
     paths.push(path);
     if (path === '/api/v2/edit/quote') {
@@ -929,7 +936,8 @@ test('a successful quote fingerprint is accepted by confirmJob for the unchanged
   const workflow = Function(
     'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel', 'invalidateQuote',
     'crypto', 'sessionStorage', 'trackJob', 'setInterval', 'clearInterval', 'pollJob',
-    `${beginSource}; ${endSource}; ${ensureSource}; ${quoteSource}; ${confirmSource}; return {requestQuote, confirmJob};`,
+    'location', 'history', 'URLSearchParams',
+    `${clearQuerySource}; ${beginSource}; ${endSource}; ${ensureSource}; ${quoteSource}; ${confirmSource}; return {requestQuote, confirmJob};`,
   )(
     state,
     (id) => elements[id],
@@ -950,6 +958,9 @@ test('a successful quote fingerprint is accepted by confirmJob for the unchanged
     () => 1,
     () => {},
     () => {},
+    location,
+    history,
+    URLSearchParams,
   );
 
   await workflow.requestQuote();
@@ -960,6 +971,1385 @@ test('a successful quote fingerprint is accepted by confirmJob for the unchanged
   assert.equal(state.jobId, 'job-1');
   assert.equal(state.busy, false);
   assert.equal(state.busyCount, 0);
+  assert.equal(location.search, '');
+});
+
+test('a late create response cannot replace a job opened while creation was pending', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const confirmSource = page.match(/async function confirmJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(confirmSource, 'confirmJob must be present');
+
+  let resolveCreate;
+  const createResponse = new Promise((resolve) => { resolveCreate = resolve; });
+  const draft = {main_input: {asset_id: 'subject-A'}, aspect_ratio: '9:16'};
+  const state = {
+    quote: {id: 'quote-A', held_points: 64},
+    quotedDraftFingerprint: JSON.stringify(draft),
+    busy: false,
+    busyCount: 0,
+    jobRequestKey: null,
+    jobId: null,
+    jobViewRevision: 0,
+    pollTimer: null,
+  };
+  const elements = {
+    formMessage: {textContent: ''},
+    taskDetails: {hidden: true},
+  };
+  const stored = new Map();
+  const tracked = [];
+  const clearedTimers = [];
+  const confirmJob = Function(
+    'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel', 'invalidateQuote',
+    'beginBusy', 'endBusy', 'crypto', 'sessionStorage', 'trackJob', 'trackJobById',
+    'setInterval', 'clearInterval', 'pollJob',
+    `${confirmSource}; return confirmJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async (_path, options) => {
+      assert.deepEqual(JSON.parse(options.body), {
+        draft,
+        quote_id: 'quote-A',
+        idempotency_key: 'request-A',
+      });
+      return createResponse;
+    },
+    () => draft,
+    () => {},
+    () => {},
+    () => { state.busyCount += 1; state.busy = true; },
+    () => { state.busyCount -= 1; state.busy = state.busyCount > 0; },
+    {randomUUID: () => 'request-A'},
+    {
+      setItem: (key, value) => stored.set(key, value),
+      getItem: (key) => stored.get(key) || null,
+    },
+    () => {},
+    (id, status) => tracked.push({id, status}),
+    () => 8,
+    (timer) => clearedTimers.push(timer),
+    () => {},
+  );
+
+  const pendingCreate = confirmJob();
+  await Promise.resolve();
+  state.jobId = 'job-B';
+  state.jobViewRevision = 1;
+  state.jobRequestKey = 'request-B';
+  state.pollTimer = 9;
+  stored.set('ai_edit_v2_job_id', 'job-B');
+  stored.set('ai_edit_v2_idempotency_key', 'request-B');
+  resolveCreate({job_id: 'job-A', status: 'queued', held_points: 64});
+  await pendingCreate;
+
+  assert.equal(state.jobId, 'job-B');
+  assert.equal(state.jobRequestKey, 'request-B');
+  assert.equal(state.pollTimer, 9);
+  assert.equal(stored.get('ai_edit_v2_job_id'), 'job-B');
+  assert.equal(stored.get('ai_edit_v2_idempotency_key'), 'request-B');
+  assert.deepEqual(tracked, [{id: 'job-A', status: 'queued'}]);
+  assert.deepEqual(clearedTimers, []);
+});
+
+test('a late create response is not adopted after its quote and draft are invalidated', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const confirmSource = page.match(/async function confirmJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(confirmSource, 'confirmJob must be present');
+
+  let resolveCreate;
+  const createResponse = new Promise((resolve) => { resolveCreate = resolve; });
+  let draft = {main_input: {asset_id: 'subject-A'}, aspect_ratio: '9:16'};
+  const state = {
+    quote: {id: 'quote-A', held_points: 64},
+    quotedDraftFingerprint: JSON.stringify(draft),
+    busy: false, busyCount: 0,
+    jobRequestKey: null, jobId: null, jobViewRevision: 0, pollTimer: null,
+  };
+  const elements = {formMessage: {textContent: ''}, taskDetails: {hidden: true}};
+  const stored = new Map();
+  const tracked = [];
+  const confirmJob = Function(
+    'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel', 'invalidateQuote',
+    'beginBusy', 'endBusy', 'crypto', 'sessionStorage', 'trackJob', 'trackJobById',
+    'setInterval', 'clearInterval', 'pollJob', 'clearTaskQuery',
+    `${confirmSource}; return confirmJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => createResponse,
+    () => draft,
+    () => {},
+    () => {},
+    () => { state.busyCount += 1; state.busy = true; },
+    () => { state.busyCount -= 1; state.busy = state.busyCount > 0; },
+    {randomUUID: () => 'request-A'},
+    {setItem: (key, value) => stored.set(key, value)},
+    () => {},
+    (id, status) => tracked.push({id, status}),
+    () => 8, () => {}, () => {}, () => {},
+  );
+
+  const pendingCreate = confirmJob();
+  await Promise.resolve();
+  draft = {main_input: {asset_id: 'subject-B'}, aspect_ratio: '9:16'};
+  state.quote = null;
+  state.quotedDraftFingerprint = null;
+  state.jobRequestKey = null;
+  resolveCreate({job_id: 'job-for-A', status: 'queued', held_points: 64});
+  await pendingCreate;
+
+  assert.equal(state.jobId, null);
+  assert.equal(state.jobRequestKey, null);
+  assert.equal(stored.has('ai_edit_v2_job_id'), false);
+  assert.deepEqual(tracked, [{id: 'job-for-A', status: 'queued'}]);
+});
+
+test('a quote response is ignored after the page switches through another job context', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const ensureSource = page.match(/async function ensureMainAsset\(\)\{[^\n]+\}/)?.[0];
+  const quoteSource = page.match(/async function requestQuote\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(ensureSource && quoteSource, 'quote functions must be present');
+
+  let resolveQuote;
+  const quoteResponse = new Promise((resolve) => { resolveQuote = resolve; });
+  const main = {
+    name: 'subject-A.mp4', kind: 'video', input_mode: 'external_video',
+    asset: {asset_id: 'subject-A', kind: 'video'},
+  };
+  const draft = {main_input: main.asset, aspect_ratio: '9:16'};
+  const state = {
+    main, subjectIntentRevision: 1,
+    jobId: null, jobViewRevision: 1, terminalJobVisible: false,
+    quote: null, quotedDraftFingerprint: null,
+    busy: false, busyCount: 0,
+  };
+  const elements = {
+    formMessage: {textContent: ''},
+    quoteMin: {textContent: '—'}, quoteMax: {textContent: '—'},
+  };
+  const requestQuote = Function(
+    'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel', 'invalidateQuote',
+    'beginBusy', 'endBusy',
+    `${ensureSource}; ${quoteSource}; return requestQuote;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => quoteResponse,
+    () => draft,
+    () => {},
+    () => {},
+    () => { state.busyCount += 1; state.busy = true; },
+    () => { state.busyCount -= 1; state.busy = state.busyCount > 0; },
+  );
+
+  const pendingQuote = requestQuote();
+  await Promise.resolve();
+  state.jobId = 'job-B';
+  state.jobViewRevision = 2;
+  state.jobId = null;
+  state.jobViewRevision = 3;
+  state.terminalJobVisible = true;
+  resolveQuote({quote: {id: 'quote-for-A', minimum_points: 48, maximum_points: 64, held_points: 64}});
+  await pendingQuote;
+
+  assert.equal(state.quote, null);
+  assert.equal(state.quotedDraftFingerprint, null);
+  assert.equal(elements.quoteMin.textContent, '—');
+  assert.equal(elements.quoteMax.textContent, '—');
+});
+
+test('a completed job releases the composer instead of permanently locking the next edit', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const renderSource = page.match(/function renderWorkspacePanel\(\)\{[^\n]+\}/)?.[0];
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(renderSource && pollSource, 'workspace and polling functions must be present');
+
+  const requestQuote = () => {};
+  const confirmJob = () => {};
+  const removedSessionKeys = [];
+  const state = {
+    main: {
+      name: 'subject.mp4',
+      kind: 'video',
+      asset: {asset_id: '31', kind: 'video'},
+    },
+    mainPreviewUrl: '',
+    candidates: [],
+    quote: {id: 'old-quote', held_points: 64},
+    quotedDraftFingerprint: '{"old":true}',
+    jobRequestKey: 'old-request',
+    jobId: 'completed-job',
+    pollTimer: 7,
+    busy: false,
+  };
+  const elements = {
+    subjectSummary: {textContent: ''},
+    editModeSummary: {textContent: ''},
+    materialCount: {textContent: ''},
+    ratioSummary: {textContent: ''},
+    aspectRatio: {value: '9:16'},
+    primaryAction: {textContent: '', disabled: false, onclick: undefined},
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: '48'},
+    quoteMax: {textContent: '64'},
+  };
+  const sessionStorage = {
+    getItem(key) {
+      if (key === 'ai_edit_v2_job_id') return 'completed-job';
+      if (key === 'ai_edit_v2_idempotency_key') return 'old-request';
+      return null;
+    },
+    removeItem(key) {
+      removedSessionKeys.push(key);
+    },
+  };
+  let clearedTimer = null;
+  const workflow = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'renderSubjectPreview', 'modeLabel', 'requestQuote',
+    'confirmJob', 'sessionStorage',
+    `${renderSource}; ${pollSource}; return {renderWorkspacePanel, pollJob};`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => ({
+      job: {status: 'completed'},
+      stage: 'completed',
+      timing: {queue_seconds: 1, processing_seconds: 2, repair_seconds: 0, remaining_seconds: 0},
+      elapsed_seconds: 3,
+      estimated_remaining_seconds: 0,
+      degradations: [],
+      quality: {summary: 'passed'},
+      billing: {actual_charge_points: 15, refunded_difference_points: 49},
+      output: {
+        play_url: '/result.mp4',
+        download_url: '/download.mp4',
+        asset_url: '/assets/1',
+      },
+    }),
+    () => {},
+    (seconds) => String(seconds ?? 0),
+    (status) => status,
+    (timer) => {
+      clearedTimer = timer;
+    },
+    () => {},
+    () => 'AI智能剪辑',
+    requestQuote,
+    confirmJob,
+    sessionStorage,
+  );
+
+  workflow.renderWorkspacePanel();
+  assert.equal(elements.primaryAction.disabled, true);
+  assert.equal(elements.primaryAction.onclick, null);
+
+  await workflow.pollJob();
+
+  assert.equal(clearedTimer, 7);
+  assert.equal(state.pollTimer, null);
+  assert.equal(state.jobId, null);
+  assert.equal(state.jobRequestKey, null);
+  assert.equal(state.quote, null);
+  assert.equal(state.quotedDraftFingerprint, null);
+  assert.deepEqual(removedSessionKeys.sort(), [
+    'ai_edit_v2_idempotency_key',
+    'ai_edit_v2_job_id',
+  ]);
+  assert.equal(elements.primaryAction.disabled, false);
+  assert.equal(elements.primaryAction.onclick, requestQuote);
+  assert.equal(elements.taskDetails.hidden, false);
+  assert.equal(elements.downloadResult.style.display, 'inline');
+});
+
+test('a restored failed job releases the composer while keeping its retry action available', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const renderSource = page.match(/function renderWorkspacePanel\(\)\{[^\n]+\}/)?.[0];
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(renderSource && pollSource, 'workspace and polling functions must be present');
+
+  const requestQuote = () => {};
+  const state = {
+    main: {name: 'subject.mp4', kind: 'video', asset: {asset_id: '31', kind: 'video'}},
+    mainPreviewUrl: '',
+    candidates: [],
+    quote: {id: 'old-quote', held_points: 64},
+    quotedDraftFingerprint: '{"old":true}',
+    jobRequestKey: 'old-request',
+    jobId: 'failed-job',
+    retryJobId: null,
+    jobRestoreSource: 'session',
+    jobRestoreFirstPoll: true,
+    jobViewRevision: 2,
+    pollInFlightToken: null,
+    pollTimer: 7,
+    terminalJobVisible: false,
+    busy: false,
+  };
+  const elements = {
+    subjectSummary: {textContent: ''}, editModeSummary: {textContent: ''},
+    materialCount: {textContent: ''}, ratioSummary: {textContent: ''},
+    aspectRatio: {value: '9:16'}, primaryAction: {textContent: '', disabled: false},
+    taskDetails: {hidden: true}, jobStatus: {textContent: ''},
+    queueTime: {textContent: ''}, processingTime: {textContent: ''},
+    repairTime: {textContent: ''}, elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''}, remainingTime: {textContent: ''},
+    degradationList: {textContent: ''}, qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''}, refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true, disabled: false},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: '48'}, quoteMax: {textContent: '64'},
+  };
+  const removed = [];
+  const workflow = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'renderSubjectPreview', 'modeLabel', 'requestQuote',
+    'confirmJob', 'sessionStorage',
+    `${renderSource}; ${pollSource}; return {renderWorkspacePanel, pollJob};`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => ({job: {status: 'render_failed'}, stage: 'render_failed', timing: {}, quality: {}, billing: {}}),
+    () => {}, () => '0:00', (status) => status, () => {}, () => {}, () => 'AI智能剪辑',
+    requestQuote, () => {},
+    {
+      getItem: (key) => key === 'ai_edit_v2_job_id' ? 'failed-job' : 'old-request',
+      removeItem: (key) => removed.push(key),
+    },
+  );
+
+  await workflow.pollJob();
+
+  assert.equal(state.jobId, null);
+  assert.equal(state.retryJobId, 'failed-job');
+  assert.equal(state.terminalJobVisible, true);
+  assert.equal(state.quote, null);
+  assert.equal(state.jobRequestKey, null);
+  assert.equal(elements.retryJobBtn.hidden, false);
+  assert.equal(elements.primaryAction.disabled, false);
+  assert.equal(elements.primaryAction.onclick, requestQuote);
+  assert.deepEqual(removed, []);
+});
+
+test('an implicitly restored completed job does not reopen as the current task', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: 'old-request',
+    jobId: 'completed-job',
+    jobRestoreSource: 'session',
+    jobRestoreFirstPoll: true,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const removedSessionKeys = [];
+  let resolveCompletedResponse;
+  const completedResponse = new Promise((resolve) => {
+    resolveCompletedResponse = resolve;
+  });
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => completedResponse,
+    () => {},
+    () => '0:00',
+    (status) => status,
+    () => {},
+    {
+      getItem: (key) => key === 'ai_edit_v2_job_id' ? 'completed-job' : 'old-request',
+      removeItem: (key) => removedSessionKeys.push(key),
+    },
+    () => {},
+  );
+
+  const pendingPoll = pollJob();
+  await Promise.resolve();
+  state.main = {name: 'new-subject.mp4', kind: 'video', asset: {asset_id: 'new-subject'}};
+  resolveCompletedResponse({
+    job: {status: 'completed'},
+    stage: 'completed',
+    timing: {},
+    quality: {},
+    billing: {},
+    output: {
+      play_url: '/stale-result.mp4',
+      download_url: '/stale-download.mp4',
+      asset_url: '/assets/stale',
+    },
+  });
+  await pendingPoll;
+
+  assert.equal(state.jobId, null);
+  assert.equal(state.jobRestoreSource, null);
+  assert.equal(state.jobRestoreFirstPoll, false);
+  assert.equal(state.terminalJobVisible, false);
+  assert.equal(elements.taskDetails.hidden, true);
+  assert.equal(elements.resultVideo.src, '');
+  assert.equal(elements.resultVideo.hidden, true);
+  assert.equal(elements.downloadResult.style.display, 'none');
+  assert.equal(elements.assetResult.style.display, 'none');
+  assert.deepEqual(removedSessionKeys.sort(), [
+    'ai_edit_v2_idempotency_key',
+    'ai_edit_v2_job_id',
+  ]);
+});
+
+test('a restored running job keeps its result visible when it completes later', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: 'request-1',
+    jobId: 'running-job',
+    jobRestoreSource: 'session',
+    jobRestoreFirstPoll: true,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const responses = [
+    {job: {status: 'rendering'}, stage: 'rendering', timing: {}, quality: {}, billing: {}},
+    {
+      job: {status: 'completed'},
+      stage: 'completed',
+      timing: {},
+      quality: {},
+      billing: {},
+      output: {
+        play_url: '/new-result.mp4',
+        download_url: '/new-download.mp4',
+        asset_url: '/assets/new',
+      },
+    },
+  ];
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => responses.shift(),
+    () => {},
+    () => '0:00',
+    (status) => status,
+    () => {},
+    {
+      getItem: (key) => key === 'ai_edit_v2_job_id' ? 'running-job' : 'request-1',
+      removeItem: () => {},
+    },
+    () => {},
+  );
+
+  await pollJob();
+  assert.equal(state.jobId, 'running-job');
+  assert.equal(state.jobRestoreFirstPoll, false);
+
+  await pollJob();
+
+  assert.equal(state.jobId, null);
+  assert.equal(state.terminalJobVisible, true);
+  assert.equal(elements.taskDetails.hidden, false);
+  assert.equal(elements.resultVideo.src, '/new-result.mp4');
+  assert.equal(elements.downloadResult.style.display, 'inline');
+});
+
+test('viewing a completed history task does not erase another active session job', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: null,
+    jobId: 'history-job',
+    jobRestoreSource: 'explicit',
+    jobRestoreFirstPoll: true,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const stored = new Map([
+    ['ai_edit_v2_job_id', 'active-session-job'],
+    ['ai_edit_v2_idempotency_key', 'active-session-request'],
+  ]);
+  const removed = [];
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => ({job: {status: 'completed'}, stage: 'completed', timing: {}, quality: {}, billing: {}}),
+    () => {},
+    () => '0:00',
+    (status) => status,
+    () => {},
+    {
+      getItem: (key) => stored.get(key) || null,
+      removeItem(key) {
+        removed.push(key);
+        stored.delete(key);
+      },
+    },
+    () => {},
+  );
+
+  await pollJob();
+
+  assert.equal(state.jobId, null);
+  assert.equal(elements.taskDetails.hidden, false);
+  assert.deepEqual(removed, []);
+  assert.equal(stored.get('ai_edit_v2_job_id'), 'active-session-job');
+  assert.equal(stored.get('ai_edit_v2_idempotency_key'), 'active-session-request');
+});
+
+test('restored jobs distinguish stale session recovery from explicit task viewing', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const restoreSource = page.match(/function restorePendingJob\([^)]*\)\{[^\n]+\}/)?.[0];
+  assert.ok(restoreSource, 'restorePendingJob must be present');
+
+  const restore = (search, requestedSource, requestedJobId) => {
+    const state = {
+      jobId: null,
+      jobRequestKey: null,
+      jobRestoreSource: null,
+      pollTimer: null,
+    };
+    const elements = {
+      taskDetails: {hidden: true},
+      jobStatus: {textContent: ''},
+    };
+    const restorePendingJob = Function(
+      'state', '$', 'location', 'sessionStorage', 'URLSearchParams',
+      'clearInterval', 'setInterval', 'pollJob',
+      `${restoreSource}; return restorePendingJob;`,
+    )(
+      state,
+      (id) => elements[id],
+      {search},
+      {
+        getItem(key) {
+          if (key === 'ai_edit_v2_job_id') return 'session-job';
+          if (key === 'ai_edit_v2_idempotency_key') return 'session-request';
+          return null;
+        },
+      },
+      URLSearchParams,
+      () => {},
+      () => 3,
+      () => {},
+    );
+    restorePendingJob(requestedSource, requestedJobId);
+    return state;
+  };
+
+  const implicit = restore('', undefined);
+  assert.equal(implicit.jobId, 'session-job');
+  assert.equal(implicit.jobRestoreSource, 'session');
+  assert.equal(implicit.jobRestoreFirstPoll, true);
+  assert.equal(implicit.jobRequestKey, 'session-request');
+
+  const explicitUrl = restore('?task=url-job', undefined);
+  assert.equal(explicitUrl.jobId, 'url-job');
+  assert.equal(explicitUrl.jobRestoreSource, 'explicit');
+  assert.equal(explicitUrl.jobRequestKey, null);
+
+  const explicitResume = restore('', 'explicit');
+  assert.equal(explicitResume.jobId, 'session-job');
+  assert.equal(explicitResume.jobRestoreSource, 'explicit');
+
+  const explicitEvent = restore('?task=url-job', 'explicit', 'event-job');
+  assert.equal(explicitEvent.jobId, 'event-job');
+  assert.equal(explicitEvent.jobRestoreSource, 'explicit');
+  assert.equal(explicitEvent.jobRequestKey, null);
+});
+
+test('a late completed response cannot release a newer active job', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  let resolveResponse;
+  const response = new Promise((resolve) => {
+    resolveResponse = resolve;
+  });
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: 'old-request',
+    jobId: 'old-job',
+    jobRestoreSource: null,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const removedSessionKeys = [];
+  const clearedTimers = [];
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async (path) => {
+      assert.equal(path, '/api/v2/edit/jobs/old-job');
+      return response;
+    },
+    () => {},
+    () => '0:00',
+    (status) => status,
+    (timer) => clearedTimers.push(timer),
+    {removeItem: (key) => removedSessionKeys.push(key)},
+    () => {},
+  );
+
+  const pending = pollJob();
+  await Promise.resolve();
+  state.jobId = 'new-job';
+  state.jobRequestKey = 'new-request';
+  state.pollTimer = 9;
+  resolveResponse({
+    job: {status: 'completed'},
+    stage: 'completed',
+    timing: {},
+    quality: {},
+    billing: {},
+  });
+  await pending;
+
+  assert.equal(state.jobId, 'new-job');
+  assert.equal(state.jobRequestKey, 'new-request');
+  assert.equal(state.pollTimer, 9);
+  assert.deepEqual(clearedTimers, []);
+  assert.deepEqual(removedSessionKeys, []);
+});
+
+test('polling allows only one request at a time and resumes after it settles', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  let resolveFirst;
+  const firstResponse = new Promise((resolve) => { resolveFirst = resolve; });
+  let apiCalls = 0;
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: 'request-1',
+    jobId: 'same-job',
+    jobRestoreSource: null,
+    jobRestoreFirstPoll: false,
+    jobViewRevision: 1,
+    pollInFlightToken: null,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true, disabled: false},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => {
+      apiCalls += 1;
+      if (apiCalls === 1) return firstResponse;
+      return {job: {status: 'render_failed'}, stage: 'render_failed', timing: {}, quality: {}, billing: {}};
+    },
+    () => {},
+    () => '0:00',
+    (status) => status,
+    () => {},
+    {getItem: () => null, removeItem: () => {}},
+    () => {},
+  );
+
+  const firstPoll = pollJob();
+  await pollJob();
+  assert.equal(apiCalls, 1);
+  assert.equal(state.pollInFlightToken.jobId, 'same-job');
+
+  resolveFirst({job: {status: 'rendering'}, stage: 'rendering', timing: {}, quality: {}, billing: {}});
+  await firstPoll;
+  assert.equal(elements.jobStatus.textContent, 'rendering');
+  assert.equal(state.pollInFlightToken, null);
+  assert.equal(state.pollTimer, 7);
+
+  await pollJob();
+
+  assert.equal(elements.jobStatus.textContent, 'render_failed');
+  assert.equal(elements.retryJobBtn.hidden, false);
+  assert.equal(state.pollTimer, null);
+  assert.equal(apiCalls, 2);
+  assert.equal(state.pollInFlightToken, null);
+});
+
+test('switching jobs starts a new poll without letting the old poll clear its token', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const pollSource = page.match(/async function pollJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(pollSource, 'pollJob must be present');
+
+  let rejectA;
+  let resolveB;
+  const responseA = new Promise((_resolve, reject) => { rejectA = reject; });
+  const responseB = new Promise((resolve) => { resolveB = resolve; });
+  const calls = [];
+  const state = {
+    main: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: 'request-A',
+    jobId: 'job-A',
+    jobRestoreSource: null,
+    jobRestoreFirstPoll: false,
+    jobViewRevision: 1,
+    pollInFlightToken: null,
+    pollTimer: 7,
+  };
+  const elements = {
+    taskDetails: {hidden: true},
+    jobStatus: {textContent: ''},
+    queueTime: {textContent: ''},
+    processingTime: {textContent: ''},
+    repairTime: {textContent: ''},
+    elapsedTime: {textContent: ''},
+    estimatedTime: {textContent: ''},
+    remainingTime: {textContent: ''},
+    degradationList: {textContent: ''},
+    qualitySummary: {textContent: ''},
+    actualCharge: {textContent: ''},
+    refundedDifference: {textContent: ''},
+    retryJobBtn: {hidden: true, disabled: false},
+    resultVideo: {src: '', hidden: true},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    quoteMin: {textContent: ''},
+    quoteMax: {textContent: ''},
+  };
+  const pollJob = Function(
+    'state', '$', 'api', 'trackJob', 'formatSeconds', 'stageLabel',
+    'clearInterval', 'sessionStorage', 'renderWorkspacePanel',
+    `${pollSource}; return pollJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    async (path) => {
+      calls.push(path);
+      return path.endsWith('/job-A') ? responseA : responseB;
+    },
+    () => {},
+    () => '0:00',
+    (status) => status,
+    () => {},
+    {getItem: () => null, removeItem: () => {}},
+    () => {},
+  );
+
+  const pollA = pollJob();
+  state.jobId = 'job-B';
+  state.jobViewRevision = 2;
+  state.jobRequestKey = 'request-B';
+  state.pollTimer = 9;
+  const pollB = pollJob();
+
+  assert.deepEqual(calls, ['/api/v2/edit/jobs/job-A', '/api/v2/edit/jobs/job-B']);
+  const tokenB = state.pollInFlightToken;
+  assert.equal(tokenB.jobId, 'job-B');
+
+  rejectA(new Error('old-job-network-error'));
+  await pollA;
+  assert.equal(state.jobId, 'job-B');
+  assert.equal(state.pollInFlightToken, tokenB);
+  assert.notEqual(elements.jobStatus.textContent, 'old-job-network-error');
+
+  resolveB({job: {status: 'rendering'}, stage: 'rendering', timing: {}, quality: {}, billing: {}});
+  await pollB;
+  assert.equal(elements.jobStatus.textContent, 'rendering');
+  assert.equal(state.pollInFlightToken, null);
+  assert.equal(state.pollTimer, 9);
+});
+
+test('retrying a failed restored job becomes a current-page task', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const retrySource = page.match(/async function retryJob\(\)\{[^\n]+\}/)?.[0];
+  const clearQuerySource = page.match(/function clearTaskQuery\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(retrySource && clearQuerySource, 'retry and task-query cleanup must be present');
+
+  const state = {
+    jobId: null,
+    retryJobId: 'failed-job',
+    jobRestoreSource: null,
+    jobRequestKey: null,
+    jobViewRevision: 2,
+    pollTimer: 7,
+  };
+  const elements = {
+    retryJobBtn: {hidden: false, disabled: false},
+    formMessage: {textContent: ''},
+  };
+  const stored = new Map();
+  const location = {search: '?task=failed-job', pathname: '/workbench/ai-edit-v2', hash: ''};
+  const history = {
+    replaceState(_state, _title, url) {
+      location.search = new URL(url, 'https://example.test').search;
+    },
+  };
+  const retryJob = Function(
+    'state', '$', 'sessionStorage', 'crypto', 'api', 'trackJob',
+    'clearInterval', 'setInterval', 'pollJob', 'location', 'history', 'URLSearchParams',
+    'beginBusy', 'endBusy', 'renderWorkspacePanel',
+    `${clearQuerySource}; ${retrySource}; return retryJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    {
+      getItem: (key) => stored.get(key) || null,
+      setItem: (key, value) => stored.set(key, value),
+      removeItem: (key) => stored.delete(key),
+    },
+    {randomUUID: () => 'retry-request'},
+    async () => ({job_id: 'retry-job', status: 'queued', held_points: 64}),
+    () => {},
+    () => {},
+    () => 8,
+    () => {},
+    location,
+    history,
+    URLSearchParams,
+    () => {},
+    () => {},
+    () => {},
+  );
+
+  await retryJob();
+
+  assert.equal(state.jobId, 'retry-job');
+  assert.equal(state.retryJobId, null);
+  assert.equal(state.jobRestoreSource, null);
+  assert.equal(state.jobRequestKey, 'retry-request');
+  assert.equal(elements.retryJobBtn.hidden, true);
+  assert.equal(location.search, '');
+});
+
+test('retry locks the composer while creating and running its successor task', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const beginSource = page.match(/function beginBusy\(\)\{[^\n]+\}/)?.[0];
+  const endSource = page.match(/function endBusy\(\)\{[^\n]+\}/)?.[0];
+  const renderSource = page.match(/function renderWorkspacePanel\(\)\{[^\n]+\}/)?.[0];
+  const retrySource = page.match(/async function retryJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(beginSource && endSource && renderSource && retrySource, 'retry lifecycle functions must be present');
+
+  let resolveRetry;
+  const retryResponse = new Promise((resolve) => { resolveRetry = resolve; });
+  const requestQuote = () => {};
+  const state = {
+    main: {name: 'subject.mp4', kind: 'video', asset: {asset_id: 'subject-A'}},
+    mainPreviewUrl: '', candidates: [], quote: null,
+    jobId: null, retryJobId: 'failed-job', jobViewRevision: 2,
+    jobRestoreSource: null, jobRequestKey: null, terminalJobVisible: true,
+    pollTimer: null, busy: false, busyCount: 0,
+  };
+  const elements = {
+    subjectSummary: {textContent: ''}, editModeSummary: {textContent: ''},
+    materialCount: {textContent: ''}, ratioSummary: {textContent: ''},
+    aspectRatio: {value: '9:16'}, primaryAction: {textContent: '', disabled: false},
+    retryJobBtn: {hidden: false, disabled: false}, formMessage: {textContent: ''},
+  };
+  const retryJob = Function(
+    'state', '$', 'sessionStorage', 'crypto', 'api', 'trackJob', 'trackJobById',
+    'clearInterval', 'setInterval', 'pollJob', 'clearTaskQuery',
+    'renderSubjectPreview', 'modeLabel', 'requestQuote', 'confirmJob',
+    `${beginSource}; ${endSource}; ${renderSource}; ${retrySource}; return retryJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    {getItem: () => null, setItem: () => {}, removeItem: () => {}},
+    {randomUUID: () => 'retry-request'},
+    async () => retryResponse,
+    () => {}, () => {}, () => {}, () => 8, () => {}, () => {},
+    () => {}, () => 'AI智能剪辑', requestQuote, () => {},
+  );
+
+  const pendingRetry = retryJob();
+  await Promise.resolve();
+  assert.equal(state.busy, true);
+  assert.equal(elements.primaryAction.disabled, true);
+  assert.equal(elements.primaryAction.textContent, '正在准备素材');
+
+  resolveRetry({job_id: 'retry-job', status: 'queued', held_points: 64});
+  await pendingRetry;
+
+  assert.equal(state.busy, false);
+  assert.equal(state.jobId, 'retry-job');
+  assert.equal(elements.primaryAction.disabled, true);
+  assert.equal(elements.primaryAction.textContent, '任务已提交');
+});
+
+test('a late retry response cannot replace a job opened while retry was pending', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const retrySource = page.match(/async function retryJob\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(retrySource, 'retryJob must be present');
+
+  let resolveRetry;
+  const retryResponse = new Promise((resolve) => { resolveRetry = resolve; });
+  const state = {
+    jobId: null,
+    retryJobId: 'failed-job-A',
+    jobRestoreSource: null,
+    jobRequestKey: null,
+    jobViewRevision: 2,
+    pollTimer: 7,
+  };
+  const elements = {
+    retryJobBtn: {hidden: false, disabled: false},
+    formMessage: {textContent: ''},
+  };
+  const stored = new Map([
+    ['ai_edit_v2_job_id', 'failed-job-A'],
+    ['ai_edit_v2_idempotency_key', 'request-A'],
+  ]);
+  const tracked = [];
+  const clearedTimers = [];
+  const retryJob = Function(
+    'state', '$', 'sessionStorage', 'crypto', 'api', 'trackJob', 'trackJobById',
+    'clearInterval', 'setInterval', 'pollJob', 'beginBusy', 'endBusy', 'renderWorkspacePanel',
+    `${retrySource}; return retryJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    {
+      getItem: (key) => stored.get(key) || null,
+      setItem: (key, value) => stored.set(key, value),
+      removeItem: (key) => stored.delete(key),
+    },
+    {randomUUID: () => 'retry-request-A'},
+    async () => retryResponse,
+    () => {},
+    (id, status) => tracked.push({id, status}),
+    (timer) => clearedTimers.push(timer),
+    () => 8,
+    () => {},
+    () => {},
+    () => {},
+    () => {},
+  );
+
+  const pendingRetry = retryJob();
+  await Promise.resolve();
+  state.jobId = 'job-B';
+  state.retryJobId = null;
+  state.jobViewRevision = 3;
+  state.jobRequestKey = 'request-B';
+  state.pollTimer = 9;
+  stored.set('ai_edit_v2_job_id', 'job-B');
+  stored.set('ai_edit_v2_idempotency_key', 'request-B');
+  resolveRetry({job_id: 'retry-job-A', status: 'queued', held_points: 64});
+  await pendingRetry;
+
+  assert.equal(state.jobId, 'job-B');
+  assert.equal(state.jobRequestKey, 'request-B');
+  assert.equal(state.pollTimer, 9);
+  assert.equal(stored.get('ai_edit_v2_job_id'), 'job-B');
+  assert.equal(stored.get('ai_edit_v2_idempotency_key'), 'request-B');
+  assert.deepEqual(tracked, [{id: 'retry-job-A', status: 'queued'}]);
+  assert.deepEqual(clearedTimers, []);
+});
+
+test('opening another task clears the previous terminal result media', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const invalidateSource = page.match(/function invalidateQuote\(\)\{[^\n]+\}/)?.[0];
+  const restoreSource = page.match(/function restorePendingJob\([^)]*\)\{[^\n]+\}/)?.[0];
+  assert.ok(invalidateSource && restoreSource, 'terminal cleanup and restore functions must be present');
+
+  const videoEvents = [];
+  const state = {
+    jobId: null,
+    retryJobId: null,
+    jobRequestKey: null,
+    jobViewRevision: 4,
+    terminalJobVisible: true,
+    quote: null,
+    quotedDraftFingerprint: null,
+    pollTimer: null,
+  };
+  const elements = {
+    taskDetails: {hidden: false},
+    jobStatus: {textContent: ''},
+    resultVideo: {
+      hidden: false,
+      pause: () => videoEvents.push('pause'),
+      removeAttribute: (name) => videoEvents.push(`remove:${name}`),
+      load: () => videoEvents.push('load'),
+    },
+    downloadResult: {href: '/old.mp4', style: {display: 'inline'}},
+    assetResult: {href: '/assets/old', style: {display: 'inline'}},
+    retryJobBtn: {hidden: true},
+    quoteMin: {textContent: '48'},
+    quoteMax: {textContent: '64'},
+  };
+  let pollCalls = 0;
+  const workflow = Function(
+    'state', '$', 'renderWorkspacePanel', 'location', 'sessionStorage',
+    'URLSearchParams', 'clearInterval', 'setInterval', 'pollJob',
+    `${invalidateSource}; ${restoreSource}; return restorePendingJob;`,
+  )(
+    state,
+    (id) => elements[id],
+    () => {},
+    {search: ''},
+    {getItem: () => null, removeItem: () => {}},
+    URLSearchParams,
+    () => {},
+    () => 8,
+    () => { pollCalls += 1; },
+  );
+
+  workflow('explicit', 'job-B');
+
+  assert.equal(state.jobId, 'job-B');
+  assert.equal(state.terminalJobVisible, false);
+  assert.equal(elements.taskDetails.hidden, false);
+  assert.equal(elements.resultVideo.hidden, true);
+  assert.equal(elements.downloadResult.style.display, 'none');
+  assert.equal(elements.assetResult.style.display, 'none');
+  assert.deepEqual(videoEvents, ['pause', 'remove:src', 'load']);
+  assert.equal(pollCalls, 1);
+});
+
+test('changing the draft after a failed job clears its saved retry state', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const invalidateSource = page.match(/function invalidateQuote\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(invalidateSource, 'invalidateQuote must be present');
+
+  const state = {
+    jobId: null,
+    retryJobId: 'failed-job',
+    terminalJobVisible: true,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: null,
+  };
+  const elements = {
+    taskDetails: {hidden: false},
+    resultVideo: {hidden: true, removeAttribute: () => {}, load: () => {}},
+    downloadResult: {href: '', style: {display: 'none'}},
+    assetResult: {href: '', style: {display: 'none'}},
+    retryJobBtn: {hidden: false},
+    quoteMin: {textContent: ''}, quoteMax: {textContent: ''},
+  };
+  const stored = new Map([
+    ['ai_edit_v2_job_id', 'failed-job'],
+    ['ai_edit_v2_idempotency_key', 'failed-request'],
+  ]);
+  const invalidateQuote = Function(
+    'state', '$', 'renderWorkspacePanel', 'sessionStorage',
+    `${invalidateSource}; return invalidateQuote;`,
+  )(
+    state,
+    (id) => elements[id],
+    () => {},
+    {
+      getItem: (key) => stored.get(key) || null,
+      removeItem: (key) => stored.delete(key),
+    },
+  );
+
+  invalidateQuote();
+
+  assert.equal(state.retryJobId, null);
+  assert.equal(state.terminalJobVisible, false);
+  assert.equal(stored.has('ai_edit_v2_job_id'), false);
+  assert.equal(stored.has('ai_edit_v2_idempotency_key'), false);
+});
+
+test('invalidating a quote never clears an active task result or session pointer', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const invalidateSource = page.match(/function invalidateQuote\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(invalidateSource, 'invalidateQuote must be present');
+
+  const state = {
+    jobId: 'active-job',
+    retryJobId: null,
+    terminalJobVisible: true,
+    quote: {id: 'old-quote'},
+    quotedDraftFingerprint: 'old-fingerprint',
+    jobRequestKey: 'active-request',
+  };
+  const elements = {
+    taskDetails: {hidden: false},
+    resultVideo: {hidden: false, removeAttribute: () => { throw new Error('active video must not be cleared'); }},
+    downloadResult: {href: '/active.mp4', style: {display: 'inline'}},
+    assetResult: {href: '/assets/active', style: {display: 'inline'}},
+    retryJobBtn: {hidden: true},
+    quoteMin: {textContent: '48'}, quoteMax: {textContent: '64'},
+  };
+  const removed = [];
+  const invalidateQuote = Function(
+    'state', '$', 'renderWorkspacePanel', 'sessionStorage',
+    `${invalidateSource}; return invalidateQuote;`,
+  )(
+    state,
+    (id) => elements[id],
+    () => {},
+    {
+      getItem: () => 'active-job',
+      removeItem: (key) => removed.push(key),
+    },
+  );
+
+  invalidateQuote();
+
+  assert.equal(state.jobId, 'active-job');
+  assert.equal(state.terminalJobVisible, true);
+  assert.equal(elements.taskDetails.hidden, false);
+  assert.equal(elements.resultVideo.hidden, false);
+  assert.equal(elements.downloadResult.href, '/active.mp4');
+  assert.equal(elements.assetResult.href, '/assets/active');
+  assert.deepEqual(removed, []);
+  assert.equal(state.quote, null);
+});
+
+test('changing a new draft clears the previous completed result panel', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const invalidateSource = page.match(/function invalidateQuote\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(invalidateSource, 'invalidateQuote must be present');
+
+  const videoEvents = [];
+  const state = {
+    jobId: null,
+    terminalJobVisible: true,
+    quote: {id: 'old-quote'},
+    quotedDraftFingerprint: 'old-fingerprint',
+    jobRequestKey: 'old-request',
+  };
+  const elements = {
+    taskDetails: {hidden: false},
+    resultVideo: {
+      hidden: false,
+      pause: () => videoEvents.push('pause'),
+      removeAttribute: (name) => videoEvents.push(`remove:${name}`),
+      load: () => videoEvents.push('load'),
+    },
+    downloadResult: {href: '/old.mp4', style: {display: 'inline'}},
+    assetResult: {href: '/assets/old', style: {display: 'inline'}},
+    retryJobBtn: {hidden: true},
+    quoteMin: {textContent: '48'},
+    quoteMax: {textContent: '64'},
+  };
+  const invalidateQuote = Function(
+    'state', '$', 'renderWorkspacePanel',
+    `${invalidateSource}; return invalidateQuote;`,
+  )(
+    state,
+    (id) => elements[id],
+    () => {},
+  );
+
+  invalidateQuote();
+
+  assert.equal(state.terminalJobVisible, false);
+  assert.equal(elements.taskDetails.hidden, true);
+  assert.equal(elements.resultVideo.hidden, true);
+  assert.deepEqual(videoEvents, ['pause', 'remove:src', 'load']);
+  assert.equal(elements.downloadResult.style.display, 'none');
+  assert.equal(elements.assetResult.style.display, 'none');
+  assert.equal(state.quote, null);
+  assert.equal(state.quotedDraftFingerprint, null);
+  assert.equal(state.jobRequestKey, null);
+});
+
+test('requesting a new quote clears the previous result even when the draft is unchanged', async () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const invalidateSource = page.match(/function invalidateQuote\(\)\{[^\n]+\}/)?.[0];
+  const quoteSource = page.match(/async function requestQuote\(\)\{[^\n]+\}/)?.[0];
+  assert.ok(invalidateSource && quoteSource, 'quote lifecycle functions must be present');
+
+  const videoEvents = [];
+  const main = {
+    name: 'subject.mp4',
+    kind: 'video',
+    input_mode: 'external_video',
+    asset: {asset_id: 'subject-1', kind: 'video'},
+  };
+  const state = {
+    main,
+    subjectIntentRevision: 1,
+    terminalJobVisible: true,
+    jobId: null,
+    quote: null,
+    quotedDraftFingerprint: null,
+    jobRequestKey: null,
+    busy: false,
+  };
+  const elements = {
+    taskDetails: {hidden: false},
+    resultVideo: {
+      hidden: false,
+      pause: () => videoEvents.push('pause'),
+      removeAttribute: (name) => videoEvents.push(`remove:${name}`),
+      load: () => videoEvents.push('load'),
+    },
+    downloadResult: {href: '/old.mp4', style: {display: 'inline'}},
+    assetResult: {href: '/assets/old', style: {display: 'inline'}},
+    retryJobBtn: {hidden: true},
+    quoteMin: {textContent: '48'},
+    quoteMax: {textContent: '64'},
+    formMessage: {textContent: ''},
+  };
+  const draft = {main_input: main.asset, aspect_ratio: '9:16'};
+  const requestQuote = Function(
+    'state', '$', 'api', 'buildDraft', 'renderWorkspacePanel',
+    'ensureMainAsset', 'beginBusy', 'endBusy',
+    `${invalidateSource}; ${quoteSource}; return requestQuote;`,
+  )(
+    state,
+    (id) => elements[id],
+    async () => ({quote: {id: 'new-quote', minimum_points: 50, maximum_points: 70, held_points: 70}}),
+    () => draft,
+    () => {},
+    async () => main.asset,
+    () => { state.busy = true; },
+    () => { state.busy = false; },
+  );
+
+  await requestQuote();
+
+  assert.equal(state.terminalJobVisible, false);
+  assert.equal(elements.taskDetails.hidden, true);
+  assert.deepEqual(videoEvents, ['pause', 'remove:src', 'load']);
+  assert.equal(elements.downloadResult.style.display, 'none');
+  assert.equal(elements.assetResult.style.display, 'none');
+  assert.equal(state.quote.id, 'new-quote');
 });
 
 test('subject carousel only accepts verified digital IP assets', () => {
