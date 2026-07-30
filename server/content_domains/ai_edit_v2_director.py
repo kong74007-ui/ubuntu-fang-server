@@ -35,6 +35,10 @@ transition 可选：{transitions}。
 component_family 可选：{families}。
 caption style 可选：{caption_styles}。
 audio policy：speech_policy={speech}; music_policy 可选 {music}; sfx_policy 可选 {sfx}。
+layout、visual_type 与 material_slots 必须语义一致。
+speaker_focus 不得创建 material_slots；只有需要产品、门店、图表或 B-roll 补充画面时才创建素材槽位。
+同一槽位 ID 不得跨语义不同的场景复用；不同语义的场景必须使用不同槽位 ID。
+内容适合时改变连续场景的 layout，避免机械重复；内容不适合变化时优先保持稳定和人物主体清晰。
 场景必须从 0 开始、首尾连续无重叠，最后一个场景必须结束于 duration_ms。
 不要使用 Markdown 代码围栏。""".format(
     layouts=", ".join(sorted(SCENE_LAYOUTS)),

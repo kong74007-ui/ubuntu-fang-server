@@ -141,6 +141,22 @@ class DirectorTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertIn(forbidden, system_prompt)
 
+    def test_director_prompt_constrains_material_slots_to_semantic_layouts(self):
+        client = FakeQwen([json.dumps(VALID_PLAN, ensure_ascii=False)])
+
+        generate_edit_plan(CONTEXT, client)
+
+        system_prompt = client.calls[0][0]
+        for rule in (
+            "speaker_focus 不得创建 material_slots",
+            "layout、visual_type 与 material_slots 必须语义一致",
+            "同一槽位 ID 不得跨语义不同的场景复用",
+            "内容适合时改变连续场景的 layout",
+            "只有需要产品、门店、图表或 B-roll",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, system_prompt)
+
     def test_director_whitelists_timeline_fields_before_sending_context(self):
         context = copy.deepcopy(CONTEXT)
         context["text_timeline"]["api_key"] = "nested-secret"
