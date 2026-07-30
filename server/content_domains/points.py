@@ -156,6 +156,17 @@ def get_points(username):
     except Exception:
         return 0
 
+
+def get_points_transaction(username, transaction_key):
+    res = _auth_points_request(
+        "/api/auth/points/transaction",
+        {"username": username, "transaction_key": transaction_key},
+    )
+    if not res.get("found"):
+        return None
+    return res.get("transaction")
+
+
 def deduct_points(username, amount, reason="", transaction_key=None):
     """预扣点。reason 落 points_audit，供对账。
 

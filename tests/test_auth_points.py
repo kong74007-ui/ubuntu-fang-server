@@ -393,5 +393,120 @@ class AuthPointsTests(unittest.TestCase):
             thread.join(timeout=3)
 
 
+class PointsTransactionTests(unittest.TestCase):
+    setUp = AuthPointsTests.setUp
+    tearDown = AuthPointsTests.tearDown
+
+    def scalar(self, query, params=()):
+        with closing(sqlite3.connect(self.auth.DB)) as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def test_transaction_query_is_owner_bound_and_read_only(self):
+        self.auth.create_user("alice", "secret123", 20)
+        self.auth.create_user("bob", "secret123", 20)
+        self.auth.deduct_points("alice", 12, "v3", "ai-edit-v3:j1:pre_debit")
+        before = self.scalar("SELECT COUNT(*) FROM points_audit")
+        row = self.auth.get_points_transaction("alice", "ai-edit-v3:j1:pre_debit")
+        self.assertEqual(row["operation"], "deduct")
+        self.assertEqual(row["amount"], 12)
+        self.assertIsNone(
+            self.auth.get_points_transaction("bob", "ai-edit-v3:j1:pre_debit")
+        )
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM points_audit"), before)
+
+
+class PointsTransactionHttpTests(unittest.TestCase):
+    def setUp(self):
+        AuthPointsTests.setUp(self)
+        self.auth.create_user("alice", "secret123", 20)
+        self.auth.create_user("bob", "secret123", 20)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        AuthPointsTests.tearDown(self)
+
+    def post(self, payload, token="test-internal-token"):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-HQ-Internal-Token"] = token
+        data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        request = urllib.request.Request(
+            self.base + "/api/auth/points/transaction",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_transaction_query_requires_internal_token_before_body_parsing(self):
+        status, _ = self.post(b"{", token=None)
+        self.assertEqual(status, 403)
+
+    def test_transaction_query_rejects_malformed_key(self):
+        status, body = self.post({
+            "username": "alice",
+            "transaction_key": "x" * 201,
+        })
+        self.assertEqual(status, 400)
+        self.assertEqual(body["detail"], "invalid transaction_key")
+
+    def test_transaction_query_returns_not_found_for_absent_row(self):
+        status, body = self.post({
+            "username": "alice",
+            "transaction_key": "ai-edit-v3:absent:pre_debit",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"found": False})
+
+    def test_transaction_query_is_owner_bound_over_http(self):
+        self.auth.deduct_points("alice", 12, "v3", "ai-edit-v3:j1:pre_debit")
+        status, body = self.post({
+            "username": "bob",
+            "transaction_key": "ai-edit-v3:j1:pre_debit",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"found": False})
+
+    def test_transaction_query_returns_found_row(self):
+        self.auth.deduct_points("alice", 12, "v3", "ai-edit-v3:j1:pre_debit")
+        status, body = self.post({
+            "username": "alice",
+            "transaction_key": "ai-edit-v3:j1:pre_debit",
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(body["found"])
+        self.assertEqual(body["transaction"]["transaction_key"], "ai-edit-v3:j1:pre_debit")
+        self.assertEqual(body["transaction"]["operation"], "deduct")
+        self.assertEqual(body["transaction"]["username"], "alice")
+        self.assertEqual(body["transaction"]["amount"], 12)
+        self.assertEqual(body["transaction"]["points_after"], 8)
+        self.assertIsInstance(body["transaction"]["created_at"], int)
+
+    def test_content_client_preserves_transport_errors(self):
+        from server.content_domains import points
+
+        with patch.object(points, "AUTH_INTERNAL_TOKEN", "test-internal-token"):
+            with patch.object(
+                points.urllib.request,
+                "urlopen",
+                side_effect=urllib.error.URLError("auth unavailable"),
+            ):
+                with self.assertRaises(points.AuthPointsError) as caught:
+                    points.get_points_transaction(
+                        "alice", "ai-edit-v3:j1:pre_debit"
+                    )
+        self.assertEqual(caught.exception.status, 502)
+
+
 if __name__ == "__main__":
     unittest.main()
