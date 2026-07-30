@@ -105,6 +105,7 @@ V3 最终仅以最小增量接入以下公共文件：
 - `site/workbench/assets.html`：在用户资产库中刷新 V3 私有播放/下载地址，并支持 V3 任务通知定位。
 - `site/workbench/cloud-shell.js`：受服务端能力开关控制的入口。
 - `site/workbench/tasks.js`：恢复和跳转 V3 任务。
+- 由 `scripts/stamp_assets.py` 管理的既有 `site/workbench/*.html`：只允许机械刷新 `cloud-shell.js` 缓存指纹，不得借此修改页面业务逻辑。
 - `server/admin_api.py`：V3 独立价格版本管理。
 - `site/admin/index.html`：V3 价格管理入口。
 - `deploy/huangque-secrets.env.example`：仅增加变量名和占位说明，不写真实密钥。
