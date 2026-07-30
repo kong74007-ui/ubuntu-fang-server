@@ -566,6 +566,43 @@
       toast((e&&e.message)||'视频加载失败',false);
     });
   }
+  function refreshVideoAssetUrl(x){
+    x=x||{};
+    var existing=String(x.video_url||x.url||'').trim();
+    if(x.mode!=='ai_edit_v2') return Promise.resolve(existing);
+    return fetch('/api/gen/video/assets?limit=120',{
+      cache:'no-store',
+      headers:{Authorization:'Bearer '+tok}
+    }).then(function(r){
+      if(r.status===401){ HQ.login(); throw new Error('登录已过期'); }
+      if(!r.ok) throw new Error('无法刷新视频地址，请重试');
+      return r.json();
+    }).then(function(d){
+      var item=((d&&d.items)||[]).find(function(item){
+        return item && String(item.id)===String(x.id) && item.mode==='ai_edit_v2';
+      });
+      var fresh=String(item&&(item.video_url||item.url)||'').trim();
+      if(!fresh) throw new Error('无法刷新视频地址，请重试');
+      x.video_url=fresh;
+      return fresh;
+    });
+  }
+  function previewVideoAsset(x,title,imageUrl){
+    return refreshVideoAssetUrl(x).then(function(url){
+      if(!url) throw new Error('无法刷新视频地址，请重试');
+      openAssetVideoModal(url,title,imageUrl);
+    }).catch(function(e){
+      toast((e&&e.message)||'无法刷新视频地址，请重试',false);
+    });
+  }
+  function downloadVideoAsset(x,button){
+    return refreshVideoAssetUrl(x).then(function(url){
+      if(!url) throw new Error('无法刷新视频地址，请重试');
+      return downloadAsset(url,'huangque-video.mp4',button);
+    }).catch(function(e){
+      toast((e&&e.message)||'无法刷新视频地址，请重试',false);
+    });
+  }
   function openAssetImageModal(list,idx){
     list=Array.isArray(list)?list:[];
     if(!list.length) return;
@@ -843,11 +880,11 @@
       v.controls=false; v.preload='metadata'; v.dataset.src=videoUrl; v.muted=true; v.playsInline=true;
       if(imageUrl) v.poster=thumbUrl(imageUrl,420);
       v.style.cssText='width:100%;height:100%;object-fit:contain;display:block;background:#050812;';
-      media.onclick=function(){ openAssetVideoModal(videoUrl,title,imageUrl); };
+      media.onclick=function(){ previewVideoAsset(x,title,imageUrl); };
       media.appendChild(v);
       var openBtn=document.createElement('button');
       openBtn.type='button'; openBtn.className='asset-video-open'; openBtn.textContent='放大预览';
-      openBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openAssetVideoModal(videoUrl,title,imageUrl); };
+      openBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); previewVideoAsset(x,title,imageUrl); };
       media.appendChild(openBtn);
     }else if(imageUrl){
       var im=document.createElement('img');
@@ -892,7 +929,7 @@
     var dl=document.createElement('button');
     dl.type='button';
     dl.textContent=videoUrl?'下载':'去生成';
-    dl.onclick=function(){ if(videoUrl) downloadAsset(videoUrl,'huangque-video.mp4',dl); else location.href='video.html'; };
+    dl.onclick=function(){ if(videoUrl) downloadVideoAsset(x,dl); else location.href='video.html'; };
     dl.className='asset-action gold';
     dl.style.height='30px';
     buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
