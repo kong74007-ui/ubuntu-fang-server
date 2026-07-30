@@ -872,6 +872,13 @@ def _candidate_identity(path: Path, *, role: str) -> tuple[Path, os.stat_result 
 def resolve_db_path(value: str | os.PathLike[str] | None = None) -> Path:
     """Resolve an explicit local absolute V3 database path without creating it."""
 
+    path = _v3_path_syntax(value)
+    _assert_no_reparse_components(path, role="v3")
+    resolved, _metadata = _candidate_identity(path, role="v3")
+    return resolved
+
+
+def _v3_path_syntax(value: str | os.PathLike[str] | None = None) -> Path:
     configured: str | os.PathLike[str] | None = value
     if configured is None:
         configured = os.environ.get("AI_EDIT_V3_DB_PATH")
@@ -880,10 +887,7 @@ def resolve_db_path(value: str | os.PathLike[str] | None = None) -> Path:
             "v3_db_path_required",
             "AI_EDIT_V3_DB_PATH is required",
         )
-    path = _absolute_path(configured, role="v3")
-    _assert_no_reparse_components(path, role="v3")
-    resolved, _metadata = _candidate_identity(path, role="v3")
-    return resolved
+    return _absolute_path(configured, role="v3")
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -1121,12 +1125,10 @@ class _GuardedConnection(sqlite3.Connection):
     def close(self) -> None:
         with _SQLITE_OPEN_LOCK:
             guard = self._identity_guard
-            try:
-                sqlite3.Connection.close(self)
-            finally:
-                if guard is not None:
-                    self._identity_guard = None
-                    guard.release()
+            sqlite3.Connection.close(self)
+            if guard is not None:
+                self._identity_guard = None
+                guard.release()
 
     def __del__(self) -> None:
         try:
@@ -1181,9 +1183,7 @@ class _LinuxGuardBundle(_GuardBundle):
         self.parent_fd = -1
 
 
-def _resolve_v2_path(
-    v2_db_path: Path | None,
-) -> tuple[Path, tuple[int, int]]:
+def _v2_path_syntax(v2_db_path: Path | None) -> Path:
     configured: str | os.PathLike[str] | None = v2_db_path
     if configured is None:
         configured = os.environ.get("AI_EDIT_V2_DB")
@@ -1192,41 +1192,7 @@ def _resolve_v2_path(
             "v2_db_path_required",
             "an explicit absolute V2 database path is required for isolation",
         )
-    path = _absolute_path(configured, role="v2")
-    _assert_no_reparse_components(path, role="v2")
-    resolved, metadata = _candidate_identity(path, role="v2")
-    if metadata is None:
-        raise _configuration_error(
-            "v2_db_identity_missing",
-            "V2 database file must exist before verified open",
-        )
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise _configuration_error(
-            "v2_db_identity_unknown",
-            "V2 database must have one ordinary-file identity",
-        )
-    return resolved, (metadata.st_dev, metadata.st_ino)
-
-
-def _required_existing_file_identity(path: Path, *, role: str) -> tuple[int, int]:
-    try:
-        metadata = path.stat()
-    except FileNotFoundError as exc:
-        raise _configuration_error(
-            f"{role}_db_identity_missing",
-            f"{role.upper()} database file must exist before verified open",
-        ) from exc
-    except OSError as exc:
-        raise _configuration_error(
-            f"{role}_db_identity_unknown",
-            f"{role.upper()} database identity cannot be established",
-        ) from exc
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise _configuration_error(
-            f"{role}_db_identity_unknown",
-            f"{role.upper()} database must have one ordinary-file identity",
-        )
-    return metadata.st_dev, metadata.st_ino
+    return _absolute_path(configured, role="v2")
 
 
 def _windows_handle_identity(handle: int) -> tuple[tuple[int, int], int, int]:
@@ -1341,7 +1307,6 @@ def _open_windows_ancestor_handles(path: Path, *, role: str) -> list[int]:
 
 def _open_windows_v2_guard(
     path: Path,
-    expected_path_identity: tuple[int, int],
 ) -> _WindowsGuardBundle:
     handles = _open_windows_ancestor_handles(path, role="v2")
     try:
@@ -1358,11 +1323,6 @@ def _open_windows_v2_guard(
             raise _configuration_error(
                 "v2_db_identity_unknown",
                 "V2 database leaf does not have one stable ordinary-file identity",
-            )
-        if _required_existing_file_identity(path, role="v2") != expected_path_identity:
-            raise _configuration_error(
-                "v2_db_identity_changed",
-                "V2 database identity changed before the native handshake",
             )
         return _WindowsGuardBundle(handles, leaf_identity)
     except Exception:
@@ -1444,7 +1404,6 @@ def _open_linux_parent(path: Path) -> int:
 
 def _open_linux_v2_guard(
     path: Path,
-    expected_path_identity: tuple[int, int],
 ) -> _LinuxGuardBundle:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     ancestor_fds: list[int] = []
@@ -1478,11 +1437,6 @@ def _open_linux_v2_guard(
             raise _configuration_error(
                 "v2_db_identity_unknown",
                 "V2 database leaf does not have one stable ordinary-file identity",
-            )
-        if leaf_identity != expected_path_identity:
-            raise _configuration_error(
-                "v2_db_identity_changed",
-                "V2 database identity changed before the native handshake",
             )
         return _LinuxGuardBundle(
             descriptor,
@@ -1569,37 +1523,22 @@ def _linux_fd_snapshot() -> set[int]:
 
 def _open_v2_handshake_guard(
     v2_path: Path,
-    expected_path_identity: tuple[int, int],
 ) -> _GuardBundle:
     if os.name == "nt":
-        return _open_windows_v2_guard(v2_path, expected_path_identity)
+        return _open_windows_v2_guard(v2_path)
     if sys.platform.startswith("linux"):
-        return _open_linux_v2_guard(v2_path, expected_path_identity)
+        return _open_linux_v2_guard(v2_path)
     raise _configuration_error(
         "v2_db_identity_unknown",
         "this platform cannot prove the V2 database identity",
     )
 
 
-def _connect_with_verified_identity(
-    path: Path,
-    v2_path: Path,
-    expected_v2_path_identity: tuple[int, int],
-) -> _GuardedConnection:
-    with _SQLITE_OPEN_LOCK:
-        return _connect_with_verified_identity_under_lock(
-            path,
-            v2_path,
-            expected_v2_path_identity,
-        )
-
-
 def _connect_with_verified_identity_under_lock(
     path: Path,
     v2_path: Path,
-    expected_v2_path_identity: tuple[int, int],
+    v2_guard: _GuardBundle,
 ) -> _GuardedConnection:
-    v2_guard = _open_v2_handshake_guard(v2_path, expected_v2_path_identity)
     guard: _GuardBundle | None = None
     connection: sqlite3.Connection | None = None
     try:
@@ -1638,6 +1577,7 @@ def _connect_with_verified_identity_under_lock(
                     timeout=10.0,
                     isolation_level=None,
                     factory=_GuardedConnection,
+                    check_same_thread=False,
                     **connect_kwargs,
                 )
             except OSError as exc:
@@ -1704,8 +1644,6 @@ def _connect_with_verified_identity_under_lock(
             if guard is not None:
                 guard.release()
         raise
-    finally:
-        v2_guard.release()
 
 
 def _json_tree_is_nfc(value: Any) -> bool:
@@ -1757,29 +1695,10 @@ def open_store(
 ) -> sqlite3.Connection:
     """Open one verified connection with WAL, FK and timeout guarantees."""
 
-    path = resolve_db_path(db_path)
-    configured_v2, expected_v2_path_identity = _resolve_v2_path(v2_db_path)
-    assert_isolated_db(path, configured_v2)
-    _assert_local_filesystem(path)
-    connection = _connect_with_verified_identity(
-        path,
-        configured_v2,
-        expected_v2_path_identity,
-    )
-    try:
-        connection.row_factory = sqlite3.Row
-        _register_connection_functions(connection)
-        _negotiate_wal(connection)
-        connection.execute("PRAGMA foreign_keys=ON")
-        if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-            raise StoreMigrationError(
-                "v3_foreign_keys_unavailable",
-                "SQLite foreign key enforcement could not be enabled",
-            )
-        return connection
-    except Exception:
-        connection.close()
-        raise
+    raw_v3_path = _v3_path_syntax(db_path)
+    raw_v2_path = _v2_path_syntax(v2_db_path)
+    _path, connection = _open_store_ordered(raw_v3_path, raw_v2_path)
+    return connection
 
 
 def _path_identity(path: Path) -> tuple[tuple[int, int], tuple[int, int] | None]:
@@ -1815,6 +1734,51 @@ def _revalidate_open_identity(
         )
     assert_isolated_db(path, v2_path)
     _assert_local_filesystem(path)
+
+
+def _open_store_ordered(
+    raw_v3_path: Path,
+    raw_v2_path: Path,
+) -> tuple[Path, _GuardedConnection]:
+    """Native-pin V2 before the first authoritative V3 filesystem access."""
+
+    if sqlite3.threadsafety != 3:
+        raise _configuration_error(
+            "v3_sqlite_thread_safety_unavailable",
+            "verified V3 connections require serialized SQLite thread safety",
+        )
+    with _SQLITE_OPEN_LOCK:
+        v2_guard = _open_v2_handshake_guard(raw_v2_path)
+        connection: _GuardedConnection | None = None
+        try:
+            path = resolve_db_path(raw_v3_path)
+            assert_isolated_db(path, raw_v2_path)
+            _assert_local_filesystem(path)
+            before = _path_identity(path)
+            connection = _connect_with_verified_identity_under_lock(
+                path,
+                raw_v2_path,
+                v2_guard,
+            )
+            connection.row_factory = sqlite3.Row
+            _register_connection_functions(connection)
+            _negotiate_wal(connection)
+            connection.execute("PRAGMA foreign_keys=ON")
+            if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                raise StoreMigrationError(
+                    "v3_foreign_keys_unavailable",
+                    "SQLite foreign key enforcement could not be enabled",
+                )
+            _revalidate_open_identity(path, before, raw_v2_path)
+            verified_connection = connection
+            connection = None
+            return path, verified_connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
+        finally:
+            v2_guard.release()
 
 
 def _apply_schema_v1(connection: sqlite3.Connection) -> None:
@@ -1994,25 +1958,18 @@ def init_db(
 ) -> None:
     """Validate isolation before performing any V3 database side effect."""
 
-    path = resolve_db_path(db_path)
-    configured_v2: Path | None = v2_db_path
-    if configured_v2 is None:
-        raw_v2 = os.environ.get("AI_EDIT_V2_DB")
-        configured_v2 = Path(raw_v2) if raw_v2 else None
-    if configured_v2 is None:
-        raise _configuration_error(
-            "v2_db_path_required",
-            "an explicit absolute V2 database path is required for isolation",
-        )
-    assert_isolated_db(path, configured_v2)
-    _assert_local_filesystem(path)
-    before = _path_identity(path)
-    connection = open_store(path, v2_db_path=configured_v2)
+    raw_v3_path = _v3_path_syntax(db_path)
+    raw_v2_path = _v2_path_syntax(v2_db_path)
+    _initialize_db(raw_v3_path, raw_v2_path)
+
+
+def _initialize_db(raw_v3_path: Path, raw_v2_path: Path) -> Path:
+    path, connection = _open_store_ordered(raw_v3_path, raw_v2_path)
     try:
-        _revalidate_open_identity(path, before, configured_v2)
         _migrate_or_validate(connection)
     finally:
         connection.close()
+    return path
 
 
 _T = TypeVar("_T")
@@ -2058,18 +2015,9 @@ class V3Store:
         environment: str = "test",
     ):
         self.environment = self._validate_environment(environment)
-        configured_v2 = v2_db_path
-        if configured_v2 is None:
-            raw_v2 = os.environ.get("AI_EDIT_V2_DB")
-            configured_v2 = Path(raw_v2) if raw_v2 else None
-        if configured_v2 is None:
-            raise _configuration_error(
-                "v2_db_path_required",
-                "an explicit absolute V2 database path is required for isolation",
-            )
-        self.v2_db_path = _absolute_path(configured_v2, role="v2")
-        init_db(db_path, v2_db_path=self.v2_db_path)
-        self.db_path = resolve_db_path(db_path)
+        raw_v3_path = _v3_path_syntax(db_path)
+        self.v2_db_path = _v2_path_syntax(v2_db_path)
+        self.db_path = _initialize_db(raw_v3_path, self.v2_db_path)
 
     @staticmethod
     def _validate_environment(value: str) -> str:
@@ -2084,16 +2032,8 @@ class V3Store:
         return self._validate_environment(self.environment if value is None else value)
 
     def _connect(self) -> sqlite3.Connection:
-        assert_isolated_db(self.db_path, self.v2_db_path)
-        _assert_local_filesystem(self.db_path)
-        before = _path_identity(self.db_path)
-        connection = open_store(self.db_path, v2_db_path=self.v2_db_path)
-        try:
-            _revalidate_open_identity(self.db_path, before, self.v2_db_path)
-            return connection
-        except Exception:
-            connection.close()
-            raise
+        _path, connection = _open_store_ordered(self.db_path, self.v2_db_path)
+        return connection
 
     def _write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
         connection = self._connect()
@@ -2474,6 +2414,37 @@ class V3Store:
         }
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            existing = connection.execute(
+                "SELECT * FROM edit_v3_materials WHERE material_id=?",
+                (material_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["environment"] != environment or existing["owner_id"] != owner_id:
+                    return None
+                if not self._same_values(existing, expected):
+                    raise _immutable_conflict(f"material:{material_id}")
+                return dict(existing)
+
+            if source_kind == "uploaded":
+                upload_replay = connection.execute(
+                    "SELECT * FROM edit_v3_materials WHERE upload_id=?",
+                    (upload_id,),
+                ).fetchone()
+                if upload_replay is not None:
+                    if (
+                        upload_replay["environment"] != environment
+                        or upload_replay["owner_id"] != owner_id
+                    ):
+                        return None
+                    replay_expected = {
+                        key: value
+                        for key, value in expected.items()
+                        if key != "material_id"
+                    }
+                    if not self._same_values(upload_replay, replay_expected):
+                        raise _immutable_conflict(f"material-upload:{upload_id}")
+                    return dict(upload_replay)
+
             if source_kind == "uploaded":
                 upload = connection.execute(
                     "SELECT * FROM edit_v3_uploads WHERE upload_id=?",
@@ -2518,36 +2489,6 @@ class V3Store:
                 ):
                     return None
 
-            existing = connection.execute(
-                "SELECT * FROM edit_v3_materials WHERE material_id=?",
-                (material_id,),
-            ).fetchone()
-            if existing is not None:
-                if existing["environment"] != environment or existing["owner_id"] != owner_id:
-                    return None
-                if not self._same_values(existing, expected):
-                    raise _immutable_conflict(f"material:{material_id}")
-                return dict(existing)
-
-            if source_kind == "uploaded":
-                upload_replay = connection.execute(
-                    "SELECT * FROM edit_v3_materials WHERE upload_id=?",
-                    (upload_id,),
-                ).fetchone()
-                if upload_replay is not None:
-                    if (
-                        upload_replay["environment"] != environment
-                        or upload_replay["owner_id"] != owner_id
-                    ):
-                        return None
-                    replay_expected = {
-                        key: value
-                        for key, value in expected.items()
-                        if key != "material_id"
-                    }
-                    if not self._same_values(upload_replay, replay_expected):
-                        raise _immutable_conflict(f"material-upload:{upload_id}")
-                    return dict(upload_replay)
             try:
                 connection.execute(
                     """INSERT INTO edit_v3_materials(

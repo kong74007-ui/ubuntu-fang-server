@@ -10,6 +10,7 @@ import stat
 import tempfile
 import threading
 import unittest
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -366,6 +367,7 @@ class V3StorePathTests(unittest.TestCase):
 
     def test_network_filesystems_are_rejected_before_db_creation(self):
         v2 = self.root / "ai_edit_v2.db"
+        v2.write_bytes(b"V2 identity marker; never open through SQLite")
         remote_types = (
             "nfs",
             "nfs4",
@@ -399,6 +401,7 @@ class V3StorePathTests(unittest.TestCase):
     def test_unknown_filesystem_identity_fails_closed_before_creation(self):
         target = self.root / "ai_edit_v3.db"
         v2 = self.root / "ai_edit_v2.db"
+        v2.write_bytes(b"V2 identity marker; never open through SQLite")
         with mock.patch.object(
             store_module,
             "_filesystem_type_for_path",
@@ -428,13 +431,14 @@ class V3StorePathTests(unittest.TestCase):
             clear=True,
         ):
             with mock.patch.object(
-                store_module,
-                "open_store",
+                sqlite3,
+                "connect",
                 side_effect=RuntimeError("stop after isolation"),
             ) as open_v3:
                 with self.assertRaisesRegex(RuntimeError, "stop after isolation"):
                     init_db(v3)
-        open_v3.assert_called_once_with(v3, v2_db_path=v2)
+        open_v3.assert_called_once()
+        self.assertEqual(Path(open_v3.call_args.args[0]), v3)
         self.assertEqual(v2.read_bytes(), b"not a sqlite database and must stay unopened")
 
 
@@ -732,19 +736,22 @@ class V3StoreSchemaTests(unittest.TestCase):
         initial = sqlite3.connect(self.db)
         initial.close()
         original_identity = self.db.stat()
+        real_path_identity = store_module._path_identity
+        observations = 0
 
-        def swap_before_return(path, *, v2_db_path=None):
-            moved = self.root / "original.db"
-            os.replace(path, moved)
-            connection = sqlite3.connect(path, isolation_level=None)
-            connection.row_factory = sqlite3.Row
-            return connection
+        def changed_identity(path):
+            nonlocal observations
+            result = real_path_identity(path)
+            observations += 1
+            if observations == 2:
+                return result[0], (result[1][0], result[1][1] + 1)
+            return result
 
-        with mock.patch.object(store_module, "open_store", side_effect=swap_before_return):
+        with mock.patch.object(store_module, "_path_identity", side_effect=changed_identity):
             with self.assertRaises(StoreConfigurationError) as caught:
                 self.initialize()
         self.assertEqual(caught.exception.error_code, "v3_db_identity_changed")
-        self.assertNotEqual(
+        self.assertEqual(
             (self.db.stat().st_dev, self.db.stat().st_ino),
             (original_identity.st_dev, original_identity.st_ino),
         )
@@ -1222,16 +1229,16 @@ class V3StorePrimitiveTests(unittest.TestCase):
         self.seed_job("job-prod", "alice", 999, environment="production")
 
         traced = []
-        real_open_store = open_store
+        real_open_store = store_module._open_store_ordered
 
-        def traced_open(path, *, v2_db_path=None):
-            connection = real_open_store(path, v2_db_path=v2_db_path)
+        def traced_open(path, v2_path):
+            resolved, connection = real_open_store(path, v2_path)
             connection.set_trace_callback(traced.append)
-            return connection
+            return resolved, connection
 
         seen = []
         cursor = None
-        with mock.patch.object(store_module, "open_store", side_effect=traced_open):
+        with mock.patch.object(store_module, "_open_store_ordered", side_effect=traced_open):
             while True:
                 page = self.store.list_jobs_for_owner(
                     "alice",
@@ -1672,7 +1679,10 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
                 with self.assertRaises(StoreConfigurationError) as caught:
                     connection = open_store(target, v2_db_path=self.v2)
                     connection.close()
-        self.assertEqual(caught.exception.error_code, "v2_db_identity_changed")
+        self.assertIn(
+            caught.exception.error_code,
+            {"v2_db_identity_changed", "v2_v3_db_same_file"},
+        )
         self.assertTrue(attack["performed"])
         connect.assert_not_called()
         self.assertEqual(
@@ -1718,7 +1728,10 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
                 with self.assertRaises(StoreConfigurationError) as caught:
                     connection = open_store(target, v2_db_path=self.v2)
                     connection.close()
-        self.assertEqual(caught.exception.error_code, "v2_db_identity_changed")
+        self.assertIn(
+            caught.exception.error_code,
+            {"v2_db_identity_changed", "v2_v3_db_same_file"},
+        )
         self.assertTrue(attack["performed"])
         connect.assert_not_called()
 
@@ -1750,6 +1763,303 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
                     open_store(target, v2_db_path=self.v2)
         self.assertEqual(len(releases), 2)
         self.assertEqual(set(releases.values()), {1})
+
+    def test_cross_thread_close_closes_sqlite_before_releasing_guard_once(self):
+        target = self.root / "cross-thread-close.db"
+        ready = threading.Event()
+        close_done = threading.Event()
+        post_close_checked = threading.Event()
+        cleanup = threading.Event()
+        shared = {"close_errors": [], "post_close_errors": [], "release_errors": []}
+
+        def creator():
+            connection, guard = self._open_counted(target)
+            shared["connection"] = connection
+            shared["guard"] = guard
+            ready.set()
+            close_done.wait(5)
+            try:
+                connection.execute("SELECT 1")
+            except Exception as exc:
+                shared["post_close_errors"].append(exc)
+            finally:
+                post_close_checked.set()
+            cleanup.wait(5)
+            connection.close()
+
+        creator_thread = threading.Thread(target=creator)
+        creator_thread.start()
+        self.assertTrue(ready.wait(5))
+        connection = shared["connection"]
+        guard = shared["guard"]
+
+        def before_release():
+            try:
+                sqlite3.Connection.execute(connection, "SELECT 1")
+            except Exception as exc:
+                shared["release_errors"].append(exc)
+
+        guard.before_release = before_release
+
+        def closer():
+            try:
+                connection.close()
+            except Exception as exc:
+                shared["close_errors"].append(exc)
+            finally:
+                close_done.set()
+
+        closer_thread = threading.Thread(target=closer)
+        closer_thread.start()
+        closer_thread.join(5)
+        try:
+            self.assertFalse(closer_thread.is_alive())
+            self.assertTrue(post_close_checked.wait(5))
+            self.assertEqual(shared["close_errors"], [])
+            self.assertEqual(len(shared["release_errors"]), 1)
+            self.assertIsInstance(shared["release_errors"][0], sqlite3.ProgrammingError)
+            self.assertIn("closed", str(shared["release_errors"][0]).lower())
+            self.assertEqual(len(shared["post_close_errors"]), 1)
+            self.assertIn("closed", str(shared["post_close_errors"][0]).lower())
+            self.assertEqual(guard.release_calls, 1)
+            self.assertIsNone(connection._identity_guard)
+        finally:
+            cleanup.set()
+            creator_thread.join(5)
+        self.assertFalse(creator_thread.is_alive())
+
+    def test_connection_cycle_collected_in_another_thread_closes_before_release(self):
+        target = self.root / "cross-thread-gc.db"
+        shared = {"events": []}
+
+        def creator():
+            connection, guard = self._open_counted(target)
+            cycle = [connection]
+            cycle.append(cycle)
+            shared["cycle"] = cycle
+            shared["connection_ref"] = weakref.ref(connection)
+            shared["guard"] = guard
+            guard.before_release = lambda: shared["events"].append("guard_release")
+
+        creator_thread = threading.Thread(target=creator)
+        creator_thread.start()
+        creator_thread.join(5)
+        self.assertFalse(creator_thread.is_alive())
+        guard = shared["guard"]
+
+        def collector():
+            cycle = shared.pop("cycle")
+            del cycle
+            for _ in range(3):
+                gc.collect()
+
+        real_connection_api = sqlite3.Connection
+
+        class ObservedConnectionAPI:
+            @staticmethod
+            def close(connection):
+                result = real_connection_api.close(connection)
+                shared["events"].append("sqlite_closed")
+                return result
+
+        with mock.patch.object(
+            store_module.sqlite3,
+            "Connection",
+            ObservedConnectionAPI,
+        ):
+            collector_thread = threading.Thread(target=collector)
+            collector_thread.start()
+            collector_thread.join(5)
+        self.assertFalse(collector_thread.is_alive())
+        self.assertEqual(shared["events"][:2], ["sqlite_closed", "guard_release"])
+        self.assertEqual(shared["events"].count("guard_release"), 1)
+        self.assertEqual(guard.release_calls, 1)
+        self.assertIsNone(shared["connection_ref"]())
+
+    def test_base_close_failure_retains_guard_until_successful_retry(self):
+        target = self.root / "base-close-failure.db"
+        connection, guard = self._open_counted(target)
+        self.addCleanup(connection.close)
+
+        class FailingConnectionAPI:
+            @staticmethod
+            def close(_connection):
+                raise sqlite3.OperationalError("injected base close failure")
+
+        with mock.patch.object(store_module.sqlite3, "Connection", FailingConnectionAPI):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "injected base close"):
+                connection.close()
+
+        self.assertIs(connection._identity_guard, guard)
+        self.assertEqual(guard.release_calls, 0)
+        self.assertEqual(connection.execute("SELECT 42").fetchone()[0], 42)
+
+        release_errors = []
+
+        def before_release():
+            try:
+                sqlite3.Connection.execute(connection, "SELECT 1")
+            except Exception as exc:
+                release_errors.append(exc)
+
+        guard.before_release = before_release
+        connection.close()
+        self.assertEqual(len(release_errors), 1)
+        self.assertIn("closed", str(release_errors[0]).lower())
+        self.assertEqual(guard.release_calls, 1)
+
+    def test_verified_open_requires_serialized_sqlite_thread_safety(self):
+        target = self.root / "thread-safety-unavailable.db"
+        def operation():
+            connection = open_store(target, v2_db_path=self.v2)
+            connection.close()
+
+        with mock.patch.object(store_module.sqlite3, "threadsafety", 1):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    operation()
+        self.assertEqual(
+            caught.exception.error_code,
+            "v3_sqlite_thread_safety_unavailable",
+        )
+        connect.assert_not_called()
+        self.assertFalse(target.exists())
+
+
+class V3StoreOuterCredentialTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.replacement = self.root / "replacement_v2.db"
+        self._create_marker_db(self.v2, "original")
+        self._create_marker_db(self.replacement, "replacement")
+
+    @staticmethod
+    def _create_marker_db(path, marker):
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("CREATE TABLE identity_marker(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO identity_marker VALUES(?)", (marker,))
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _sidecars(path):
+        return tuple(
+            Path(f"{path}{suffix}").exists()
+            for suffix in ("-wal", "-shm", "-journal")
+        )
+
+    def _snapshot(self, path):
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            mode = connection.execute("PRAGMA journal_mode").fetchone()[0].lower()
+            marker = connection.execute("SELECT value FROM identity_marker").fetchone()[0]
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            connection.close()
+        return (
+            path.read_bytes(),
+            path.stat().st_mtime_ns,
+            mode,
+            self._sidecars(path),
+            marker,
+            integrity,
+        )
+
+    def _swap_v2_onto_v3(self, target, attack):
+        os.replace(self.v2, target)
+        os.replace(self.replacement, self.v2)
+        attack["performed"] = True
+
+    def _assert_databases_preserved(self, target, attack, original_before, replacement_before):
+        original_path = target if attack["performed"] else self.v2
+        replacement_path = self.v2 if attack["performed"] else self.replacement
+        self.assertEqual(self._snapshot(original_path), original_before)
+        self.assertEqual(self._snapshot(replacement_path), replacement_before)
+
+    def test_direct_open_pins_v2_before_first_v3_resolution(self):
+        target = self.root / "direct-open-v3.db"
+        original_before = self._snapshot(self.v2)
+        replacement_before = self._snapshot(self.replacement)
+        real_resolve = store_module.resolve_db_path
+        attack = {"performed": False}
+
+        def resolve_then_swap(value=None):
+            result = real_resolve(value)
+            if not attack["performed"]:
+                self._swap_v2_onto_v3(target, attack)
+            return result
+
+        with mock.patch.object(store_module, "resolve_db_path", side_effect=resolve_then_swap):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises((StoreConfigurationError, OSError)):
+                    connection = open_store(target, v2_db_path=self.v2)
+                    connection.close()
+        connect.assert_not_called()
+        self._assert_databases_preserved(
+            target,
+            attack,
+            original_before,
+            replacement_before,
+        )
+
+    def test_init_db_carries_first_v2_pin_across_path_identity_seam(self):
+        target = self.root / "init-v3.db"
+        original_before = self._snapshot(self.v2)
+        replacement_before = self._snapshot(self.replacement)
+        real_path_identity = store_module._path_identity
+        attack = {"performed": False}
+
+        def identity_then_swap(path):
+            result = real_path_identity(path)
+            if path == target and not attack["performed"]:
+                self._swap_v2_onto_v3(target, attack)
+            return result
+
+        with mock.patch.object(store_module, "_path_identity", side_effect=identity_then_swap):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises(
+                    (StoreConfigurationError, StoreMigrationError, OSError)
+                ):
+                    init_db(target, v2_db_path=self.v2)
+        connect.assert_not_called()
+        self._assert_databases_preserved(
+            target,
+            attack,
+            original_before,
+            replacement_before,
+        )
+
+    def test_store_connect_carries_first_v2_pin_across_path_identity_seam(self):
+        target = self.root / "store-v3.db"
+        store = V3Store(target, v2_db_path=self.v2, environment="test")
+        original_before = self._snapshot(self.v2)
+        replacement_before = self._snapshot(self.replacement)
+        real_path_identity = store_module._path_identity
+        attack = {"performed": False}
+
+        def identity_then_swap(path):
+            result = real_path_identity(path)
+            if path == target and not attack["performed"]:
+                self._swap_v2_onto_v3(target, attack)
+            return result
+
+        with mock.patch.object(store_module, "_path_identity", side_effect=identity_then_swap):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises((StoreConfigurationError, OSError)):
+                    connection = store._connect()
+                    connection.close()
+        connect.assert_not_called()
+        self._assert_databases_preserved(
+            target,
+            attack,
+            original_before,
+            replacement_before,
+        )
 
 
 class V3StoreNativeCreateRaceTests(unittest.TestCase):
@@ -2239,6 +2549,124 @@ class V3StorePromotionReplayTests(unittest.TestCase):
                 created_at=1_200,
             )
         self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+    def test_upload_identity_divergence_wins_before_new_authority_validation(self):
+        upload = self._complete_upload("upload-divergent-replay")
+        self.store.insert_material(
+            "alice",
+            "material-original",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={"role": "evidence"},
+            created_at=1_200,
+        )
+
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_material(
+                "alice",
+                "material-new-id",
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key="test/ai-edit-v3/alice/divergent.png",
+                mime_type=upload["observed_mime"],
+                size_bytes=upload["observed_size"],
+                sha256=upload["sha256"],
+                metadata={"role": "evidence"},
+                created_at=1_200,
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+    def test_material_id_divergence_wins_before_missing_upload_lookup(self):
+        upload = self._complete_upload("upload-material-id")
+        self.store.insert_material(
+            "alice",
+            "material-stable-id",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={},
+            created_at=1_200,
+        )
+
+        with self.assertRaises(StoreConflictError) as caught:
+            self.store.insert_material(
+                "alice",
+                "material-stable-id",
+                source_kind="uploaded",
+                upload_id="missing-upload",
+                cos_key="test/ai-edit-v3/alice/missing.png",
+                mime_type="image/png",
+                size_bytes=12,
+                sha256="a" * 64,
+                metadata={},
+                created_at=1_200,
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+    def test_material_replay_privacy_and_genuinely_new_missing_authority(self):
+        upload = self._complete_upload("upload-private-replay")
+        material = self.store.insert_material(
+            "alice",
+            "material-private",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={},
+            created_at=1_200,
+        )
+        self.assertEqual(
+            self.store.insert_material(
+                "alice",
+                "material-private",
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key=upload["object_key"],
+                mime_type=upload["observed_mime"],
+                size_bytes=upload["observed_size"],
+                sha256=upload["sha256"],
+                metadata={},
+                created_at=1_200,
+            ),
+            material,
+        )
+        self.assertIsNone(
+            self.store.insert_material(
+                "bob",
+                "material-private",
+                source_kind="uploaded",
+                upload_id="missing-upload",
+                cos_key="test/ai-edit-v3/bob/private.png",
+                mime_type="image/png",
+                size_bytes=12,
+                sha256="b" * 64,
+                metadata={},
+                created_at=1_200,
+            )
+        )
+        self.assertIsNone(
+            self.store.insert_material(
+                "alice",
+                "material-genuinely-new",
+                source_kind="uploaded",
+                upload_id="missing-upload",
+                cos_key="test/ai-edit-v3/alice/missing.png",
+                mime_type="image/png",
+                size_bytes=12,
+                sha256="a" * 64,
+                metadata={},
+                created_at=1_200,
+            )
+        )
 
     def test_promotion_rejects_non_material_upload_mime_and_illegal_source_unions(self):
         video = self._complete_upload(
