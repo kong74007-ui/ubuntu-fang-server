@@ -20,6 +20,34 @@ from tests.test_ai_edit_v2_runtime import _resolved_plan
 
 
 class QualityRepairProviderTests(unittest.TestCase):
+    def test_vertical_caption_repair_uses_a_narrower_safe_area_than_the_canvas(self):
+        plan = _resolved_plan()
+        plan["aspect_ratio"] = "9:16"
+        graph = build_render_graph(
+            plan,
+            {"private/source.mp4": "https://cos.example/source.mp4"},
+            BUNDLED_NOTO_SANS_SC_URL,
+        )
+
+        repaired = ProductionRepairProvider._targeted_graph(
+            graph,
+            frozenset({"caption_invalid", "caption_out_of_safe_area"}),
+            frozenset({"captions"}),
+        )
+        captions = [
+            component for component in repaired["components"]
+            if component["type"] == "basic_caption"
+        ]
+
+        self.assertTrue(captions)
+        self.assertTrue(
+            all(
+                (item["font_size"], item["width"], item["height"])
+                == (44, 800, 180)
+                for item in captions
+            )
+        )
+
     def test_tofu_and_missing_glyph_are_rejected_before_shotstack_submit(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = os.path.join(directory, "v2.db")

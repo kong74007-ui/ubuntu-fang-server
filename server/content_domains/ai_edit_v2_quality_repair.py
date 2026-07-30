@@ -480,9 +480,14 @@ class ProductionRepairProvider:
 
         original = json.dumps(graph, sort_keys=True, separators=(",", ":"))
         if "captions" in layers and codes.intersection(_SHOTSTACK_REPAIR_CODES):
+            repair_width = 800 if graph.get("aspect_ratio") == "9:16" else 1440
             for component in graph.get("components") or []:
                 if component.get("type") == "basic_caption":
-                    component.update({"font_size": 44, "width": 1440, "height": 180})
+                    component.update({
+                        "font_size": 44,
+                        "width": repair_width,
+                        "height": 180,
+                    })
         if "video" in layers and codes.intersection(
             {"black_frames_detected", "blank_frames_detected"}
         ):
