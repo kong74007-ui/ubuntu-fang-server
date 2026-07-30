@@ -236,7 +236,7 @@ def _response_content(result: Any) -> str:
 
 
 def _normalize_structural_fields(plan: Any) -> Any:
-    """Repair only deterministic identifiers and wrapper shapes, never semantics."""
+    """Apply allowlisted deterministic normalization without inventing content."""
 
     if not isinstance(plan, dict):
         return plan
@@ -255,6 +255,14 @@ def _normalize_structural_fields(plan: Any) -> Any:
             scene_id = normalized_scene.get("id")
             if scene_id is None or (isinstance(scene_id, str) and not scene_id.strip()):
                 normalized_scene["id"] = f"scene_{index + 1:02d}"
+            headline = normalized_scene.get("headline")
+            intent = normalized_scene.get("intent")
+            if (
+                (headline is None or (isinstance(headline, str) and not headline.strip()))
+                and isinstance(intent, str)
+                and intent.strip()
+            ):
+                normalized_scene["headline"] = intent.strip()
             normalized_scenes.append(normalized_scene)
         normalized["scenes"] = normalized_scenes
     return normalized
