@@ -236,7 +236,7 @@ def _response_content(result: Any) -> str:
 
 
 def _normalize_structural_fields(plan: Any) -> Any:
-    """Repair deterministic required fields and wrapper shapes, never semantics."""
+    """Apply allowlisted deterministic normalization without inventing content."""
 
     if not isinstance(plan, dict):
         return plan
