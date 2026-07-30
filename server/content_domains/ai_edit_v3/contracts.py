@@ -5,7 +5,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import stat
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -196,21 +198,66 @@ _TRANSITION_IDS = frozenset(
         "card_match_cut",
     }
 )
-_QUALITY_CHECK_IDS = frozenset(
-    {
-        "media_decode_codec_dimensions",
-        "av_duration_sync",
-        "black_frames",
-        "abnormal_freeze",
-        "audio_integrity",
-        "caption_fact_accuracy",
-        "safe_area_and_text_visibility",
-        "face_product_obstruction",
-        "material_provenance",
-        "material_semantic_identity",
-        "generated_evidence_claim",
-        "opening_hook_visual_consistency",
-    }
+_THEME_CAPABILITIES = {
+    "palette_id": frozenset({"midnight_gold"}),
+    "typography_id": frozenset({"editorial_sans"}),
+    "density": frozenset({"airy", "balanced", "dense"}),
+    "motion_energy": frozenset({"low", "medium", "high"}),
+    "image_fit": frozenset({"contain", "cover", "smart_crop"}),
+}
+_QUALITY_BLOCKING = {
+    "media_decode_codec_dimensions": True,
+    "av_duration_sync": True,
+    "black_frames": True,
+    "abnormal_freeze": True,
+    "audio_integrity": True,
+    "caption_fact_accuracy": True,
+    "safe_area_and_text_visibility": True,
+    "face_product_obstruction": True,
+    "material_provenance": True,
+    "material_semantic_identity": True,
+    "generated_evidence_claim": True,
+    "opening_hook_visual_consistency": False,
+}
+_QUALITY_CHECK_IDS = frozenset(_QUALITY_BLOCKING)
+_NEGATION_MARKERS = (
+    "不会",
+    "没有",
+    "不得",
+    "不能",
+    "不再",
+    "未曾",
+    "无需",
+    "并非",
+    "不",
+    "没",
+    "无",
+    "非",
+    "未",
+    "否",
+)
+_CAUSAL_MARKERS = (
+    "之所以",
+    "是因为",
+    "由于",
+    "因为",
+    "所以",
+    "因此",
+    "导致",
+    "从而",
+    "使得",
+    "于是",
+)
+_PROMISE_MARKERS = (
+    "100%",
+    "保证",
+    "承诺",
+    "一定",
+    "必然",
+    "永久",
+    "绝对",
+    "立刻",
+    "马上",
 )
 
 
@@ -225,8 +272,18 @@ def _has_control_character(value: str) -> bool:
     )
 
 
+def _has_surrogate(value: str) -> bool:
+    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+
+
 def _reject_control_characters(value: Any, field_path: str = "$") -> None:
     if isinstance(value, str):
+        if _has_surrogate(value):
+            _raise(
+                "unicode_scalar_invalid",
+                field_path,
+                "lone surrogate code points are forbidden",
+            )
         if _has_control_character(value):
             _raise(
                 "control_character_forbidden",
@@ -236,12 +293,19 @@ def _reject_control_characters(value: Any, field_path: str = "$") -> None:
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if isinstance(key, str) and _has_control_character(key):
-                _raise(
-                    "control_character_forbidden",
-                    field_path,
-                    "control characters are forbidden",
-                )
+            if isinstance(key, str):
+                if _has_surrogate(key):
+                    _raise(
+                        "unicode_scalar_invalid",
+                        field_path,
+                        "lone surrogate code points are forbidden",
+                    )
+                if _has_control_character(key):
+                    _raise(
+                        "control_character_forbidden",
+                        field_path,
+                        "control characters are forbidden",
+                    )
             _reject_control_characters(item, f"{field_path}.{key}")
         return
     if isinstance(value, (list, tuple)):
@@ -416,7 +480,7 @@ def normalize_job_request(body: Mapping[str, Any]) -> dict[str, Any]:
             "material IDs must be unique and contain at most ten items",
         )
 
-    normalized = dict(body)
+    normalized = copy.deepcopy(dict(body))
     normalized["ratio"] = ratio
     normalized.setdefault("material_asset_ids", [])
     return normalized
@@ -477,6 +541,38 @@ def parse_strict_json(
     if len(raw_bytes) > max_bytes:
         _raise("json_bytes_exceeded", "$", "JSON byte limit exceeded")
 
+    json_whitespace = " \t\r\n"
+    start = 0
+    while start < len(text) and text[start] in json_whitespace:
+        start += 1
+    if start == len(text):
+        _raise("json_invalid", "$", "JSON input is empty")
+
+    structural_depth = 0
+    in_string = False
+    escaped = False
+    for character in text[start:]:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            structural_depth += 1
+            if structural_depth > max_depth:
+                _raise(
+                    "json_depth_exceeded",
+                    "$",
+                    "JSON depth limit exceeded",
+                )
+        elif character in "]}":
+            structural_depth = max(0, structural_depth - 1)
+
     def reject_constant(token: str) -> None:
         _raise(
             "json_nonfinite_number",
@@ -500,9 +596,6 @@ def parse_strict_json(
         object_pairs_hook=unique_object,
         parse_constant=reject_constant,
     )
-    start = len(text) - len(text.lstrip())
-    if start == len(text):
-        _raise("json_invalid", "$", "JSON input is empty")
     try:
         value, end = decoder.raw_decode(text, start)
     except ContractError:
@@ -513,7 +606,13 @@ def parse_strict_json(
             "$",
             "JSON syntax is invalid",
         ) from exc
-    if text[end:].strip():
+    except RecursionError as exc:
+        raise ContractError(
+            "json_depth_exceeded",
+            "$",
+            "JSON depth limit exceeded",
+        ) from exc
+    if any(character not in json_whitespace for character in text[end:]):
         _raise(
             "json_trailing_content",
             "$",
@@ -527,6 +626,12 @@ def parse_strict_json(
         if depth > max_depth:
             _raise("json_depth_exceeded", path, "JSON depth limit exceeded")
         if isinstance(item, str):
+            if _has_surrogate(item):
+                _raise(
+                    "unicode_scalar_invalid",
+                    path,
+                    "lone surrogate code points are forbidden",
+                )
             if len(item) > max_string_chars:
                 _raise(
                     "json_string_exceeded",
@@ -561,6 +666,12 @@ def parse_strict_json(
                         path,
                         "JSON key limit exceeded",
                     )
+                if _has_surrogate(key):
+                    _raise(
+                        "unicode_scalar_invalid",
+                        path,
+                        "lone surrogate code points are forbidden",
+                    )
                 if _has_control_character(key):
                     _raise(
                         "control_character_forbidden",
@@ -580,7 +691,14 @@ def parse_strict_json(
             for index, child in enumerate(item):
                 inspect(child, depth + 1, f"{path}[{index}]")
 
-    inspect(value, 1, "$")
+    try:
+        inspect(value, 1, "$")
+    except RecursionError as exc:
+        raise ContractError(
+            "json_depth_exceeded",
+            "$",
+            "JSON depth limit exceeded",
+        ) from exc
     return value
 
 
@@ -662,7 +780,68 @@ def _timeline_capability(
             primary,
             "capability list is invalid",
         )
-    return frozenset(configured)
+    configured_set = frozenset(configured)
+    if (
+        any(not isinstance(item, str) for item in configured_set)
+        or not configured_set.issubset(default)
+    ):
+        _raise(
+            "timeline_capability_invalid",
+            primary,
+            "capability list may not enlarge the frozen registry",
+        )
+    return configured_set
+
+
+def _marker_sequence(text: str, markers: tuple[str, ...]) -> tuple[str, ...]:
+    pattern = "|".join(
+        re.escape(marker) for marker in sorted(markers, key=len, reverse=True)
+    )
+    return tuple(match.group(0) for match in re.finditer(pattern, text))
+
+
+def _compressed_text_preserves_facts(
+    source: str,
+    output: str,
+    protected_terms: list[str],
+) -> bool:
+    source_normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFC", source)
+        if not unicodedata.category(character).startswith(("P", "Z"))
+    )
+    output_normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFC", output)
+        if not unicodedata.category(character).startswith(("P", "Z"))
+    )
+    source_position = 0
+    for character in output_normalized:
+        source_position = source_normalized.find(character, source_position)
+        if source_position < 0:
+            return False
+        source_position += 1
+    for term in protected_terms:
+        if (
+            not isinstance(term, str)
+            or not term
+            or source.count(term) == 0
+            or output.count(term) != source.count(term)
+        ):
+            return False
+    if re.findall(r"\d+(?:\.\d+)?(?:%|元|万|亿)?", source) != re.findall(
+        r"\d+(?:\.\d+)?(?:%|元|万|亿)?",
+        output,
+    ):
+        return False
+    return all(
+        _marker_sequence(source, markers) == _marker_sequence(output, markers)
+        for markers in (
+            _NEGATION_MARKERS,
+            _CAUSAL_MARKERS,
+            _PROMISE_MARKERS,
+        )
+    )
 
 
 def _validate_time_range(
@@ -827,6 +1006,14 @@ def validate_edit_plan(
     material_requests = {
         material["request_id"]: material for material in plan["materials"]
     }
+    for material_index, material in enumerate(plan["materials"]):
+        _validate_time_range(
+            material["time_range"],
+            duration_ms,
+            field_path=f"materials[{material_index}].time_range",
+            error_code="material_request_timeline_invalid",
+        )
+    bound_material_ids: set[str] = set()
     for scene_index, scene in enumerate(scenes):
         if scene["layout_id"] not in layout_ids:
             _raise(
@@ -897,9 +1084,10 @@ def validate_edit_plan(
                     protected_terms.extend(
                         accurate_by_id[reference].get("protected_terms", [])
                     )
-                if any(
-                    not isinstance(term, str) or term not in visible["text"]
-                    for term in protected_terms
+                if not _compressed_text_preserves_facts(
+                    authoritative,
+                    visible["text"],
+                    protected_terms,
                 ):
                     _raise(
                         "visible_text_protected_fact_changed",
@@ -918,12 +1106,42 @@ def validate_edit_plan(
                     f"scenes[{scene_index}].material_slots[{slot_index}]",
                     "material slot must be contained by its scene",
                 )
-            if slot["priority"] == "required" and slot["id"] not in material_requests:
+            request = material_requests.get(slot["id"])
+            if request is None:
+                if slot["priority"] == "required":
+                    _raise(
+                        "required_material_unresolved",
+                        f"scenes[{scene_index}].material_slots[{slot_index}]",
+                        "required material slot has no request",
+                    )
                 _raise(
-                    "required_material_unresolved",
+                    "material_request_unbound",
                     f"scenes[{scene_index}].material_slots[{slot_index}]",
-                    "required material slot has no request",
+                    "material slot has no matching request",
                 )
+            bound_material_ids.add(slot["id"])
+            expected_range = {
+                "start_ms": slot["start_ms"],
+                "end_ms": slot["end_ms"],
+            }
+            if any(
+                request[field] != slot[field]
+                for field in ("semantic", "purpose", "priority", "ratio")
+            ) or request["time_range"] != expected_range:
+                _raise(
+                    "material_request_mismatch",
+                    f"materials[{slot['id']}]",
+                    "material request does not exactly match its slot",
+                )
+
+    unbound_materials = set(material_requests) - bound_material_ids
+    if unbound_materials:
+        unbound = sorted(unbound_materials)[0]
+        _raise(
+            "material_request_unbound",
+            "materials",
+            f"material request {unbound} has no matching slot",
+        )
 
     segment_output = 0
     previous_source_end = 0
@@ -966,21 +1184,43 @@ def validate_edit_plan(
                 error_code=f"{field}_timeline_invalid",
             )
 
-    theme_capabilities = timeline.get("theme_capabilities", {})
-    if theme_capabilities is not None:
-        if not isinstance(theme_capabilities, Mapping):
+    theme_capabilities = timeline.get("theme_capabilities")
+    if theme_capabilities is None:
+        _raise(
+            "timeline_capability_missing",
+            "theme_capabilities",
+            "theme capabilities are required for a themed plan",
+        )
+    if (
+        not isinstance(theme_capabilities, Mapping)
+        or set(theme_capabilities) != set(_THEME_CAPABILITIES)
+    ):
+        _raise(
+            "timeline_capability_invalid",
+            "theme_capabilities",
+            "theme capability registry is incomplete",
+        )
+    for field, frozen in _THEME_CAPABILITIES.items():
+        allowed = theme_capabilities[field]
+        if not isinstance(allowed, (list, tuple, set, frozenset)):
             _raise(
                 "timeline_capability_invalid",
-                "theme_capabilities",
-                "theme capability registry is invalid",
+                f"theme_capabilities.{field}",
+                "theme capability list is invalid",
             )
-        for field, allowed in theme_capabilities.items():
-            if field in plan["theme"] and plan["theme"][field] not in allowed:
-                _raise(
-                    "director_capability_unknown",
-                    f"theme.{field}",
-                    "theme token is not in the frozen capability registry",
-                )
+        allowed_set = frozenset(allowed)
+        if not allowed_set or not allowed_set.issubset(frozen):
+            _raise(
+                "timeline_capability_invalid",
+                f"theme_capabilities.{field}",
+                "theme capabilities may not enlarge the frozen registry",
+            )
+        if plan["theme"][field] not in allowed_set:
+            _raise(
+                "director_capability_unknown",
+                f"theme.{field}",
+                "theme token is not in the supplied frozen capabilities",
+            )
     return copy.deepcopy(plan)
 
 
@@ -1013,22 +1253,33 @@ def _verify_declared_file(
     path_key: str,
     sandbox_root: Path,
     field_path: str,
-) -> None:
+) -> tuple[str, str, int, tuple[int, int]]:
     relative = _validate_relative_media_path(
         declaration.get(path_key),
         f"{field_path}.{path_key}",
     )
-    root = sandbox_root.resolve(strict=True)
-    candidate = root
     try:
+        root_input = sandbox_root.absolute()
+        root_metadata = root_input.lstat()
+        reparse_attribute = getattr(
+            stat,
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            0,
+        )
+        if stat.S_ISLNK(root_metadata.st_mode) or (
+            getattr(root_metadata, "st_file_attributes", 0)
+            & reparse_attribute
+        ):
+            _raise(
+                "render_file_not_regular",
+                field_path,
+                "sandbox root may not be a reparse point",
+            )
+        root = sandbox_root.resolve(strict=True)
+        candidate = root
         for part in relative.parts:
             candidate = candidate / part
             metadata = candidate.lstat()
-            reparse_attribute = getattr(
-                stat,
-                "FILE_ATTRIBUTE_REPARSE_POINT",
-                0,
-            )
             if stat.S_ISLNK(metadata.st_mode) or (
                 getattr(metadata, "st_file_attributes", 0)
                 & reparse_attribute
@@ -1038,18 +1289,42 @@ def _verify_declared_file(
                     field_path,
                     "symlinks are forbidden",
                 )
+        pre_open = candidate.lstat()
+        if not stat.S_ISREG(pre_open.st_mode) or pre_open.st_nlink != 1:
+            _raise(
+                "render_file_not_regular",
+                field_path,
+                "media must be an ordinary single-link file",
+            )
         resolved = candidate.resolve(strict=True)
-    except FileNotFoundError as exc:
+    except ContractError:
+        raise
+    except OSError as exc:
         raise ContractError(
             "render_file_not_regular",
             field_path,
-            "declared media file does not exist",
+            "declared media path cannot be inspected",
         ) from exc
     if not resolved.is_relative_to(root):
         _raise("render_path_invalid", field_path, "media path escapes sandbox")
 
-    digest = hashlib.sha256()
-    with candidate.open("rb") as stream:
+    declared_size = declaration.get("size_bytes")
+    if declared_size is not None and pre_open.st_size != declared_size:
+        _raise(
+            "render_size_mismatch",
+            field_path,
+            "declared media size does not match",
+        )
+    hard_size_limit = declared_size if declared_size is not None else 1073741824
+    try:
+        stream = candidate.open("rb")
+    except OSError as exc:
+        raise ContractError(
+            "render_file_unreadable",
+            field_path,
+            "declared media file cannot be opened",
+        ) from exc
+    try:
         opened = os.fstat(stream.fileno())
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             _raise(
@@ -1057,13 +1332,67 @@ def _verify_declared_file(
                 field_path,
                 "media must be an ordinary unlinked file",
             )
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        if not os.path.samestat(pre_open, opened):
+            _raise(
+                "render_file_identity_changed",
+                field_path,
+                "media identity changed before open",
+            )
+        if opened.st_size != pre_open.st_size or opened.st_size > hard_size_limit:
+            _raise(
+                "render_size_mismatch",
+                field_path,
+                "opened media size does not match bounded declaration",
+            )
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = stream.read(min(1024 * 1024, hard_size_limit - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > hard_size_limit:
+                _raise(
+                    "render_size_mismatch",
+                    field_path,
+                    "media exceeded its declared size while hashing",
+                )
             digest.update(chunk)
-    if "size_bytes" in declaration and opened.st_size != declaration["size_bytes"]:
-        _raise(
-            "render_size_mismatch",
+        after_read = os.fstat(stream.fileno())
+        if not os.path.samestat(opened, after_read) or after_read.st_size != total:
+            _raise(
+                "render_file_identity_changed",
+                field_path,
+                "opened media changed while hashing",
+            )
+    except ContractError:
+        raise
+    except OSError as exc:
+        raise ContractError(
+            "render_file_unreadable",
             field_path,
-            "declared media size does not match",
+            "declared media file could not be read",
+        ) from exc
+    finally:
+        stream.close()
+    try:
+        post_open = candidate.lstat()
+        post_resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ContractError(
+            "render_file_identity_changed",
+            field_path,
+            "media path disappeared after hashing",
+        ) from exc
+    if (
+        not os.path.samestat(opened, post_open)
+        or post_resolved != resolved
+        or not post_resolved.is_relative_to(root)
+    ):
+        _raise(
+            "render_file_identity_changed",
+            field_path,
+            "media path identity changed while hashing",
         )
     if digest.hexdigest() != declaration.get("sha256"):
         _raise(
@@ -1071,6 +1400,12 @@ def _verify_declared_file(
             field_path,
             "declared media SHA-256 does not match",
         )
+    return (
+        relative.as_posix(),
+        digest.hexdigest(),
+        total,
+        (opened.st_dev, opened.st_ino),
+    )
 
 
 def validate_render_manifest(
@@ -1078,33 +1413,21 @@ def validate_render_manifest(
     *,
     sandbox_root: Path,
 ) -> dict[str, Any]:
+    try:
+        _validate_schema(
+            manifest,
+            "render-manifest-v1.schema.json",
+            "render_schema_invalid",
+        )
+    except ContractError as exc:
+        if exc.field_path.endswith((".path", ".source_path")):
+            raise ContractError(
+                "render_path_invalid",
+                exc.field_path,
+                "media path must be normalized relative POSIX",
+            ) from exc
+        raise
     _reject_control_characters(manifest)
-    if isinstance(manifest, Mapping):
-        declarations: list[tuple[Mapping[str, Any], str, str]] = []
-        source_video = manifest.get("source_video")
-        if isinstance(source_video, Mapping):
-            declarations.append((source_video, "path", "source_video"))
-        master_audio = manifest.get("master_audio")
-        if isinstance(master_audio, Mapping):
-            declarations.append((master_audio, "path", "master_audio"))
-        for index, asset in enumerate(manifest.get("assets", [])):
-            if isinstance(asset, Mapping):
-                declarations.append((asset, "path", f"assets[{index}]"))
-        for index, segment in enumerate(manifest.get("source_segments", [])):
-            if isinstance(segment, Mapping):
-                declarations.append(
-                    (segment, "source_path", f"source_segments[{index}]")
-                )
-        for declaration, path_key, field_path in declarations:
-            _validate_relative_media_path(
-                declaration.get(path_key),
-                f"{field_path}.{path_key}",
-            )
-    _validate_schema(
-        manifest,
-        "render-manifest-v1.schema.json",
-        "render_schema_invalid",
-    )
     if manifest["schema_sha256"] != schema_sha256(
         "render-manifest-v1.schema.json"
     ):
@@ -1209,7 +1532,19 @@ def validate_render_manifest(
 
     segment_output = 0
     previous_source_end = 0
+    source_video = manifest["source_video"]
     for index, segment in enumerate(manifest["source_segments"]):
+        if (
+            source_video is None
+            or segment["source_path"] != source_video["path"]
+            or segment["sha256"] != source_video["sha256"]
+            or segment["source_end_ms"] > source_video["duration_ms"]
+        ):
+            _raise(
+                "render_source_video_binding_invalid",
+                f"source_segments[{index}]",
+                "source segment must bind to the declared source video",
+            )
         if (
             segment["source_start_ms"] < previous_source_end
             or segment["source_end_ms"] <= segment["source_start_ms"]
@@ -1261,13 +1596,47 @@ def validate_render_manifest(
         (segment, "source_path", f"source_segments[{index}]")
         for index, segment in enumerate(manifest["source_segments"])
     )
+    verified_paths: dict[str, tuple[str, int, tuple[int, int]]] = {}
+    verified_identities: dict[tuple[int, int], str] = {}
     for declaration, path_key, field_path in file_declarations:
-        _verify_declared_file(
+        relative = _validate_relative_media_path(
+            declaration[path_key],
+            f"{field_path}.{path_key}",
+        ).as_posix()
+        cached = verified_paths.get(relative)
+        if cached is not None:
+            cached_sha, cached_size, _identity = cached
+            if declaration["sha256"] != cached_sha:
+                _raise(
+                    "render_hash_mismatch",
+                    field_path,
+                    "same path has conflicting declared hashes",
+                )
+            if (
+                "size_bytes" in declaration
+                and declaration["size_bytes"] != cached_size
+            ):
+                _raise(
+                    "render_size_mismatch",
+                    field_path,
+                    "same path has conflicting declared sizes",
+                )
+            continue
+        verified_path, digest, size, identity = _verify_declared_file(
             declaration,
             path_key=path_key,
             sandbox_root=root,
             field_path=field_path,
         )
+        other_path = verified_identities.get(identity)
+        if other_path is not None and other_path != verified_path:
+            _raise(
+                "render_file_not_regular",
+                field_path,
+                "different media paths may not share one file identity",
+            )
+        verified_paths[verified_path] = (digest, size, identity)
+        verified_identities[identity] = verified_path
     return copy.deepcopy(manifest)
 
 
@@ -1292,6 +1661,15 @@ def validate_quality_verdict(verdict: Any) -> dict[str, Any]:
                     "quality check IDs must be unique",
                 )
             seen.add(check_id)
+            if (
+                "blocking" in check
+                and check["blocking"] is not _QUALITY_BLOCKING[check_id]
+            ):
+                _raise(
+                    "quality_blocking_mismatch",
+                    f"checks[{index}].blocking",
+                    "quality blocking classification is frozen",
+                )
             confidence = check.get("confidence")
             if (
                 isinstance(confidence, bool)
@@ -1304,6 +1682,13 @@ def validate_quality_verdict(verdict: Any) -> dict[str, Any]:
                     f"checks[{index}].confidence",
                     "quality confidence must be finite from zero to one",
                 )
+        missing = _QUALITY_CHECK_IDS - seen
+        if missing:
+            _raise(
+                "quality_check_missing",
+                "checks",
+                "quality verdict must contain the complete frozen check set",
+            )
     _validate_schema(
         verdict,
         "quality-verdict-v1.schema.json",

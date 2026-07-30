@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from server.content_domains.ai_edit_v3.contracts import (
@@ -58,9 +59,9 @@ def valid_request(**overrides):
 def matrix_request(input_type, creation_mode):
     return {
         "input_type": input_type,
-        **INPUT_CASES[input_type],
+        **copy.deepcopy(INPUT_CASES[input_type]),
         "creation_mode": creation_mode,
-        **CREATION_CASES[creation_mode],
+        **copy.deepcopy(CREATION_CASES[creation_mode]),
         "material_asset_ids": ["image_01", "image_02"],
     }
 
@@ -144,6 +145,19 @@ class RequestContractTests(unittest.TestCase):
                 "style_prompt": "  克制可信  ",
                 "material_asset_ids": ["image-1"],
             },
+        )
+
+    def test_normalized_request_deep_copies_nested_caller_values(self):
+        body = matrix_request("script_to_audio_video", "ai_auto")
+
+        normalized = normalize_job_request(body)
+        body["tts_input"]["text"] = "mutated"
+        body["material_asset_ids"].append("image_03")
+
+        self.assertEqual(normalized["tts_input"]["text"], "可信的准确文本")
+        self.assertEqual(
+            normalized["material_asset_ids"],
+            ["image_01", "image_02"],
         )
 
     def test_uploaded_video_rejects_even_null_unused_sources(self):
@@ -312,6 +326,16 @@ class RequestContractTests(unittest.TestCase):
                 ):
                     normalize_job_request(body)
 
+    def test_lone_surrogates_are_rejected_as_contract_errors(self):
+        body = matrix_request("uploaded_video", "style_prompt")
+        body["style_prompt"] = "unsafe\ud800text"
+
+        with self.assertRaisesRegex(
+            ContractError,
+            "unicode_scalar_invalid",
+        ):
+            normalize_job_request(body)
+
 
 class CanonicalRequestTests(unittest.TestCase):
     def test_canonical_json_is_compact_sorted_utf8_without_ascii_escaping(self):
@@ -338,6 +362,16 @@ class CanonicalRequestTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ContractError):
                     canonical_json(value)
+
+    def test_canonical_json_and_fingerprint_reject_lone_surrogates_stably(self):
+        value = {"text": "unsafe\ud800text"}
+        for function in (canonical_json, request_fingerprint):
+            with self.subTest(function=function.__name__):
+                with self.assertRaisesRegex(
+                    ContractError,
+                    "unicode_scalar_invalid",
+                ):
+                    function(value)
 
 
 class StateContractTests(unittest.TestCase):
