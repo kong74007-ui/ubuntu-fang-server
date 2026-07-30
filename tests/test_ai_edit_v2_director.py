@@ -88,6 +88,33 @@ class DirectorTests(unittest.TestCase):
         self.assertEqual(plan["style_system"], {"component_family": "editorial_business"})
         self.assertEqual(plan["scenes"][0]["id"], "scene_01")
 
+    def test_director_fills_blank_headline_from_scene_intent_without_retry(self):
+        response = copy.deepcopy(VALID_PLAN)
+        response["scenes"][0]["intent"] = "  解释价格构成  "
+        response["scenes"][0]["headline"] = "   "
+        client = FakeQwen([json.dumps(response, ensure_ascii=False)])
+
+        plan = generate_edit_plan(CONTEXT, client)
+
+        self.assertEqual(plan["scenes"][0]["headline"], "解释价格构成")
+        self.assertEqual(len(client.calls), 1)
+
+    def test_director_fills_missing_or_none_headline_from_scene_intent(self):
+        for headline in (None, "missing"):
+            with self.subTest(headline=headline):
+                response = copy.deepcopy(VALID_PLAN)
+                response["scenes"][0]["intent"] = "解释价格构成"
+                if headline == "missing":
+                    response["scenes"][0].pop("headline")
+                else:
+                    response["scenes"][0]["headline"] = headline
+                client = FakeQwen([json.dumps(response, ensure_ascii=False)])
+
+                plan = generate_edit_plan(CONTEXT, client)
+
+                self.assertEqual(plan["scenes"][0]["headline"], "解释价格构成")
+                self.assertEqual(len(client.calls), 1)
+
     def test_director_initial_request_contains_a_context_valid_output_example(self):
         class ExampleEchoQwen:
             def generate_edit_plan(self, _system_prompt, user_prompt):
