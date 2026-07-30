@@ -63,6 +63,7 @@ class FakeRepositories:
         self.required = list(required or [])
         self.records = None
         self.persisted = []
+        self.search_calls = []
 
     def owner_for_job(self, job_id):
         if job_id != JOB:
@@ -71,6 +72,7 @@ class FakeRepositories:
 
     def search(self, source, job_id, slot):
         self.assert_safe_slot(slot)
+        self.search_calls.append(source)
         return copy.deepcopy(self.by_source.get(source, []))
 
     def required_materials(self, job_id):
@@ -141,9 +143,49 @@ class MaterialResolverTests(unittest.TestCase):
             resolved["materials"]["slot_product_1"]["source"], "current_upload"
         )
         self.assertEqual(image.calls, [])
-        by_source = {record["source"]: record for record in repos.records}
-        self.assertEqual(by_source["user_history"]["exclusion_code"], "not_selected")
-        self.assertEqual(by_source["platform_public"]["exclusion_code"], "not_selected")
+        self.assertEqual(repos.search_calls, ["current_upload"])
+
+    def test_history_and_public_sources_are_never_searched(self):
+        repos = FakeRepositories(
+            {
+                "user_history": [candidate("history", "user_history")],
+                "platform_public": [candidate("public", "platform_public")],
+            }
+        )
+        image = FakeImageProvider()
+
+        resolved = resolve_materials(JOB, PLAN, repos, image)
+
+        self.assertEqual(repos.search_calls, ["current_upload"])
+        self.assertEqual(
+            resolved["materials"]["slot_product_1"]["source"], "gpt_image"
+        )
+        self.assertEqual(len(image.calls), 1)
+
+    def test_optional_current_upload_is_not_reused_across_slots(self):
+        plan = copy.deepcopy(PLAN)
+        plan["scenes"].append(
+            {
+                **copy.deepcopy(plan["scenes"][0]),
+                "id": "scene_02",
+                "material_slots": ["slot_product_2"],
+            }
+        )
+        repos = FakeRepositories(
+            {"current_upload": [candidate("only-upload", "current_upload")]}
+        )
+        image = FakeImageProvider()
+
+        resolved = resolve_materials(JOB, plan, repos, image)
+
+        self.assertEqual(repos.search_calls, ["current_upload", "current_upload"])
+        self.assertEqual(
+            resolved["materials"]["slot_product_1"]["source"], "current_upload"
+        )
+        self.assertEqual(
+            resolved["materials"]["slot_product_2"]["source"], "gpt_image"
+        )
+        self.assertEqual(len(image.calls), 1)
 
     def test_required_material_must_be_used_once_or_more(self):
         plan_without_slots = copy.deepcopy(PLAN)
@@ -286,26 +328,18 @@ class MaterialResolverTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, "required_material_unavailable")
 
-    def test_cross_owner_or_cross_job_candidates_are_excluded(self):
+    def test_cross_job_current_upload_is_excluded_without_history_or_public_fallback(self):
         wrong_job = candidate("wrong-job", "current_upload", job_id="other-job")
-        wrong_owner = candidate("wrong-owner", "user_history", owner="user-b")
-        public = candidate("public", "platform_public")
-        repos = FakeRepositories(
-            {
-                "current_upload": [wrong_job],
-                "user_history": [wrong_owner],
-                "platform_public": [public],
-            }
-        )
+        repos = FakeRepositories({"current_upload": [wrong_job]})
 
         resolved = resolve_materials(JOB, PLAN, repos, FakeImageProvider())
 
-        self.assertEqual(resolved["materials"]["slot_product_1"]["asset_id"], "public")
+        self.assertEqual(
+            resolved["materials"]["slot_product_1"]["source"], "gpt_image"
+        )
         by_asset = {record["asset_id"]: record for record in repos.records}
         self.assertEqual(by_asset["wrong-job"]["exclusion_code"], "job_scope_mismatch")
-        self.assertEqual(by_asset["wrong-owner"]["exclusion_code"], "owner_scope_mismatch")
         self.assertIsNone(by_asset["wrong-job"]["cos_key"])
-        self.assertIsNone(by_asset["wrong-owner"]["cos_key"])
 
     def test_private_candidate_cos_key_must_match_user_and_current_job_scope(self):
         wrong_cos_scope = candidate(
@@ -316,14 +350,13 @@ class MaterialResolverTests(unittest.TestCase):
                 "223e4567-e89b-12d3-a456-426614174000/materials/wrong.png"
             ),
         )
-        public = candidate("public", "platform_public")
-        repos = FakeRepositories(
-            {"current_upload": [wrong_cos_scope], "platform_public": [public]}
-        )
+        repos = FakeRepositories({"current_upload": [wrong_cos_scope]})
 
         resolved = resolve_materials(JOB, PLAN, repos, FakeImageProvider())
 
-        self.assertEqual(resolved["materials"]["slot_product_1"]["asset_id"], "public")
+        self.assertEqual(
+            resolved["materials"]["slot_product_1"]["source"], "gpt_image"
+        )
         wrong_record = next(
             record for record in repos.records if record["asset_id"] == "wrong-cos-scope"
         )

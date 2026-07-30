@@ -115,6 +115,89 @@ class RuntimeTests(unittest.TestCase):
             repositories = runtime._MaterialRepositories(db_path, "alice")
             self.assertEqual(repositories.search("current_upload", job["id"], {}), [])
 
+    def test_material_repository_honors_real_required_and_reference_bindings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            pricing_path = os.path.join(directory, "pricing.db")
+            store.init_db(db_path)
+            rows = [
+                ("video", "primary", None, "platform_video", "source.mp4", "video/mp4"),
+                ("image", "required", None, "user_upload", "required.png", "image/png"),
+                ("image", "reference", "direct_use", "user_upload", "direct.png", "image/png"),
+                ("image", "reference", "style_only", "user_upload", "style.png", "image/png"),
+            ]
+            material_ids = []
+            with closing(store.open_store(db_path)) as conn:
+                for kind, purpose, reference_mode, source, filename, mime_type in rows:
+                    cursor = conn.execute(
+                        """INSERT INTO edit_v2_materials(
+                               owner,kind,purpose,reference_mode,source,cos_key,filename,mime_type,
+                               size_bytes,duration_ms,width,height,status,created_at,updated_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            "alice", kind, purpose, reference_mode, source,
+                            "ai-edit-v2/alice/uploads/" + filename, filename, mime_type,
+                            100, 1000 if kind == "video" else None, 1080, 1920,
+                            "ready", 1, 1,
+                        ),
+                    )
+                    material_ids.append(cursor.lastrowid)
+                conn.commit()
+
+            primary_id, required_id, direct_id, style_id = material_ids
+            draft = {
+                "creation_mode": "open_generation",
+                "language": "zh-CN",
+                "aspect_ratio": "9:16",
+                "target_duration_ms": None,
+                "input_mode": "platform_video",
+                "main_input": {
+                    "asset_id": str(primary_id), "kind": "video", "size_bytes": 100,
+                    "duration_ms": 1000,
+                },
+                "required_materials": [{
+                    "asset_id": str(required_id), "kind": "image", "size_bytes": 100,
+                    "duration_ms": None,
+                }],
+                "reference_materials": [
+                    {
+                        "asset_id": str(direct_id), "kind": "image", "size_bytes": 100,
+                        "duration_ms": None, "reference_mode": "direct_use",
+                    },
+                    {
+                        "asset_id": str(style_id), "kind": "image", "size_bytes": 100,
+                        "duration_ms": None, "reference_mode": "style_only",
+                    },
+                ],
+                "original_text": "platform script",
+            }
+            quote = billing.create_quote(
+                "alice", draft, 1, db_path=db_path, pricing_db_path=pricing_path
+            )
+            job = store.create_job(
+                "alice", {"draft": draft}, quote["id"], "material-bindings", 2,
+                uuid_factory=lambda: "123e4567-e89b-42d3-a456-426614174002",
+                db_path=db_path,
+                material_bindings=[
+                    {"material_id": primary_id, "purpose": "primary"},
+                    {"material_id": required_id, "purpose": "required"},
+                    {"material_id": direct_id, "purpose": "reference"},
+                    {"material_id": style_id, "purpose": "reference"},
+                ],
+            )
+
+            repositories = runtime._MaterialRepositories(db_path, "alice")
+            required = repositories.required_materials(job["id"])
+            candidates = repositories.search("current_upload", job["id"], {})
+
+            self.assertEqual([item["asset_id"] for item in required], [str(required_id)])
+            self.assertTrue(required[0]["required"])
+            self.assertEqual(
+                {item["asset_id"] for item in candidates},
+                {str(required_id), str(direct_id)},
+            )
+            self.assertNotIn(str(style_id), {item["asset_id"] for item in candidates})
+
     def test_audio_only_always_masters_original_voice_when_optional_audio_is_none_or_degraded(self):
         class Cos:
             def __init__(self): self.objects = {}
