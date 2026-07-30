@@ -37,6 +37,28 @@ STABLE_RENDER_COMPONENTS: Final = frozenset(
         "audio_bed",
     }
 )
+STABLE_VISUAL_GEOMETRIES: Final = {
+    "16:9": frozenset(
+        {
+            ("right", 720, 900, "contain"),
+            ("right", 960, 1080, "crop"),
+            ("center", None, None, "crop"),
+            ("center", 960, 640, "contain"),
+        }
+    ),
+    "9:16": frozenset(
+        {
+            ("bottom", 960, 760, "contain"),
+            ("bottom", 1080, 960, "crop"),
+            ("center", None, None, "crop"),
+            ("center", 960, 720, "contain"),
+        }
+    ),
+}
+STABLE_CARD_GEOMETRIES: Final = {
+    "16:9": frozenset({("top", 1500, 260)}),
+    "9:16": frozenset({("top", 864, 300)}),
+}
 BUNDLED_NOTO_SANS_SC_URL: Final = (
     "https://shotstack-assets.s3-ap-southeast-2.amazonaws.com/"
     "fonts/NotoSansSC-Regular.otf"
@@ -501,6 +523,42 @@ def validate_render_graph(graph: dict[str, Any]) -> dict[str, Any]:
                 )
                 and component.get("height") == 180,
                 f"{path}修复布局不受支持",
+            )
+        elif kind == "basic_card" and fields != allowed_fields[kind]:
+            geometry_fields = {"position", "width", "height"}
+            _require(
+                fields == allowed_fields[kind] | geometry_fields,
+                f"{path}字段不受支持",
+            )
+            geometry = (
+                component.get("position"),
+                component.get("width"),
+                component.get("height"),
+            )
+            _require(
+                geometry in STABLE_CARD_GEOMETRIES[graph["aspect_ratio"]],
+                f"{path}卡片布局不受支持",
+            )
+        elif kind in {"broll_image", "broll_video"} and fields != allowed_fields[kind]:
+            geometry_fields = {"position", "width", "height", "fit"}
+            full_bleed_fields = {"position", "fit"}
+            _require(
+                frozenset(fields)
+                in {
+                    frozenset(allowed_fields[kind] | geometry_fields),
+                    frozenset(allowed_fields[kind] | full_bleed_fields),
+                },
+                f"{path}字段不受支持",
+            )
+            geometry = (
+                component.get("position"),
+                component.get("width"),
+                component.get("height"),
+                component.get("fit"),
+            )
+            _require(
+                geometry in STABLE_VISUAL_GEOMETRIES[graph["aspect_ratio"]],
+                f"{path}视觉布局不受支持",
             )
         else:
             _require(fields == allowed_fields[kind], f"{path}字段不受支持")

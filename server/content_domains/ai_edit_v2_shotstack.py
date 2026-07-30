@@ -30,6 +30,54 @@ from .ai_edit_v2_schema import (
 
 _DEFAULT_API_BASE = "https://api.shotstack.io/edit/stage"
 _WEBHOOK_LEASE_SECONDS = 60
+_MATERIAL_LAYOUTS = {
+    "16:9": {
+        "speaker_product_split": {
+            "position": "right",
+            "width": 720,
+            "height": 900,
+            "fit": "contain",
+        },
+        "split_screen": {
+            "position": "right",
+            "width": 960,
+            "height": 1080,
+            "fit": "crop",
+        },
+        "full_bleed": {"position": "center", "fit": "crop"},
+        "data_card": {
+            "position": "center",
+            "width": 960,
+            "height": 640,
+            "fit": "contain",
+        },
+    },
+    "9:16": {
+        "speaker_product_split": {
+            "position": "bottom",
+            "width": 960,
+            "height": 760,
+            "fit": "contain",
+        },
+        "split_screen": {
+            "position": "bottom",
+            "width": 1080,
+            "height": 960,
+            "fit": "crop",
+        },
+        "full_bleed": {"position": "center", "fit": "crop"},
+        "data_card": {
+            "position": "center",
+            "width": 960,
+            "height": 720,
+            "fit": "contain",
+        },
+    },
+}
+_CARD_LAYOUTS = {
+    "16:9": {"position": "top", "width": 1500, "height": 260},
+    "9:16": {"position": "top", "width": 864, "height": 300},
+}
 
 
 class RenderGraphError(RuntimeError):
@@ -105,6 +153,7 @@ def build_render_graph(
                         "text": headline,
                         "start": start_ms / 1000,
                         "length": (end_ms - start_ms) / 1000,
+                        **_CARD_LAYOUTS[aspect_ratio],
                     }
                 )
             transition = scene.get("transition")
@@ -124,6 +173,12 @@ def build_render_graph(
                     continue
                 if not isinstance(material, dict):
                     raise RenderGraphError("resolved_material_missing")
+                layout = scene.get("layout")
+                if layout == "speaker_focus":
+                    raise RenderGraphError("speaker_focus_material_forbidden")
+                geometry = _MATERIAL_LAYOUTS.get(aspect_ratio, {}).get(layout)
+                if geometry is None:
+                    raise RenderGraphError("stable_layout_unsupported")
                 kind = material.get("kind")
                 component_type = {
                     "image": "broll_image",
@@ -133,7 +188,12 @@ def build_render_graph(
                     raise RenderGraphError("resolved_material_kind_invalid")
                 components.append(
                     _asset_component(
-                        component_type, material, signed_assets, start_ms, end_ms
+                        component_type,
+                        material,
+                        signed_assets,
+                        start_ms,
+                        end_ms,
+                        geometry=geometry,
                     )
                 )
         mastered = resolved_plan.get("mastered_audio")
@@ -179,6 +239,7 @@ def _asset_component(
     signed_assets: dict[str, str],
     start_ms: int,
     end_ms: int,
+    geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cos_key = asset.get("cos_key")
     if not isinstance(cos_key, str) or not cos_key:
@@ -186,12 +247,15 @@ def _asset_component(
     src = signed_assets.get(cos_key)
     if not isinstance(src, str) or not src.startswith(("http://", "https://")):
         raise RenderGraphError("render_asset_signature_missing")
-    return {
+    component = {
         "type": kind,
         "start": start_ms / 1000,
         "length": (end_ms - start_ms) / 1000,
         "src": src,
     }
+    if geometry is not None:
+        component.update(geometry)
+    return component
 
 
 def _time_range(value: dict[str, Any], duration_ms: int) -> tuple[int, int]:
@@ -292,10 +356,14 @@ def _compile_shotstack_edit(
             })
         elif kind == "basic_card":
             clip.update({
-                "position": "center",
-                "width": 864 if vertical else 1500,
-                "height": 360,
+                "position": component.get("position", "center"),
+                "width": component.get("width", 864 if vertical else 1500),
+                "height": component.get("height", 360),
             })
+        elif kind in {"broll_image", "broll_video"}:
+            for field in ("position", "width", "height", "fit"):
+                if field in component:
+                    clip[field] = component[field]
         tracks.append({"clips": [clip]})
     return {
         "timeline": {

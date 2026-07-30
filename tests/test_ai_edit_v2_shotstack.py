@@ -46,11 +46,13 @@ RESOLVED_PLAN = {
     "scenes": [
         {
             "id": "scene_1", "start_ms": 0, "end_ms": 1_840,
-            "headline": "真实问题", "material_slots": [], "transition": "cut",
+            "headline": "真实问题", "layout": "speaker_focus",
+            "visual_type": "talking_head", "material_slots": [], "transition": "cut",
         },
         {
             "id": "scene_2", "start_ms": 1_840, "end_ms": 4_000,
-            "headline": "解决办法", "material_slots": ["slot_solution"],
+            "headline": "解决办法", "layout": "speaker_product_split",
+            "visual_type": "product_hook", "material_slots": ["slot_solution"],
             "transition": "fade",
         },
     ],
@@ -132,7 +134,7 @@ class RenderGraphTests(unittest.TestCase):
         self.assertTrue(captions)
         self.assertTrue(cards)
         self.assertTrue(all((clip["width"], clip["height"]) == (864, 240) for clip in captions))
-        self.assertTrue(all((clip["width"], clip["height"]) == (864, 360) for clip in cards))
+        self.assertTrue(all((clip["width"], clip["height"]) == (864, 300) for clip in cards))
 
     def test_render_graph_maps_only_the_stable_component_allowlist(self):
         graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
@@ -162,6 +164,60 @@ class RenderGraphTests(unittest.TestCase):
         self.assertTrue(overlay_indices)
         self.assertTrue(all(index < material_index for index in overlay_indices))
         self.assertLess(material_index, primary_index)
+
+    def test_semantic_layouts_compile_to_distinct_audited_geometry(self):
+        cases = (
+            ("16:9", "speaker_product_split", "right", 720, 900, "contain"),
+            ("16:9", "split_screen", "right", 960, 1080, "crop"),
+            ("16:9", "full_bleed", "center", None, None, "crop"),
+            ("16:9", "data_card", "center", 960, 640, "contain"),
+            ("9:16", "speaker_product_split", "bottom", 960, 760, "contain"),
+            ("9:16", "split_screen", "bottom", 1080, 960, "crop"),
+            ("9:16", "data_card", "center", 960, 720, "contain"),
+        )
+
+        for ratio, layout, position, width, height, fit in cases:
+            with self.subTest(ratio=ratio, layout=layout):
+                plan = json.loads(json.dumps(RESOLVED_PLAN))
+                plan["aspect_ratio"] = ratio
+                plan["scenes"][1]["layout"] = layout
+                edit = _compile_shotstack_edit(
+                    build_render_graph(plan, SIGNED_ASSETS, FONT_URL),
+                    "https://callback.example.invalid",
+                )
+                clip = next(
+                    track["clips"][0]
+                    for track in edit["timeline"]["tracks"]
+                    if track["clips"][0]["asset"].get("src")
+                    == SIGNED_ASSETS["private/broll.png"]
+                )
+                self.assertEqual(clip["position"], position)
+                self.assertEqual(clip.get("width"), width)
+                self.assertEqual(clip.get("height"), height)
+                self.assertEqual(clip["fit"], fit)
+
+    def test_speaker_focus_rejects_supplemental_material_before_submission(self):
+        plan = json.loads(json.dumps(RESOLVED_PLAN))
+        plan["scenes"][1]["layout"] = "speaker_focus"
+
+        with self.assertRaisesRegex(
+            RenderGraphError, "speaker_focus_material_forbidden"
+        ):
+            build_render_graph(plan, SIGNED_ASSETS, FONT_URL)
+
+    def test_compiler_rejects_geometry_outside_the_audited_layout_table(self):
+        graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
+        material = next(
+            item for item in graph["components"] if item["type"] == "broll_image"
+        )
+        material["position"] = "left"
+
+        with self.assertRaisesRegex(
+            ProviderError, "shotstack_render_graph_invalid"
+        ):
+            _compile_shotstack_edit(
+                graph, "https://callback.example.invalid"
+            )
 
     def test_render_graph_rejects_free_code_and_advanced_components(self):
         for component in (

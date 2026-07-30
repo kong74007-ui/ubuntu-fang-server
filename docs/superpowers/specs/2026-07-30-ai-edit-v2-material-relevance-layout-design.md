@@ -36,7 +36,7 @@
 - `full_bleed`：补充素材全屏覆盖，适用于纯 B-roll 场景。
 - `data_card`：主体视频保留，素材使用居中信息卡尺寸，标题位于卡片上方。
 
-内部 `render_graph` 为视觉组件增加受审计的 `position`、`width`、`height`、`fit` 字段。编译为 Shotstack Timeline 时只映射固定枚举和固定尺寸，不允许 Qwen 输出任意坐标、HTML 或代码。
+内部 `render_graph` 为视觉组件增加受审计的 `position`、`width`、`height`、`fit` 字段，其中 `fit` 仅允许 `contain` 或保持比例裁切的 `crop`。编译为 Shotstack Timeline 时只映射固定枚举和固定尺寸，不允许 Qwen 输出任意坐标、HTML 或代码。
 
 ### Qwen 约束
 
@@ -67,4 +67,3 @@ Qwen 仍只输出 provider-neutral `edit-plan 2.0`。提示词增加：
 - `speaker_product_split` 与 `split_screen` 在 9:16、16:9 下均保持画布内安全尺寸。
 - Qwen 提示词明确约束槽位、布局和重复，但不出现 Shotstack 字段。
 - 相关单测、全量 AI Edit V2 测试、语法检查和 `git diff --check` 全部通过。
-

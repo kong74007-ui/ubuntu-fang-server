@@ -87,7 +87,7 @@ Expected: FAIL because the graph currently ignores `layout` and all B-roll compi
 
 - [ ] **Step 3: Extend the audited graph contract**
 
-Allow only fixed `position`, positive integer `width`/`height`, and `fit` in `{"cover", "contain"}` on visual components. Reject arbitrary values before provider submission.
+Allow only fixed `position`, positive integer `width`/`height`, and `fit` in `{"crop", "contain"}` on visual components. Reject arbitrary values before provider submission.
 
 - [ ] **Step 4: Implement deterministic layout mapping**
 
@@ -188,4 +188,3 @@ Confirm no user-history lookup, provider URL persistence, arbitrary layout coord
 - [ ] **Step 5: Push and open a draft PR**
 
 Push `codex/ai-edit-v2-material-layout`, open a draft PR with root-cause evidence and test results, and leave deployment for a separately authorized test-environment step.
-
