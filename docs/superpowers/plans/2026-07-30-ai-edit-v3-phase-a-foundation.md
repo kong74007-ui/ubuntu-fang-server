@@ -145,7 +145,7 @@ class LeaseClaim:
     job_id: str
     worker_id: str
     fencing_token: int
-    lease_until: int
+    lease_until: int  # Unix epoch milliseconds at claim time; this is a snapshot
 
 @dataclass(frozen=True)
 class ProviderResult:
@@ -171,17 +171,31 @@ class StageOutcome:
     checkpoint_input_sha256: str
     provider_result: ProviderResult | None = None
 
-def claim_next_job(worker_id: str, lease_seconds: int, now: int,
+def claim_next_job(worker_id: str, lease_seconds: int, now_ms: int,
                    *, db_path: Path | None = None) -> LeaseClaim | None: ...
-def renew_lease(claim: LeaseClaim, lease_seconds: int, now: int,
+def claim_job(job_id: str, worker_id: str, lease_seconds: int, now_ms: int,
+              *, expected_states: Collection[str],
+              db_path: Path | None = None) -> LeaseClaim | None: ...
+def renew_lease(claim: LeaseClaim, lease_seconds: int, now_ms: int,
                 *, db_path: Path | None = None) -> bool: ...
+def lease_owned(claim: LeaseClaim, now_ms: int,
+                *, db_path: Path | None = None) -> bool: ...
+def release_lease(claim: LeaseClaim, now_ms: int,
+                  *, db_path: Path | None = None) -> bool: ...
 def transition_leased(claim: LeaseClaim, expected_states: Collection[str],
-                      target_state: str, checkpoint: Mapping[str, Any], now: int,
+                      target_state: str, now_ms: int,
                       *, lease_seconds: int,
                       db_path: Path | None = None) -> bool: ...
 def run_job(claim: LeaseClaim, runtime: RuntimeDependencies,
             *, db_path: Path | None = None) -> JobRunResult: ...
 ```
+
+所有 `now_ms`、`lease_until` 和处理截止时间都使用 Unix epoch 毫秒；`lease_seconds`
+只表示调用方配置单位，持久值固定为 `now_ms + lease_seconds * 1000`。续租使用
+`max(current_lease_until, now_ms + lease_seconds * 1000)`，不得缩短租约。
+`LeaseClaim.lease_until` 只是领取时快照，权威持有状态只能通过 `lease_owned` 查询。
+阶段结果与状态迁移分离：检查点只写入不可变 `edit_v3_checkpoints`，不得塞入
+`jobs.result_json`，`transition_leased` 也不得接受或静默丢弃 checkpoint。
 
 ### 2.4 Billing and publication boundary
 
@@ -946,22 +960,25 @@ git commit -m "feat(ai-edit-v3): add isolated versioned store"
 
 **Interfaces:**
 - Consumes: `LeaseClaim` and the complete state graph from sections 2.3 and 3.
-- Produces: `claim_next_job`, `renew_lease`, `lease_owned`, `transition_leased`, `start_stage_attempt`, `finish_stage_attempt`, `save_checkpoint`, `record_provider_intent`, `bind_provider_result` and `close_running_attempts`.
+- Produces: `ALL_STATES`, `QUEUE_CLAIMABLE_STATES`, `LeaseLost`, `claim_next_job`, `claim_job`, `renew_lease`, `lease_owned`, `release_lease`, `transition_leased`, `start_stage_attempt`, `finish_stage_attempt`, `save_checkpoint`, `get_checkpoint_for_claim`, `record_provider_intent`, `get_provider_task_for_claim`, `bind_provider_result` and `close_running_attempts`.
+- Claim split: `claim_next_job` only selects media queue states plus `failed`; reconciliation-first billing/publication code locates a due outbox row and uses `claim_job(job_id, ..., expected_states=...)`. Terminal jobs are never claimable.
+- Provider recovery: operation key, request SHA, provider and capability are immutable. A new fencing token may read and resume an older persisted provider intent, but only the currently leased worker may bind a result. An intent without a result means “submission may have happened” and must not trigger a blind duplicate call.
+- Top-level functions and `V3Store` methods share one transaction implementation; they must not maintain two SQL implementations.
 
 - [ ] **Step 1: Write a failing stale-token test**
 
 ```python
 def test_expired_worker_cannot_write_after_reclaim(self):
     self.seed_queued("job-1")
-    old = claim_next_job("worker-a", 10, 100, db_path=self.db)
-    new = claim_next_job("worker-b", 10, 111, db_path=self.db)
+    old = claim_next_job("worker-a", 10, 100_000, db_path=self.db)
+    new = claim_next_job("worker-b", 10, 111_000, db_path=self.db)
     self.assertGreater(new.fencing_token, old.fencing_token)
     self.assertFalse(transition_leased(
-        old, {"queued"}, "generating_voice", {"status": "started"}, 112,
+        old, {"queued"}, "generating_voice", 112_000,
         lease_seconds=10, db_path=self.db,
     ))
     self.assertTrue(transition_leased(
-        new, {"queued"}, "generating_voice", {"status": "started"}, 112,
+        new, {"queued"}, "generating_voice", 112_000,
         lease_seconds=10, db_path=self.db,
     ))
 ```
@@ -974,9 +991,9 @@ Expected: FAIL because lease operations are absent.
 
 - [ ] **Step 3: Implement atomic claim and renewal**. Claim selects one runnable nonterminal job under `BEGIN IMMEDIATE`, increments `fencing_token`, sets worker and expiry, and returns the persisted token. Renewal and every subsequent mutation use `WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?` in the same statement; a separate pre-read is not accepted as fencing.
 
-- [ ] **Step 4: Add stale-write tests for every leased mutation**: transition, stage start, stage finish, checkpoint, provider intent, provider result binding, deadline extension, billing intent update and publish intent update. Each old-token call must return false or raise `LeaseLost` without altering row counts or state.
+- [ ] **Step 4: Add stale-write tests for every leased mutation implemented by this task**: transition, stage start, stage finish, checkpoint, provider intent, provider result binding and lease release. Each old-token call must return false or raise `LeaseLost` without altering row counts or state. Initial processing-deadline and billing-intent stale tests belong to Task 6; publish-intent stale tests belong to Task 8; Task 13 reruns the combined crash matrix.
 
-- [ ] **Step 5: Implement immutable stage/checkpoint semantics**. `start_stage_attempt` records `running` with token and input SHA; `finish_stage_attempt` requires the same claim and changes exactly one running row; `save_checkpoint` appends a new version only when input SHA changes, otherwise returns the existing version. `skipped` is a first-class stage result and still creates an attempt/checkpoint.
+- [ ] **Step 5: Implement immutable stage/checkpoint and provider-intent semantics**. `start_stage_attempt` records `running` with token and input SHA; `finish_stage_attempt` requires the same claim and changes exactly one running row; `save_checkpoint` returns the existing version only when input and canonical output both match, rejects same-input/different-output reuse, and appends a new version when input changes. `skipped` is a first-class stage result and still creates an attempt/checkpoint. Child inserts use `INSERT ... SELECT ... FROM edit_v3_jobs WHERE job_id/worker/token/lease` so the fencing predicate is in the same statement. Provider intent is persisted before any external call; a replacement claim can recover the immutable intent, while the stale token cannot bind a result.
 
 - [ ] **Step 6: Write a failing state-graph exhaustiveness test**
 
@@ -997,9 +1014,9 @@ Run: `python -m unittest tests.test_ai_edit_v3_pipeline.V3StateContractTests -v`
 
 Expected before implementation: FAIL for a missing or incomplete state set. After implementing the exact section 3 graph and rejecting all table-external edges, rerun and expect PASS.
 
-- [ ] **Step 8: Add deadline tests**. Confirm pre-debit sets `processing_deadline_at` once; reclaim and restart preserve it; the first `quality_checking -> repair_planning` CAS increments `repair_count` to one and adds exactly 600 seconds; a second repair and any other deadline extension fail.
+- [ ] **Step 8: Add deadline tests**. Confirm the Task 6 pre-debit-created `processing_deadline_at` is preserved by reclaim, restart and every ordinary transition; the first `quality_checking -> repair_planning` CAS atomically requires `repair_count=0`, increments it to one and adds exactly `600_000` milliseconds; a lost response and exact replay do not add it twice; a second repair and any other deadline extension fail.
 
-- [ ] **Step 9: Add lease-loss cleanup tests**. A claim lost during a running stage closes that stage with `status="aborted_lease_lost"`; reclaim observes no permanent `running` attempt; a terminal job is never claimable.
+- [ ] **Step 9: Add lease-loss cleanup and claim-selection tests**. Reclaim performs old-running-attempt closure to `status="aborted_lease_lost"` and new token/owner/expiry assignment in one `BEGIN IMMEDIATE` transaction; an injected abort proves both changes roll back together. Verify `lease_until == now_ms` is expired, renewal never shortens expiry, two workers behind a barrier produce one winner, `claim_next_job` excludes reconciliation states, `claim_job` can acquire an explicitly selected due-outbox job only from allowed states, and terminal jobs are never claimable.
 
 - [ ] **Step 10: Run the store/pipeline contract suites**
 

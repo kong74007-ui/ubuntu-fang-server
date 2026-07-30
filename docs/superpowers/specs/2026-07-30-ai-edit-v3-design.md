@@ -920,10 +920,14 @@ failed_reconciliation_pending(full_refund_target_reached) -> refunded
 
 - Worker 使用有期限租约领取任务。
 - 每次领取生成单调递增的 `fencing_token`。只有同时匹配 owner、未过期租约和当前 token 的 Worker 才能续租、提交阶段结果或完成检查点；过期 Worker 的任何写回均被数据库条件更新拒绝。
+- 所有 `now`、`lease_until`、阶段时间和处理截止时间均为 Unix epoch 毫秒；配置仍以 `lease_seconds` 表示，持久到期值按 `now_ms + lease_seconds * 1000` 计算。`lease_until == now_ms` 视为过期，续租不得缩短现有到期时间。
+- 普通媒体队列领取与指定任务领取分开：`claim_next_job` 只领取媒体状态和 `failed`，账务与资产裁决 outbox 先确定任务后使用 `claim_job`。终态永不领取；主动释放只清空当前租约，不重开终态。
+- reclaim 在一个 `BEGIN IMMEDIATE` 事务内同时关闭旧 token 的 `running` 阶段为 `aborted_lease_lost`、递增 token 并写入新 worker/expiry；任一步失败全部回滚。所有子表写入使用带 job/worker/token/未过期条件的单条 `INSERT ... SELECT` 或等价原子语句，不能先读租约再无条件写。
 - 供应商提交前先持久化提交意图和幂等键。
-- 已知结果按 provider task ID 恢复，不盲目重复提交。
-- 每个阶段结果带输入指纹；输入改变时不得复用旧结果。
+- 供应商 operation key、请求 SHA、provider 和 capability 冻结不可变；新 token 可以读取旧 token 留下的意图并按 provider task ID 或原幂等键恢复，但只有当前租约可绑定结果。意图存在而结果缺失表示“可能已提交”，不得盲目重复调用。
+- 每个阶段结果带输入指纹；同 job/stage/input SHA 且规范输出一致时精确重放原 checkpoint，同输入但输出不同必须冲突，输入改变时创建下一不可变版本。checkpoint 与 jobs 状态迁移分离，禁止把 checkpoint 塞入 `result_json` 或在状态 CAS 中静默丢弃。
 - 首次预扣成功时冻结绝对 `processing_deadline_at`；重启、重领、阶段重试和机器时钟变化都不得重置它。仅在首次进入修复路径时原子追加一次 10 分钟并记录 `repair_budget_granted_at`。
+- `quality_checking -> repair_planning` 在同一条 CAS 中要求 `repair_count=0`、设置为 1、记录修复授权时间并只增加一次 `600_000` 毫秒；响应丢失后的重放不得再次增加。
 - 租约丢失或超时时终止该任务的完整 Chromium、Node 和 FFmpeg 进程组，并在同一数据库事务中关闭仍为 `running` 的阶段记录。
 - `completed`、`refunded` 和 `prehold_absent` 终态不可重新打开；对账状态只能按上方权威账本分支收敛。
 - 用户重试创建继任任务并重新报价、重新预扣，不复用不完整任务状态。
