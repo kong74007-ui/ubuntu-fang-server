@@ -224,9 +224,7 @@ def _slot_specs(plan: dict[str, Any]) -> list[dict[str, Any]]:
             if existing is None:
                 slots[slot_id] = {
                     "id": slot_id,
-                    "semantic_query": str(
-                        scene.get("headline") or scene.get("intent") or slot_id
-                    ),
+                    "semantic_query": _slot_semantic_query(slot_id, scene),
                     "time_range": {
                         "start_ms": int(scene["start_ms"]),
                         "end_ms": int(scene["end_ms"]),
@@ -242,6 +240,19 @@ def _slot_specs(plan: dict[str, Any]) -> list[dict[str, Any]]:
                     existing["time_range"]["end_ms"], int(scene["end_ms"])
                 )
     return list(slots.values())
+
+
+def _slot_semantic_query(slot_id: str, scene: dict[str, Any]) -> str:
+    slot_semantics = re.sub(r"[_-]+", " ", slot_id.removeprefix("slot_")).strip()
+    parts = [
+        slot_semantics,
+        scene.get("headline"),
+        scene.get("intent"),
+    ]
+    query = " ".join(
+        part.strip() for part in parts if isinstance(part, str) and part.strip()
+    )
+    return query or slot_id
 
 
 def _owner_for_job(repositories: Any, job_id: str) -> str:
@@ -393,7 +404,7 @@ def _with_slot_relevance(
 def _semantic_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
-    return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.casefold())
+    return re.sub(r"[\W_]+", "", value.casefold())
 
 
 def _filename_label(value: Any) -> str:

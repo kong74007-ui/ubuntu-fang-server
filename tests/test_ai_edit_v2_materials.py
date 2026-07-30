@@ -276,13 +276,46 @@ class MaterialResolverTests(unittest.TestCase):
         self.assertEqual(by_asset["irrelevant"]["exclusion_code"], "irrelevant")
         self.assertEqual(by_asset["bad-ratio"]["exclusion_code"], "invalid_ratio")
         selected = by_asset["good"]
-        self.assertEqual(selected["semantic_query"], "Product close-up")
+        self.assertIn("product 1", selected["semantic_query"])
+        self.assertIn("Product close-up", selected["semantic_query"])
+        self.assertIn("show the real product clearly", selected["semantic_query"])
         self.assertEqual(selected["time_range"], {"start_ms": 0, "end_ms": 2_000})
         self.assertEqual(selected["ratio"], "16:9")
         self.assertEqual(selected["dimensions"], {"width": 1920, "height": 1080})
         self.assertEqual(selected["selected_score"], 0.8)
         self.assertIsNone(selected["exclusion_code"])
         self.assertNotIn("url", str(repos.records).lower())
+
+    def test_slot_id_semantics_match_a_current_upload_before_image_generation(self):
+        plan = copy.deepcopy(PLAN)
+        plan["scenes"][0].update(
+            {
+                "headline": "Brand introduction",
+                "intent": "Introduce the brand",
+                "material_slots": ["slot_product_logo"],
+            }
+        )
+        logo = candidate(
+            "product-logo",
+            "current_upload",
+            filename="product_logo.png",
+            relevant=None,
+            score=None,
+        )
+        image = FakeImageProvider()
+
+        resolved = resolve_materials(
+            JOB,
+            plan,
+            FakeRepositories({"current_upload": [logo]}),
+            image,
+        )
+
+        self.assertEqual(
+            resolved["materials"]["slot_product_logo"]["asset_id"],
+            "product-logo",
+        )
+        self.assertEqual(image.calls, [])
 
     def test_required_material_is_selected_ahead_of_optional_peer(self):
         required = candidate("required", "current_upload", required=True, score=0.5)

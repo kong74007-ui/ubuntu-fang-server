@@ -439,6 +439,66 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(slot=slot), self.assertRaisesRegex(ValueError, "槽位ID"):
                 schema.validate_edit_plan(valid_plan(scenes=[scene]))
 
+    def test_speaker_focus_forbids_material_slots(self):
+        scene = {
+            **valid_plan()["scenes"][0],
+            "layout": "speaker_focus",
+            "visual_type": "talking_head",
+            "material_slots": ["slot_product"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "speaker_focus"):
+            schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
+    def test_material_slot_ids_cannot_be_reused_across_scenes(self):
+        first = {
+            **valid_plan()["scenes"][0],
+            "end_ms": 20_000,
+            "material_slots": ["slot_product"],
+        }
+        second = {
+            **valid_plan()["scenes"][0],
+            "id": "scene_02",
+            "start_ms": 20_000,
+            "material_slots": ["slot_product"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "slot_product"):
+            schema.validate_edit_plan(valid_plan(scenes=[first, second]))
+
+    def test_scene_layout_visual_and_material_contract_is_deterministic(self):
+        invalid_scenes = (
+            {
+                **valid_plan()["scenes"][0],
+                "layout": "speaker_focus",
+                "visual_type": "product_hook",
+                "material_slots": [],
+            },
+            {
+                **valid_plan()["scenes"][0],
+                "layout": "speaker_product_split",
+                "visual_type": "talking_head",
+                "material_slots": ["slot_product"],
+            },
+            {
+                **valid_plan()["scenes"][0],
+                "layout": "full_bleed",
+                "visual_type": "b_roll",
+                "material_slots": [],
+            },
+            {
+                **valid_plan()["scenes"][0],
+                "layout": "data_card",
+                "visual_type": "text_card",
+                "material_slots": ["slot_chart"],
+            },
+        )
+
+        for scene in invalid_scenes:
+            with self.subTest(layout=scene["layout"], visual_type=scene["visual_type"]):
+                with self.assertRaisesRegex(ValueError, "layout.*visual_type.*material_slots"):
+                    schema.validate_edit_plan(valid_plan(scenes=[scene]))
+
     def test_model_generated_strings_have_reasonable_length(self):
         scene = {**valid_plan()["scenes"][0], "headline": "长" * 501}
 

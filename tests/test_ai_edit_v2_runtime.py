@@ -10,6 +10,7 @@ from unittest.mock import patch
 from server.content_domains import ai_edit_v2_runtime as runtime
 from server.content_domains import ai_edit_v2_billing as billing
 from server.content_domains import ai_edit_v2_store as store
+from server.content_domains.ai_edit_v2_materials import resolve_materials
 from tests.test_ai_edit_v2_director import VALID_PLAN
 
 
@@ -204,6 +205,101 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn("relevant", direct)
             self.assertNotIn("score", direct)
             self.assertNotIn(str(style_id), {item["asset_id"] for item in candidates})
+
+    def test_sqlite_bound_current_upload_matches_slot_id_before_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "v2.db")
+            pricing_path = os.path.join(directory, "pricing.db")
+            store.init_db(db_path)
+            job_id = "123e4567-e89b-42d3-a456-426614174003"
+            with closing(store.open_store(db_path)) as conn:
+                cursor = conn.execute(
+                    """INSERT INTO edit_v2_materials(
+                           owner,kind,purpose,source,cos_key,filename,mime_type,
+                           size_bytes,width,height,status,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        "alice",
+                        "image",
+                        "reference",
+                        "user_upload",
+                        f"ai-edit-v2/2bd806c97f0e00af/{job_id}/materials/product_logo.png",
+                        "product_logo.png",
+                        "image/png",
+                        100,
+                        1600,
+                        900,
+                        "ready",
+                        1,
+                        1,
+                    ),
+                )
+                material_id = cursor.lastrowid
+                conn.commit()
+            draft = {
+                "creation_mode": "open_generation",
+                "language": "zh-CN",
+                "aspect_ratio": "16:9",
+                "target_duration_ms": 1800,
+                "input_mode": "external_video",
+                "main_input": {
+                    "asset_id": "primary",
+                    "kind": "video",
+                    "size_bytes": 100,
+                    "duration_ms": 1800,
+                },
+                "required_materials": [],
+                "reference_materials": [
+                    {
+                        "asset_id": str(material_id),
+                        "kind": "image",
+                        "size_bytes": 100,
+                        "duration_ms": None,
+                        "reference_mode": "direct_use",
+                    }
+                ],
+            }
+            quote = billing.create_quote(
+                "alice", draft, 1, db_path=db_path, pricing_db_path=pricing_path
+            )
+            job = store.create_job(
+                "alice",
+                {"draft": draft},
+                quote["id"],
+                "slot-id-binding",
+                2,
+                uuid_factory=lambda: job_id,
+                db_path=db_path,
+                material_bindings=[
+                    {"material_id": material_id, "purpose": "reference"}
+                ],
+            )
+            plan = copy.deepcopy(VALID_PLAN)
+            plan["scenes"][0].update(
+                {
+                    "layout": "speaker_product_split",
+                    "visual_type": "product_hook",
+                    "headline": "Brand introduction",
+                    "intent": "Introduce the brand",
+                    "material_slots": ["slot_product_logo"],
+                }
+            )
+
+            class RejectImageGeneration:
+                def generate(self, *_args, **_kwargs):
+                    raise AssertionError("matched current upload must not generate an image")
+
+            resolved = resolve_materials(
+                job["id"],
+                plan,
+                runtime._MaterialRepositories(db_path, "alice"),
+                RejectImageGeneration(),
+            )
+
+            self.assertEqual(
+                resolved["materials"]["slot_product_logo"]["asset_id"],
+                str(material_id),
+            )
 
     def test_audio_only_always_masters_original_voice_when_optional_audio_is_none_or_degraded(self):
         class Cos:
@@ -460,7 +556,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_resolved_plan_allows_only_declared_slots_to_be_missing_when_image_generation_degraded(self):
         degraded = {"resolved_plan": _resolved_plan()}
-        degraded["resolved_plan"]["scenes"][0]["material_slots"] = ["slot_optional"]
+        degraded["resolved_plan"]["scenes"][0].update(
+            {
+                "layout": "speaker_product_split",
+                "visual_type": "product_hook",
+                "material_slots": ["slot_optional"],
+            }
+        )
         degraded["resolved_plan"]["material_resolution_status"] = "image_generation_degraded"
 
         self.assertEqual(

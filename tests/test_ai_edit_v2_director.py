@@ -185,6 +185,48 @@ class DirectorTests(unittest.TestCase):
         self.assertIn("previous_response", repair_prompt)
         self.assertNotIn("must-not-leak", repair_prompt)
 
+    def test_director_repairs_invalid_scene_semantics_before_material_resolution(self):
+        invalid_plans = []
+        speaker_focus_with_material = copy.deepcopy(VALID_PLAN)
+        speaker_focus_with_material["scenes"][0]["material_slots"] = ["slot_product"]
+        invalid_plans.append(speaker_focus_with_material)
+
+        duplicate_slot = copy.deepcopy(VALID_PLAN)
+        duplicate_slot["scenes"] = [
+            {
+                **copy.deepcopy(VALID_PLAN["scenes"][0]),
+                "end_ms": 900,
+                "layout": "speaker_product_split",
+                "visual_type": "product_hook",
+                "material_slots": ["slot_product"],
+            },
+            {
+                **copy.deepcopy(VALID_PLAN["scenes"][0]),
+                "id": "scene_02",
+                "start_ms": 900,
+                "layout": "speaker_product_split",
+                "visual_type": "product_hook",
+                "material_slots": ["slot_product"],
+            },
+        ]
+        invalid_plans.append(duplicate_slot)
+
+        for invalid in invalid_plans:
+            with self.subTest(invalid=invalid["scenes"]):
+                client = FakeQwen(
+                    [
+                        json.dumps(invalid, ensure_ascii=False),
+                        json.dumps(VALID_PLAN, ensure_ascii=False),
+                    ]
+                )
+
+                plan = generate_edit_plan(CONTEXT, client)
+
+                self.assertEqual(plan, VALID_PLAN)
+                self.assertEqual(len(client.calls), 2)
+                repair_request = json.loads(client.calls[1][1])
+                self.assertIn("schema_errors", repair_request)
+
     def test_director_prompts_keep_the_exact_contract_and_original_request_during_repair(self):
         client = FakeQwen(["{}", json.dumps(VALID_PLAN, ensure_ascii=False)])
 

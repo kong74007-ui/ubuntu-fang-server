@@ -102,6 +102,14 @@ _OUTPUT_CONTRACT: Final = {
         "style_system": "use only component_family unless context contains a published template",
         "caption_source": "text_timeline",
         "material_slot_id": "slot_ followed by lowercase letters, digits, underscores, or hyphens",
+        "scene_semantics": {
+            "speaker_focus": "talking_head with no material slots",
+            "speaker_product_split": "product_hook or b_roll with material slots",
+            "full_bleed": "product_hook or b_roll with material slots",
+            "split_screen": "product_hook or b_roll with material slots",
+            "data_card": "text_card with no slots, or data_visualization with material slots",
+            "slot_reuse": "a slot ID may appear in only one scene",
+        },
     },
 }
 _SENSITIVE_KEY_RE: Final = re.compile(

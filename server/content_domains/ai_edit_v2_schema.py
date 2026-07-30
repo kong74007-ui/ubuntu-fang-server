@@ -19,6 +19,25 @@ SCENE_LAYOUTS: Final = frozenset(
 SCENE_VISUAL_TYPES: Final = frozenset(
     {"talking_head", "product_hook", "b_roll", "text_card", "data_visualization"}
 )
+SCENE_LAYOUT_CONTRACTS: Final = {
+    "speaker_focus": {"talking_head": "forbidden"},
+    "speaker_product_split": {
+        "product_hook": "required",
+        "b_roll": "required",
+    },
+    "full_bleed": {
+        "product_hook": "required",
+        "b_roll": "required",
+    },
+    "split_screen": {
+        "product_hook": "required",
+        "b_roll": "required",
+    },
+    "data_card": {
+        "text_card": "forbidden",
+        "data_visualization": "required",
+    },
+}
 SCENE_TRANSITIONS: Final = frozenset({"cut", "dissolve", "fade", "wipe"})
 COMPONENT_FAMILIES: Final = frozenset(
     {"editorial_business", "documentary_modern", "energetic_social"}
@@ -362,6 +381,7 @@ def _validate_scenes(scenes: Any, duration_ms: int) -> None:
     _require(isinstance(scenes, list) and bool(scenes), "剪辑方案scenes不能为空")
     previous_end = 0
     scene_ids: set[str] = set()
+    used_material_slots: set[str] = set()
     for index, scene in enumerate(scenes):
         path = f"scenes[{index}]"
         _require(isinstance(scene, dict), f"{path}必须是对象")
@@ -408,6 +428,29 @@ def _validate_scenes(scenes: Any, duration_ms: int) -> None:
             f"{path}.material_slots只能包含严格格式的槽位ID",
         )
         _require(len(material_slots) == len(set(material_slots)), f"{path}.material_slots不能重复")
+        layout = scene["layout"]
+        visual_type = scene["visual_type"]
+        material_policy = SCENE_LAYOUT_CONTRACTS.get(layout, {}).get(visual_type)
+        _require(
+            material_policy is not None,
+            f"{path} layout、visual_type 与 material_slots 组合不受支持",
+        )
+        if material_policy == "forbidden":
+            _require(
+                not material_slots,
+                f"{path} {layout} layout、visual_type 与 material_slots 组合禁止素材槽位",
+            )
+        else:
+            _require(
+                bool(material_slots),
+                f"{path} {layout} layout、visual_type 与 material_slots 组合要求素材槽位",
+            )
+        for slot_id in material_slots:
+            _require(
+                slot_id not in used_material_slots,
+                f"{path}.material_slots 槽位 {slot_id} 不得跨场景重复使用",
+            )
+            used_material_slots.add(slot_id)
     _require(previous_end == duration_ms, "场景总时长必须等于剪辑方案时长")
 
 
