@@ -309,7 +309,7 @@ class ApiTests(unittest.TestCase):
                      "payload mismatch", "9:16", "done", 1, 5),
                     (46, "job-46", "alice", "text", None, "platform-video.mp4", "provider-46",
                      "unfinished", "9:16", "running", 1, 4),
-                    (47, "job-47", "alice", "text", None, "", "provider-47",
+                    (47, "job-47", "alice", "text", None, "missing-platform-video.mp4", "provider-47",
                      "missing file", "9:16", "done", 1, 3),
                     (48, "job-48", "bob", "text", None, "platform-video.mp4", "provider-48",
                      "other owner", "9:16", "done", 1, 2),
@@ -371,6 +371,124 @@ class ApiTests(unittest.TestCase):
             )
             self.assertEqual(status, 409)
             self.assertEqual(rejected["detail"], "platform_asset_not_digital_ip")
+
+    def test_platform_asset_limit_is_applied_after_provenance_filtering(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
+        source = os.path.join(self.temp_dir.name, "platform-video.mp4")
+        Path(source).write_bytes(b"verified-digital-ip-video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                image_file TEXT,video_file TEXT,provider_video_id TEXT,text TEXT,ratio TEXT,status TEXT,
+                created_at INTEGER,updated_at INTEGER)""")
+            conn.execute(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (1, "valid-job", "alice", "text", None, "platform-video.mp4",
+                 "provider-valid", "valid text", "9:16", "done", 1, 1),
+            )
+            conn.executemany(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (asset_id, f"invalid-job-{asset_id}", "alice", "text", None,
+                     "platform-video.mp4", f"provider-{asset_id}", "invalid text",
+                     "9:16", "done", asset_id, asset_id)
+                    for asset_id in range(2, 102)
+                ],
+            )
+            conn.commit()
+        with closing(sqlite3.connect(jobs_db)) as conn:
+            conn.execute("""CREATE TABLE jobs(
+                id TEXT PRIMARY KEY,username TEXT,kind TEXT,status TEXT,payload TEXT,
+                result TEXT,deleted INTEGER)""")
+            payload = json.dumps({
+                "mode": "text", "text": "script", "voice": "v", "image_data": "img",
+            })
+            result = json.dumps({"type": "video", "mode": "text", "status": "done"})
+            conn.execute(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?)",
+                ("valid-job", "alice", "video", "done", payload, result, 0),
+            )
+            conn.executemany(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?)",
+                [
+                    (f"invalid-job-{asset_id}", "alice", "ai_edit", "done", payload, result, 0)
+                    for asset_id in range(2, 102)
+                ],
+            )
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
+
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in listed["items"]], [1])
+
+    def test_platform_asset_list_reports_jobs_store_errors(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
+        Path(os.path.join(self.temp_dir.name, "platform-video.mp4")).write_bytes(b"video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                image_file TEXT,video_file TEXT,provider_video_id TEXT,text TEXT,ratio TEXT,status TEXT,
+                created_at INTEGER,updated_at INTEGER)""")
+            conn.execute(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (1, "job-1", "alice", "text", None, "platform-video.mp4",
+                 "provider-1", "text", "9:16", "done", 1, 1),
+            )
+            conn.commit()
+        with closing(sqlite3.connect(jobs_db)) as conn:
+            conn.execute("CREATE TABLE jobs(id TEXT PRIMARY KEY,username TEXT)")
+            conn.execute("INSERT INTO jobs VALUES(?,?)", ("job-1", "alice"))
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, payload = self._dispatch("GET", "/api/v2/edit/platform-assets")
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["detail"], "platform_asset_store_unavailable")
+
+    def test_platform_asset_import_reports_jobs_store_errors(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
+        Path(os.path.join(self.temp_dir.name, "platform-video.mp4")).write_bytes(b"video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                image_file TEXT,video_file TEXT,provider_video_id TEXT,text TEXT,ratio TEXT,status TEXT,
+                created_at INTEGER,updated_at INTEGER)""")
+            conn.execute(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (1, "job-1", "alice", "text", None, "platform-video.mp4",
+                 "provider-1", "text", "9:16", "done", 1, 1),
+            )
+            conn.commit()
+        with closing(sqlite3.connect(jobs_db)) as conn:
+            conn.execute("CREATE TABLE jobs(id TEXT PRIMARY KEY,username TEXT)")
+            conn.execute("INSERT INTO jobs VALUES(?,?)", ("job-1", "alice"))
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, payload = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/1/import", {}
+            )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["detail"], "platform_asset_import_failed")
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)

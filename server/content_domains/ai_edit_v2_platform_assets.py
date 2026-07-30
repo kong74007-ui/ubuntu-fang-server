@@ -91,25 +91,37 @@ def _authoritative_text(row: sqlite3.Row) -> str:
     return text
 
 
-def _is_digital_ip_asset(row: sqlite3.Row) -> bool:
+def _is_digital_ip_asset(
+    row: sqlite3.Row,
+    *,
+    jobs_conn: sqlite3.Connection | None = None,
+) -> bool:
     mode = str(row["mode"] or "").strip().lower()
     job_id = row["job_id"]
     owner = str(row["username"] or "").strip()
     provider_video_id = str(row["provider_video_id"] or "").strip()
     if mode not in TALKING_MODES or not job_id or not owner or not provider_video_id:
         return False
+    try:
+        _source_path(row["video_file"])
+    except ValueError:
+        return False
     jobs_db = _jobs_db_path()
     if not os.path.isfile(jobs_db):
-        return False
-    try:
+        raise sqlite3.OperationalError("platform jobs database unavailable")
+    if jobs_conn is None:
         with closing(_connect(jobs_db)) as conn:
             job = conn.execute(
                 """SELECT kind,status,payload,result,COALESCE(deleted,0) AS deleted
                    FROM jobs WHERE id=? AND username=?""",
                 (job_id, owner),
             ).fetchone()
-    except sqlite3.Error:
-        return False
+    else:
+        job = jobs_conn.execute(
+            """SELECT kind,status,payload,result,COALESCE(deleted,0) AS deleted
+               FROM jobs WHERE id=? AND username=?""",
+            (job_id, owner),
+        ).fetchone()
     if (
         job is None
         or str(job["kind"] or "").strip().lower() != "video"
@@ -154,35 +166,41 @@ def _owned_row(owner: str, asset_id: int) -> sqlite3.Row | None:
 
 
 def list_assets(owner: str, limit: int = 100) -> list[dict[str, Any]]:
-    with closing(_connect(_asset_db_path())) as conn:
+    item_limit = max(1, min(100, int(limit)))
+    items = []
+    with (
+        closing(_connect(_asset_db_path())) as conn,
+        closing(_connect(_jobs_db_path())) as jobs_conn,
+    ):
         rows = conn.execute(
             """SELECT id,job_id,username,mode,image_file,video_file,provider_video_id,
                       text,ratio,
                       status,created_at
                FROM video_assets
                WHERE username=? AND mode IN ('text','audio')
-                 AND status IN ('done','ready','completed','succeeded')
-                 AND video_file IS NOT NULL AND TRIM(video_file)!=''
-               ORDER BY updated_at DESC,id DESC LIMIT ?""",
-            (owner, max(1, min(100, int(limit)))),
-        ).fetchall()
-    items = []
-    for row in rows:
-        if not _is_digital_ip_asset(row):
-            continue
-        preview_url = _preview_url(row["video_file"])
-        if preview_url is None:
-            continue
-        items.append({
-            "id": int(row["id"]), "reference_id": str(row["id"]),
-            "filename": os.path.basename(str(row["video_file"])),
-            "summary": " ".join(str(row["text"] or "").split())[:120],
-            "ratio": row["ratio"], "status": row["status"],
-            "created_at": int(row["created_at"] or 0),
-            "asset_type": "digital_ip",
-            "preview_url": preview_url,
-            "thumbnail_url": _preview_url(row["image_file"]),
-        })
+                  AND status IN ('done','ready','completed','succeeded')
+                  AND video_file IS NOT NULL AND TRIM(video_file)!=''
+               ORDER BY updated_at DESC,id DESC""",
+            (owner,),
+        )
+        for row in rows:
+            if not _is_digital_ip_asset(row, jobs_conn=jobs_conn):
+                continue
+            preview_url = _preview_url(row["video_file"])
+            if preview_url is None:
+                continue
+            items.append({
+                "id": int(row["id"]), "reference_id": str(row["id"]),
+                "filename": os.path.basename(str(row["video_file"])),
+                "summary": " ".join(str(row["text"] or "").split())[:120],
+                "ratio": row["ratio"], "status": row["status"],
+                "created_at": int(row["created_at"] or 0),
+                "asset_type": "digital_ip",
+                "preview_url": preview_url,
+                "thumbnail_url": _preview_url(row["image_file"]),
+            })
+            if len(items) >= item_limit:
+                break
     return items
 
 
