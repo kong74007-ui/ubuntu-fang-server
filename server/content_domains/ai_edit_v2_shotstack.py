@@ -233,6 +233,7 @@ def _compile_shotstack_edit(
         "fade": "fade",
         "wipe": "wipeLeft",
     }
+    vertical = render_graph["aspect_ratio"] == "9:16"
     primary_component = None
     if components and components[0]["type"] == "broll_video":
         candidate = components[0]
@@ -286,11 +287,15 @@ def _compile_shotstack_edit(
         if kind == "basic_caption":
             clip.update({
                 "position": "bottom",
-                "width": component.get("width", 1720),
+                "width": component.get("width", 864 if vertical else 1720),
                 "height": component.get("height", 240),
             })
         elif kind == "basic_card":
-            clip.update({"position": "center", "width": 1500, "height": 360})
+            clip.update({
+                "position": "center",
+                "width": 864 if vertical else 1500,
+                "height": 360,
+            })
         tracks.append({"clips": [clip]})
     return {
         "timeline": {

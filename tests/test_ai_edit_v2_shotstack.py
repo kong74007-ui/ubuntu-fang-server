@@ -114,6 +114,26 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual(caption["font_url"], FONT_URL)
         self.assertNotIn("auto_caption", json.dumps(graph).lower())
 
+    def test_vertical_edit_keeps_caption_and_card_inside_the_1080_pixel_canvas(self):
+        plan = json.loads(json.dumps(RESOLVED_PLAN))
+        plan["aspect_ratio"] = "9:16"
+
+        edit = _compile_shotstack_edit(
+            build_render_graph(plan, SIGNED_ASSETS, FONT_URL),
+            "https://callback.example.invalid",
+        )
+        clips = [
+            clip for track in edit["timeline"]["tracks"] for clip in track["clips"]
+            if clip["asset"]["type"] == "rich-text"
+        ]
+        captions = [clip for clip in clips if clip["asset"]["font"]["size"] == 52]
+        cards = [clip for clip in clips if clip["asset"]["font"]["size"] == 64]
+
+        self.assertTrue(captions)
+        self.assertTrue(cards)
+        self.assertTrue(all((clip["width"], clip["height"]) == (864, 240) for clip in captions))
+        self.assertTrue(all((clip["width"], clip["height"]) == (864, 360) for clip in cards))
+
     def test_render_graph_maps_only_the_stable_component_allowlist(self):
         graph = build_render_graph(RESOLVED_PLAN, SIGNED_ASSETS, FONT_URL)
 

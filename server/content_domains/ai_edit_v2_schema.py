@@ -496,7 +496,9 @@ def validate_render_graph(graph: dict[str, Any]) -> dict[str, Any]:
             )
             _require(
                 component.get("font_size") == 44
-                and component.get("width") == 1440
+                and component.get("width") == (
+                    800 if graph.get("aspect_ratio") == "9:16" else 1440
+                )
                 and component.get("height") == 180,
                 f"{path}修复布局不受支持",
             )
