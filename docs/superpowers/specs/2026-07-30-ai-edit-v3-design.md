@@ -1076,6 +1076,8 @@ failed_reconciliation_pending(full_refund_target_reached) -> refunded
 
 `edit_v3_billing_intents` 对 `(environment, owner_id, job_id, operation)` 建唯一约束；`operation` 只允许 `pre_debit`、`refund_delta` 和 `refund_full`。每行保存不可变的外部幂等号、请求指纹、`refund_target_total`、本次实际请求额、状态和权威账本对账证据。任务账务汇总强制 `0 <= confirmed_refunded_total <= confirmed_preheld_total`，任何退款响应都先按外部幂等号从权威账本确认，再更新累计值。任务的 `fencing_token`、`processing_deadline_at`、`repair_budget_granted_at` 和最终资产发布标识必须可事务校验。
 
+Schema v1 的精确 19 表列名、时间/JSON/SHA 表示、外键、唯一约束和恢复索引以实施计划第 3.1 节的冻结附录为准。Task 4 只能实现该附录，不得自行增表、改名或静默省略后续 Task 需要的列。公开 owner 数据读取必须在 SQL 条件中同时限制 `environment` 和 `owner_id`；V3 初始化缺少可验证的 V2 绝对路径时 fail closed，不能静默跳过隔离比较。
+
 ## 19. COS 对象规则
 
 ```text

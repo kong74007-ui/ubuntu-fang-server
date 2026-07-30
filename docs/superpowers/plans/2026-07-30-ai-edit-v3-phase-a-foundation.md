@@ -337,6 +337,46 @@ Schema v1 创建以下表并仅通过 `store.py` 访问：
 
 `edit_v3_jobs` 同时维护 `confirmed_preheld_total` 和 `confirmed_refunded_total`，CHECK 固定为 `0 <= confirmed_refunded_total <= confirmed_preheld_total`。数据库只保存稳定 COS Key，不保存签名 URL。
 
+### 3.1 Schema v1 冻结列清单
+
+为避免 Task 5–13 各自推测列名，Schema v1 在 Task 4 冻结以下最小列集。所有时间字段使用 Unix epoch 毫秒 `INTEGER`；布尔值使用受 CHECK 约束的 `INTEGER`；JSON 使用 `TEXT` 且只能写入规范 JSON；SHA-256 使用 64 位小写十六进制 `TEXT`。可以增加普通索引，但不得增加第 20 张 `edit_v3_*` 表或删除下列列：
+
+- `edit_v3_schema_meta`：`id=1, version, migration_sha256, created_at, updated_at`。
+- `edit_v3_jobs`：`job_id, environment, owner_id, state, normalized_request_json, request_sha256, quote_id, predecessor_job_id, idempotency_key, worker_id, fencing_token, lease_until, queued_at, processing_deadline_at, repair_count, repair_budget_granted_at, reconciliation_reason, resume_state, confirmed_preheld_total, confirmed_refunded_total, delivery_object_key, asset_id, result_json, error_code, error_json, created_at, updated_at`。
+- `edit_v3_stage_attempts`：`id, job_id, stage, attempt, worker_id, fencing_token, status, input_sha256, started_at, finished_at, error_code, error_json`。
+- `edit_v3_checkpoints`：`id, job_id, stage, version, stage_attempt_id, input_sha256, output_json, output_sha256, fencing_token, created_at`。
+- `edit_v3_uploads`：`upload_id, environment, owner_id, upload_type, object_key, declared_mime, declared_size, observed_mime, observed_size, observed_etag, sha256, duration_ms, width, height, probe_json, status, expires_at, completed_at, created_at, updated_at`。
+- `edit_v3_materials`：`material_id, environment, owner_id, upload_id, source_kind, source_job_id, cos_key, mime_type, size_bytes, sha256, metadata_json, created_at`。
+- `edit_v3_job_materials`：`job_id, material_id, purpose, ordinal, created_at`。
+- `edit_v3_quotes`：`quote_id, environment, owner_id, normalized_request_json, request_sha256, pricing_version, template_id, template_version, min_points, max_points, breakdown_json, expires_at, created_at`。
+- `edit_v3_pricing_versions`：`version, status, parameters_json, parameters_sha256, created_at, published_at, retired_at`。
+- `edit_v3_template_versions`：`template_id, version, status, preview_cos_key, supported_ratios_json, capability_contract_json, sha256, created_at, published_at`。
+- `edit_v3_model_calls`：`id, job_id, stage_attempt_id, provider, model, purpose, prompt_version, request_schema_sha256, response_schema_sha256, request_id, redacted_final_output_json, validation_json, usage_json, elapsed_ms, created_at`。
+- `edit_v3_provider_tasks`：`id, job_id, stage, stage_attempt_id, provider, capability, operation_key, request_sha256, external_id, status, fencing_token, first_unknown_at, last_checked_at, result_json, created_at, updated_at`。
+- `edit_v3_provider_usage`：`id, job_id, provider, capability, request_id, usage_json, cost_units, created_at`。
+- `edit_v3_plans`：`id, job_id, version, model_call_id, raw_final_output_json, normalized_plan_json, plan_sha256, schema_sha256, created_at`。
+- `edit_v3_render_manifests`：`id, job_id, attempt, plan_id, manifest_json, manifest_sha256, schema_sha256, registry_sha256, renderer_environment_sha256, created_at`。
+- `edit_v3_renders`：`id, job_id, attempt, manifest_id, status, artifact_cos_key, artifact_sha256, evidence_json, performance_json, log_summary, cost_units, started_at, finished_at`。
+- `edit_v3_quality_reports`：`id, job_id, attempt, render_id, verdict_json, verdict_sha256, schema_sha256, evidence_json, status, repairable, created_at`。
+- `edit_v3_billing_intents`：`id, environment, owner_id, job_id, operation, external_idempotency_key, request_sha256, refund_target_total, request_amount, status, first_unknown_at, last_checked_at, authority_evidence_json, reason, resume_state, created_at, updated_at, completed_at`。
+- `edit_v3_publish_intents`：每个外部 operation 一行，列为 `id, job_id, publish_generation, operation, external_idempotency_key, object_key, metadata_sha256, expected_decision, status, fencing_token, first_unknown_at, last_decision_json, last_decision_at, asset_id, created_at, updated_at`。
+
+Schema v1 同时冻结以下最低约束与索引：
+
+- `jobs` 唯一 `(environment, owner_id, idempotency_key)`，分页索引 `(environment, owner_id, created_at DESC, job_id DESC)`，claim 索引 `(state, lease_until, queued_at, job_id)`，`repair_count IN (0,1)`，状态只能来自本节冻结状态全集。
+- `stage_attempts` 唯一 `(job_id, stage, attempt)`，并以 partial unique 保证一个 job 只有一个 `status='running'` 的 attempt。
+- `checkpoints` 唯一 `(job_id, stage, version)` 和 `(job_id, stage, input_sha256)`。
+- `uploads.object_key` 唯一；`materials.cos_key` 唯一且非空 `upload_id` 唯一；`job_materials` 唯一 `(job_id, material_id)` 和 `(job_id, purpose, ordinal)`。
+- `pricing_versions` 至多一个 `published`；`template_versions` 唯一 `(template_id, version)`，每个模板至多一个 `published`。
+- `provider_tasks.operation_key`、非空供应商 request ID 和所有外部幂等键不可重复；`provider_usage` 唯一 `(provider, request_id)`。
+- plan、manifest、render 和 quality 分别按 `(job_id, version)` 或 `(job_id, attempt)` 唯一。
+- billing 唯一 `(environment, owner_id, job_id, operation)`；publish 唯一 `(job_id, publish_generation, operation)`；二者都有按 `status/first_unknown_at` 的恢复索引。
+- 所有 job 子表外键指向 `jobs`；job-material 双向外键；job 的 quote/predecessor、quote 的 pricing/template、material 的 upload、render 的 manifest、quality 的 render 均有外键。跨 owner/environment 绑定还必须由同一事务的条件查询验证。
+
+公开读取 primitive 必须把 `environment` 和 `owner_id` 放入 SQL `WHERE`；`get_quote` 的公开形式为 `get_quote(owner_id, quote_id, *, environment=...)`，不存在和 owner 不匹配返回相同结果。任务分页使用 `(created_at, job_id)` 严格 keyset cursor，cursor 绑定 environment 与 owner，不使用 `OFFSET`。
+
+V3 初始化在显式 `v2_db_path` 和 `AI_EDIT_V2_DB` 都缺失时必须 fail closed；不能因为 V2 模块存在默认路径而跳过比较，也不得导入或打开 V2 数据库来发现默认值。
+
 ---
 
 ## Authorization Gate A0: Record the required shared-file specification clarification
