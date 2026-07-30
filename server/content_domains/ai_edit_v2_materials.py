@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
+import re
 from typing import Any
 
 from .ai_edit_v2_providers.base import ProviderResult
@@ -75,6 +77,9 @@ def resolve_materials(
             for candidate in source_candidates[source]:
                 asset_id = str(candidate.get("asset_id") or "")
                 required = bool(candidate.get("required")) or asset_id in required_ids
+                candidate = _with_slot_relevance(
+                    candidate, slot["semantic_query"], required=required
+                )
                 exclusion = _exclusion_code(
                     candidate,
                     source=source,
@@ -82,6 +87,7 @@ def resolve_materials(
                     job_id=job_id,
                     ratio=slot["ratio"],
                     seen_assets=seen_assets,
+                    required=required,
                 )
                 records.append(
                     _resolution_record(
@@ -291,6 +297,7 @@ def _exclusion_code(
     job_id: str,
     ratio: str,
     seen_assets: set[str],
+    required: bool,
 ) -> str | None:
     asset_id = str(candidate.get("asset_id") or "")
     cos_key = candidate.get("cos_key")
@@ -314,6 +321,16 @@ def _exclusion_code(
         return "blurred"
     if candidate.get("relevant") is False:
         return "irrelevant"
+    if not required:
+        score = candidate.get("score")
+        if (
+            candidate.get("relevant") is not True
+            or isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(float(score))
+            or not 0 <= float(score) <= 1
+        ):
+            return "relevance_unverified"
     if not _ratio_matches(candidate, ratio):
         return "invalid_ratio"
     return None
@@ -347,6 +364,48 @@ def _choose_candidate(
         pool = unused_required or candidates
         return source, max(pool, key=lambda item: float(item.get("score") or 0))
     return None
+
+
+def _with_slot_relevance(
+    candidate: dict[str, Any], semantic_query: str, *, required: bool
+) -> dict[str, Any]:
+    scored = copy.deepcopy(candidate)
+    if required or scored.get("relevant") is not None or scored.get("score") is not None:
+        return scored
+    query = _semantic_text(semantic_query)
+    labels = [
+        scored.get("semantic_label"),
+        _filename_label(scored.get("filename")),
+    ]
+    for label in labels:
+        normalized = _semantic_text(label)
+        if not normalized or not query:
+            continue
+        if normalized == query:
+            scored.update({"relevant": True, "score": 1.0})
+            return scored
+        if normalized in query or query in normalized:
+            scored.update({"relevant": True, "score": 0.85})
+            return scored
+    return scored
+
+
+def _semantic_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _filename_label(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    stem = value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+    normalized = re.sub(r"[\W_]+", "", stem.casefold())
+    if not normalized or re.fullmatch(
+        r"(?:img|image|dsc|video|audio|wechat|wx)\d*", normalized
+    ):
+        return ""
+    return stem
 
 
 def _resolution_record(

@@ -49,6 +49,7 @@ def candidate(asset_id, source, **overrides):
         "width": 1600,
         "height": 900,
         "score": 0.9,
+        "relevant": True,
         "required": False,
         "is_real_product": False,
     }
@@ -186,6 +187,57 @@ class MaterialResolverTests(unittest.TestCase):
             resolved["materials"]["slot_product_2"]["source"], "gpt_image"
         )
         self.assertEqual(len(image.calls), 1)
+
+    def test_optional_candidate_without_relevance_evidence_uses_generated_image(self):
+        unverified = candidate(
+            "unverified-upload",
+            "current_upload",
+            relevant=None,
+            score=None,
+            semantic_label=None,
+            filename="IMG_0001.png",
+        )
+        repos = FakeRepositories({"current_upload": [unverified]})
+        image = FakeImageProvider()
+
+        resolved = resolve_materials(JOB, PLAN, repos, image)
+
+        self.assertEqual(
+            resolved["materials"]["slot_product_1"]["source"], "gpt_image"
+        )
+        record = next(
+            item
+            for item in repos.records
+            if item.get("asset_id") == "unverified-upload"
+        )
+        self.assertEqual(record["exclusion_code"], "relevance_unverified")
+        self.assertEqual(len(image.calls), 1)
+
+    def test_matching_semantic_label_is_scored_for_the_current_slot(self):
+        labeled = candidate(
+            "labeled-upload",
+            "current_upload",
+            relevant=None,
+            score=None,
+            semantic_label="Product close-up",
+            filename="IMG_0002.png",
+        )
+        repos = FakeRepositories({"current_upload": [labeled]})
+        image = FakeImageProvider()
+
+        resolved = resolve_materials(JOB, PLAN, repos, image)
+
+        material = resolved["materials"]["slot_product_1"]
+        self.assertEqual(material["asset_id"], "labeled-upload")
+        self.assertEqual(material["source"], "current_upload")
+        selected = next(
+            item
+            for item in repos.records
+            if item.get("asset_id") == "labeled-upload"
+        )
+        self.assertGreaterEqual(selected["selected_score"], 0.8)
+        self.assertIsNone(selected["exclusion_code"])
+        self.assertEqual(image.calls, [])
 
     def test_required_material_must_be_used_once_or_more(self):
         plan_without_slots = copy.deepcopy(PLAN)

@@ -121,22 +121,22 @@ class RuntimeTests(unittest.TestCase):
             pricing_path = os.path.join(directory, "pricing.db")
             store.init_db(db_path)
             rows = [
-                ("video", "primary", None, "platform_video", "source.mp4", "video/mp4"),
-                ("image", "required", None, "user_upload", "required.png", "image/png"),
-                ("image", "reference", "direct_use", "user_upload", "direct.png", "image/png"),
-                ("image", "reference", "style_only", "user_upload", "style.png", "image/png"),
+                ("video", "primary", None, "platform_video", "source.mp4", "video/mp4", None),
+                ("image", "required", None, "user_upload", "required.png", "image/png", "产品实拍"),
+                ("image", "reference", "direct_use", "user_upload", "direct.png", "image/png", "门店环境"),
+                ("image", "reference", "style_only", "user_upload", "style.png", "image/png", "参考风格"),
             ]
             material_ids = []
             with closing(store.open_store(db_path)) as conn:
-                for kind, purpose, reference_mode, source, filename, mime_type in rows:
+                for kind, purpose, reference_mode, source, filename, mime_type, semantic_label in rows:
                     cursor = conn.execute(
                         """INSERT INTO edit_v2_materials(
-                               owner,kind,purpose,reference_mode,source,cos_key,filename,mime_type,
+                               owner,kind,purpose,reference_mode,source,cos_key,filename,mime_type,semantic_label,
                                size_bytes,duration_ms,width,height,status,created_at,updated_at
-                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             "alice", kind, purpose, reference_mode, source,
-                            "ai-edit-v2/alice/uploads/" + filename, filename, mime_type,
+                            "ai-edit-v2/alice/uploads/" + filename, filename, mime_type, semantic_label,
                             100, 1000 if kind == "video" else None, 1080, 1920,
                             "ready", 1, 1,
                         ),
@@ -192,10 +192,17 @@ class RuntimeTests(unittest.TestCase):
 
             self.assertEqual([item["asset_id"] for item in required], [str(required_id)])
             self.assertTrue(required[0]["required"])
+            self.assertTrue(required[0]["relevant"])
             self.assertEqual(
                 {item["asset_id"] for item in candidates},
                 {str(required_id), str(direct_id)},
             )
+            direct = next(
+                item for item in candidates if item["asset_id"] == str(direct_id)
+            )
+            self.assertEqual(direct["semantic_label"], "门店环境")
+            self.assertNotIn("relevant", direct)
+            self.assertNotIn("score", direct)
             self.assertNotIn(str(style_id), {item["asset_id"] for item in candidates})
 
     def test_audio_only_always_masters_original_voice_when_optional_audio_is_none_or_degraded(self):

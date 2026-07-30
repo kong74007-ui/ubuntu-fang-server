@@ -421,10 +421,23 @@ class _MaterialRepositories:
 
     @staticmethod
     def _asset(row: dict[str, Any], *, required: bool = False) -> dict[str, Any]:
-        return {"asset_id": str(row["id"]), "cos_key": row["cos_key"], "kind": row["kind"],
-                "width": row.get("width"), "height": row.get("height"), "size_bytes": row.get("size_bytes"),
-                "etag": row.get("etag"), "owner": row["owner"], "job_id": row.get("job_id"),
-                "required": required, "relevant": True, "score": 1.0}
+        asset = {
+            "asset_id": str(row["id"]),
+            "cos_key": row["cos_key"],
+            "kind": row["kind"],
+            "width": row.get("width"),
+            "height": row.get("height"),
+            "size_bytes": row.get("size_bytes"),
+            "etag": row.get("etag"),
+            "owner": row["owner"],
+            "job_id": row.get("job_id"),
+            "required": required,
+            "semantic_label": row.get("semantic_label"),
+            "filename": row.get("filename"),
+        }
+        if required:
+            asset.update({"relevant": True, "score": 1.0})
+        return asset
 
     def required_materials(self, job_id: str) -> list[dict[str, Any]]:
         return [self._asset(row, required=True) for row in self._rows(job_id)
