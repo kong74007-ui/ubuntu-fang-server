@@ -31,7 +31,7 @@ def _asset_db_path() -> str:
 
 
 def _jobs_db_path() -> str:
-    return os.environ.get("AI_EDIT_V2_JOB_DB") or os.path.join(
+    return os.environ.get("CONTENT_JOB_DB") or os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "content_jobs.db"
     )
 
