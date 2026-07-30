@@ -9,7 +9,7 @@ from typing import Any
 from .ai_edit_v2_providers.base import ProviderResult
 
 
-SOURCE_PRIORITY = ("current_upload", "user_history", "platform_public")
+SOURCE_PRIORITY = ("current_upload",)
 _SAFE_ASSET_FIELDS = {
     "asset_id",
     "cos_key",
@@ -50,6 +50,7 @@ def resolve_materials(
     records: list[dict[str, Any]] = []
     resolved: dict[str, dict[str, Any]] = {}
     degraded = False
+    selected_optional_assets: set[str] = set()
 
     for slot in slots:
         source_candidates: dict[str, list[dict[str, Any]]] = {}
@@ -68,7 +69,7 @@ def resolve_materials(
         invalid_required_ids: set[str] = set()
         qualified_required_ids: set[str] = set()
         protected_real_product_present = False
-        seen_assets: set[str] = set()
+        seen_assets: set[str] = set(selected_optional_assets)
         for source in SOURCE_PRIORITY:
             qualified: list[dict[str, Any]] = []
             for candidate in source_candidates[source]:
@@ -116,6 +117,8 @@ def resolve_materials(
             asset_id = str(candidate["asset_id"])
             if candidate.get("required"):
                 used_required.add(asset_id)
+            else:
+                selected_optional_assets.add(asset_id)
             _mark_selected(records, slot["id"], source, asset_id)
             resolved[slot["id"]] = {
                 **_safe_asset(candidate),

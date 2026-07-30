@@ -429,10 +429,6 @@ class _MaterialRepositories:
     def search(self, source: str, job_id: str, _slot: dict[str, Any]) -> list[dict[str, Any]]:
         if source == "current_upload":
             return [self._asset(row) for row in self._rows(job_id) if row.get("bound_purpose") != "primary"]
-        if source == "user_history":
-            return [self._asset(row) for row in self._rows() if row.get("source") != "platform_public"]
-        if source == "platform_public":
-            return []
         return []
 
     def save_resolution_records(self, _job_id: str, records: list[dict[str, Any]], **_kw: Any) -> None:
