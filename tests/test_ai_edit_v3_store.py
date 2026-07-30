@@ -1545,13 +1545,61 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
     def test_unclosed_connection_gc_closes_sqlite_then_releases_guard_once(self):
         target = self.root / "gc.db"
         connection, guard = self._open_counted(target)
+        cursor = connection.execute("SELECT 1")
+        connection.retained_cursor = cursor
         del connection
+        del cursor
         for _ in range(3):
             gc.collect()
         observed = guard.release_calls
         if observed == 0:
             guard.release()
         self.assertEqual(observed, 1)
+
+    def test_cursor_only_retains_native_connection_and_guard_until_graph_dies(self):
+        target = self.root / "cursor-retained.db"
+        connection, guard = self._open_counted(target)
+        cursor = connection.execute("SELECT 42")
+        del connection
+        for _ in range(3):
+            gc.collect()
+
+        self.assertEqual(cursor.fetchone()[0], 42)
+        self.assertEqual(guard.release_calls, 0)
+        retained_connection = cursor.connection
+        cursor.close()
+        retained_connection.close()
+        self.assertEqual(guard.release_calls, 1)
+
+    def test_connection_and_cursor_keep_native_sqlite_identity(self):
+        target = self.root / "native-identity.db"
+        connection, guard = self._open_counted(target)
+        self.addCleanup(connection.close)
+        self.assertIsInstance(connection, sqlite3.Connection)
+        cursor = connection.execute("SELECT 42")
+        self.assertIs(cursor.connection, connection)
+        self.assertEqual(cursor.fetchone()[0], 42)
+        connection.close()
+        self.assertEqual(guard.release_calls, 1)
+
+    def test_native_backup_accepts_two_verified_connections(self):
+        source, source_guard = self._open_counted(self.root / "backup-source.db")
+        target, target_guard = self._open_counted(self.root / "backup-target.db")
+        self.addCleanup(source.close)
+        self.addCleanup(target.close)
+        source.execute("CREATE TABLE backup_marker(value INTEGER NOT NULL)")
+        source.execute("INSERT INTO backup_marker VALUES(42)")
+
+        source.backup(target)
+
+        self.assertEqual(
+            target.execute("SELECT value FROM backup_marker").fetchone()[0],
+            42,
+        )
+        source.close()
+        target.close()
+        self.assertEqual(source_guard.release_calls, 1)
+        self.assertEqual(target_guard.release_calls, 1)
 
     def test_explicit_close_followed_by_gc_releases_guard_once(self):
         target = self.root / "explicit-close.db"
@@ -1569,18 +1617,110 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
             gc.collect()
         self.assertEqual(guard.release_calls, 1)
 
-    def test_context_manager_error_closes_and_releases_guard_once(self):
-        target = self.root / "context-error.db"
+    def test_context_manager_preserves_native_commit_and_connection_lifetime(self):
+        target = self.root / "context-native.db"
         connection, guard = self._open_counted(target)
         self.addCleanup(connection.close)
-        with self.assertRaisesRegex(RuntimeError, "injected body failure"):
-            with connection:
-                raise RuntimeError("injected body failure")
-        observed = guard.release_calls
-        if observed == 0:
-            connection.close()
-        self.assertEqual(observed, 1)
+        with connection as entered:
+            self.assertIs(entered, connection)
+            connection.execute("CREATE TABLE committed(value INTEGER NOT NULL)")
+            connection.execute("INSERT INTO committed VALUES(42)")
+
+        self.assertEqual(guard.release_calls, 0)
+        self.assertEqual(connection.execute("SELECT value FROM committed").fetchone()[0], 42)
+        connection.close()
         self.assertEqual(guard.release_calls, 1)
+
+    def test_v2_expected_identity_precedes_path_only_isolation_callback(self):
+        target = self.root / "identity-sample-gap.db"
+        replacement = self.root / "replacement-v2.db"
+        replacement_connection = sqlite3.connect(replacement, isolation_level=None)
+        try:
+            replacement_connection.execute("PRAGMA journal_mode=DELETE")
+            replacement_connection.execute("CREATE TABLE replacement(value TEXT NOT NULL)")
+            replacement_connection.execute("INSERT INTO replacement VALUES('different')")
+        finally:
+            replacement_connection.close()
+
+        original_before = (
+            self.v2.read_bytes(),
+            self.v2.stat().st_mtime_ns,
+            self._journal_mode(self.v2),
+            self._sidecars(self.v2),
+        )
+        replacement_before = (
+            replacement.read_bytes(),
+            replacement.stat().st_mtime_ns,
+            self._journal_mode(replacement),
+            self._sidecars(replacement),
+        )
+        real_assert_isolated = store_module.assert_isolated_db
+        attack = {"performed": False}
+
+        def assert_then_replace(v3_path, v2_path):
+            real_assert_isolated(v3_path, v2_path)
+            os.replace(self.v2, target)
+            os.replace(replacement, self.v2)
+            attack["performed"] = True
+
+        with mock.patch.object(
+            store_module,
+            "assert_isolated_db",
+            side_effect=assert_then_replace,
+        ):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    connection = open_store(target, v2_db_path=self.v2)
+                    connection.close()
+        self.assertEqual(caught.exception.error_code, "v2_db_identity_changed")
+        self.assertTrue(attack["performed"])
+        connect.assert_not_called()
+        self.assertEqual(
+            (
+                target.read_bytes(),
+                target.stat().st_mtime_ns,
+                self._journal_mode(target),
+                self._sidecars(target),
+            ),
+            original_before,
+        )
+        self.assertEqual(
+            (
+                self.v2.read_bytes(),
+                self.v2.stat().st_mtime_ns,
+                self._journal_mode(self.v2),
+                self._sidecars(self.v2),
+            ),
+            replacement_before,
+        )
+
+    def test_first_v2_resolution_identity_is_the_handshake_credential(self):
+        target = self.root / "first-v2-observation.db"
+        replacement = self.root / "first-v2-replacement.db"
+        sqlite3.connect(replacement).close()
+        real_candidate_identity = store_module._candidate_identity
+        attack = {"performed": False}
+
+        def resolve_then_replace(path, *, role):
+            result = real_candidate_identity(path, role=role)
+            if role == "v2" and not attack["performed"]:
+                os.replace(self.v2, target)
+                os.replace(replacement, self.v2)
+                attack["performed"] = True
+            return result
+
+        with mock.patch.object(
+            store_module,
+            "_candidate_identity",
+            side_effect=resolve_then_replace,
+        ):
+            with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    connection = open_store(target, v2_db_path=self.v2)
+                    connection.close()
+        self.assertEqual(caught.exception.error_code, "v2_db_identity_changed")
+        self.assertTrue(attack["performed"])
+        connect.assert_not_called()
 
     def test_failed_verified_open_releases_v2_and_v3_guards_once_each(self):
         target = self.root / "failed-open.db"

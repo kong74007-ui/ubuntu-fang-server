@@ -15,7 +15,6 @@ import sys
 import threading
 import time
 import unicodedata
-import weakref
 from contextlib import suppress
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
@@ -867,7 +866,7 @@ def _candidate_identity(path: Path, *, role: str) -> tuple[Path, os.stat_result 
             f"{role}_db_identity_unknown",
             f"{role.upper()} database must be an ordinary file",
         )
-    return resolved, metadata
+    return resolved, target_metadata
 
 
 def resolve_db_path(value: str | os.PathLike[str] | None = None) -> Path:
@@ -1110,74 +1109,32 @@ class _GuardBundle:
 
 
 class _GuardedConnection(sqlite3.Connection):
-    """Marker subclass proving sqlite3 honored the verified-open factory."""
+    """A native connection retaining its verified path-identity evidence."""
 
+    _identity_guard: _GuardBundle | None = None
 
-class _ConnectionGuardOwner:
-    """Close SQLite before releasing its native path-identity evidence."""
-
-    def __init__(self, connection: _GuardedConnection, guard: _GuardBundle):
-        self._connection: _GuardedConnection | None = connection
-        self._guard: _GuardBundle | None = guard
-        self._closed = False
-        self._close_lock = threading.Lock()
+    def _retain_identity_guard(self, guard: _GuardBundle) -> None:
+        if self._identity_guard is not None:
+            raise RuntimeError("SQLite identity guard is already retained")
+        self._identity_guard = guard
 
     def close(self) -> None:
         with _SQLITE_OPEN_LOCK:
-            with self._close_lock:
-                if self._closed:
-                    return
-                self._closed = True
-                connection = self._connection
-                guard = self._guard
-                self._connection = None
-                self._guard = None
-                try:
-                    if connection is not None:
-                        connection.close()
-                finally:
-                    if guard is not None:
-                        guard.release()
+            guard = self._identity_guard
+            try:
+                sqlite3.Connection.close(self)
+            finally:
+                if guard is not None:
+                    self._identity_guard = None
+                    guard.release()
 
-
-class _VerifiedConnection:
-    """Connection-compatible owner with deterministic and GC-safe cleanup."""
-
-    __slots__ = ("_connection", "_finalizer", "__weakref__")
-
-    def __init__(self, connection: _GuardedConnection, guard: _GuardBundle):
-        owner = _ConnectionGuardOwner(connection, guard)
-        object.__setattr__(self, "_connection", connection)
-        object.__setattr__(self, "_finalizer", weakref.finalize(self, owner.close))
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._connection, name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"_connection", "_finalizer"}:
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._connection, name, value)
-
-    def __iter__(self):
-        return iter(self._connection)
-
-    def __enter__(self) -> _VerifiedConnection:
+    def __del__(self) -> None:
         try:
-            self._connection.__enter__()
+            self.close()
         except Exception:
-            self.close()
-            raise
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> bool:
-        try:
-            return bool(self._connection.__exit__(exc_type, exc_value, traceback))
-        finally:
-            self.close()
-
-    def close(self) -> None:
-        self._finalizer()
+            # Finalizers cannot report cleanup failures. Explicit close still
+            # preserves the normal sqlite exception surface for callers.
+            pass
 
 
 class _WindowsGuardBundle(_GuardBundle):
@@ -1224,7 +1181,9 @@ class _LinuxGuardBundle(_GuardBundle):
         self.parent_fd = -1
 
 
-def _resolve_v2_path(v2_db_path: Path | None) -> Path:
+def _resolve_v2_path(
+    v2_db_path: Path | None,
+) -> tuple[Path, tuple[int, int]]:
     configured: str | os.PathLike[str] | None = v2_db_path
     if configured is None:
         configured = os.environ.get("AI_EDIT_V2_DB")
@@ -1235,8 +1194,18 @@ def _resolve_v2_path(v2_db_path: Path | None) -> Path:
         )
     path = _absolute_path(configured, role="v2")
     _assert_no_reparse_components(path, role="v2")
-    resolved, _metadata = _candidate_identity(path, role="v2")
-    return resolved
+    resolved, metadata = _candidate_identity(path, role="v2")
+    if metadata is None:
+        raise _configuration_error(
+            "v2_db_identity_missing",
+            "V2 database file must exist before verified open",
+        )
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise _configuration_error(
+            "v2_db_identity_unknown",
+            "V2 database must have one ordinary-file identity",
+        )
+    return resolved, (metadata.st_dev, metadata.st_ino)
 
 
 def _required_existing_file_identity(path: Path, *, role: str) -> tuple[int, int]:
@@ -1616,7 +1585,7 @@ def _connect_with_verified_identity(
     path: Path,
     v2_path: Path,
     expected_v2_path_identity: tuple[int, int],
-) -> _VerifiedConnection:
+) -> _GuardedConnection:
     with _SQLITE_OPEN_LOCK:
         return _connect_with_verified_identity_under_lock(
             path,
@@ -1629,7 +1598,7 @@ def _connect_with_verified_identity_under_lock(
     path: Path,
     v2_path: Path,
     expected_v2_path_identity: tuple[int, int],
-) -> _VerifiedConnection:
+) -> _GuardedConnection:
     v2_guard = _open_v2_handshake_guard(v2_path, expected_v2_path_identity)
     guard: _GuardBundle | None = None
     connection: sqlite3.Connection | None = None
@@ -1722,7 +1691,8 @@ def _connect_with_verified_identity_under_lock(
                         "v3_db_main_handle_mismatch",
                         "SQLite main descriptor does not uniquely match the guarded V3 leaf",
                     )
-            verified_connection = _VerifiedConnection(connection, guard)
+            connection._retain_identity_guard(guard)
+            verified_connection = connection
             connection = None
             guard = None
             return verified_connection
@@ -1788,12 +1758,8 @@ def open_store(
     """Open one verified connection with WAL, FK and timeout guarantees."""
 
     path = resolve_db_path(db_path)
-    configured_v2 = _resolve_v2_path(v2_db_path)
+    configured_v2, expected_v2_path_identity = _resolve_v2_path(v2_db_path)
     assert_isolated_db(path, configured_v2)
-    expected_v2_path_identity = _required_existing_file_identity(
-        configured_v2,
-        role="v2",
-    )
     _assert_local_filesystem(path)
     connection = _connect_with_verified_identity(
         path,
