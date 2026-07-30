@@ -198,6 +198,7 @@ class ApiTests(unittest.TestCase):
     def test_platform_asset_is_owner_scoped_and_imports_authoritative_text_without_client_truth(self):
         asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
         jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
+        v2_db = os.path.join(self.temp_dir.name, "ai-edit-v2.db")
         source = os.path.join(self.temp_dir.name, "platform-video.mp4")
         Path(source).write_bytes(b"authoritative-platform-video")
         with closing(sqlite3.connect(asset_db)) as conn:
@@ -233,10 +234,14 @@ class ApiTests(unittest.TestCase):
                 ],
             )
             conn.commit()
+        with closing(sqlite3.connect(v2_db)) as conn:
+            conn.execute("CREATE TABLE edit_v2_jobs(id TEXT PRIMARY KEY,status TEXT)")
+            conn.commit()
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
-            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "AI_EDIT_V2_JOB_DB": v2_db,
+            "CONTENT_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
@@ -356,7 +361,7 @@ class ApiTests(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
-            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "CONTENT_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
@@ -420,7 +425,7 @@ class ApiTests(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
-            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "CONTENT_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
@@ -450,7 +455,7 @@ class ApiTests(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
-            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "CONTENT_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, payload = self._dispatch("GET", "/api/v2/edit/platform-assets")
@@ -480,7 +485,7 @@ class ApiTests(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
-            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "CONTENT_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, payload = self._dispatch(
