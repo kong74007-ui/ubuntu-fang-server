@@ -92,7 +92,7 @@ class DirectorTests(unittest.TestCase):
         response = copy.deepcopy(VALID_PLAN)
         response["scenes"][0]["intent"] = "  解释价格构成  "
         response["scenes"][0]["headline"] = "   "
-        client = FakeQwen([json.dumps(response, ensure_ascii=False)])
+        client = FakeQwen([json.dumps(response, ensure_ascii=False)] * 3)
 
         plan = generate_edit_plan(CONTEXT, client)
 
@@ -108,7 +108,7 @@ class DirectorTests(unittest.TestCase):
                     response["scenes"][0].pop("headline")
                 else:
                     response["scenes"][0]["headline"] = headline
-                client = FakeQwen([json.dumps(response, ensure_ascii=False)])
+                client = FakeQwen([json.dumps(response, ensure_ascii=False)] * 3)
 
                 plan = generate_edit_plan(CONTEXT, client)
 
