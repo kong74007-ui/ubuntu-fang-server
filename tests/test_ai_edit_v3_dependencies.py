@@ -40,5 +40,7 @@ class V3CiDependencyTests(unittest.TestCase):
             "python -m pip install --disable-pip-version-check --no-input --no-deps "
             "--requirement deploy/requirements-ai-edit-v3.txt"
         )
+        self.assertLess(workflow.index("actions/setup-python@v6"), install)
+        self.assertLess(workflow.index('python -m pip install "cryptography>=41,<50"'), install)
         self.assertLess(install, workflow.index("python scripts/ci_validate.py"))
         self.assertLess(install, workflow.index("python -m unittest discover -s tests -v"))
