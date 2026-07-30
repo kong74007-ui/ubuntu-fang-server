@@ -451,6 +451,38 @@ class RuntimeTests(unittest.TestCase):
                     "stage_output_schema_invalid",
                 )
 
+    def test_resolved_plan_allows_only_declared_slots_to_be_missing_when_image_generation_degraded(self):
+        degraded = {"resolved_plan": _resolved_plan()}
+        degraded["resolved_plan"]["scenes"][0]["material_slots"] = ["slot_optional"]
+        degraded["resolved_plan"]["material_resolution_status"] = "image_generation_degraded"
+
+        self.assertEqual(
+            runtime.validate_stage_output("resolving_materials", degraded, None),
+            (True, None),
+        )
+
+        resolved = copy.deepcopy(degraded)
+        resolved["resolved_plan"]["material_resolution_status"] = "resolved"
+        self.assertEqual(
+            runtime.validate_stage_output("resolving_materials", resolved, None)[1],
+            "stage_output_schema_invalid",
+        )
+
+        unknown_material = copy.deepcopy(degraded)
+        unknown_material["resolved_plan"]["materials"] = {
+            "slot_unknown": {
+                "asset_id": "asset-unknown",
+                "cos_key": "private/unknown.png",
+                "kind": "image",
+            }
+        }
+        self.assertEqual(
+            runtime.validate_stage_output(
+                "resolving_materials", unknown_material, None
+            )[1],
+            "stage_output_schema_invalid",
+        )
+
     def test_generating_media_rejects_empty_or_malformed_recursive_audio(self):
         valid = {
             "resolved_plan": _resolved_plan(),

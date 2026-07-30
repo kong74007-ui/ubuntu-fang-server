@@ -267,11 +267,15 @@ def _resolved_plan(value: Any) -> bool:
         for scene in value["scenes"]
         for slot_id in scene["material_slots"]
     }
-    if set(materials) != slots:
-        return False
-    if value.get("material_resolution_status") not in {
+    material_slots = set(materials)
+    resolution_status = value.get("material_resolution_status")
+    if resolution_status not in {
         "resolved", "image_generation_degraded"
     }:
+        return False
+    if not material_slots.issubset(slots):
+        return False
+    if resolution_status == "resolved" and material_slots != slots:
         return False
     primary = value.get("primary_media") or value.get("primary_video")
     if not _timeline(value.get("text_timeline")) or not _normalized_media(primary):

@@ -91,6 +91,10 @@ def build_render_graph(
         materials = resolved_plan.get("materials") or {}
         if not isinstance(materials, dict):
             raise RenderGraphError("resolved_materials_invalid")
+        image_generation_degraded = (
+            resolved_plan.get("material_resolution_status")
+            == "image_generation_degraded"
+        )
         for scene in resolved_plan.get("scenes") or []:
             start_ms, end_ms = _time_range(scene, duration_ms)
             headline = scene.get("headline")
@@ -116,6 +120,8 @@ def build_render_graph(
                 )
             for slot_id in scene.get("material_slots") or []:
                 material = materials.get(slot_id)
+                if material is None and image_generation_degraded:
+                    continue
                 if not isinstance(material, dict):
                     raise RenderGraphError("resolved_material_missing")
                 kind = material.get("kind")
