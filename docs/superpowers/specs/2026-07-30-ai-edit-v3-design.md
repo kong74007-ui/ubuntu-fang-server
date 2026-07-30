@@ -4,7 +4,7 @@
 
 - 产品名称：AI 智能剪辑 V3
 - 设计日期：2026-07-30
-- 设计状态：已完成逐节用户确认，等待用户复核书面规格
+- 设计状态：已完成逐节用户确认和书面复核；实施计划审查补充了实现已确认安全语义所必需的公共接点
 - 开发范围：测试环境开发与可行性验证
 - 输出规格：1080p、H.264/AAC、MP4
 - 源需求：《AI智能剪辑第一版开发方案》V1.0
@@ -97,15 +97,20 @@ V3 不导入、修改或迁移 `ai_edit_v2.db`。V3 Worker 不领取 V2 任务�
 
 V3 最终仅以最小增量接入以下公共文件：
 
+- `server/auth_server.py`：为既有点数账本增加按 owner 与幂等键查询交易结果的内部只读接口。
+- `server/content_domains/points.py`：封装上述只读交易查询，供 V3 unknown 对账使用。
+- `server/content_domains/video_asset_publish.py`：新增共享资产发布仲裁模块，提供 generation、隐藏准备、发布/取消和裁决查询。
 - `server/content_domains/core.py`：注册 V3 API 处理器。
 - `server/content_domains/video.py`：为 V3 私有成片生成新的短期播放和下载地址。
+- `site/workbench/assets.html`：在用户资产库中刷新 V3 私有播放/下载地址，并支持 V3 任务通知定位。
 - `site/workbench/cloud-shell.js`：受服务端能力开关控制的入口。
 - `site/workbench/tasks.js`：恢复和跳转 V3 任务。
 - `server/admin_api.py`：V3 独立价格版本管理。
 - `site/admin/index.html`：V3 价格管理入口。
 - `deploy/huangque-secrets.env.example`：仅增加变量名和占位说明，不写真实密钥。
+- `.github/workflows/ci.yml`：安装冻结的 V3 Python/Node 测试依赖并执行 V3 专用测试；不得改变 V2 测试门槛。
 
-公共文件按仓库协作组边界拆分 PR，不把多个协作组的公共接点和全部 V3 业务代码塞入同一审查单元。
+上述补充不增加产品能力，只为实现本文已经确认的权威账务对账、发布 Saga、资产库播放与干净 CI 验证。公共文件按仓库协作组边界拆分 PR，不把多个协作组的公共接点和全部 V3 业务代码塞入同一审查单元；新建 V3 专属文件不计入公共接点。
 
 ## 5. 用户流程与页面
 
