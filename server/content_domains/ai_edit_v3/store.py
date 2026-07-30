@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import math
 import os
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 import unicodedata
+import weakref
 from contextlib import suppress
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
@@ -1108,19 +1110,74 @@ class _GuardBundle:
 
 
 class _GuardedConnection(sqlite3.Connection):
-    _identity_guard: _GuardBundle | None = None
+    """Marker subclass proving sqlite3 honored the verified-open factory."""
+
+
+class _ConnectionGuardOwner:
+    """Close SQLite before releasing its native path-identity evidence."""
+
+    def __init__(self, connection: _GuardedConnection, guard: _GuardBundle):
+        self._connection: _GuardedConnection | None = connection
+        self._guard: _GuardBundle | None = guard
+        self._closed = False
+        self._close_lock = threading.Lock()
 
     def close(self) -> None:
-        guard = getattr(self, "_identity_guard", None)
-        if guard is None:
-            super().close()
-            return
         with _SQLITE_OPEN_LOCK:
-            try:
-                super().close()
-            finally:
-                self._identity_guard = None
-                guard.release()
+            with self._close_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                connection = self._connection
+                guard = self._guard
+                self._connection = None
+                self._guard = None
+                try:
+                    if connection is not None:
+                        connection.close()
+                finally:
+                    if guard is not None:
+                        guard.release()
+
+
+class _VerifiedConnection:
+    """Connection-compatible owner with deterministic and GC-safe cleanup."""
+
+    __slots__ = ("_connection", "_finalizer", "__weakref__")
+
+    def __init__(self, connection: _GuardedConnection, guard: _GuardBundle):
+        owner = _ConnectionGuardOwner(connection, guard)
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "_finalizer", weakref.finalize(self, owner.close))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_connection", "_finalizer"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._connection, name, value)
+
+    def __iter__(self):
+        return iter(self._connection)
+
+    def __enter__(self) -> _VerifiedConnection:
+        try:
+            self._connection.__enter__()
+        except Exception:
+            self.close()
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return bool(self._connection.__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self._finalizer()
 
 
 class _WindowsGuardBundle(_GuardBundle):
@@ -1147,18 +1204,24 @@ class _LinuxGuardBundle(_GuardBundle):
         parent_fd: int,
         leaf_fd: int,
         leaf_identity: tuple[int, int],
+        *,
+        ancestor_fds: list[int] | None = None,
     ):
         self.parent_fd = parent_fd
         self.leaf_fd = leaf_fd
         self.leaf_identity = leaf_identity
+        self.ancestor_fds = list(ancestor_fds or [parent_fd])
 
     def release(self) -> None:
-        for attribute in ("leaf_fd", "parent_fd"):
-            descriptor = getattr(self, attribute, -1)
-            if descriptor >= 0:
-                with suppress(OSError):
-                    os.close(descriptor)
-                setattr(self, attribute, -1)
+        if self.leaf_fd >= 0:
+            with suppress(OSError):
+                os.close(self.leaf_fd)
+            self.leaf_fd = -1
+        while self.ancestor_fds:
+            descriptor = self.ancestor_fds.pop()
+            with suppress(OSError):
+                os.close(descriptor)
+        self.parent_fd = -1
 
 
 def _resolve_v2_path(v2_db_path: Path | None) -> Path:
@@ -1174,6 +1237,27 @@ def _resolve_v2_path(v2_db_path: Path | None) -> Path:
     _assert_no_reparse_components(path, role="v2")
     resolved, _metadata = _candidate_identity(path, role="v2")
     return resolved
+
+
+def _required_existing_file_identity(path: Path, *, role: str) -> tuple[int, int]:
+    try:
+        metadata = path.stat()
+    except FileNotFoundError as exc:
+        raise _configuration_error(
+            f"{role}_db_identity_missing",
+            f"{role.upper()} database file must exist before verified open",
+        ) from exc
+    except OSError as exc:
+        raise _configuration_error(
+            f"{role}_db_identity_unknown",
+            f"{role.upper()} database identity cannot be established",
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise _configuration_error(
+            f"{role}_db_identity_unknown",
+            f"{role.upper()} database must have one ordinary-file identity",
+        )
+    return metadata.st_dev, metadata.st_ino
 
 
 def _windows_handle_identity(handle: int) -> tuple[tuple[int, int], int, int]:
@@ -1257,14 +1341,74 @@ def _windows_create_handle(
     return int(handle)
 
 
-def _open_windows_guard(path: Path, v2_path: Path) -> _WindowsGuardBundle:
+def _is_exact_create_race(error: OSError, *, windows: bool) -> bool:
+    if windows:
+        return getattr(error, "winerror", None) == 80  # ERROR_FILE_EXISTS
+    return getattr(error, "errno", None) == errno.EEXIST
+
+
+def _open_windows_ancestor_handles(path: Path, *, role: str) -> list[int]:
     handles: list[int] = []
     try:
         current = Path(path.anchor)
-        handles.append(_windows_create_handle(current, directory=True))
+        candidates = [current]
         for part in path.parent.parts[1:]:
             current /= part
-            handles.append(_windows_create_handle(current, directory=True))
+            candidates.append(current)
+        for candidate in candidates:
+            handle = _windows_create_handle(candidate, directory=True)
+            handles.append(handle)
+            _identity, attributes, _links = _windows_handle_identity(handle)
+            if attributes & 0x400:
+                raise _configuration_error(
+                    f"{role}_db_path_reparse",
+                    f"{role.upper()} database ancestor may not be a reparse point",
+                )
+        return handles
+    except Exception:
+        _WindowsGuardBundle(handles, (0, 0)).release()
+        raise
+
+
+def _open_windows_v2_guard(
+    path: Path,
+    expected_path_identity: tuple[int, int],
+) -> _WindowsGuardBundle:
+    handles = _open_windows_ancestor_handles(path, role="v2")
+    try:
+        try:
+            leaf_handle = _windows_create_handle(path, directory=False)
+        except FileNotFoundError as exc:
+            raise _configuration_error(
+                "v2_db_identity_missing",
+                "V2 database disappeared before the identity handshake",
+            ) from exc
+        handles.append(leaf_handle)
+        leaf_identity, attributes, link_count = _windows_handle_identity(leaf_handle)
+        if attributes & 0x400 or link_count != 1:
+            raise _configuration_error(
+                "v2_db_identity_unknown",
+                "V2 database leaf does not have one stable ordinary-file identity",
+            )
+        if _required_existing_file_identity(path, role="v2") != expected_path_identity:
+            raise _configuration_error(
+                "v2_db_identity_changed",
+                "V2 database identity changed before the native handshake",
+            )
+        return _WindowsGuardBundle(handles, leaf_identity)
+    except Exception:
+        _WindowsGuardBundle(handles, (0, 0)).release()
+        raise
+
+
+def _open_windows_guard(
+    path: Path,
+    v2_path: Path,
+    *,
+    v2_identity: tuple[int, int] | None = None,
+) -> _WindowsGuardBundle:
+    handles = _open_windows_ancestor_handles(path, role="v3")
+    try:
         existed = os.path.lexists(path)
         try:
             leaf_handle = _windows_create_handle(
@@ -1273,8 +1417,8 @@ def _open_windows_guard(path: Path, v2_path: Path) -> _WindowsGuardBundle:
                 create_new=not existed,
                 writable=True,
             )
-        except FileExistsError:
-            if existed:
+        except OSError as exc:
+            if existed or not _is_exact_create_race(exc, windows=True):
                 raise
             # Another verified opener won CREATE_NEW while the process-wide
             # identity lock was held by the caller.  Reopen that exact leaf;
@@ -1292,15 +1436,16 @@ def _open_windows_guard(path: Path, v2_path: Path) -> _WindowsGuardBundle:
                 "v3_db_identity_unprovable",
                 "V3 database leaf does not have one stable ordinary-file identity",
             )
-        if os.path.lexists(v2_path):
-            v2_handle = _windows_create_handle(v2_path, directory=False)
-            handles.append(v2_handle)
-            v2_identity, _attributes, _links = _windows_handle_identity(v2_handle)
-            if leaf_identity == v2_identity:
-                raise _configuration_error(
-                    "v2_v3_db_same_file",
-                    "V2 and V3 database files share one filesystem identity",
-                )
+        if v2_identity is None:
+            raise _configuration_error(
+                "v2_db_identity_unknown",
+                "V2 native identity was not supplied to the V3 handshake",
+            )
+        if leaf_identity == v2_identity:
+            raise _configuration_error(
+                "v2_v3_db_same_file",
+                "V2 and V3 database files share one filesystem identity",
+            )
         return _WindowsGuardBundle(handles, leaf_identity)
     except Exception:
         _WindowsGuardBundle(handles, (0, 0)).release()
@@ -1328,14 +1473,80 @@ def _open_linux_parent(path: Path) -> int:
         raise
 
 
-def _open_linux_guard(path: Path, v2_path: Path) -> _LinuxGuardBundle:
+def _open_linux_v2_guard(
+    path: Path,
+    expected_path_identity: tuple[int, int],
+) -> _LinuxGuardBundle:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    ancestor_fds: list[int] = []
+    leaf_fd = -1
+    try:
+        descriptor = os.open(path.anchor or "/", flags)
+        ancestor_fds.append(descriptor)
+        for part in path.parent.parts[1:]:
+            descriptor = os.open(part, flags, dir_fd=descriptor)
+            ancestor_fds.append(descriptor)
+        parent_metadata = os.fstat(descriptor)
+        if parent_metadata.st_uid != os.geteuid() or parent_metadata.st_mode & 0o022:
+            raise _configuration_error(
+                "v2_db_identity_unknown",
+                "V2 database parent identity is not safe for a verified handshake",
+            )
+        try:
+            leaf_fd = os.open(
+                path.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+        except FileNotFoundError as exc:
+            raise _configuration_error(
+                "v2_db_identity_missing",
+                "V2 database disappeared before the identity handshake",
+            ) from exc
+        metadata = os.fstat(leaf_fd)
+        leaf_identity = metadata.st_dev, metadata.st_ino
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise _configuration_error(
+                "v2_db_identity_unknown",
+                "V2 database leaf does not have one stable ordinary-file identity",
+            )
+        if leaf_identity != expected_path_identity:
+            raise _configuration_error(
+                "v2_db_identity_changed",
+                "V2 database identity changed before the native handshake",
+            )
+        return _LinuxGuardBundle(
+            descriptor,
+            leaf_fd,
+            leaf_identity,
+            ancestor_fds=ancestor_fds,
+        )
+    except Exception:
+        parent_fd = ancestor_fds[-1] if ancestor_fds else -1
+        _LinuxGuardBundle(
+            parent_fd,
+            leaf_fd,
+            (0, 0),
+            ancestor_fds=ancestor_fds,
+        ).release()
+        raise
+
+
+def _open_linux_guard(
+    path: Path,
+    v2_path: Path,
+    *,
+    v2_identity: tuple[int, int] | None = None,
+) -> _LinuxGuardBundle:
     parent_fd = _open_linux_parent(path)
     leaf_fd = -1
     try:
         flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         try:
             leaf_fd = os.open(path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
-        except FileExistsError:
+        except OSError as exc:
+            if not _is_exact_create_race(exc, windows=False):
+                raise
             leaf_fd = os.open(path.name, flags, dir_fd=parent_fd)
         metadata = os.fstat(leaf_fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -1344,13 +1555,16 @@ def _open_linux_guard(path: Path, v2_path: Path) -> _LinuxGuardBundle:
                 "V3 database leaf does not have one stable ordinary-file identity",
             )
         leaf_identity = (metadata.st_dev, metadata.st_ino)
-        if os.path.lexists(v2_path):
-            v2_metadata = os.stat(v2_path, follow_symlinks=False)
-            if leaf_identity == (v2_metadata.st_dev, v2_metadata.st_ino):
-                raise _configuration_error(
-                    "v2_v3_db_same_file",
-                    "V2 and V3 database files share one filesystem identity",
-                )
+        if v2_identity is None:
+            raise _configuration_error(
+                "v2_db_identity_unknown",
+                "V2 native identity was not supplied to the V3 handshake",
+            )
+        if leaf_identity == v2_identity:
+            raise _configuration_error(
+                "v2_v3_db_same_file",
+                "V2 and V3 database files share one filesystem identity",
+            )
         return _LinuxGuardBundle(parent_fd, leaf_fd, leaf_identity)
     except Exception:
         _LinuxGuardBundle(parent_fd, leaf_fd, (0, 0)).release()
@@ -1384,40 +1598,70 @@ def _linux_fd_snapshot() -> set[int]:
         ) from exc
 
 
+def _open_v2_handshake_guard(
+    v2_path: Path,
+    expected_path_identity: tuple[int, int],
+) -> _GuardBundle:
+    if os.name == "nt":
+        return _open_windows_v2_guard(v2_path, expected_path_identity)
+    if sys.platform.startswith("linux"):
+        return _open_linux_v2_guard(v2_path, expected_path_identity)
+    raise _configuration_error(
+        "v2_db_identity_unknown",
+        "this platform cannot prove the V2 database identity",
+    )
+
+
 def _connect_with_verified_identity(
     path: Path,
     v2_path: Path,
-) -> _GuardedConnection:
+    expected_v2_path_identity: tuple[int, int],
+) -> _VerifiedConnection:
     with _SQLITE_OPEN_LOCK:
-        return _connect_with_verified_identity_under_lock(path, v2_path)
+        return _connect_with_verified_identity_under_lock(
+            path,
+            v2_path,
+            expected_v2_path_identity,
+        )
 
 
 def _connect_with_verified_identity_under_lock(
     path: Path,
     v2_path: Path,
-) -> _GuardedConnection:
-    if os.name == "nt":
-        guard: _GuardBundle = _open_windows_guard(path, v2_path)
-        connect_target: str | Path = path
-        connect_kwargs: dict[str, Any] = {}
-        before_descriptors: set[int] | None = None
-    elif sys.platform.startswith("linux"):
-        linux_guard = _open_linux_guard(path, v2_path)
-        guard = linux_guard
-        connect_target = (
-            f"file:/proc/self/fd/{linux_guard.parent_fd}/{quote(path.name, safe='')}"
-            "?mode=rw&cache=private"
-        )
-        connect_kwargs = {"uri": True}
-        before_descriptors = _linux_fd_snapshot()
-    else:
-        raise _configuration_error(
-            "v3_db_identity_unprovable",
-            "this platform cannot prove the SQLite main-file identity",
-        )
-
+    expected_v2_path_identity: tuple[int, int],
+) -> _VerifiedConnection:
+    v2_guard = _open_v2_handshake_guard(v2_path, expected_v2_path_identity)
+    guard: _GuardBundle | None = None
     connection: sqlite3.Connection | None = None
     try:
+        if os.name == "nt":
+            guard = _open_windows_guard(
+                path,
+                v2_path,
+                v2_identity=v2_guard.leaf_identity,
+            )
+            connect_target: str | Path = path
+            connect_kwargs: dict[str, Any] = {}
+            before_descriptors: set[int] | None = None
+        elif sys.platform.startswith("linux"):
+            linux_guard = _open_linux_guard(
+                path,
+                v2_path,
+                v2_identity=v2_guard.leaf_identity,
+            )
+            guard = linux_guard
+            connect_target = (
+                f"file:/proc/self/fd/{linux_guard.parent_fd}/{quote(path.name, safe='')}"
+                "?mode=rw&cache=private"
+            )
+            connect_kwargs = {"uri": True}
+            before_descriptors = _linux_fd_snapshot()
+        else:
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "this platform cannot prove the SQLite main-file identity",
+            )
+
         with _SQLITE_OPEN_LOCK:
             try:
                 connection = sqlite3.connect(
@@ -1454,6 +1698,11 @@ def _connect_with_verified_identity_under_lock(
                         "v3_db_main_handle_mismatch",
                         "SQLite main handle does not match the guarded V3 leaf",
                     )
+                if main_identity == v2_guard.leaf_identity:
+                    raise _configuration_error(
+                        "v2_v3_db_same_file",
+                        "SQLite main handle is the guarded V2 database",
+                    )
             else:
                 assert before_descriptors is not None
                 after_descriptors = _linux_fd_snapshot()
@@ -1473,13 +1722,20 @@ def _connect_with_verified_identity_under_lock(
                         "v3_db_main_handle_mismatch",
                         "SQLite main descriptor does not uniquely match the guarded V3 leaf",
                     )
-            connection._identity_guard = guard
-            return connection
+            verified_connection = _VerifiedConnection(connection, guard)
+            connection = None
+            guard = None
+            return verified_connection
     except Exception:
-        if connection is not None:
-            connection.close()
-        guard.release()
+        try:
+            if connection is not None:
+                connection.close()
+        finally:
+            if guard is not None:
+                guard.release()
         raise
+    finally:
+        v2_guard.release()
 
 
 def _json_tree_is_nfc(value: Any) -> bool:
@@ -1534,8 +1790,16 @@ def open_store(
     path = resolve_db_path(db_path)
     configured_v2 = _resolve_v2_path(v2_db_path)
     assert_isolated_db(path, configured_v2)
+    expected_v2_path_identity = _required_existing_file_identity(
+        configured_v2,
+        role="v2",
+    )
     _assert_local_filesystem(path)
-    connection = _connect_with_verified_identity(path, configured_v2)
+    connection = _connect_with_verified_identity(
+        path,
+        configured_v2,
+        expected_v2_path_identity,
+    )
     try:
         connection.row_factory = sqlite3.Row
         _register_connection_functions(connection)

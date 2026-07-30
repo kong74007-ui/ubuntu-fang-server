@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import errno
+import gc
 import inspect
 import os
 import sqlite3
@@ -1424,6 +1426,301 @@ class V3StoreReviewIsolationTests(unittest.TestCase):
 
     def test_aba_hardlink_swap_and_restore_is_rejected_by_actual_handle_identity(self):
         self._assert_connect_boundary_hardlink_attack_is_rejected(restore=True)
+
+
+class _ReleaseCountingGuard:
+    def __init__(self, inner):
+        self.inner = inner
+        self.release_calls = 0
+        self.before_release = None
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def release(self):
+        self.release_calls += 1
+        if self.before_release is not None:
+            self.before_release()
+        self.inner.release()
+
+
+class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        connection = sqlite3.connect(self.v2, isolation_level=None)
+        try:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("CREATE TABLE v2_marker(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO v2_marker VALUES('unchanged')")
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _sidecars(path):
+        return tuple(
+            Path(f"{path}{suffix}").exists()
+            for suffix in ("-wal", "-shm", "-journal")
+        )
+
+    @staticmethod
+    def _journal_mode(path):
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            return connection.execute("PRAGMA journal_mode").fetchone()[0].lower()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _guard_name():
+        return "_open_windows_guard" if os.name == "nt" else "_open_linux_guard"
+
+    def _open_counted(self, target):
+        guard_name = self._guard_name()
+        real_guard = getattr(store_module, guard_name)
+        holder = {}
+
+        def counted(*args, **kwargs):
+            proxy = _ReleaseCountingGuard(real_guard(*args, **kwargs))
+            holder["guard"] = proxy
+            return proxy
+
+        with mock.patch.object(store_module, guard_name, side_effect=counted):
+            connection = open_store(target, v2_db_path=self.v2)
+        return connection, holder["guard"]
+
+    def test_v2_swap_before_v3_native_guard_cannot_reach_sqlite_or_mutate_identity(self):
+        target = self.root / "swap-before-guard.db"
+        before_mode = self._journal_mode(self.v2)
+        before_bytes = self.v2.read_bytes()
+        before_mtime = self.v2.stat().st_mtime_ns
+        before_sidecars = self._sidecars(self.v2)
+        guard_name = self._guard_name()
+        real_guard = getattr(store_module, guard_name)
+        attack = {"attempted": False, "moved": False}
+
+        def swap_then_guard(*args, **kwargs):
+            attack["attempted"] = True
+            os.replace(self.v2, target)
+            attack["moved"] = True
+            return real_guard(*args, **kwargs)
+
+        def operation():
+            connection = open_store(target, v2_db_path=self.v2)
+            connection.close()
+
+        real_connect = sqlite3.connect
+        with mock.patch.object(store_module, guard_name, side_effect=swap_then_guard):
+            with mock.patch.object(sqlite3, "connect", wraps=real_connect) as connect:
+                with self.assertRaises((StoreConfigurationError, OSError)):
+                    operation()
+            connect.assert_not_called()
+
+        self.assertTrue(attack["attempted"])
+        survivor = self.v2 if self.v2.exists() else target
+        self.assertEqual(survivor.read_bytes(), before_bytes)
+        self.assertEqual(self._journal_mode(survivor), before_mode)
+        self.assertEqual(survivor.stat().st_mtime_ns, before_mtime)
+        self.assertEqual(self._sidecars(self.v2), before_sidecars)
+        self.assertEqual(self._sidecars(target), (False, False, False))
+
+    def test_v2_missing_at_guard_handshake_fails_before_v3_creation(self):
+        missing_v2 = self.root / "missing-v2.db"
+        target = self.root / "missing-handshake-v3.db"
+
+        def operation():
+            connection = open_store(target, v2_db_path=missing_v2)
+            connection.close()
+
+        with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+            with self.assertRaises(StoreConfigurationError) as caught:
+                operation()
+        self.assertEqual(caught.exception.error_code, "v2_db_identity_missing")
+        connect.assert_not_called()
+        self.assertFalse(target.exists())
+        self.assertEqual(self._sidecars(target), (False, False, False))
+
+    def test_unclosed_connection_gc_closes_sqlite_then_releases_guard_once(self):
+        target = self.root / "gc.db"
+        connection, guard = self._open_counted(target)
+        del connection
+        for _ in range(3):
+            gc.collect()
+        observed = guard.release_calls
+        if observed == 0:
+            guard.release()
+        self.assertEqual(observed, 1)
+
+    def test_explicit_close_followed_by_gc_releases_guard_once(self):
+        target = self.root / "explicit-close.db"
+        connection, guard = self._open_counted(target)
+
+        def assert_sqlite_closed_before_guard_release():
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+        guard.before_release = assert_sqlite_closed_before_guard_release
+        connection.close()
+        guard.before_release = None
+        del connection
+        for _ in range(3):
+            gc.collect()
+        self.assertEqual(guard.release_calls, 1)
+
+    def test_context_manager_error_closes_and_releases_guard_once(self):
+        target = self.root / "context-error.db"
+        connection, guard = self._open_counted(target)
+        self.addCleanup(connection.close)
+        with self.assertRaisesRegex(RuntimeError, "injected body failure"):
+            with connection:
+                raise RuntimeError("injected body failure")
+        observed = guard.release_calls
+        if observed == 0:
+            connection.close()
+        self.assertEqual(observed, 1)
+        self.assertEqual(guard.release_calls, 1)
+
+    def test_failed_verified_open_releases_v2_and_v3_guards_once_each(self):
+        target = self.root / "failed-open.db"
+        other = self.root / "other.db"
+        sqlite3.connect(other).close()
+        bundle_class = (
+            store_module._WindowsGuardBundle
+            if os.name == "nt"
+            else store_module._LinuxGuardBundle
+        )
+        real_release = bundle_class.release
+        releases = {}
+
+        def tracked_release(bundle):
+            identity = id(bundle)
+            releases[identity] = releases.get(identity, 0) + 1
+            return real_release(bundle)
+
+        real_connect = sqlite3.connect
+
+        def wrong_connect(_requested, *args, **kwargs):
+            return real_connect(other, isolation_level=None)
+
+        with mock.patch.object(bundle_class, "release", tracked_release):
+            with mock.patch.object(sqlite3, "connect", side_effect=wrong_connect):
+                with self.assertRaises(StoreConfigurationError):
+                    open_store(target, v2_db_path=self.v2)
+        self.assertEqual(len(releases), 2)
+        self.assertEqual(set(releases.values()), {1})
+
+
+class V3StoreNativeCreateRaceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.v2 = self.root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+
+    @unittest.skipUnless(os.name == "nt", "native Windows race probe")
+    def test_exact_winerror_80_retries_inside_guard_and_revalidates(self):
+        import ctypes
+
+        target = self.root / "race-80.db"
+        real_create = store_module._windows_create_handle
+        injected = {"done": False}
+
+        def create_with_race(path, *, directory, create_new=False, writable=False):
+            if Path(path) == target and create_new and not injected["done"]:
+                injected["done"] = True
+                target.touch()
+                raise ctypes.WinError(80)
+            return real_create(
+                path,
+                directory=directory,
+                create_new=create_new,
+                writable=writable,
+            )
+
+        with mock.patch.object(
+            store_module,
+            "_windows_create_handle",
+            side_effect=create_with_race,
+        ):
+            connection = open_store(target, v2_db_path=self.v2)
+        try:
+            self.assertTrue(injected["done"])
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        finally:
+            connection.close()
+
+    @unittest.skipUnless(os.name == "nt", "native Windows race probe")
+    def test_winerror_183_and_code_less_file_exists_never_retry(self):
+        import ctypes
+
+        errors = (
+            ("winerror-183", ctypes.WinError(183)),
+            ("code-less", FileExistsError(errno.EEXIST, "synthetic collision")),
+        )
+        real_create = store_module._windows_create_handle
+        for label, injected_error in errors:
+            target = self.root / f"{label}.db"
+
+            def create_with_error(
+                path,
+                *,
+                directory,
+                create_new=False,
+                writable=False,
+                _target=target,
+                _error=injected_error,
+            ):
+                if Path(path) == _target and create_new:
+                    _target.touch()
+                    raise _error
+                return real_create(
+                    path,
+                    directory=directory,
+                    create_new=create_new,
+                    writable=writable,
+                )
+
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    store_module,
+                    "_windows_create_handle",
+                    side_effect=create_with_error,
+                ):
+                    with self.assertRaises(OSError) as caught:
+                        connection = open_store(target, v2_db_path=self.v2)
+                        connection.close()
+                self.assertIs(caught.exception, injected_error)
+                self.assertEqual(target.stat().st_size, 0)
+                self.assertEqual(
+                    tuple(
+                        Path(f"{target}{suffix}").exists()
+                        for suffix in ("-wal", "-shm", "-journal")
+                    ),
+                    (False, False, False),
+                )
+
+    def test_windows_and_linux_create_races_require_exact_native_codes(self):
+        import ctypes
+
+        win80 = ctypes.WinError(80) if os.name == "nt" else OSError("win80")
+        if os.name != "nt":
+            win80.winerror = 80
+        win183 = ctypes.WinError(183) if os.name == "nt" else OSError("win183")
+        if os.name != "nt":
+            win183.winerror = 183
+        no_winerror = FileExistsError(errno.EEXIST, "no native Windows code")
+        linux_exists = FileExistsError(errno.EEXIST, "exists")
+        linux_other = FileExistsError(errno.EACCES, "not EEXIST")
+
+        self.assertTrue(store_module._is_exact_create_race(win80, windows=True))
+        self.assertFalse(store_module._is_exact_create_race(win183, windows=True))
+        self.assertFalse(store_module._is_exact_create_race(no_winerror, windows=True))
+        self.assertTrue(store_module._is_exact_create_race(linux_exists, windows=False))
+        self.assertFalse(store_module._is_exact_create_race(linux_other, windows=False))
 
 
 class V3StoreFilesystemClassificationTests(unittest.TestCase):
