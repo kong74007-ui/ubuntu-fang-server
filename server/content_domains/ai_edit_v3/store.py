@@ -429,7 +429,7 @@ _CREATE_TABLE_SQL = {
             environment TEXT NOT NULL CHECK(environment IN ('test','production')),
             owner_id TEXT NOT NULL CHECK(length(owner_id)>0),
             upload_id TEXT UNIQUE,
-            source_kind TEXT NOT NULL CHECK(length(source_kind)>0),
+            source_kind TEXT NOT NULL,
             source_job_id TEXT,
             cos_key TEXT NOT NULL UNIQUE CHECK(length(cos_key)>0 AND instr(cos_key,'://')=0),
             mime_type TEXT NOT NULL CHECK(length(mime_type)>0),
@@ -437,6 +437,7 @@ _CREATE_TABLE_SQL = {
             sha256 TEXT NOT NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
             metadata_json TEXT NOT NULL,
             created_at INTEGER NOT NULL,
+            CHECK((source_kind='uploaded' AND upload_id IS NOT NULL AND source_job_id IS NULL) OR (source_kind='generated' AND upload_id IS NULL AND source_job_id IS NOT NULL)),
             FOREIGN KEY(upload_id) REFERENCES edit_v3_uploads(upload_id) ON DELETE RESTRICT,
             FOREIGN KEY(source_job_id) REFERENCES edit_v3_jobs(job_id) ON DELETE RESTRICT
         )
@@ -1117,6 +1118,47 @@ class _GuardedConnection(sqlite3.Connection):
 
     _identity_guard: _GuardBundle | None = None
 
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._cursor_lock = threading.RLock()
+        self._tracked_cursors: dict[int, sqlite3.Cursor] = {}
+
+    def _track_cursor(self, cursor: sqlite3.Cursor) -> sqlite3.Cursor:
+        try:
+            self._tracked_cursors[id(cursor)] = cursor
+        except BaseException:
+            sqlite3.Cursor.close(cursor)
+            raise
+        return cursor
+
+    def cursor(self, factory: type[sqlite3.Cursor] = sqlite3.Cursor) -> sqlite3.Cursor:
+        with self._cursor_lock:
+            cursor = sqlite3.Connection.cursor(self, factory)
+            return self._track_cursor(cursor)
+
+    def execute(
+        self,
+        sql: str,
+        parameters: Sequence[Any] = (),
+    ) -> sqlite3.Cursor:
+        with self._cursor_lock:
+            cursor = sqlite3.Connection.execute(self, sql, parameters)
+            return self._track_cursor(cursor)
+
+    def executemany(
+        self,
+        sql: str,
+        parameters: Sequence[Sequence[Any]],
+    ) -> sqlite3.Cursor:
+        with self._cursor_lock:
+            cursor = sqlite3.Connection.executemany(self, sql, parameters)
+            return self._track_cursor(cursor)
+
+    def executescript(self, sql_script: str) -> sqlite3.Cursor:
+        with self._cursor_lock:
+            cursor = sqlite3.Connection.executescript(self, sql_script)
+            return self._track_cursor(cursor)
+
     def _retain_identity_guard(self, guard: _GuardBundle) -> None:
         if self._identity_guard is not None:
             raise RuntimeError("SQLite identity guard is already retained")
@@ -1124,11 +1166,15 @@ class _GuardedConnection(sqlite3.Connection):
 
     def close(self) -> None:
         with _SQLITE_OPEN_LOCK:
-            guard = self._identity_guard
-            sqlite3.Connection.close(self)
-            if guard is not None:
-                self._identity_guard = None
-                guard.release()
+            with self._cursor_lock:
+                for cursor_id, cursor in tuple(self._tracked_cursors.items()):
+                    sqlite3.Cursor.close(cursor)
+                    self._tracked_cursors.pop(cursor_id, None)
+                guard = self._identity_guard
+                sqlite3.Connection.close(self)
+                if guard is not None:
+                    guard.release()
+                    self._identity_guard = None
 
     def __del__(self) -> None:
         try:
@@ -1524,14 +1570,27 @@ def _linux_fd_snapshot() -> set[int]:
 def _open_v2_handshake_guard(
     v2_path: Path,
 ) -> _GuardBundle:
-    if os.name == "nt":
-        return _open_windows_v2_guard(v2_path)
-    if sys.platform.startswith("linux"):
-        return _open_linux_v2_guard(v2_path)
-    raise _configuration_error(
-        "v2_db_identity_unknown",
-        "this platform cannot prove the V2 database identity",
-    )
+    try:
+        if os.name == "nt":
+            return _open_windows_v2_guard(v2_path)
+        if sys.platform.startswith("linux"):
+            return _open_linux_v2_guard(v2_path)
+        raise _configuration_error(
+            "v2_db_identity_unknown",
+            "this platform cannot prove the V2 database identity",
+        )
+    except StoreConfigurationError:
+        raise
+    except FileNotFoundError as exc:
+        raise _configuration_error(
+            "v2_db_identity_unknown",
+            "V2 database ancestor identity cannot be established",
+        ) from exc
+    except OSError as exc:
+        raise _configuration_error(
+            "v2_db_identity_unknown",
+            "V2 database ancestor or leaf identity cannot be opened safely",
+        ) from exc
 
 
 def _connect_with_verified_identity_under_lock(
@@ -2002,6 +2061,11 @@ def _require_integer(name: str, value: Any, *, nullable: bool = False) -> None:
             "integer_argument_invalid",
             f"{name} must be an integer primitive",
         )
+    if value < -(2**63) or value > 2**63 - 1:
+        raise _configuration_error(
+            "integer_out_of_range",
+            f"{name} must fit signed SQLite int64",
+        )
 
 
 class V3Store:
@@ -2170,12 +2234,11 @@ class V3Store:
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
             existing = connection.execute(
-                "SELECT * FROM edit_v3_quotes WHERE quote_id=?",
-                (quote_id,),
+                """SELECT * FROM edit_v3_quotes
+                   WHERE environment=? AND owner_id=? AND quote_id=?""",
+                (environment, owner_id, quote_id),
             ).fetchone()
             if existing is not None:
-                if existing["environment"] != environment or existing["owner_id"] != owner_id:
-                    return None
                 if not self._same_values(existing, expected):
                     raise _immutable_conflict(f"quote:{quote_id}")
                 return dict(existing)
@@ -2189,14 +2252,29 @@ class V3Store:
                     tuple(expected.values()),
                 )
             except sqlite3.IntegrityError as exc:
+                if getattr(exc, "sqlite_errorcode", None) in {
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_PRIMARYKEY", -1),
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_UNIQUE", -1),
+                }:
+                    replay = connection.execute(
+                        """SELECT * FROM edit_v3_quotes
+                           WHERE environment=? AND owner_id=? AND quote_id=?""",
+                        (environment, owner_id, quote_id),
+                    ).fetchone()
+                    if replay is not None:
+                        if not self._same_values(replay, expected):
+                            raise _immutable_conflict(f"quote:{quote_id}") from exc
+                        return dict(replay)
+                    return None
                 raise StoreConflictError(
                     "quote_invalid",
                     "quote violates frozen pricing, template, or value constraints",
                 ) from exc
             return dict(
                 connection.execute(
-                    "SELECT * FROM edit_v3_quotes WHERE quote_id=?",
-                    (quote_id,),
+                    """SELECT * FROM edit_v3_quotes
+                       WHERE environment=? AND owner_id=? AND quote_id=?""",
+                    (environment, owner_id, quote_id),
                 ).fetchone()
             )
 
@@ -2251,12 +2329,11 @@ class V3Store:
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
             existing = connection.execute(
-                "SELECT * FROM edit_v3_uploads WHERE upload_id=?",
-                (upload_id,),
+                """SELECT * FROM edit_v3_uploads
+                   WHERE environment=? AND owner_id=? AND upload_id=?""",
+                (environment, owner_id, upload_id),
             ).fetchone()
             if existing is not None:
-                if existing["environment"] != environment or existing["owner_id"] != owner_id:
-                    return None
                 if not self._same_values(existing, immutable):
                     raise _immutable_conflict(f"upload:{upload_id}")
                 return dict(existing)
@@ -2280,14 +2357,35 @@ class V3Store:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
+                if getattr(exc, "sqlite_errorcode", None) in {
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_PRIMARYKEY", -1),
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_UNIQUE", -1),
+                }:
+                    replay = connection.execute(
+                        """SELECT * FROM edit_v3_uploads
+                           WHERE environment=? AND owner_id=? AND upload_id=?""",
+                        (environment, owner_id, upload_id),
+                    ).fetchone()
+                    if replay is not None:
+                        if not self._same_values(replay, immutable):
+                            raise _immutable_conflict(f"upload:{upload_id}") from exc
+                        return dict(replay)
+                    owned_object_key = connection.execute(
+                        """SELECT 1 FROM edit_v3_uploads
+                           WHERE environment=? AND owner_id=? AND object_key=?""",
+                        (environment, owner_id, object_key),
+                    ).fetchone()
+                    if owned_object_key is None:
+                        return None
                 raise StoreConflictError(
                     "upload_identity_conflict",
                     "upload ID or object key is already bound",
                 ) from exc
             return dict(
                 connection.execute(
-                    "SELECT * FROM edit_v3_uploads WHERE upload_id=?",
-                    (upload_id,),
+                    """SELECT * FROM edit_v3_uploads
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, upload_id),
                 ).fetchone()
             )
 
@@ -2415,27 +2513,22 @@ class V3Store:
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
             existing = connection.execute(
-                "SELECT * FROM edit_v3_materials WHERE material_id=?",
-                (material_id,),
+                """SELECT * FROM edit_v3_materials
+                   WHERE environment=? AND owner_id=? AND material_id=?""",
+                (environment, owner_id, material_id),
             ).fetchone()
             if existing is not None:
-                if existing["environment"] != environment or existing["owner_id"] != owner_id:
-                    return None
                 if not self._same_values(existing, expected):
                     raise _immutable_conflict(f"material:{material_id}")
                 return dict(existing)
 
             if source_kind == "uploaded":
                 upload_replay = connection.execute(
-                    "SELECT * FROM edit_v3_materials WHERE upload_id=?",
-                    (upload_id,),
+                    """SELECT * FROM edit_v3_materials
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, upload_id),
                 ).fetchone()
                 if upload_replay is not None:
-                    if (
-                        upload_replay["environment"] != environment
-                        or upload_replay["owner_id"] != owner_id
-                    ):
-                        return None
                     replay_expected = {
                         key: value
                         for key, value in expected.items()
@@ -2447,13 +2540,11 @@ class V3Store:
 
             if source_kind == "uploaded":
                 upload = connection.execute(
-                    "SELECT * FROM edit_v3_uploads WHERE upload_id=?",
-                    (upload_id,),
+                    """SELECT * FROM edit_v3_uploads
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, upload_id),
                 ).fetchone()
-                if upload is None or (
-                    upload["environment"] != environment
-                    or upload["owner_id"] != owner_id
-                ):
+                if upload is None:
                     return None
                 if (
                     upload["status"] != "completed"
@@ -2480,13 +2571,11 @@ class V3Store:
                     )
             else:
                 source_job = connection.execute(
-                    "SELECT environment,owner_id FROM edit_v3_jobs WHERE job_id=?",
-                    (source_job_id,),
+                    """SELECT environment,owner_id FROM edit_v3_jobs
+                       WHERE environment=? AND owner_id=? AND job_id=?""",
+                    (environment, owner_id, source_job_id),
                 ).fetchone()
-                if source_job is None or (
-                    source_job["environment"] != environment
-                    or source_job["owner_id"] != owner_id
-                ):
+                if source_job is None:
                     return None
 
             try:
@@ -2498,6 +2587,43 @@ class V3Store:
                     tuple(expected.values()),
                 )
             except sqlite3.IntegrityError as exc:
+                if getattr(exc, "sqlite_errorcode", None) in {
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_PRIMARYKEY", -1),
+                    getattr(sqlite3, "SQLITE_CONSTRAINT_UNIQUE", -1),
+                }:
+                    material_replay = connection.execute(
+                        """SELECT * FROM edit_v3_materials
+                           WHERE environment=? AND owner_id=? AND material_id=?""",
+                        (environment, owner_id, material_id),
+                    ).fetchone()
+                    if material_replay is not None:
+                        if not self._same_values(material_replay, expected):
+                            raise _immutable_conflict(f"material:{material_id}") from exc
+                        return dict(material_replay)
+                    if source_kind == "uploaded":
+                        upload_replay = connection.execute(
+                            """SELECT * FROM edit_v3_materials
+                               WHERE environment=? AND owner_id=? AND upload_id=?""",
+                            (environment, owner_id, upload_id),
+                        ).fetchone()
+                        if upload_replay is not None:
+                            replay_expected = {
+                                key: value
+                                for key, value in expected.items()
+                                if key != "material_id"
+                            }
+                            if not self._same_values(upload_replay, replay_expected):
+                                raise _immutable_conflict(
+                                    f"material-upload:{upload_id}"
+                                ) from exc
+                            return dict(upload_replay)
+                    owned_cos_key = connection.execute(
+                        """SELECT 1 FROM edit_v3_materials
+                           WHERE environment=? AND owner_id=? AND cos_key=?""",
+                        (environment, owner_id, cos_key),
+                    ).fetchone()
+                    if owned_cos_key is None:
+                        return None
                 raise StoreConflictError(
                     "material_identity_conflict",
                     "material ID, upload, or COS key is already bound",
@@ -2576,9 +2702,11 @@ class V3Store:
                     return None
             for material_id, purpose, ordinal in normalized:
                 existing = connection.execute(
-                    """SELECT * FROM edit_v3_job_materials
-                       WHERE job_id=? AND material_id=?""",
-                    (job_id, material_id),
+                    """SELECT jm.* FROM edit_v3_job_materials AS jm
+                       JOIN edit_v3_jobs AS j ON j.job_id=jm.job_id
+                       WHERE j.environment=? AND j.owner_id=?
+                         AND jm.job_id=? AND jm.material_id=?""",
+                    (environment, owner_id, job_id, material_id),
                 ).fetchone()
                 if existing is not None:
                     if (
@@ -2605,9 +2733,11 @@ class V3Store:
             return [
                 dict(row)
                 for row in connection.execute(
-                    """SELECT * FROM edit_v3_job_materials
-                       WHERE job_id=? ORDER BY ordinal,material_id""",
-                    (job_id,),
+                    """SELECT jm.* FROM edit_v3_job_materials AS jm
+                       JOIN edit_v3_jobs AS j ON j.job_id=jm.job_id
+                       WHERE j.environment=? AND j.owner_id=? AND jm.job_id=?
+                       ORDER BY jm.ordinal,jm.material_id""",
+                    (environment, owner_id, job_id),
                 )
             ]
 
@@ -2680,6 +2810,7 @@ class V3Store:
             or not value["owner_id"]
         ):
             raise _configuration_error("job_cursor_invalid", "job cursor is invalid")
+        _require_integer("created_at", value["created_at"])
         return value
 
     def list_jobs_for_owner(

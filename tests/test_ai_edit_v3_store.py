@@ -195,7 +195,7 @@ EXPECTED_DECLARED_INDEXES = {
 
 
 EXPECTED_MIGRATION_SHA256 = (
-    "b4a64a576f2d703023f429b706bc1af83d37195fa6d50f73a65257e99c996140"
+    "ac0f6a45cc1e97976dfbfea95f9112e6ccc38802a3a4899f1b8fd435b09d3387"
 )
 
 
@@ -615,6 +615,103 @@ class V3StoreSchemaTests(unittest.TestCase):
                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 ("mat-1", "test", "alice", "missing-upload", "uploaded", "test/key", "image/png", 1, sha, "{}", 1),
             )
+
+    def test_material_source_authority_union_is_enforced_by_schema_v1(self):
+        self.initialize()
+        connection = open_store(self.db, v2_db_path=self.v2)
+        self.addCleanup(connection.close)
+        sha = "a" * 64
+        connection.execute(
+            """INSERT INTO edit_v3_pricing_versions(
+                   version,status,parameters_json,parameters_sha256,created_at
+               ) VALUES(?,?,?,?,?)""",
+            ("price-v1", "published", "{}", sha, 1),
+        )
+        connection.execute(
+            """INSERT INTO edit_v3_quotes(
+                   quote_id,environment,owner_id,normalized_request_json,request_sha256,
+                   pricing_version,min_points,max_points,breakdown_json,expires_at,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("quote-1", "test", "alice", "{}", sha, "price-v1", 1, 2, "{}", 9, 1),
+        )
+        connection.execute(
+            """INSERT INTO edit_v3_jobs(
+                   job_id,environment,owner_id,state,normalized_request_json,request_sha256,
+                   quote_id,idempotency_key,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            ("job-1", "test", "alice", "created_draft", "{}", sha, "quote-1", "key-1", 1, 1),
+        )
+        for index in range(12):
+            connection.execute(
+                """INSERT INTO edit_v3_uploads(
+                       upload_id,environment,owner_id,upload_type,object_key,declared_mime,
+                       declared_size,status,expires_at,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,'completed',?,?,?)""",
+                (
+                    f"upload-{index}", "test", "alice", "material_image",
+                    f"test/authority-{index}.png", "image/png", 1, 9, 1, 1,
+                ),
+            )
+
+        def insert(material_id, source_kind, upload_id, source_job_id):
+            connection.execute(
+                """INSERT INTO edit_v3_materials(
+                       material_id,environment,owner_id,upload_id,source_kind,source_job_id,
+                       cos_key,mime_type,size_bytes,sha256,metadata_json,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    material_id, "test", "alice", upload_id, source_kind, source_job_id,
+                    f"test/{material_id}.png", "image/png", 1, sha, "{}", 1,
+                ),
+            )
+
+        insert("valid-uploaded", "uploaded", "upload-0", None)
+        insert("valid-generated", "generated", None, "job-1")
+        illegal = (
+            ("uploaded", None, None),
+            ("uploaded", None, "job-1"),
+            ("uploaded", "upload-1", "job-1"),
+            ("generated", None, None),
+            ("generated", "upload-2", None),
+            ("generated", "upload-3", "job-1"),
+            ("other", None, None),
+            ("other", None, "job-1"),
+            ("other", "upload-4", None),
+            ("other", "upload-5", "job-1"),
+        )
+        for index, values in enumerate(illegal):
+            with self.subTest(values=values):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    insert(f"illegal-{index}", *values)
+
+        ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='edit_v3_materials'"
+        ).fetchone()[0]
+        normalized = " ".join(ddl.split())
+        self.assertIn(
+            "CHECK((source_kind='uploaded' AND upload_id IS NOT NULL AND source_job_id IS NULL) "
+            "OR (source_kind='generated' AND upload_id IS NULL AND source_job_id IS NOT NULL))",
+            normalized,
+        )
+
+    def test_material_source_union_corruption_is_rejected_on_reinitialization(self):
+        self.initialize()
+        connection = self.raw_connection()
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            """INSERT INTO edit_v3_materials(
+                   material_id,environment,owner_id,upload_id,source_kind,source_job_id,
+                   cos_key,mime_type,size_bytes,sha256,metadata_json,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "corrupt-material", "test", "alice", None, "uploaded", None,
+                "test/corrupt.png", "image/png", 1, "a" * 64, "{}", 1,
+            ),
+        )
+        connection.close()
+        with self.assertRaises(StoreMigrationError) as caught:
+            self.initialize()
+        self.assertEqual(caught.exception.error_code, "v3_integrity_check_failed")
 
     def test_stage_attempt_status_check_accepts_the_exact_frozen_v1_set(self):
         self.initialize()
@@ -1308,6 +1405,319 @@ class V3StorePrimitiveTests(unittest.TestCase):
                 parameters = set(inspect.signature(getattr(V3Store, method_name)).parameters)
                 self.assertTrue(parameters.isdisjoint(forbidden))
 
+    def test_every_owner_replay_and_authority_select_binds_scope_in_sql(self):
+        quote = self.seed_pricing_and_quote()
+        self.seed_job("job-1", "alice", 100)
+        upload = self.store.insert_upload(
+            "alice",
+            "upload-scoped",
+            upload_type="material_image",
+            object_key="test/ai-edit-v3/alice/upload-scoped.png",
+            declared_mime="image/png",
+            declared_size=12,
+            expires_at=5_000,
+            created_at=1_000,
+        )
+        upload = self.store.complete_upload(
+            "alice",
+            upload["upload_id"],
+            observed_mime="image/png",
+            observed_size=12,
+            observed_etag="etag",
+            sha256="a" * 64,
+            duration_ms=None,
+            width=2,
+            height=3,
+            probe={},
+            completed_at=1_100,
+        )
+        material = self.store.insert_material(
+            "alice",
+            "material-scoped",
+            source_kind="uploaded",
+            upload_id=upload["upload_id"],
+            cos_key=upload["object_key"],
+            mime_type=upload["observed_mime"],
+            size_bytes=upload["observed_size"],
+            sha256=upload["sha256"],
+            metadata={},
+            created_at=1_200,
+        )
+        self.store.bind_job_materials(
+            "alice",
+            "job-1",
+            [{"material_id": material["material_id"], "purpose": "evidence", "ordinal": 0}],
+            created_at=1_300,
+        )
+        authority_upload = self.store.insert_upload(
+            "alice",
+            "upload-authority-scoped",
+            upload_type="material_image",
+            object_key="test/ai-edit-v3/alice/upload-authority-scoped.png",
+            declared_mime="image/png",
+            declared_size=13,
+            expires_at=5_000,
+            created_at=1_000,
+        )
+        authority_upload = self.store.complete_upload(
+            "alice",
+            authority_upload["upload_id"],
+            observed_mime="image/png",
+            observed_size=13,
+            observed_etag="etag-2",
+            sha256="b" * 64,
+            duration_ms=None,
+            width=2,
+            height=3,
+            probe={},
+            completed_at=1_100,
+        )
+
+        captured = []
+        real_execute = store_module._GuardedConnection.execute
+
+        def capture(connection, statement, parameters=()):
+            captured.append((statement, tuple(parameters)))
+            return real_execute(connection, statement, parameters)
+
+        with mock.patch.object(store_module._GuardedConnection, "execute", capture):
+            self.store.insert_quote(
+                "alice",
+                quote["quote_id"],
+                {
+                    "input_type": "uploaded_video",
+                    "source_upload_id": "upload-1",
+                    "ratio": "auto",
+                    "creation_mode": "ai_auto",
+                    "material_asset_ids": [],
+                },
+                pricing_version="price-v1",
+                min_points=5,
+                max_points=9,
+                breakdown={"base": 5, "variable_max": 4},
+                expires_at=9_999,
+                created_at=1_010,
+            )
+            self.store.insert_upload(
+                "alice",
+                upload["upload_id"],
+                upload_type="material_image",
+                object_key=upload["object_key"],
+                declared_mime="image/png",
+                declared_size=12,
+                expires_at=5_000,
+                created_at=1_000,
+            )
+            self.store.insert_material(
+                "alice",
+                material["material_id"],
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key=upload["object_key"],
+                mime_type=upload["observed_mime"],
+                size_bytes=upload["observed_size"],
+                sha256=upload["sha256"],
+                metadata={},
+                created_at=1_200,
+            )
+            self.store.insert_material(
+                "alice",
+                "material-upload-replay-new-id",
+                source_kind="uploaded",
+                upload_id=upload["upload_id"],
+                cos_key=upload["object_key"],
+                mime_type=upload["observed_mime"],
+                size_bytes=upload["observed_size"],
+                sha256=upload["sha256"],
+                metadata={},
+                created_at=1_200,
+            )
+            self.store.insert_material(
+                "alice",
+                "material-authority-scoped",
+                source_kind="uploaded",
+                upload_id=authority_upload["upload_id"],
+                cos_key=authority_upload["object_key"],
+                mime_type=authority_upload["observed_mime"],
+                size_bytes=authority_upload["observed_size"],
+                sha256=authority_upload["sha256"],
+                metadata={},
+                created_at=1_200,
+            )
+            self.store.insert_material(
+                "alice",
+                "material-source-job-scoped",
+                source_kind="generated",
+                source_job_id="job-1",
+                cos_key="test/ai-edit-v3/alice/generated-scoped.png",
+                mime_type="image/png",
+                size_bytes=1,
+                sha256="c" * 64,
+                metadata={},
+                created_at=1_200,
+            )
+            self.store.bind_job_materials(
+                "alice",
+                "job-1",
+                [{"material_id": material["material_id"], "purpose": "evidence", "ordinal": 0}],
+                created_at=1_300,
+            )
+
+        checks = (
+            ("edit_v3_quotes", quote["quote_id"]),
+            ("edit_v3_uploads", upload["upload_id"]),
+            ("edit_v3_uploads", authority_upload["upload_id"]),
+            ("edit_v3_materials", material["material_id"]),
+            ("edit_v3_materials", upload["upload_id"]),
+            ("edit_v3_jobs", "job-1"),
+            ("edit_v3_job_materials", "job-1"),
+        )
+        for table, identity in checks:
+            with self.subTest(table=table, identity=identity):
+                selects = [
+                    (statement, parameters)
+                    for statement, parameters in captured
+                    if statement.lstrip().upper().startswith("SELECT")
+                    and table in statement
+                    and identity in parameters
+                ]
+                self.assertTrue(selects)
+                for statement, parameters in selects:
+                    compact = "".join(statement.lower().split())
+                    self.assertIn("environment=?", compact)
+                    self.assertIn("owner_id=?", compact)
+                    self.assertIn("test", parameters)
+                    self.assertIn("alice", parameters)
+
+    def test_unique_race_reread_preserves_exact_divergent_and_private_replay_semantics(self):
+        quote = self.seed_pricing_and_quote()
+        self.seed_job("job-race", "alice", 100)
+        upload = self.store.insert_upload(
+            "alice", "upload-race", upload_type="material_image",
+            object_key="test/ai-edit-v3/alice/upload-race.png",
+            declared_mime="image/png", declared_size=12,
+            expires_at=5_000, created_at=1_000,
+        )
+        upload = self.store.complete_upload(
+            "alice", upload["upload_id"], observed_mime="image/png",
+            observed_size=12, observed_etag="etag", sha256="a" * 64,
+            duration_ms=None, width=2, height=3, probe={}, completed_at=1_100,
+        )
+        material = self.store.insert_material(
+            "alice", "material-race", source_kind="generated",
+            source_job_id="job-race", cos_key="test/ai-edit-v3/alice/generated-race.png",
+            mime_type="image/png", size_bytes=12,
+            sha256="b" * 64, metadata={}, created_at=1_200,
+        )
+
+        class NoRow:
+            @staticmethod
+            def fetchone():
+                return None
+
+        def miss_first_select(table, identity_column, operation):
+            real_execute = store_module._GuardedConnection.execute
+            missed = False
+
+            def execute(connection, statement, parameters=()):
+                nonlocal missed
+                compact = "".join(statement.lower().split())
+                if (
+                    not missed
+                    and statement.lstrip().upper().startswith("SELECT")
+                    and table in statement
+                    and f"{identity_column}=?" in compact
+                ):
+                    missed = True
+                    return NoRow()
+                return real_execute(connection, statement, parameters)
+
+            with mock.patch.object(store_module._GuardedConnection, "execute", execute):
+                result = operation()
+            self.assertTrue(missed)
+            return result
+
+        quote_args = dict(
+            pricing_version="price-v1", min_points=5, max_points=9,
+            breakdown={"base": 5, "variable_max": 4},
+            expires_at=9_999, created_at=1_010,
+        )
+        request = {
+            "input_type": "uploaded_video", "source_upload_id": "upload-1",
+            "ratio": "auto", "creation_mode": "ai_auto", "material_asset_ids": [],
+        }
+        self.assertEqual(
+            miss_first_select(
+                "edit_v3_quotes", "quote_id",
+                lambda: self.store.insert_quote("alice", quote["quote_id"], request, **quote_args),
+            ),
+            quote,
+        )
+        with self.assertRaises(StoreConflictError) as caught:
+            miss_first_select(
+                "edit_v3_quotes", "quote_id",
+                lambda: self.store.insert_quote(
+                    "alice", quote["quote_id"], request, **{**quote_args, "max_points": 10}
+                ),
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+        upload_args = dict(
+            upload_type="material_image", object_key=upload["object_key"],
+            declared_mime="image/png", declared_size=12,
+            expires_at=5_000, created_at=1_000,
+        )
+        self.assertEqual(
+            miss_first_select(
+                "edit_v3_uploads", "upload_id",
+                lambda: self.store.insert_upload("alice", upload["upload_id"], **upload_args),
+            )["upload_id"],
+            upload["upload_id"],
+        )
+        with self.assertRaises(StoreConflictError) as caught:
+            miss_first_select(
+                "edit_v3_uploads", "upload_id",
+                lambda: self.store.insert_upload(
+                    "alice", upload["upload_id"], **{**upload_args, "declared_size": 13}
+                ),
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+        material_args = dict(
+            source_kind="generated", source_job_id="job-race",
+            cos_key="test/ai-edit-v3/alice/generated-race.png", mime_type="image/png",
+            size_bytes=12, sha256="b" * 64,
+            metadata={}, created_at=1_200,
+        )
+        self.assertEqual(
+            miss_first_select(
+                "edit_v3_materials", "material_id",
+                lambda: self.store.insert_material(
+                    "alice", material["material_id"], **material_args
+                ),
+            ),
+            material,
+        )
+        with self.assertRaises(StoreConflictError) as caught:
+            miss_first_select(
+                "edit_v3_materials", "material_id",
+                lambda: self.store.insert_material(
+                    "alice", material["material_id"],
+                    **{**material_args, "metadata": {"changed": True}},
+                ),
+            )
+        self.assertEqual(caught.exception.error_code, "idempotency_conflict")
+
+        self.assertIsNone(
+            self.store.insert_quote("bob", quote["quote_id"], request, **quote_args)
+        )
+        self.assertIsNone(
+            self.store.insert_upload(
+                "bob", upload["upload_id"],
+                **{**upload_args, "object_key": "test/ai-edit-v3/bob/upload-race.png"},
+            )
+        )
+
 
 class V3StoreReviewIsolationTests(unittest.TestCase):
     def setUp(self):
@@ -1546,6 +1956,42 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
                 operation()
         self.assertEqual(caught.exception.error_code, "v2_db_identity_missing")
         connect.assert_not_called()
+        self.assertFalse(target.exists())
+        self.assertEqual(self._sidecars(target), (False, False, False))
+
+    def test_missing_v2_parent_has_one_stable_code_and_native_cause_for_every_entrypoint(self):
+        missing_v2 = self.root / "missing-parent" / "ai_edit_v2.db"
+        entries = (
+            ("open", lambda target: open_store(target, v2_db_path=missing_v2)),
+            ("init", lambda target: init_db(target, v2_db_path=missing_v2)),
+            ("store", lambda target: V3Store(target, v2_db_path=missing_v2)),
+        )
+        for label, operation in entries:
+            with self.subTest(entry=label):
+                target = self.root / f"missing-parent-{label}.db"
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    operation(target)
+                self.assertEqual(caught.exception.error_code, "v2_db_identity_unknown")
+                self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+                self.assertFalse(target.exists())
+                self.assertEqual(self._sidecars(target), (False, False, False))
+
+    def test_v2_native_permission_failure_has_stable_code_and_preserves_cause(self):
+        target = self.root / "permission-v3.db"
+        native_error = PermissionError(errno.EACCES, "injected V2 native open denial")
+        if os.name == "nt":
+            seam = mock.patch.object(
+                store_module,
+                "_windows_create_handle",
+                side_effect=native_error,
+            )
+        else:
+            seam = mock.patch.object(store_module.os, "open", side_effect=native_error)
+        with seam:
+            with self.assertRaises(StoreConfigurationError) as caught:
+                open_store(target, v2_db_path=self.v2)
+        self.assertEqual(caught.exception.error_code, "v2_db_identity_unknown")
+        self.assertIs(caught.exception.__cause__, native_error)
         self.assertFalse(target.exists())
         self.assertEqual(self._sidecars(target), (False, False, False))
 
@@ -1907,6 +2353,139 @@ class V3StoreHandshakeAndLifecycleTests(unittest.TestCase):
         self.assertEqual(len(release_errors), 1)
         self.assertIn("closed", str(release_errors[0]).lower())
         self.assertEqual(guard.release_calls, 1)
+
+    def test_close_finalizes_every_documented_cursor_path_with_base_cursor_close(self):
+        target = self.root / "tracked-cursors.db"
+        connection, guard = self._open_counted(target)
+        connection.execute("CREATE TABLE tracked(value INTEGER)")
+
+        class DefiantCursor(sqlite3.Cursor):
+            def close(self):
+                raise AssertionError("subclass close override must not run")
+
+        cursors = []
+        manual = connection.cursor()
+        manual.execute("SELECT 1")
+        cursors.append(manual)
+        cursors.append(connection.execute("SELECT 2"))
+        cursors.append(connection.executemany("INSERT INTO tracked VALUES(?)", ((1,), (2,))))
+        cursors.append(connection.executescript("SELECT 3;"))
+        custom = connection.cursor(factory=DefiantCursor)
+        custom.execute("SELECT 4")
+        cursors.append(custom)
+
+        connection.close()
+
+        self.assertEqual(guard.release_calls, 1)
+        self.assertIsNone(connection._identity_guard)
+        self.assertEqual(connection._tracked_cursors, {})
+        for cursor in cursors:
+            with self.subTest(cursor=type(cursor).__name__):
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    cursor.fetchone()
+
+    @unittest.skipUnless(os.name == "nt", "Windows delete sharing is the native handle regression")
+    def test_close_releases_actual_windows_sqlite_handle_while_cursor_object_is_retained(self):
+        target = self.root / "windows-live-cursor.db"
+        connection, guard = self._open_counted(target)
+        cursor = connection.execute("SELECT 42")
+
+        connection.close()
+        target.unlink()
+
+        self.assertFalse(target.exists())
+        self.assertEqual(guard.release_calls, 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            cursor.fetchone()
+
+    def test_tracked_cursor_close_failure_retains_guard_and_retry_releases_once(self):
+        target = self.root / "cursor-close-failure.db"
+        connection, guard = self._open_counted(target)
+        cursor = connection.execute("SELECT 42")
+
+        real_cursor_api = sqlite3.Cursor
+        closed = set()
+        failure_injected = False
+
+        class FailingCursorAPI:
+            @staticmethod
+            def close(candidate):
+                nonlocal failure_injected
+                identity = id(candidate)
+                if identity in closed:
+                    raise AssertionError("successfully closed cursor was retried")
+                if closed and not failure_injected:
+                    failure_injected = True
+                    raise sqlite3.OperationalError("injected cursor close failure")
+                real_cursor_api.close(candidate)
+                closed.add(identity)
+
+        with mock.patch.object(store_module.sqlite3, "Cursor", FailingCursorAPI):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "cursor close failure"):
+                connection.close()
+
+        self.assertIs(connection._identity_guard, guard)
+        self.assertEqual(guard.release_calls, 0)
+        self.assertEqual(cursor.fetchone()[0], 42)
+
+        connection.close()
+        self.assertTrue(failure_injected)
+        self.assertEqual(guard.release_calls, 1)
+        self.assertIsNone(connection._identity_guard)
+
+    def test_guard_release_failure_retains_guard_until_successful_retry(self):
+        target = self.root / "guard-release-failure.db"
+        connection, guard = self._open_counted(target)
+        connection.execute("SELECT 42")
+
+        def fail_release():
+            raise OSError("injected guard release failure")
+
+        guard.before_release = fail_release
+        with self.assertRaisesRegex(OSError, "guard release failure"):
+            connection.close()
+        self.assertIs(connection._identity_guard, guard)
+
+        guard.before_release = None
+        connection.close()
+        self.assertIsNone(connection._identity_guard)
+        self.assertEqual(guard.release_calls, 2)
+
+    def test_cross_thread_close_with_live_cursor_closes_before_one_release(self):
+        target = self.root / "cross-thread-live-cursor.db"
+        connection, guard = self._open_counted(target)
+        cursor = connection.execute("SELECT 42")
+        errors = []
+
+        thread = threading.Thread(
+            target=lambda: self._close_in_thread(connection, errors),
+        )
+        thread.start()
+        thread.join(5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(guard.release_calls, 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            cursor.fetchone()
+
+    @staticmethod
+    def _close_in_thread(connection, errors):
+        try:
+            connection.close()
+        except Exception as exc:
+            errors.append(exc)
+
+    def test_v3_production_code_does_not_construct_cursors_outside_connection_api(self):
+        package = Path(store_module.__file__).resolve().parent
+        offenders = []
+        for path in package.glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "sqlite3.Cursor(" in text:
+                offenders.append(path.name)
+            if path.name != "store.py" and "sqlite3.connect(" in text:
+                offenders.append(path.name)
+        self.assertEqual(offenders, [])
 
     def test_verified_open_requires_serialized_sqlite_thread_safety(self):
         target = self.root / "thread-safety-unavailable.db"
@@ -2979,6 +3558,101 @@ class V3StoreReplayAndIntegerTests(unittest.TestCase):
                 with self.assertRaises(StoreConfigurationError) as caught:
                     operation()
                 self.assertEqual(caught.exception.error_code, "integer_argument_invalid")
+
+    def test_signed_int64_boundaries_are_accepted_and_one_beyond_is_rejected(self):
+        minimum = -(2**63)
+        maximum = 2**63 - 1
+        self.assertEqual(
+            self.store.insert_pricing_version(
+                "int64-min",
+                {},
+                status="draft",
+                created_at=minimum,
+            )["created_at"],
+            minimum,
+        )
+        self.assertEqual(
+            self.store.insert_pricing_version(
+                "int64-max",
+                {},
+                status="draft",
+                created_at=maximum,
+            )["created_at"],
+            maximum,
+        )
+
+        huge_cursor = base64.urlsafe_b64encode(
+            canonical_json(
+                {
+                    "created_at": 2**63,
+                    "environment": "test",
+                    "job_id": "job",
+                    "owner_id": "alice",
+                }
+            )
+        ).rstrip(b"=").decode("ascii")
+        cases = (
+            (
+                "created_at",
+                lambda: self.store.insert_pricing_version(
+                    "too-small", {}, status="draft", created_at=minimum - 1
+                ),
+            ),
+            (
+                "max_points",
+                lambda: self.store.insert_quote(
+                    "alice", "too-large-quote", {}, pricing_version="price-v1",
+                    min_points=1, max_points=maximum + 1, breakdown={},
+                    expires_at=3, created_at=1,
+                ),
+            ),
+            (
+                "declared_size",
+                lambda: self.store.insert_upload(
+                    "alice", "too-large-upload", upload_type="material_image",
+                    object_key="test/too-large-upload", declared_mime="image/png",
+                    declared_size=maximum + 1, expires_at=3, created_at=1,
+                ),
+            ),
+            (
+                "width",
+                lambda: self.store.complete_upload(
+                    "alice", "missing", observed_mime="image/png", observed_size=1,
+                    observed_etag="etag", sha256="a" * 64, duration_ms=None,
+                    width=maximum + 1, height=1, probe={}, completed_at=1,
+                ),
+            ),
+            (
+                "size_bytes",
+                lambda: self.store.insert_material(
+                    "alice", "too-large-material", source_kind="generated",
+                    source_job_id="missing", cos_key="test/too-large-material",
+                    mime_type="image/png", size_bytes=maximum + 1,
+                    sha256="a" * 64, metadata={}, created_at=1,
+                ),
+            ),
+            (
+                "ordinal",
+                lambda: self.store.bind_job_materials(
+                    "alice", "missing",
+                    [{"material_id": "m", "purpose": "p", "ordinal": maximum + 1}],
+                    created_at=1,
+                ),
+            ),
+            ("limit", lambda: self.store.list_jobs_for_owner("alice", limit=maximum + 1)),
+            (
+                "created_at",
+                lambda: self.store.list_jobs_for_owner(
+                    "alice", limit=1, cursor=huge_cursor
+                ),
+            ),
+        )
+        for field, operation in cases:
+            with self.subTest(field=field):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    operation()
+                self.assertEqual(caught.exception.error_code, "integer_out_of_range")
+                self.assertIn(field, caught.exception.message)
 
 
 class _WalCursor:
