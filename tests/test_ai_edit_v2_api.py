@@ -197,28 +197,46 @@ class ApiTests(unittest.TestCase):
 
     def test_platform_asset_is_owner_scoped_and_imports_authoritative_text_without_client_truth(self):
         asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
         source = os.path.join(self.temp_dir.name, "platform-video.mp4")
         Path(source).write_bytes(b"authoritative-platform-video")
         with closing(sqlite3.connect(asset_db)) as conn:
             conn.execute("""CREATE TABLE video_assets(
                 id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
-                image_file TEXT,video_file TEXT,text TEXT,ratio TEXT,status TEXT,
+                image_file TEXT,video_file TEXT,provider_video_id TEXT,text TEXT,ratio TEXT,status TEXT,
                 created_at INTEGER,updated_at INTEGER)""")
             conn.executemany(
-                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (31, "source-job-31", "alice", "text", "image/cover 31.jpg",
-                     "platform-video.mp4",
+                     "platform-video.mp4", "provider-31",
                      "authoritative script 29", "16:9", "done", 1, 2),
                     (32, "source-job-32", "bob", "text", "image/cover-32.jpg",
-                     "platform-video.mp4",
+                     "platform-video.mp4", "provider-32",
                      "other owner secret", "16:9", "done", 1, 2),
+                ],
+            )
+            conn.commit()
+        with closing(sqlite3.connect(jobs_db)) as conn:
+            conn.execute("""CREATE TABLE jobs(
+                id TEXT PRIMARY KEY,username TEXT,kind TEXT,status TEXT,payload TEXT,
+                result TEXT,deleted INTEGER)""")
+            conn.executemany(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("source-job-31", "alice", "video", "done",
+                     json.dumps({"mode": "text", "text": "script", "voice": "v", "image_data": "img"}),
+                     json.dumps({"type": "video", "mode": "text", "status": "done"}), 0),
+                    ("source-job-32", "bob", "video", "done",
+                     json.dumps({"mode": "text", "text": "secret", "voice": "v", "image_data": "img"}),
+                     json.dumps({"type": "video", "mode": "text", "status": "done"}), 0),
                 ],
             )
             conn.commit()
 
         with patch.dict(os.environ, {
             "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_JOB_DB": jobs_db,
             "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
         }):
             status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
@@ -226,7 +244,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(listed["items"], [{
                 "id": 31, "reference_id": "31", "filename": "platform-video.mp4",
                 "summary": "authoritative script 29", "ratio": "16:9",
-                "status": "done", "created_at": 1,
+                "status": "done", "created_at": 1, "asset_type": "digital_ip",
                 "preview_url": "/api/gen/file/platform-video.mp4",
                 "thumbnail_url": "/api/gen/file/image/cover%2031.jpg",
             }])
@@ -265,6 +283,94 @@ class ApiTests(unittest.TestCase):
                 (upload["upload_id"],),
             ).fetchone()
         self.assertEqual(tuple(spoof), ("user_upload", None))
+
+    def test_platform_assets_require_verified_digital_ip_job_provenance(self):
+        asset_db = os.path.join(self.temp_dir.name, "platform-assets.db")
+        jobs_db = os.path.join(self.temp_dir.name, "content-jobs.db")
+        source = os.path.join(self.temp_dir.name, "platform-video.mp4")
+        Path(source).write_bytes(b"verified-digital-ip-video")
+        with closing(sqlite3.connect(asset_db)) as conn:
+            conn.execute("""CREATE TABLE video_assets(
+                id INTEGER PRIMARY KEY,job_id TEXT,username TEXT,mode TEXT,
+                image_file TEXT,video_file TEXT,provider_video_id TEXT,text TEXT,ratio TEXT,status TEXT,
+                created_at INTEGER,updated_at INTEGER)""")
+            conn.executemany(
+                "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (41, "job-41", "alice", "text", None, "platform-video.mp4", "provider-41",
+                     "valid text", "9:16", "done", 1, 9),
+                    (42, "job-42", "alice", "audio", None, "platform-video.mp4", "provider-42",
+                     "valid audio", "9:16", "completed", 1, 8),
+                    (43, "job-43", "alice", "grok", None, "platform-video.mp4", "provider-43",
+                     "AI video", "9:16", "done", 1, 7),
+                    (44, "job-44", "alice", "text", None, "platform-video.mp4", "provider-44",
+                     "wrong task kind", "9:16", "done", 1, 6),
+                    (45, "job-45", "alice", "text", None, "platform-video.mp4", "provider-45",
+                     "payload mismatch", "9:16", "done", 1, 5),
+                    (46, "job-46", "alice", "text", None, "platform-video.mp4", "provider-46",
+                     "unfinished", "9:16", "running", 1, 4),
+                    (47, "job-47", "alice", "text", None, "", "provider-47",
+                     "missing file", "9:16", "done", 1, 3),
+                    (48, "job-48", "bob", "text", None, "platform-video.mp4", "provider-48",
+                     "other owner", "9:16", "done", 1, 2),
+                    (49, "missing-job", "alice", "text", None, "platform-video.mp4", "provider-49",
+                     "orphan", "9:16", "done", 1, 1),
+                    (50, "job-50", "alice", "text", None, "platform-video.mp4", "provider-50",
+                     "failed job", "9:16", "done", 1, 0),
+                    (51, "job-51", "alice", "text", None, "platform-video.mp4", "provider-51",
+                     "deleted job", "9:16", "done", 1, 0),
+                    (52, "job-52", "alice", "text", None, "platform-video.mp4", "provider-52",
+                     "bad result", "9:16", "done", 1, 0),
+                    (53, "job-53", "alice", "text", None, "platform-video.mp4", "",
+                     "missing provider", "9:16", "done", 1, 0),
+                ],
+            )
+            conn.commit()
+        with closing(sqlite3.connect(jobs_db)) as conn:
+            conn.execute("""CREATE TABLE jobs(
+                id TEXT PRIMARY KEY,username TEXT,kind TEXT,status TEXT,payload TEXT,
+                result TEXT,deleted INTEGER)""")
+            def job(job_id, owner, kind, mode, status="done", deleted=0, result_mode=None):
+                payload = {"mode": mode, "image_data": "img"}
+                payload.update({"text": "script", "voice": "v"} if mode == "text" else {"audio_data": "audio"})
+                result = {"type": "video", "mode": result_mode or mode, "status": "done"}
+                return (job_id, owner, kind, status, json.dumps(payload), json.dumps(result), deleted)
+            conn.executemany(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?)",
+                [
+                    job("job-41", "alice", "video", "text"),
+                    job("job-42", "alice", "video", "audio"),
+                    job("job-43", "alice", "xiaole_video", "grok"),
+                    job("job-44", "alice", "ai_edit", "text"),
+                    job("job-45", "alice", "video", "audio"),
+                    job("job-46", "alice", "video", "text"),
+                    job("job-47", "alice", "video", "text"),
+                    job("job-48", "bob", "video", "text"),
+                    job("job-50", "alice", "video", "text", status="error"),
+                    job("job-51", "alice", "video", "text", deleted=1),
+                    job("job-52", "alice", "video", "text", result_mode="audio"),
+                    job("job-53", "alice", "video", "text"),
+                ],
+            )
+            conn.commit()
+
+        with patch.dict(os.environ, {
+            "AI_EDIT_V2_ASSET_DB": asset_db,
+            "AI_EDIT_V2_JOB_DB": jobs_db,
+            "AI_EDIT_V2_PLATFORM_OUT": self.temp_dir.name,
+        }):
+            status, listed = self._dispatch("GET", "/api/v2/edit/platform-assets")
+            self.assertEqual(status, 200)
+            self.assertEqual([item["id"] for item in listed["items"]], [41, 42])
+            self.assertEqual(
+                [item.get("asset_type") for item in listed["items"]],
+                ["digital_ip", "digital_ip"],
+            )
+            status, rejected = self._dispatch(
+                "POST", "/api/v2/edit/platform-assets/44/import", {}
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(rejected["detail"], "platform_asset_not_digital_ip")
 
     def _dispatch(self, method, path, body=None, user=None):
         handler = FakeHandler(body)

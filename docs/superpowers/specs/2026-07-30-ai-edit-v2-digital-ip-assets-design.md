@@ -11,7 +11,10 @@ AI Edit V2 第一步的账号内视频卡片只展示当前账号通过“数字
 - `video_assets.username` 等于当前登录账号；
 - `video_assets.mode` 为 `text` 或 `audio`；
 - 对应原始任务属于同一账号，`jobs.kind` 为 `video`；
+- 原始任务状态为 `done` 且未删除；
 - 原始任务 payload 的 `mode` 为 `text` 或 `audio`，并与资产模式一致；
+- 文字模式具有文案、音色和人物输入，音频模式具有音频和人物输入；
+- 原始任务 result 明确记录 `type=video`、同一 mode 和 `status=done`，且资产具有上游视频 ID；
 - 资产状态已完成，且存在可读取的视频文件引用。
 
 列表接口只返回通过上述校验的记录，并给每条记录返回固定分类 `asset_type=digital_ip`。导入接口复用同一判定，防止客户端通过猜测资产 ID 绕过列表限制。前端只渲染 `asset_type=digital_ip` 的项目，并把文案改为“数字化 IP 口播视频”。

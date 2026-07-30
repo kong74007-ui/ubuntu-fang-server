@@ -110,6 +110,19 @@ test('platform cards render lightweight covers without loading video sources', (
   assert.doesNotMatch(html, /src="\/api\/gen\/file\/talking\.mp4"/);
 });
 
+test('subject carousel only accepts verified digital IP assets', () => {
+  const page = fs.readFileSync(pagePath, 'utf8');
+  const source = page.match(/async function loadPlatformAssets\(\)\{[^\n]+\}/)?.[0] || '';
+
+  assert.match(source, /\/api\/v2\/edit\/platform-assets/);
+  assert.match(source, /asset_type==='digital_ip'/);
+  assert.doesNotMatch(source, /\/api\/gen\/video\/assets/);
+  assert.match(page, /账号内已完成的数字化 IP 口播视频/);
+  assert.match(page, /暂无数字化 IP 口播视频/);
+  assert.match(page, /id="videoSubjectInput"/);
+  assert.match(page, /id="audioSubjectInput"/);
+});
+
 test('platform gallery stays in one horizontal row', () => {
   const page = fs.readFileSync(pagePath, 'utf8');
   const rule = page.match(/\.platform-gallery\{([^}]*)\}/)?.[1] || '';
