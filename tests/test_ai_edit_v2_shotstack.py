@@ -69,6 +69,25 @@ def _components(graph, kind):
 
 
 class RenderGraphTests(unittest.TestCase):
+    def test_explicit_image_degradation_skips_only_the_missing_broll_slot(self):
+        plan = json.loads(json.dumps(RESOLVED_PLAN))
+        plan["material_resolution_status"] = "image_generation_degraded"
+        plan["scenes"][0]["material_slots"] = ["slot_missing_optional"]
+
+        graph = build_render_graph(plan, SIGNED_ASSETS, FONT_URL)
+
+        self.assertTrue(_components(graph, "basic_caption"))
+        self.assertTrue(_components(graph, "basic_card"))
+        self.assertEqual(len(_components(graph, "broll_image")), 1)
+
+    def test_missing_broll_slot_remains_fatal_without_explicit_degradation(self):
+        plan = json.loads(json.dumps(RESOLVED_PLAN))
+        plan["material_resolution_status"] = "resolved"
+        plan["scenes"][0]["material_slots"] = ["slot_missing"]
+
+        with self.assertRaisesRegex(RenderGraphError, "resolved_material_missing"):
+            build_render_graph(plan, SIGNED_ASSETS, FONT_URL)
+
     def test_audio_only_never_compiles_source_audio_as_a_video_clip(self):
         plan = {
             **RESOLVED_PLAN,
