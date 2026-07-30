@@ -811,7 +811,7 @@ Expected: FAIL because the schema files and validators are absent.
 
 - [ ] **Step 10: Author `quality-verdict-v1.schema.json`** with at most 64 checks, each result in `pass/fail/unknown`, confidence `0..1`, at most eight evidence objects, required evidence for `pass`, fixed check IDs and no repair prompt/result field.
 
-- [ ] **Step 11: Implement strict parsing and cross-field validators**. Enforce scene continuity from zero to `duration_ms`, caption and cue bounds, source/output segment monotonicity, reference existence, capability membership, accurate-text protection, ratio/dimensions, asset path resolution below `sandbox_root`, ordinary-file checks and file SHA matching.
+- [ ] **Step 11: Implement strict parsing and cross-field validators**. Enforce scene continuity from zero to `duration_ms`, caption and cue bounds, source/output segment monotonicity, reference existence, capability membership, accurate-text protection, ratio/dimensions, asset path resolution below `sandbox_root`, ordinary-file checks and file SHA matching. For render manifests, video-mode segments bind to `source_video` and its duration; when `source_video` is null, audio-mode segments bind to `master_audio`, use identity source/output intervals and remain within its duration.
 
 - [ ] **Step 12: Add parser adversarial tests** for duplicate keys, two JSON roots, trailing text, `NaN`, `Infinity`, depth overflow, element overflow, string overflow, control characters, unknown nested keys, parent paths, absolute paths and symlinks.
 

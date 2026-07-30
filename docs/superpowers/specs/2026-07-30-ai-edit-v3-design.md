@@ -625,6 +625,8 @@ Qwen 不可以：
 
 首发 `render-manifest-v1` 根字段固定包含 `version`、相关 Schema SHA、`renderer_environment`、`output_spec`、`duration_ms`、`edit_plan_sha256`、`registry_sha256`、`theme`、`seed`、`source_video`、`source_segments`、`master_audio`、`assets`、`compositions` 和 `captions`。其中 `source_video` 可以为空但若存在必须声明静音；`source_segments` 是画面与人声共同的唯一剪辑映射；`master_audio` 必须唯一；所有媒体只允许相对路径和 SHA；`compositions` 只能引用注册表中的组件、视觉动画与转场。
 
+当 `source_video` 存在时，`source_segments` 必须逐项绑定其路径和 SHA，且源区间不得超过源视频时长。当 `source_video` 为空时，表示输入为已有音频、上传音频或文案配音；渲染前的确定性音频编译已经把原始删减映射冻结在 `edit-plan`，因此 `render-manifest` 中的 `source_segments` 必须绑定唯一 `master_audio` 的路径和 SHA，并采用与输出时间轴完全相同的恒等区间，且不得超过 `master_audio.duration_ms`。该约束不允许把任意素材音频冒充源媒体，也不改变 `edit-plan` 对原始音频删减的审计职责。
+
 ## 12. 创意组件语法
 
 ### 12.1 设计原则
