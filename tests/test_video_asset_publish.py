@@ -302,6 +302,118 @@ class VideoAssetPublishArbitrationTests(unittest.TestCase):
             "test/ai-edit-v3/o/job-prepare-conflict/delivery/final.mp4",
         )
 
+    def test_generation_advance_requires_fresh_prepare_before_commit(self):
+        key7 = "test/ai-edit-v3/o/job-reprepare/delivery/gen-7.mp4"
+        key8 = "test/ai-edit-v3/o/job-reprepare/delivery/gen-8.mp4"
+        self.publisher.register_generation(
+            "ai_edit_v3", "job-reprepare", 7, "reprepare-register-7"
+        )
+        self.publisher.prepare_hidden(
+            "ai_edit_v3",
+            "job-reprepare",
+            "alice",
+            key7,
+            7,
+            "reprepare-prepare-7",
+        )
+        advanced = self.publisher.register_generation(
+            "ai_edit_v3", "job-reprepare", 8, "reprepare-register-8"
+        )
+        premature = self.publisher.commit_publish(
+            "ai_edit_v3", "job-reprepare", 8, "reprepare-commit-before-prepare-8"
+        )
+
+        self.assertEqual(advanced.status, "accepted")
+        self.assertEqual(advanced.current_generation, 8)
+        self.assertEqual(premature.status, "accepted")
+        self.assertEqual(premature.current_generation, 8)
+        self.assertIsNone(premature.asset_id)
+        self.assertEqual(self.visible_assets("job-reprepare"), [])
+        row = self.publication("job-reprepare")
+        self.assertIsNone(row["prepared_generation"])
+        self.assertIsNone(row["owner"])
+        self.assertIsNone(row["object_key"])
+
+        prepared = self.publisher.prepare_hidden(
+            "ai_edit_v3",
+            "job-reprepare",
+            "bob",
+            key8,
+            8,
+            "reprepare-prepare-8",
+        )
+        won = self.publisher.commit_publish(
+            "ai_edit_v3", "job-reprepare", 8, "reprepare-commit-after-prepare-8"
+        )
+        self.assertEqual(prepared.status, "accepted")
+        self.assertEqual(won.status, "publish_won")
+        visible = self.visible_assets("job-reprepare")
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(visible[0]["username"], "bob")
+        self.assertEqual(visible[0]["video_file"], key8)
+        self.assertEqual(visible[0]["publication_generation"], 8)
+
+    def test_same_generation_new_key_rejects_different_prepared_payload(self):
+        original_key = "test/ai-edit-v3/o/job-frozen/delivery/final.mp4"
+        self.publisher.register_generation(
+            "ai_edit_v3", "job-frozen", 4, "frozen-register"
+        )
+        self.publisher.prepare_hidden(
+            "ai_edit_v3",
+            "job-frozen",
+            "alice",
+            original_key,
+            4,
+            "frozen-prepare-original",
+        )
+
+        with self.assertRaisesRegex(ValueError, "prepared_payload_conflict"):
+            self.publisher.prepare_hidden(
+                "ai_edit_v3",
+                "job-frozen",
+                "mallory",
+                "test/ai-edit-v3/o/job-frozen/delivery/forged.mp4",
+                4,
+                "frozen-prepare-conflict",
+            )
+
+        row = self.publication("job-frozen")
+        self.assertEqual(row["prepared_generation"], 4)
+        self.assertEqual(row["owner"], "alice")
+        self.assertEqual(row["object_key"], original_key)
+        self.assertEqual(self.operation_count("frozen-prepare-conflict"), 0)
+        self.assertEqual(self.visible_assets("job-frozen"), [])
+
+    def test_same_generation_new_key_accepts_identical_prepared_payload(self):
+        object_key = "test/ai-edit-v3/o/job-identical/delivery/final.mp4"
+        self.publisher.register_generation(
+            "ai_edit_v3", "job-identical", 5, "identical-register"
+        )
+        first = self.publisher.prepare_hidden(
+            "ai_edit_v3",
+            "job-identical",
+            "alice",
+            object_key,
+            5,
+            "identical-prepare-1",
+        )
+        second = self.publisher.prepare_hidden(
+            "ai_edit_v3",
+            "job-identical",
+            "alice",
+            object_key,
+            5,
+            "identical-prepare-2",
+        )
+
+        self.assertEqual(second, first)
+        self.assertEqual(self.operation_count("identical-prepare-2"), 1)
+        row = self.publication("job-identical")
+        self.assertEqual(row["prepared_generation"], 5)
+        self.assertEqual(row["owner"], "alice")
+        self.assertEqual(row["object_key"], object_key)
+        self.assertEqual(self.visible_assets("job-identical"), [])
+
     def test_higher_generation_fences_every_stale_mutation(self):
         original_key = "test/ai-edit-v3/o/job-fence/delivery/final.mp4"
         self.publisher.register_generation(
@@ -347,8 +459,9 @@ class VideoAssetPublishArbitrationTests(unittest.TestCase):
             self.assertEqual(decision.current_generation, 8)
             self.assertIsNone(decision.asset_id)
         row = self.publication("job-fence")
-        self.assertEqual(row["object_key"], original_key)
-        self.assertEqual(row["owner"], "alice")
+        self.assertIsNone(row["prepared_generation"])
+        self.assertIsNone(row["object_key"])
+        self.assertIsNone(row["owner"])
         self.assertIsNone(row["verdict"])
         self.assertEqual(self.visible_assets("job-fence"), [])
 

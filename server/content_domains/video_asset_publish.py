@@ -324,7 +324,8 @@ class AssetPublicationService:
             ):
                 conn.execute(
                     """UPDATE video_asset_publications
-                       SET current_generation=?,updated_at=?
+                       SET current_generation=?,prepared_generation=NULL,
+                           owner=NULL,object_key=NULL,updated_at=?
                        WHERE mode=? AND source_job_id=?""",
                     (
                         generation,
@@ -386,6 +387,14 @@ class AssetPublicationService:
                     "stale_generation", int(row["current_generation"]), None
                 )
             elif row["verdict"] is None:
+                if (
+                    generation == int(row["current_generation"])
+                    and row["prepared_generation"] is not None
+                    and generation == int(row["prepared_generation"])
+                ):
+                    if row["owner"] != owner or row["object_key"] != object_key:
+                        raise ValueError("prepared_payload_conflict")
+                    return self._publication_decision(row)
                 conn.execute(
                     """UPDATE video_asset_publications
                        SET current_generation=?,prepared_generation=?,
@@ -441,6 +450,8 @@ class AssetPublicationService:
                 return existing
             if (
                 generation != int(row["current_generation"])
+                or row["prepared_generation"] is None
+                or generation != int(row["prepared_generation"])
                 or row["owner"] is None
                 or row["object_key"] is None
             ):
