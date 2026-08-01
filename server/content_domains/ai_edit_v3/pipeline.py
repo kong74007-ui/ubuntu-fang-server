@@ -25,7 +25,7 @@ from .delivery import (
 )
 from .providers import SubmissionUnknown
 from .runtime import LeaseHeartbeat, RuntimeDependencies, StageContext, StageOutcome
-from .store import LeaseLost, StoreConflictError
+from .store import LeaseLost, StoreConfigurationError, StoreConflictError
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,36 +42,47 @@ class _StageFailure(RuntimeError):
         super().__init__(error_code)
 
 
-class _AuthorityOnlyPublisher:
-    """Expose authoritative publication lookup without outbound mutation."""
+def _query_historical_publish_authority(
+    claim: LeaseClaim,
+    runtime: RuntimeDependencies,
+    publish_generation: int,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Query only the frozen authority key of an unresolved older generation."""
 
-    def __init__(self, publisher: object):
-        self._publisher = publisher
-
-    def query_decision(
-        self,
-        mode: str,
-        source_job_id: str,
-        idempotency_key: str,
-    ) -> object:
-        decision = self._publisher.query_decision(
-            mode, source_job_id, idempotency_key
+    authority = runtime.store.get_historical_publish_authority_for_claim(
+        claim, publish_generation, now_ms
+    )
+    try:
+        raw_decision = runtime.assets.query_decision(
+            "ai_edit_v3",
+            claim.job_id,
+            authority["query"]["external_idempotency_key"],
         )
-        if decision is None or getattr(decision, "status", None) == "accepted":
-            raise SubmissionUnknown("authority_not_final")
-        return decision
-
-    def register_generation(self, *args: object) -> object:
-        raise SubmissionUnknown("new_work_blocked")
-
-    def prepare_hidden(self, *args: object) -> object:
-        raise SubmissionUnknown("new_work_blocked")
-
-    def commit_publish(self, *args: object) -> object:
-        raise SubmissionUnknown("new_work_blocked")
-
-    def cancel_publish(self, *args: object) -> object:
-        raise SubmissionUnknown("new_work_blocked")
+        if raw_decision is None:
+            evidence = {
+                "asset_id": None,
+                "current_generation": publish_generation,
+                "status": "accepted",
+            }
+        else:
+            evidence = {
+                "asset_id": getattr(raw_decision, "asset_id", None),
+                "current_generation": getattr(
+                    raw_decision, "current_generation", None
+                ),
+                "status": getattr(raw_decision, "status", None),
+            }
+    except SubmissionUnknown as exc:
+        evidence = {"outcome": "unknown", "reason_code": exc.reason_code}
+    except Exception:
+        evidence = {"outcome": "unknown", "reason_code": "ambiguous_exception"}
+    return runtime.store.record_historical_publish_authority(
+        claim,
+        publish_generation,
+        evidence,
+        now_ms=now_ms,
+    )
 
 
 def _billing_expected_states(operation: str, status: str) -> frozenset[str]:
@@ -648,21 +659,17 @@ def run_reconciliation_pass(
         if claim is None:
             continue
         try:
-            job = runtime.store.get_job_for_claim(claim, now_ms)
             if not allow_new_work:
-                create_publish_intent(
+                _query_historical_publish_authority(
                     claim,
-                    metadata_sha256=row["metadata_sha256"],
-                    now=now_ms,
-                    store=runtime.store,
+                    runtime,
+                    row["publish_generation"],
+                    now_ms,
                 )
-                progress = reconcile_asset_decision(
-                    claim,
-                    now=now_ms,
-                    store=runtime.store,
-                    publisher=_AuthorityOnlyPublisher(runtime.assets),
-                )
-            elif job["state"] == "publishing" and row["status"] == "pending":
+                counts["assets"] += 1
+                continue
+            job = runtime.store.get_job_for_claim(claim, now_ms)
+            if job["state"] == "publishing" and row["status"] == "pending":
                 progress = advance_publish(
                     claim,
                     metadata_sha256=row["metadata_sha256"],
@@ -698,7 +705,12 @@ def run_reconciliation_pass(
                         "lease_lost", "fenced publication transition was rejected"
                     )
             counts["assets"] += 1
-        except (LeaseLost, StoreConflictError, ValueError):
+        except (
+            LeaseLost,
+            StoreConfigurationError,
+            StoreConflictError,
+            ValueError,
+        ):
             pass
         finally:
             if runtime.store.lease_owned(claim, now_ms):

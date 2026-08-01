@@ -66,6 +66,18 @@ class StopAfterOneLoop:
         return True
 
 
+class StopAfterThreeLoops:
+    def __init__(self):
+        self.waits = 0
+
+    def is_set(self):
+        return self.waits >= 3
+
+    def wait(self, timeout):
+        self.waits += 1
+        return self.is_set()
+
+
 class V3WorkerTests(unittest.TestCase):
     def real_store(self):
         temp = tempfile.TemporaryDirectory()
@@ -349,7 +361,9 @@ class V3WorkerTests(unittest.TestCase):
     def test_not_ready_worker_does_not_advance_publication_ready_job(self):
         self.assert_publication_ready_is_gated(enabled=True, ready=False)
 
-    def test_disabled_worker_queries_unknown_publication_without_resuming_work(self):
+    def assert_disabled_worker_reuses_unknown_publication_authority(
+        self, query_outcome
+    ):
         from server.ai_edit_v3_worker import run_worker, worker_config
 
         store = self.real_store()
@@ -371,13 +385,12 @@ class V3WorkerTests(unittest.TestCase):
         class Publisher:
             def __init__(self):
                 self.calls = []
-                self.generation = None
+                self.query_keys = []
 
             def register_generation(
                 self, mode, source_job_id, generation, idempotency_key
             ):
                 self.calls.append("register_generation")
-                self.generation = generation
                 return PublicationDecision("accepted", generation, None)
 
             def prepare_hidden(
@@ -402,7 +415,12 @@ class V3WorkerTests(unittest.TestCase):
 
             def query_decision(self, mode, source_job_id, idempotency_key):
                 self.calls.append("query_decision")
+                self.query_keys.append(idempotency_key)
                 current_generation = int(idempotency_key.rsplit(":", 1)[1])
+                if query_outcome == "unknown":
+                    raise SubmissionUnknown("authority_query_unknown")
+                if query_outcome == "none":
+                    return None
                 return PublicationDecision("accepted", current_generation, None)
 
         publisher = Publisher()
@@ -423,36 +441,62 @@ class V3WorkerTests(unittest.TestCase):
                 lease_seconds=30,
             )
         )
+        self.assertTrue(store.release_lease(setup_claim, 104))
         publisher.calls.clear()
+        publisher.query_keys.clear()
         media_claims = []
         original_claim_next = store.claim_next_job
-        original_claim_job = store.claim_job
 
         def count_media_claim(*args, **kwargs):
             media_claims.append(args)
             return original_claim_next(*args, **kwargs)
 
-        def reuse_reconciliation_claim(job_id, *args, **kwargs):
-            if job_id == setup_claim.job_id:
-                return setup_claim
-            return original_claim_job(job_id, *args, **kwargs)
-
         store.claim_next_job = count_media_claim
-        store.claim_job = reuse_reconciliation_claim
         runtime = self.runtime_for_gate(
             store,
             enabled=False,
             ledger=object(),
             publisher=publisher,
         )
-        run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+        run_worker(StopAfterThreeLoops(), config=worker_config(), runtime=runtime)
 
-        self.assertEqual(publisher.calls, ["query_decision"])
-        self.assertEqual(media_claims, [])
+        self.assertEqual(publisher.calls, ["query_decision"] * 3)
         self.assertEqual(
-            self.real_job(store, job_id)["state"],
-            "asset_decision_reconciling",
+            publisher.query_keys,
+            [
+                f"ai-edit-v3:{job_id}:publish:query:"
+                f"{setup_claim.fencing_token}"
+            ]
+            * 3,
         )
+        self.assertEqual(media_claims, [])
+        job = self.real_job(store, job_id)
+        self.assertEqual(job["state"], "asset_decision_reconciling")
+        self.assertEqual(job["fencing_token"], setup_claim.fencing_token + 3)
+        publish_rows = store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_publish_intents
+                       WHERE job_id=? ORDER BY publish_generation,operation""",
+                    (job_id,),
+                )
+            )
+        )
+        self.assertEqual(len(publish_rows), 5)
+        self.assertEqual(
+            {row["publish_generation"] for row in publish_rows},
+            {setup_claim.fencing_token},
+        )
+
+    def test_disabled_worker_reuses_unknown_publication_accepted_authority(self):
+        self.assert_disabled_worker_reuses_unknown_publication_authority("accepted")
+
+    def test_disabled_worker_reuses_unknown_publication_no_verdict_authority(self):
+        self.assert_disabled_worker_reuses_unknown_publication_authority("none")
+
+    def test_disabled_worker_reuses_unknown_publication_query_unknown(self):
+        self.assert_disabled_worker_reuses_unknown_publication_authority("unknown")
 
     def test_not_ready_worker_queries_unknown_billing_without_claiming_media(self):
         from server.ai_edit_v3_worker import run_worker, worker_config

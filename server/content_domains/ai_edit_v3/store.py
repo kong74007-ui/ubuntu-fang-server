@@ -121,6 +121,9 @@ _PUBLISH_REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _PUBLISH_ACCEPTED_OPERATIONS = frozenset(
     {"register_generation", "prepare_hidden"}
 )
+_PUBLISH_AUTHORITY_STATES = frozenset(
+    {"publishing", "asset_decision_reconciling", "failed_asset_decision_pending"}
+)
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -2532,6 +2535,19 @@ def _require_publish_operation(operation: Any) -> str:
     return operation
 
 
+def _require_publish_generation(generation: Any) -> int:
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 0 <= generation <= _SQLITE_INT64_MAX
+    ):
+        raise _configuration_error(
+            "publish_generation_invalid",
+            "publication generation must be a non-negative 64-bit integer",
+        )
+    return generation
+
+
 def _require_delivery_object_key(value: Any, environment: str) -> str:
     if (
         not isinstance(value, str)
@@ -2793,6 +2809,188 @@ def _lease_owned_tx(
         ).fetchone()
         is not None
     )
+
+
+def _historical_publish_authority_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    publish_generation: int,
+    environment: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Validate one frozen historical publication generation under a live claim."""
+
+    claim = _require_claim(claim)
+    publish_generation = _require_publish_generation(publish_generation)
+    now_ms = _require_now_ms(now_ms)
+    if publish_generation >= claim.fencing_token:
+        raise StoreConflictError(
+            "publish_generation_not_historical",
+            "publication authority must reuse an older frozen generation",
+        )
+    job = connection.execute(
+        """SELECT * FROM edit_v3_jobs
+           WHERE job_id=? AND environment=? AND worker_id=?
+             AND fencing_token=? AND lease_until>?""",
+        (
+            claim.job_id,
+            environment,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if job is None:
+        raise _lease_lost(claim)
+    if job["state"] not in _PUBLISH_AUTHORITY_STATES:
+        raise StoreConflictError(
+            "publish_authority_state_invalid",
+            "historical publication authority requires a reconciliation state",
+        )
+    rows = connection.execute(
+        """SELECT * FROM edit_v3_publish_intents
+           WHERE job_id=? AND publish_generation=?""",
+        (claim.job_id, publish_generation),
+    ).fetchall()
+    by_operation = {row["operation"]: row for row in rows}
+    if len(rows) != len(_PUBLISH_OPERATIONS) or set(by_operation) != set(
+        _PUBLISH_OPERATIONS
+    ):
+        raise StoreConflictError(
+            "publish_intent_conflict",
+            "historical publication generation has an incomplete identity set",
+        )
+    metadata_sha256 = rows[0]["metadata_sha256"]
+    for operation in _PUBLISH_OPERATIONS:
+        row = by_operation[operation]
+        expected_key = (
+            f"ai-edit-v3:{claim.job_id}:publish:"
+            f"{_PUBLISH_KEY_SEGMENTS[operation]}:{publish_generation}"
+        )
+        if (
+            row["id"]
+            != _publish_intent_id(claim.job_id, publish_generation, operation)
+            or row["job_id"] != claim.job_id
+            or row["publish_generation"] != publish_generation
+            or row["operation"] != operation
+            or row["external_idempotency_key"] != expected_key
+            or row["object_key"] != job["delivery_object_key"]
+            or row["metadata_sha256"] != metadata_sha256
+            or row["expected_decision"]
+            != _PUBLISH_EXPECTED_DECISIONS[operation]
+            or row["fencing_token"] != publish_generation
+        ):
+            raise StoreConflictError(
+                "publish_intent_conflict",
+                "historical publication authority diverged from its frozen identity",
+            )
+    if not any(row["status"] == "unknown" for row in rows):
+        raise StoreConflictError(
+            "publish_authority_missing",
+            "historical publication authority has no unresolved unknown operation",
+        )
+    return {
+        "job": dict(job),
+        "publish_generation": publish_generation,
+        "query": dict(by_operation["query_decision"]),
+    }
+
+
+def _freeze_full_refund_intent_tx(
+    connection: sqlite3.Connection,
+    job: Mapping[str, Any],
+    now_ms: int,
+) -> dict[str, Any]:
+    """Create or validate the sole deterministic full-refund outbox row."""
+
+    target = job["confirmed_preheld_total"]
+    refunded = job["confirmed_refunded_total"]
+    request_amount = target - refunded
+    job_id = job["job_id"]
+    external_key = f"ai-edit-v3:{job_id}:refund_full"
+    existing = connection.execute(
+        """SELECT * FROM edit_v3_billing_intents
+           WHERE environment=? AND owner_id=? AND job_id=?
+             AND operation='refund_full'""",
+        (job["environment"], job["owner_id"], job_id),
+    ).fetchone()
+    if existing is None:
+        unresolved = connection.execute(
+            """SELECT 1 FROM edit_v3_billing_intents
+               WHERE job_id=? AND operation='refund_delta'
+                 AND status IN ('pending','retryable_absent','unknown',
+                                'reconciliation_pending')
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if unresolved is not None:
+            raise StoreConflictError(
+                "overlapping_refund_intent",
+                "delta refund must converge before full refund is frozen",
+            )
+        status = "completed" if request_amount == 0 else "pending"
+        completed_at = now_ms if request_amount == 0 else None
+        evidence_json = (
+            _json_text({"zero_amount": True}) if request_amount == 0 else None
+        )
+        refund_identity = hashlib.sha256(
+            f"{job_id}\0refund_full".encode("utf-8")
+        ).hexdigest()
+        connection.execute(
+            """INSERT INTO edit_v3_billing_intents(
+                   id,environment,owner_id,job_id,operation,
+                   external_idempotency_key,request_sha256,
+                   refund_target_total,request_amount,status,
+                   authority_evidence_json,reason,resume_state,
+                   created_at,updated_at,completed_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                refund_identity,
+                job["environment"],
+                job["owner_id"],
+                job_id,
+                "refund_full",
+                external_key,
+                job["request_sha256"],
+                target,
+                request_amount,
+                status,
+                evidence_json,
+                "refund",
+                "refund_pending",
+                now_ms,
+                now_ms,
+                completed_at,
+            ),
+        )
+        existing = connection.execute(
+            "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+            (refund_identity,),
+        ).fetchone()
+    else:
+        expected = {
+            "environment": job["environment"],
+            "owner_id": job["owner_id"],
+            "job_id": job_id,
+            "operation": "refund_full",
+            "external_idempotency_key": external_key,
+            "request_sha256": job["request_sha256"],
+            "refund_target_total": target,
+            "reason": "refund",
+            "resume_state": "refund_pending",
+        }
+        original_refunded = target - existing["request_amount"]
+        if (
+            not all(existing[key] == value for key, value in expected.items())
+            or isinstance(existing["request_amount"], bool)
+            or not isinstance(existing["request_amount"], int)
+            or not 0 <= original_refunded <= refunded <= target
+        ):
+            raise StoreConflictError(
+                "billing_intent_conflict",
+                "existing full-refund intent diverges from cancel authority",
+            )
+    return dict(existing)
 
 
 def _get_job_for_claim_tx(
@@ -6419,6 +6617,194 @@ class V3Store:
 
         return self._read(read)
 
+    def get_historical_publish_authority_for_claim(
+        self,
+        claim: LeaseClaim,
+        publish_generation: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Return the frozen query identity for one unresolved older generation."""
+
+        claim = _require_claim(claim)
+        publish_generation = _require_publish_generation(publish_generation)
+        now_ms = _require_now_ms(now_ms)
+        return self._read(
+            lambda connection: _historical_publish_authority_tx(
+                connection,
+                claim,
+                publish_generation,
+                self.environment,
+                now_ms,
+            )
+        )
+
+    def record_historical_publish_authority(
+        self,
+        claim: LeaseClaim,
+        publish_generation: int,
+        evidence: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Record a historical query result without creating a new generation."""
+
+        claim = _require_claim(claim)
+        publish_generation = _require_publish_generation(publish_generation)
+        normalized = _normalize_publish_evidence(evidence)
+        if "outcome" in normalized and (
+            normalized["outcome"] != "unknown"
+            or normalized["reason_code"] == "definitive_not_accepted"
+        ):
+            raise _configuration_error(
+                "publish_evidence_invalid",
+                "historical publication authority accepts only ambiguous evidence",
+            )
+        evidence_json = _json_text(normalized)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            authority = _historical_publish_authority_tx(
+                connection,
+                claim,
+                publish_generation,
+                self.environment,
+                now_ms,
+            )
+            job = authority["job"]
+            query = authority["query"]
+            status = normalized.get("status")
+            if status not in {"publish_won", "cancel_won"}:
+                updated = connection.execute(
+                    """UPDATE edit_v3_publish_intents
+                       SET status='unknown',
+                           first_unknown_at=COALESCE(first_unknown_at,?),
+                           last_decision_json=?,last_decision_at=?,updated_at=?
+                       WHERE id=?""",
+                    (now_ms, evidence_json, now_ms, now_ms, query["id"]),
+                )
+                if updated.rowcount != 1:
+                    raise StoreConflictError(
+                        "publish_intent_missing",
+                        "historical query identity disappeared before recording",
+                    )
+                return {
+                    "decision": normalized,
+                    "job": job,
+                    "publish_generation": publish_generation,
+                    "query": dict(
+                        connection.execute(
+                            "SELECT * FROM edit_v3_publish_intents WHERE id=?",
+                            (query["id"],),
+                        ).fetchone()
+                    ),
+                }
+
+            if status == "publish_won":
+                asset_id = normalized["asset_id"]
+                if job["asset_id"] not in {None, asset_id}:
+                    raise StoreConflictError(
+                        "asset_decision_conflict",
+                        "publication winner conflicts with the frozen asset id",
+                    )
+                refund = connection.execute(
+                    """SELECT 1 FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_full' LIMIT 1""",
+                    (claim.job_id,),
+                ).fetchone()
+                cancel_winner = connection.execute(
+                    """SELECT 1 FROM edit_v3_publish_intents
+                       WHERE job_id=? AND status='cancel_won' LIMIT 1""",
+                    (claim.job_id,),
+                ).fetchone()
+                if refund is not None or cancel_winner is not None:
+                    raise StoreConflictError(
+                        "asset_refund_conflict",
+                        "published asset cannot coexist with cancel authority",
+                    )
+                updated = connection.execute(
+                    """UPDATE edit_v3_jobs SET asset_id=?,updated_at=?
+                       WHERE job_id=? AND worker_id=? AND fencing_token=?
+                         AND lease_until>? AND (asset_id IS NULL OR asset_id=?)""",
+                    (
+                        asset_id,
+                        now_ms,
+                        claim.job_id,
+                        claim.worker_id,
+                        claim.fencing_token,
+                        now_ms,
+                        asset_id,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise _lease_lost(claim)
+                target_state = "completed"
+                refund_intent = None
+            else:
+                publish_winner = connection.execute(
+                    """SELECT 1 FROM edit_v3_publish_intents
+                       WHERE job_id=? AND status='publish_won' LIMIT 1""",
+                    (claim.job_id,),
+                ).fetchone()
+                if job["asset_id"] is not None or publish_winner is not None:
+                    raise StoreConflictError(
+                        "asset_refund_conflict",
+                        "cancel winner cannot overwrite an authoritative publication",
+                    )
+                refund_intent = _freeze_full_refund_intent_tx(
+                    connection, job, now_ms
+                )
+                target_state = "failed"
+
+            connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET status=?,last_decision_json=?,last_decision_at=?,
+                       asset_id=?,updated_at=? WHERE job_id=?""",
+                (
+                    status,
+                    evidence_json,
+                    now_ms,
+                    normalized["asset_id"],
+                    now_ms,
+                    claim.job_id,
+                ),
+            )
+            if not _transition_leased_tx(
+                connection,
+                claim,
+                {job["state"]},
+                target_state,
+                now_ms,
+                1,
+                preserve_current_lease=True,
+            ):
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "publish_authority_transition_conflict",
+                    "historical publication authority could not finalize the job",
+                )
+            final_job = dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_jobs WHERE job_id=?",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+            return {
+                "decision": normalized,
+                "intent": refund_intent,
+                "job": final_job,
+                "publish_generation": publish_generation,
+                "query": query,
+            }
+
+        try:
+            return self._write(write)
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError(
+                "publish_authority_conflict",
+                "historical publication authority violates frozen constraints",
+            ) from exc
+
     def list_due_publish_intents(
         self,
         now_ms: int,
@@ -6792,93 +7178,7 @@ class V3Store:
 
             target = job["confirmed_preheld_total"]
             refunded = job["confirmed_refunded_total"]
-            request_amount = target - refunded
-            external_key = f"ai-edit-v3:{claim.job_id}:refund_full"
-            existing = connection.execute(
-                """SELECT * FROM edit_v3_billing_intents
-                   WHERE environment=? AND owner_id=? AND job_id=?
-                     AND operation='refund_full'""",
-                (job["environment"], job["owner_id"], claim.job_id),
-            ).fetchone()
-            if existing is None:
-                unresolved = connection.execute(
-                    """SELECT 1 FROM edit_v3_billing_intents
-                       WHERE job_id=? AND operation='refund_delta'
-                         AND status IN ('pending','retryable_absent','unknown',
-                                        'reconciliation_pending')
-                       LIMIT 1""",
-                    (claim.job_id,),
-                ).fetchone()
-                if unresolved is not None:
-                    raise StoreConflictError(
-                        "overlapping_refund_intent",
-                        "delta refund must converge before full refund is frozen",
-                    )
-                status = "completed" if request_amount == 0 else "pending"
-                completed_at = now_ms if request_amount == 0 else None
-                evidence_json = (
-                    _json_text({"zero_amount": True})
-                    if request_amount == 0
-                    else None
-                )
-                refund_identity = hashlib.sha256(
-                    f"{claim.job_id}\0refund_full".encode("utf-8")
-                ).hexdigest()
-                connection.execute(
-                    """INSERT INTO edit_v3_billing_intents(
-                           id,environment,owner_id,job_id,operation,
-                           external_idempotency_key,request_sha256,
-                           refund_target_total,request_amount,status,
-                           authority_evidence_json,reason,resume_state,
-                           created_at,updated_at,completed_at
-                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        refund_identity,
-                        job["environment"],
-                        job["owner_id"],
-                        claim.job_id,
-                        "refund_full",
-                        external_key,
-                        job["request_sha256"],
-                        target,
-                        request_amount,
-                        status,
-                        evidence_json,
-                        "refund",
-                        "refund_pending",
-                        now_ms,
-                        now_ms,
-                        completed_at,
-                    ),
-                )
-                existing = connection.execute(
-                    """SELECT * FROM edit_v3_billing_intents
-                       WHERE id=?""",
-                    (refund_identity,),
-                ).fetchone()
-            else:
-                expected = {
-                    "environment": job["environment"],
-                    "owner_id": job["owner_id"],
-                    "job_id": claim.job_id,
-                    "operation": "refund_full",
-                    "external_idempotency_key": external_key,
-                    "request_sha256": job["request_sha256"],
-                    "refund_target_total": target,
-                    "reason": "refund",
-                    "resume_state": "refund_pending",
-                }
-                original_refunded = target - existing["request_amount"]
-                if (
-                    not self._same_values(existing, expected)
-                    or isinstance(existing["request_amount"], bool)
-                    or not isinstance(existing["request_amount"], int)
-                    or not 0 <= original_refunded <= refunded <= target
-                ):
-                    raise StoreConflictError(
-                        "billing_intent_conflict",
-                        "existing full-refund intent diverges from cancel authority",
-                    )
+            existing = _freeze_full_refund_intent_tx(connection, job, now_ms)
 
             connection.execute(
                 """UPDATE edit_v3_publish_intents

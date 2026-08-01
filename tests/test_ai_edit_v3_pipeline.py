@@ -116,6 +116,90 @@ class V3StateCASTests(unittest.TestCase):
             )
         )
 
+    def publish_rows(self, job_id):
+        return self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_publish_intents
+                       WHERE job_id=? ORDER BY publish_generation,operation""",
+                    (job_id,),
+                )
+            )
+        )
+
+    def billing_rows(self, job_id):
+        return self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE job_id=? ORDER BY operation,id""",
+                    (job_id,),
+                )
+            )
+        )
+
+    def seed_unknown_publish_generation(self, job_id, *, transition=True):
+        from server.content_domains.ai_edit_v3.delivery import advance_publish
+        from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+        from server.content_domains.video_asset_publish import PublicationDecision
+
+        class Publisher:
+            def register_generation(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(
+                self,
+                mode,
+                source_job_id,
+                owner,
+                object_key,
+                generation,
+                idempotency_key,
+            ):
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(self, *args):
+                raise SubmissionUnknown("response_lost")
+
+            def cancel_publish(self, *args):
+                raise AssertionError("unknown publish must not cancel")
+
+            def query_decision(self, *args):
+                raise AssertionError("setup stops at the unknown commit")
+
+        self.seed_publish_job(job_id)
+        setup_claim = self.store.claim_job(
+            job_id,
+            f"worker-{job_id}-setup",
+            30,
+            100_000,
+            expected_states={"publishing"},
+        )
+        progress = advance_publish(
+            setup_claim,
+            metadata_sha256="8" * 64,
+            now=100_001,
+            store=self.store,
+            publisher=Publisher(),
+        )
+        self.assertEqual(progress.next_state, "asset_decision_reconciling")
+        if transition:
+            self.assertTrue(
+                self.store.transition_leased(
+                    setup_claim,
+                    {"publishing"},
+                    progress.next_state,
+                    100_002,
+                    lease_seconds=30,
+                )
+            )
+        self.assertTrue(self.store.release_lease(setup_claim, 100_003))
+        return setup_claim
+
     def test_every_graph_edge_uses_fenced_actual_state_cas(self):
         index = 0
         for source, targets in contracts.ALLOWED_TRANSITIONS.items():
@@ -1473,6 +1557,296 @@ class V3StateCASTests(unittest.TestCase):
         self.assertEqual(job["asset_id"], "asset-unknown-recovered")
         self.assertEqual(publisher.calls.count("commit_publish"), 1)
         self.assertEqual(publisher.calls.count("query_decision"), 1)
+
+    def test_disabled_reconciliation_completes_from_frozen_historical_authority(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_reconciliation_pass
+        from server.content_domains.video_asset_publish import PublicationDecision
+
+        job_id = "job-disabled-historical-publish-won"
+        setup_claim = self.seed_unknown_publish_generation(job_id)
+        frozen_key = (
+            f"ai-edit-v3:{job_id}:publish:query:{setup_claim.fencing_token}"
+        )
+
+        class Clock:
+            def now(self):
+                return 100.02
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def query_decision(self, mode, source_job_id, idempotency_key):
+                self.calls.append(
+                    (mode, source_job_id, idempotency_key)
+                )
+                return PublicationDecision(
+                    "publish_won",
+                    setup_claim.fencing_token,
+                    "asset-historical-authority",
+                )
+
+            def __getattr__(self, name):
+                raise AssertionError(f"disabled reconciliation called {name}")
+
+        publisher = Publisher()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-disabled-historical-publish",
+            lease_seconds=30,
+            limit=10,
+            allow_new_work=False,
+        )
+
+        job = self.row(job_id)
+        rows = self.publish_rows(job_id)
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["asset_id"], "asset-historical-authority")
+        self.assertEqual(
+            publisher.calls,
+            [("ai_edit_v3", job_id, frozen_key)],
+        )
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(
+            {row["publish_generation"] for row in rows},
+            {setup_claim.fencing_token},
+        )
+        self.assertEqual({row["status"] for row in rows}, {"publish_won"})
+        self.assertEqual(self.billing_rows(job_id), ())
+
+    def test_disabled_reconciliation_recovers_unknown_before_state_transition(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_reconciliation_pass
+        from server.content_domains.video_asset_publish import PublicationDecision
+
+        job_id = "job-disabled-publishing-crash-window"
+        setup_claim = self.seed_unknown_publish_generation(
+            job_id, transition=False
+        )
+        frozen_key = (
+            f"ai-edit-v3:{job_id}:publish:query:{setup_claim.fencing_token}"
+        )
+
+        class Clock:
+            def now(self):
+                return 100.02
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def query_decision(self, mode, source_job_id, idempotency_key):
+                self.calls.append((mode, source_job_id, idempotency_key))
+                return PublicationDecision(
+                    "publish_won",
+                    setup_claim.fencing_token,
+                    "asset-crash-window-recovered",
+                )
+
+            def __getattr__(self, name):
+                raise AssertionError(f"disabled reconciliation called {name}")
+
+        publisher = Publisher()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-disabled-publishing-crash-window",
+            lease_seconds=30,
+            limit=10,
+            allow_new_work=False,
+        )
+
+        job = self.row(job_id)
+        rows = self.publish_rows(job_id)
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["asset_id"], "asset-crash-window-recovered")
+        self.assertEqual(
+            publisher.calls,
+            [("ai_edit_v3", job_id, frozen_key)],
+        )
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(
+            {row["publish_generation"] for row in rows},
+            {setup_claim.fencing_token},
+        )
+
+    def test_disabled_reconciliation_fails_and_refunds_from_historical_cancel(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_reconciliation_pass
+        from server.content_domains.video_asset_publish import PublicationDecision
+
+        job_id = "job-disabled-historical-cancel-won"
+        setup_claim = self.seed_unknown_publish_generation(job_id)
+        frozen_key = (
+            f"ai-edit-v3:{job_id}:publish:query:{setup_claim.fencing_token}"
+        )
+
+        class Clock:
+            def now(self):
+                return 100.02
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def query_decision(self, mode, source_job_id, idempotency_key):
+                self.calls.append(
+                    (mode, source_job_id, idempotency_key)
+                )
+                return PublicationDecision(
+                    "cancel_won", setup_claim.fencing_token, None
+                )
+
+            def __getattr__(self, name):
+                raise AssertionError(f"disabled reconciliation called {name}")
+
+        publisher = Publisher()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-disabled-historical-cancel",
+            lease_seconds=30,
+            limit=10,
+            allow_new_work=False,
+        )
+
+        job = self.row(job_id)
+        rows = self.publish_rows(job_id)
+        refunds = self.billing_rows(job_id)
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(job["state"], "failed")
+        self.assertIsNone(job["asset_id"])
+        self.assertEqual(
+            publisher.calls,
+            [("ai_edit_v3", job_id, frozen_key)],
+        )
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(
+            {row["publish_generation"] for row in rows},
+            {setup_claim.fencing_token},
+        )
+        self.assertEqual({row["status"] for row in rows}, {"cancel_won"})
+        self.assertEqual(len(refunds), 1)
+        self.assertEqual(refunds[0]["operation"], "refund_full")
+        self.assertEqual(refunds[0]["request_amount"], 1)
+        self.assertEqual(refunds[0]["status"], "pending")
+
+    def test_historical_publish_authority_rejects_stale_claim_write(self):
+        job_id = "job-historical-authority-stale-claim"
+        setup_claim = self.seed_unknown_publish_generation(job_id)
+        claim = self.store.claim_job(
+            job_id,
+            "worker-historical-authority-first",
+            30,
+            100_004,
+            expected_states={"asset_decision_reconciling"},
+        )
+        authority = self.store.get_historical_publish_authority_for_claim(
+            claim, setup_claim.fencing_token, 100_005
+        )
+        self.assertEqual(
+            authority["query"]["external_idempotency_key"],
+            f"ai-edit-v3:{job_id}:publish:query:{setup_claim.fencing_token}",
+        )
+        before = self.publish_rows(job_id)
+        self.assertTrue(self.store.release_lease(claim, 100_006))
+        replacement = self.store.claim_job(
+            job_id,
+            "worker-historical-authority-replacement",
+            30,
+            100_007,
+            expected_states={"asset_decision_reconciling"},
+        )
+        self.assertGreater(replacement.fencing_token, claim.fencing_token)
+
+        with self.assertRaises(LeaseLost):
+            self.store.record_historical_publish_authority(
+                claim,
+                setup_claim.fencing_token,
+                {
+                    "asset_id": None,
+                    "current_generation": setup_claim.fencing_token,
+                    "status": "accepted",
+                },
+                now_ms=100_008,
+            )
+
+        self.assertEqual(self.publish_rows(job_id), before)
+
+    def test_historical_publish_authority_validates_frozen_row_identity(self):
+        job_id = "job-historical-authority-corrupt-row"
+        setup_claim = self.seed_unknown_publish_generation(job_id)
+        claim = self.store.claim_job(
+            job_id,
+            "worker-historical-authority-corrupt",
+            30,
+            100_004,
+            expected_states={"asset_decision_reconciling"},
+        )
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET external_idempotency_key=?
+                   WHERE job_id=? AND publish_generation=?
+                     AND operation='query_decision'""",
+                (
+                    f"ai-edit-v3:{job_id}:publish:query:corrupt",
+                    job_id,
+                    setup_claim.fencing_token,
+                ),
+            )
+        )
+
+        with self.assertRaises(StoreConflictError):
+            self.store.get_historical_publish_authority_for_claim(
+                claim, setup_claim.fencing_token, 100_005
+            )
 
     def test_staging_checkpoint_crash_replay_converges_through_settlement_and_publish(self):
         from server.content_domains.ai_edit_v3.billing import (
