@@ -8,6 +8,7 @@ import os
 import stat
 import unicodedata
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -88,6 +89,16 @@ ALLOWED_TRANSITIONS = {
     "refunded": set(),
     "prehold_absent": set(),
 }
+ALL_STATES = frozenset(ALLOWED_TRANSITIONS)
+QUEUE_CLAIMABLE_STATES = frozenset((*MEDIA_STATES, "failed"))
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseClaim:
+    job_id: str
+    worker_id: str
+    fencing_token: int
+    lease_until: int
 
 
 class ContractError(ValueError):

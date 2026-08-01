@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
@@ -23,7 +24,12 @@ from urllib.parse import quote
 
 from .contracts import (
     ALLOWED_TRANSITIONS,
+    ALL_STATES,
     ContractError,
+    LeaseClaim,
+    MEDIA_STATES,
+    QUEUE_CLAIMABLE_STATES,
+    TERMINAL_STATES,
     canonical_json,
     parse_strict_json,
     request_fingerprint,
@@ -753,6 +759,14 @@ class StoreMigrationError(StoreError):
 
 class StoreConflictError(StoreError):
     """Raised when an immutable store identity is reused inconsistently."""
+
+
+class LeaseLost(StoreError):
+    """Raised when a protected child operation no longer owns its lease."""
+
+
+class _ClaimRaceLost(RuntimeError):
+    """Forces rollback when a selected claim row stops matching."""
 
 
 def _configuration_error(error_code: str, message: str) -> StoreConfigurationError:
@@ -2368,6 +2382,927 @@ def _require_integer(name: str, value: Any, *, nullable: bool = False) -> None:
         )
 
 
+def _require_nonblank(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise _configuration_error(
+            "string_argument_invalid",
+            f"{name} must be a non-blank string",
+        )
+    return value
+
+
+def _require_now_ms(now_ms: Any) -> int:
+    _require_integer("now_ms", now_ms)
+    if now_ms < 0:
+        raise _configuration_error(
+            "timestamp_argument_invalid",
+            "now_ms must be a Unix epoch millisecond value",
+        )
+    return now_ms
+
+
+def _lease_expiry(lease_seconds: Any, now_ms: Any) -> tuple[int, int]:
+    now_ms = _require_now_ms(now_ms)
+    _require_integer("lease_seconds", lease_seconds)
+    if lease_seconds <= 0:
+        raise _configuration_error(
+            "lease_duration_invalid",
+            "lease_seconds must be a positive integer",
+        )
+    lease_until = now_ms + lease_seconds * 1000
+    _require_integer("lease_until", lease_until)
+    return now_ms, lease_until
+
+
+def _require_state_set(name: str, states: Any) -> frozenset[str]:
+    if isinstance(states, (str, bytes)):
+        raise _configuration_error(
+            "state_set_invalid",
+            f"{name} must be a non-empty state collection",
+        )
+    try:
+        normalized = frozenset(states)
+    except TypeError as exc:
+        raise _configuration_error(
+            "state_set_invalid",
+            f"{name} must be a non-empty state collection",
+        ) from exc
+    if not normalized or any(
+        not isinstance(state, str) or state not in ALL_STATES for state in normalized
+    ):
+        raise _configuration_error(
+            "state_set_invalid",
+            f"{name} contains an unknown or missing state",
+        )
+    return normalized
+
+
+def _require_claim(claim: Any) -> LeaseClaim:
+    if not isinstance(claim, LeaseClaim):
+        raise _configuration_error(
+            "lease_claim_invalid",
+            "claim must be an immutable LeaseClaim",
+        )
+    _require_nonblank("claim.job_id", claim.job_id)
+    _require_nonblank("claim.worker_id", claim.worker_id)
+    _require_integer("claim.fencing_token", claim.fencing_token)
+    _require_integer("claim.lease_until", claim.lease_until)
+    if claim.fencing_token < 0 or claim.lease_until < 0:
+        raise _configuration_error(
+            "lease_claim_invalid",
+            "claim token and deadline must be non-negative",
+        )
+    return claim
+
+
+def _require_sha256(name: str, value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise _configuration_error(
+            "sha256_argument_invalid",
+            f"{name} must be a 64-character lowercase SHA-256",
+        )
+    return value
+
+
+def _lease_lost(claim: LeaseClaim) -> LeaseLost:
+    return LeaseLost(
+        "lease_lost",
+        f"lease ownership was lost for job {claim.job_id}",
+    )
+
+
+def _claim_row(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    worker_id: str,
+    lease_until: int,
+    now_ms: int,
+) -> LeaseClaim | None:
+    connection.execute(
+        """UPDATE edit_v3_stage_attempts
+           SET status='aborted_lease_lost',finished_at=?,error_code='lease_lost',
+               error_json=NULL
+           WHERE job_id=? AND fencing_token=? AND status='running'""",
+        (now_ms, row["job_id"], row["fencing_token"]),
+    )
+    updated = connection.execute(
+        """UPDATE edit_v3_jobs
+           SET worker_id=?,fencing_token=fencing_token+1,lease_until=?,updated_at=?
+           WHERE job_id=? AND state=? AND fencing_token=?
+             AND (worker_id IS NULL OR lease_until IS NULL OR lease_until<=?)""",
+        (
+            worker_id,
+            lease_until,
+            now_ms,
+            row["job_id"],
+            row["state"],
+            row["fencing_token"],
+            now_ms,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise _ClaimRaceLost()
+    claimed = connection.execute(
+        """SELECT job_id,worker_id,fencing_token,lease_until
+           FROM edit_v3_jobs WHERE job_id=?""",
+        (row["job_id"],),
+    ).fetchone()
+    return LeaseClaim(
+        claimed["job_id"],
+        claimed["worker_id"],
+        claimed["fencing_token"],
+        claimed["lease_until"],
+    )
+
+
+def _claim_next_job_tx(
+    connection: sqlite3.Connection,
+    worker_id: str,
+    lease_seconds: int,
+    now_ms: int,
+) -> LeaseClaim | None:
+    worker_id = _require_nonblank("worker_id", worker_id)
+    now_ms, lease_until = _lease_expiry(lease_seconds, now_ms)
+    placeholders = ",".join("?" for _ in QUEUE_CLAIMABLE_STATES)
+    row = connection.execute(
+        f"""SELECT job_id,state,fencing_token FROM edit_v3_jobs
+            WHERE state IN ({placeholders})
+              AND (worker_id IS NULL OR lease_until IS NULL OR lease_until<=?)
+            ORDER BY queued_at ASC,job_id ASC LIMIT 1""",
+        (*sorted(QUEUE_CLAIMABLE_STATES), now_ms),
+    ).fetchone()
+    if row is None:
+        return None
+    return _claim_row(connection, row, worker_id, lease_until, now_ms)
+
+
+def _claim_job_tx(
+    connection: sqlite3.Connection,
+    job_id: str,
+    worker_id: str,
+    lease_seconds: int,
+    now_ms: int,
+    expected_states: Any,
+) -> LeaseClaim | None:
+    job_id = _require_nonblank("job_id", job_id)
+    worker_id = _require_nonblank("worker_id", worker_id)
+    states = _require_state_set("expected_states", expected_states)
+    now_ms, lease_until = _lease_expiry(lease_seconds, now_ms)
+    placeholders = ",".join("?" for _ in states)
+    row = connection.execute(
+        f"""SELECT job_id,state,fencing_token FROM edit_v3_jobs
+            WHERE job_id=? AND state IN ({placeholders})
+              AND state NOT IN (?,?,?)
+              AND (worker_id IS NULL OR lease_until IS NULL OR lease_until<=?)""",
+        (job_id, *sorted(states), *sorted(TERMINAL_STATES), now_ms),
+    ).fetchone()
+    if row is None:
+        return None
+    return _claim_row(connection, row, worker_id, lease_until, now_ms)
+
+
+def _renew_lease_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    lease_seconds: int,
+    now_ms: int,
+) -> bool:
+    claim = _require_claim(claim)
+    now_ms, desired = _lease_expiry(lease_seconds, now_ms)
+    updated = connection.execute(
+        """UPDATE edit_v3_jobs
+           SET lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END,
+               updated_at=?
+           WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?""",
+        (
+            desired,
+            desired,
+            now_ms,
+            claim.job_id,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    return updated.rowcount == 1
+
+
+def _lease_owned_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    now_ms: int,
+) -> bool:
+    claim = _require_claim(claim)
+    now_ms = _require_now_ms(now_ms)
+    return (
+        connection.execute(
+            """SELECT 1 FROM edit_v3_jobs
+               WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?""",
+            (claim.job_id, claim.worker_id, claim.fencing_token, now_ms),
+        ).fetchone()
+        is not None
+    )
+
+
+def _transition_leased_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    expected_states: Any,
+    target_state: str,
+    now_ms: int,
+    lease_seconds: int,
+) -> bool:
+    claim = _require_claim(claim)
+    states = _require_state_set("expected_states", expected_states)
+    target_state = _require_nonblank("target_state", target_state)
+    if target_state not in ALL_STATES or any(
+        target_state not in ALLOWED_TRANSITIONS[state] for state in states
+    ):
+        raise _configuration_error(
+            "state_transition_invalid",
+            "requested transition is outside the frozen V3 state graph",
+        )
+    now_ms, desired = _lease_expiry(lease_seconds, now_ms)
+    placeholders = ",".join("?" for _ in states)
+    running_guard = "" if states.isdisjoint(MEDIA_STATES) else (
+        " AND NOT EXISTS(SELECT 1 FROM edit_v3_stage_attempts AS a"
+        " WHERE a.job_id=edit_v3_jobs.job_id AND a.status='running')"
+    )
+
+    if target_state == "repair_planning":
+        updated = connection.execute(
+            f"""UPDATE edit_v3_jobs
+                SET state='repair_planning',repair_count=1,
+                    repair_budget_granted_at=?,
+                    processing_deadline_at=processing_deadline_at+600000,
+                    lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END,
+                    updated_at=?
+                WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                  AND state IN ({placeholders}) AND repair_count=0
+                  AND processing_deadline_at IS NOT NULL{running_guard}""",
+            (
+                now_ms,
+                desired,
+                desired,
+                now_ms,
+                claim.job_id,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+                *sorted(states),
+            ),
+        )
+        if updated.rowcount == 1:
+            return True
+        replay = connection.execute(
+            f"""UPDATE edit_v3_jobs
+                SET lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END,
+                    updated_at=?
+                WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                  AND state='repair_planning' AND repair_count=1
+                  AND repair_budget_granted_at IS NOT NULL
+                  AND processing_deadline_at IS NOT NULL{running_guard}""",
+            (
+                desired,
+                desired,
+                now_ms,
+                claim.job_id,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+            ),
+        )
+        return replay.rowcount == 1
+
+    clears_lease = target_state in TERMINAL_STATES or target_state in {
+        "failed_reconciliation_pending",
+        "failed_asset_decision_pending",
+    }
+    if clears_lease:
+        lease_assignment = "worker_id=NULL,lease_until=NULL"
+        lease_parameters: tuple[int, ...] = ()
+    else:
+        lease_assignment = (
+            "lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END"
+        )
+        lease_parameters = (desired, desired)
+    updated = connection.execute(
+        f"""UPDATE edit_v3_jobs
+            SET state=?,{lease_assignment},updated_at=?
+            WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+              AND state IN ({placeholders}){running_guard}""",
+        (
+            target_state,
+            *lease_parameters,
+            now_ms,
+            claim.job_id,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+            *sorted(states),
+        ),
+    )
+    return updated.rowcount == 1
+
+
+def _start_stage_attempt_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage: str,
+    input_sha256: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    stage = _require_nonblank("stage", stage)
+    input_sha256 = _require_sha256("input_sha256", input_sha256)
+    now_ms = _require_now_ms(now_ms)
+    replay = connection.execute(
+        """SELECT a.* FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.job_id=? AND a.stage=? AND a.fencing_token=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            stage,
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if replay is not None:
+        if replay["input_sha256"] != input_sha256:
+            raise StoreConflictError(
+                "stage_attempt_input_conflict",
+                "the same lease and stage cannot be reused with another input",
+            )
+        return dict(replay)
+
+    attempt = connection.execute(
+        """SELECT COALESCE(MAX(attempt),0)+1
+           FROM edit_v3_stage_attempts WHERE job_id=? AND stage=?""",
+        (claim.job_id, stage),
+    ).fetchone()[0]
+    stage_attempt_id = f"stage-{uuid.uuid4().hex}"
+    try:
+        inserted = connection.execute(
+            """INSERT INTO edit_v3_stage_attempts(
+                   id,job_id,stage,attempt,worker_id,fencing_token,status,
+                   input_sha256,started_at
+               )
+               SELECT ?,j.job_id,?,?,j.worker_id,j.fencing_token,'running',?,?
+               FROM edit_v3_jobs AS j
+               WHERE j.job_id=? AND j.worker_id=? AND j.fencing_token=?
+                 AND j.lease_until>?""",
+            (
+                stage_attempt_id,
+                stage,
+                attempt,
+                input_sha256,
+                now_ms,
+                claim.job_id,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise StoreConflictError(
+            "stage_attempt_running",
+            "the job already has a running stage attempt",
+        ) from exc
+    if inserted.rowcount != 1:
+        raise _lease_lost(claim)
+    return dict(
+        connection.execute(
+            "SELECT * FROM edit_v3_stage_attempts WHERE id=?",
+            (stage_attempt_id,),
+        ).fetchone()
+    )
+
+
+def _finish_stage_attempt_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage_attempt_id: str,
+    status: str,
+    now_ms: int,
+    error_code: str | None,
+    error: Any,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+    if status not in {"completed", "failed", "skipped"}:
+        raise _configuration_error(
+            "stage_attempt_status_invalid",
+            "stage attempt status must be completed, failed or skipped",
+        )
+    now_ms = _require_now_ms(now_ms)
+    if error_code is not None:
+        _require_nonblank("error_code", error_code)
+    error_json = None if error is None else _json_text(error)
+    updated = connection.execute(
+        """UPDATE edit_v3_stage_attempts
+           SET status=?,finished_at=?,error_code=?,error_json=?
+           WHERE id=? AND job_id=? AND fencing_token=? AND status='running'
+             AND (?<>'skipped' OR EXISTS(
+                 SELECT 1 FROM edit_v3_checkpoints AS c
+                 WHERE c.stage_attempt_id=edit_v3_stage_attempts.id
+             ))
+             AND EXISTS(
+                 SELECT 1 FROM edit_v3_jobs AS j
+                 WHERE j.job_id=edit_v3_stage_attempts.job_id
+                   AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+             )""",
+        (
+            status,
+            now_ms,
+            error_code,
+            error_json,
+            stage_attempt_id,
+            claim.job_id,
+            claim.fencing_token,
+            status,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    if updated.rowcount == 1:
+        return dict(
+            connection.execute(
+                "SELECT * FROM edit_v3_stage_attempts WHERE id=?",
+                (stage_attempt_id,),
+            ).fetchone()
+        )
+    existing = connection.execute(
+        """SELECT a.* FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.fencing_token=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            stage_attempt_id,
+            claim.job_id,
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if (
+        existing is not None
+        and existing["status"] == status
+        and existing["error_code"] == error_code
+        and existing["error_json"] == error_json
+    ):
+        return dict(existing)
+    if existing is not None and existing["status"] == "running" and status == "skipped":
+        raise StoreConflictError(
+            "skipped_checkpoint_required",
+            "a skipped stage attempt requires an immutable checkpoint",
+        )
+    if existing is None and not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    raise StoreConflictError(
+        "stage_attempt_not_running",
+        "stage attempt is missing, belongs elsewhere or is already closed",
+    )
+
+
+def _save_checkpoint_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage_attempt_id: str,
+    input_sha256: str,
+    output: Any,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+    input_sha256 = _require_sha256("input_sha256", input_sha256)
+    now_ms = _require_now_ms(now_ms)
+    output_json = _json_text(output)
+    output_sha256 = _json_sha256(output)
+    attempt = connection.execute(
+        """SELECT a.* FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.fencing_token=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            stage_attempt_id,
+            claim.job_id,
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if attempt is None:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "checkpoint_attempt_mismatch",
+            "checkpoint attempt does not match the leased job, stage or input",
+        )
+    if attempt["input_sha256"] != input_sha256:
+        raise StoreConflictError(
+            "checkpoint_attempt_mismatch",
+            "checkpoint attempt does not match the leased job, stage or input",
+        )
+    existing = connection.execute(
+        """SELECT c.* FROM edit_v3_checkpoints AS c
+           JOIN edit_v3_jobs AS j ON j.job_id=c.job_id
+           WHERE c.job_id=? AND c.stage=? AND c.input_sha256=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            attempt["stage"],
+            input_sha256,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if existing is not None:
+        if (
+            existing["output_json"] != output_json
+            or existing["output_sha256"] != output_sha256
+        ):
+            raise StoreConflictError(
+                "checkpoint_output_conflict",
+                "checkpoint input is already bound to another immutable output",
+            )
+        return dict(existing)
+    version = connection.execute(
+        """SELECT COALESCE(MAX(version),0)+1 FROM edit_v3_checkpoints
+           WHERE job_id=? AND stage=?""",
+        (claim.job_id, attempt["stage"]),
+    ).fetchone()[0]
+    checkpoint_id = f"checkpoint-{uuid.uuid4().hex}"
+    inserted = connection.execute(
+        """INSERT INTO edit_v3_checkpoints(
+               id,job_id,stage,version,stage_attempt_id,input_sha256,output_json,
+               output_sha256,fencing_token,created_at
+           )
+           SELECT ?,a.job_id,a.stage,?,?,a.input_sha256,?,?,j.fencing_token,?
+           FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.fencing_token=?
+             AND a.input_sha256=? AND j.worker_id=? AND j.fencing_token=?
+             AND j.lease_until>?""",
+        (
+            checkpoint_id,
+            version,
+            stage_attempt_id,
+            output_json,
+            output_sha256,
+            now_ms,
+            stage_attempt_id,
+            claim.job_id,
+            claim.fencing_token,
+            input_sha256,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    if inserted.rowcount != 1:
+        raise _lease_lost(claim)
+    return dict(
+        connection.execute(
+            "SELECT * FROM edit_v3_checkpoints WHERE id=?", (checkpoint_id,)
+        ).fetchone()
+    )
+
+
+def _get_checkpoint_for_claim_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage: str,
+    input_sha256: str,
+    now_ms: int,
+) -> dict[str, Any] | None:
+    claim = _require_claim(claim)
+    stage = _require_nonblank("stage", stage)
+    input_sha256 = _require_sha256("input_sha256", input_sha256)
+    now_ms = _require_now_ms(now_ms)
+    row = connection.execute(
+        """SELECT c.* FROM edit_v3_checkpoints AS c
+           JOIN edit_v3_jobs AS j ON j.job_id=c.job_id
+           WHERE c.job_id=? AND c.stage=? AND c.input_sha256=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            stage,
+            input_sha256,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    return None
+
+
+def _close_running_attempts_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    now_ms: int,
+) -> int:
+    claim = _require_claim(claim)
+    now_ms = _require_now_ms(now_ms)
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    updated = connection.execute(
+        """UPDATE edit_v3_stage_attempts
+           SET status='aborted_lease_lost',finished_at=?,error_code='lease_lost',
+               error_json=NULL
+           WHERE job_id=? AND fencing_token=? AND status='running'
+             AND EXISTS(
+                 SELECT 1 FROM edit_v3_jobs AS j
+                 WHERE j.job_id=edit_v3_stage_attempts.job_id
+                   AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+             )""",
+        (
+            now_ms,
+            claim.job_id,
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    return updated.rowcount
+
+
+def _release_lease_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    now_ms: int,
+) -> bool:
+    claim = _require_claim(claim)
+    now_ms = _require_now_ms(now_ms)
+    updated = connection.execute(
+        """UPDATE edit_v3_jobs
+           SET worker_id=NULL,lease_until=NULL,updated_at=?
+           WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+             AND NOT EXISTS(
+                 SELECT 1 FROM edit_v3_stage_attempts AS a
+                 WHERE a.job_id=edit_v3_jobs.job_id AND a.status='running'
+             )""",
+        (now_ms, claim.job_id, claim.worker_id, claim.fencing_token, now_ms),
+    )
+    if updated.rowcount == 1:
+        return True
+    if not _lease_owned_tx(connection, claim, now_ms):
+        return False
+    raise StoreConflictError(
+        "running_stage_attempt_exists",
+        "a running stage attempt must be closed before lease release",
+    )
+
+
+def _record_provider_intent_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage: str,
+    stage_attempt_id: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    stage = _require_nonblank("stage", stage)
+    stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+    provider = _require_nonblank("provider", provider)
+    capability = _require_nonblank("capability", capability)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    request_sha256 = _require_sha256("request_sha256", request_sha256)
+    now_ms = _require_now_ms(now_ms)
+    immutable = {
+        "job_id": claim.job_id,
+        "stage": stage,
+        "stage_attempt_id": stage_attempt_id,
+        "provider": provider,
+        "capability": capability,
+        "operation_key": operation_key,
+        "request_sha256": request_sha256,
+    }
+    existing = connection.execute(
+        """SELECT p.* FROM edit_v3_provider_tasks AS p
+           JOIN edit_v3_jobs AS j ON j.job_id=p.job_id
+           WHERE p.operation_key=? AND p.job_id=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            operation_key,
+            claim.job_id,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if existing is not None:
+        if not all(existing[key] == value for key, value in immutable.items()):
+            raise StoreConflictError(
+                "provider_intent_conflict",
+                "provider operation key is bound to another immutable intent",
+            )
+        return dict(existing)
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    collision = connection.execute(
+        "SELECT 1 FROM edit_v3_provider_tasks WHERE operation_key=?",
+        (operation_key,),
+    ).fetchone()
+    if collision is not None:
+        raise StoreConflictError(
+            "provider_intent_conflict",
+            "provider operation key is bound to another immutable intent",
+        )
+    provider_task_id = f"provider-{uuid.uuid4().hex}"
+    try:
+        inserted = connection.execute(
+            """INSERT INTO edit_v3_provider_tasks(
+                   id,job_id,stage,stage_attempt_id,provider,capability,operation_key,
+                   request_sha256,status,fencing_token,first_unknown_at,last_checked_at,
+                   created_at,updated_at
+               )
+               SELECT ?,j.job_id,?,a.id,?,?,?,?,'intent_recorded',j.fencing_token,
+                      ?,NULL,?,?
+               FROM edit_v3_jobs AS j
+               JOIN edit_v3_stage_attempts AS a ON a.job_id=j.job_id
+               WHERE j.job_id=? AND j.worker_id=? AND j.fencing_token=?
+                 AND j.lease_until>? AND a.id=? AND a.stage=?
+                 AND a.fencing_token=j.fencing_token""",
+            (
+                provider_task_id,
+                stage,
+                provider,
+                capability,
+                operation_key,
+                request_sha256,
+                now_ms,
+                now_ms,
+                now_ms,
+                claim.job_id,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+                stage_attempt_id,
+                stage,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise StoreConflictError(
+            "provider_intent_conflict",
+            "provider operation key conflicts with another immutable intent",
+        ) from exc
+    if inserted.rowcount != 1:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "provider_attempt_mismatch",
+            "provider intent stage attempt does not match the current leased stage",
+        )
+    return dict(
+        connection.execute(
+            "SELECT * FROM edit_v3_provider_tasks WHERE id=?",
+            (provider_task_id,),
+        ).fetchone()
+    )
+
+
+def _get_provider_task_for_claim_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    operation_key: str,
+    now_ms: int,
+) -> dict[str, Any] | None:
+    claim = _require_claim(claim)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    now_ms = _require_now_ms(now_ms)
+    row = connection.execute(
+        """SELECT p.* FROM edit_v3_provider_tasks AS p
+           JOIN edit_v3_jobs AS j ON j.job_id=p.job_id
+           WHERE p.job_id=? AND p.operation_key=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            operation_key,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    return None
+
+
+def _bind_provider_result_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    operation_key: str,
+    external_id: str,
+    status: str,
+    result: Any,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    external_id = _require_nonblank("external_id", external_id)
+    status = _require_nonblank("status", status)
+    now_ms = _require_now_ms(now_ms)
+    result_json = _json_text(result)
+    existing = connection.execute(
+        """SELECT p.* FROM edit_v3_provider_tasks AS p
+           JOIN edit_v3_jobs AS j ON j.job_id=p.job_id
+           WHERE p.job_id=? AND p.operation_key=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            operation_key,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if existing is None:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "provider_intent_missing",
+            "provider result cannot be bound before its immutable intent",
+        )
+    if existing["external_id"] is not None or existing["result_json"] is not None:
+        if (
+            existing["external_id"] == external_id
+            and existing["status"] == status
+            and existing["result_json"] == result_json
+        ):
+            return dict(existing)
+        raise StoreConflictError(
+            "provider_result_conflict",
+            "provider result is immutable once bound",
+        )
+    try:
+        updated = connection.execute(
+            """UPDATE edit_v3_provider_tasks
+               SET external_id=?,status=?,result_json=?,fencing_token=?,
+                   last_checked_at=?,updated_at=?
+               WHERE job_id=? AND operation_key=?
+                 AND external_id IS NULL AND result_json IS NULL
+                 AND EXISTS(
+                     SELECT 1 FROM edit_v3_jobs AS j
+                     WHERE j.job_id=edit_v3_provider_tasks.job_id
+                       AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+                 )""",
+            (
+                external_id,
+                status,
+                result_json,
+                claim.fencing_token,
+                now_ms,
+                now_ms,
+                claim.job_id,
+                operation_key,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise StoreConflictError(
+            "provider_external_id_conflict",
+            "provider external ID is already bound",
+        ) from exc
+    if updated.rowcount != 1:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "provider_result_conflict",
+            "provider result was concurrently or divergently bound",
+        )
+    return dict(
+        connection.execute(
+            """SELECT * FROM edit_v3_provider_tasks
+               WHERE job_id=? AND operation_key=?""",
+            (claim.job_id, operation_key),
+        ).fetchone()
+    )
+
+
 class V3Store:
     """Only typed, parameterized operations may cross the V3 SQL boundary."""
 
@@ -2426,6 +3361,222 @@ class V3Store:
         expected: Mapping[str, Any],
     ) -> bool:
         return all(row[key] == value for key, value in expected.items())
+
+    def claim_next_job(
+        self,
+        worker_id: str,
+        lease_seconds: int,
+        now_ms: int,
+    ) -> LeaseClaim | None:
+        try:
+            return self._write(
+                lambda connection: _claim_next_job_tx(
+                    connection, worker_id, lease_seconds, now_ms
+                )
+            )
+        except _ClaimRaceLost:
+            return None
+
+    def claim_job(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        now_ms: int,
+        *,
+        expected_states: Any,
+    ) -> LeaseClaim | None:
+        try:
+            return self._write(
+                lambda connection: _claim_job_tx(
+                    connection,
+                    job_id,
+                    worker_id,
+                    lease_seconds,
+                    now_ms,
+                    expected_states,
+                )
+            )
+        except _ClaimRaceLost:
+            return None
+
+    def renew_lease(
+        self,
+        claim: LeaseClaim,
+        lease_seconds: int,
+        now_ms: int,
+    ) -> bool:
+        return self._write(
+            lambda connection: _renew_lease_tx(
+                connection, claim, lease_seconds, now_ms
+            )
+        )
+
+    def lease_owned(self, claim: LeaseClaim, now_ms: int) -> bool:
+        return self._read(
+            lambda connection: _lease_owned_tx(connection, claim, now_ms)
+        )
+
+    def transition_leased(
+        self,
+        claim: LeaseClaim,
+        expected_states: Any,
+        target_state: str,
+        now_ms: int,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        return self._write(
+            lambda connection: _transition_leased_tx(
+                connection,
+                claim,
+                expected_states,
+                target_state,
+                now_ms,
+                lease_seconds,
+            )
+        )
+
+    def start_stage_attempt(
+        self,
+        claim: LeaseClaim,
+        stage: str,
+        input_sha256: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _start_stage_attempt_tx(
+                connection, claim, stage, input_sha256, now_ms
+            )
+        )
+
+    def finish_stage_attempt(
+        self,
+        claim: LeaseClaim,
+        stage_attempt_id: str,
+        status: str,
+        now_ms: int,
+        *,
+        error_code: str | None = None,
+        error: Any = None,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _finish_stage_attempt_tx(
+                connection,
+                claim,
+                stage_attempt_id,
+                status,
+                now_ms,
+                error_code,
+                error,
+            )
+        )
+
+    def save_checkpoint(
+        self,
+        claim: LeaseClaim,
+        stage_attempt_id: str,
+        input_sha256: str,
+        output: Any,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _save_checkpoint_tx(
+                connection,
+                claim,
+                stage_attempt_id,
+                input_sha256,
+                output,
+                now_ms,
+            )
+        )
+
+    def get_checkpoint_for_claim(
+        self,
+        claim: LeaseClaim,
+        stage: str,
+        input_sha256: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._read(
+            lambda connection: _get_checkpoint_for_claim_tx(
+                connection, claim, stage, input_sha256, now_ms
+            )
+        )
+
+    def close_running_attempts(
+        self,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> int:
+        return self._write(
+            lambda connection: _close_running_attempts_tx(
+                connection, claim, now_ms
+            )
+        )
+
+    def release_lease(self, claim: LeaseClaim, now_ms: int) -> bool:
+        return self._write(
+            lambda connection: _release_lease_tx(connection, claim, now_ms)
+        )
+
+    def record_provider_intent(
+        self,
+        claim: LeaseClaim,
+        stage: str,
+        stage_attempt_id: str,
+        provider: str,
+        capability: str,
+        operation_key: str,
+        request_sha256: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _record_provider_intent_tx(
+                connection,
+                claim,
+                stage,
+                stage_attempt_id,
+                provider,
+                capability,
+                operation_key,
+                request_sha256,
+                now_ms,
+            )
+        )
+
+    def get_provider_task_for_claim(
+        self,
+        claim: LeaseClaim,
+        operation_key: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._read(
+            lambda connection: _get_provider_task_for_claim_tx(
+                connection, claim, operation_key, now_ms
+            )
+        )
+
+    def bind_provider_result(
+        self,
+        claim: LeaseClaim,
+        operation_key: str,
+        external_id: str,
+        status: str,
+        result: Any,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _bind_provider_result_tx(
+                connection,
+                claim,
+                operation_key,
+                external_id,
+                status,
+                result,
+                now_ms,
+            )
+        )
 
     def insert_pricing_version(
         self,
@@ -3174,3 +4325,201 @@ class V3Store:
             return {"items": items, "next_cursor": next_cursor}
 
         return self._read(read)
+
+
+def _configured_store(db_path: Path | None) -> V3Store:
+    return V3Store(db_path=db_path)
+
+
+def claim_next_job(
+    worker_id: str,
+    lease_seconds: int,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> LeaseClaim | None:
+    return _configured_store(db_path).claim_next_job(worker_id, lease_seconds, now_ms)
+
+
+def claim_job(
+    job_id: str,
+    worker_id: str,
+    lease_seconds: int,
+    now_ms: int,
+    *,
+    expected_states: Any,
+    db_path: Path | None = None,
+) -> LeaseClaim | None:
+    return _configured_store(db_path).claim_job(
+        job_id,
+        worker_id,
+        lease_seconds,
+        now_ms,
+        expected_states=expected_states,
+    )
+
+
+def renew_lease(
+    claim: LeaseClaim,
+    lease_seconds: int,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    return _configured_store(db_path).renew_lease(claim, lease_seconds, now_ms)
+
+
+def lease_owned(
+    claim: LeaseClaim,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    return _configured_store(db_path).lease_owned(claim, now_ms)
+
+
+def release_lease(
+    claim: LeaseClaim,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    return _configured_store(db_path).release_lease(claim, now_ms)
+
+
+def transition_leased(
+    claim: LeaseClaim,
+    expected_states: Any,
+    target_state: str,
+    now_ms: int,
+    *,
+    lease_seconds: int,
+    db_path: Path | None = None,
+) -> bool:
+    return _configured_store(db_path).transition_leased(
+        claim,
+        expected_states,
+        target_state,
+        now_ms,
+        lease_seconds=lease_seconds,
+    )
+
+
+def start_stage_attempt(
+    claim: LeaseClaim,
+    stage: str,
+    input_sha256: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).start_stage_attempt(
+        claim, stage, input_sha256, now_ms
+    )
+
+
+def finish_stage_attempt(
+    claim: LeaseClaim,
+    stage_attempt_id: str,
+    status: str,
+    now_ms: int,
+    *,
+    error_code: str | None = None,
+    error: Any = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).finish_stage_attempt(
+        claim,
+        stage_attempt_id,
+        status,
+        now_ms,
+        error_code=error_code,
+        error=error,
+    )
+
+
+def save_checkpoint(
+    claim: LeaseClaim,
+    stage_attempt_id: str,
+    input_sha256: str,
+    output: Any,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).save_checkpoint(
+        claim, stage_attempt_id, input_sha256, output, now_ms
+    )
+
+
+def get_checkpoint_for_claim(
+    claim: LeaseClaim,
+    stage: str,
+    input_sha256: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    return _configured_store(db_path).get_checkpoint_for_claim(
+        claim, stage, input_sha256, now_ms
+    )
+
+
+def record_provider_intent(
+    claim: LeaseClaim,
+    stage: str,
+    stage_attempt_id: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).record_provider_intent(
+        claim,
+        stage,
+        stage_attempt_id,
+        provider,
+        capability,
+        operation_key,
+        request_sha256,
+        now_ms,
+    )
+
+
+def get_provider_task_for_claim(
+    claim: LeaseClaim,
+    operation_key: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    return _configured_store(db_path).get_provider_task_for_claim(
+        claim, operation_key, now_ms
+    )
+
+
+def bind_provider_result(
+    claim: LeaseClaim,
+    operation_key: str,
+    external_id: str,
+    status: str,
+    result: Any,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).bind_provider_result(
+        claim, operation_key, external_id, status, result, now_ms
+    )
+
+
+def close_running_attempts(
+    claim: LeaseClaim,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> int:
+    return _configured_store(db_path).close_running_attempts(claim, now_ms)

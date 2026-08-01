@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from server.content_domains.ai_edit_v3 import contracts as contracts_module
 from server.content_domains.ai_edit_v3 import store as store_module
 from server.content_domains.ai_edit_v3.store import (
     StoreConflictError,
@@ -4452,6 +4453,894 @@ class V3StoreWalBudgetTests(unittest.TestCase):
                 budget_seconds=10.0,
             )
         self.assertEqual(connection.wal_attempts, 1)
+
+
+class V3LeaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name).resolve()
+        self.db = root / "ai_edit_v3.db"
+        self.v2 = root / "ai_edit_v2.db"
+        self.v2.write_bytes(b"V2 identity marker; never open")
+        self.store = V3Store(self.db, v2_db_path=self.v2, environment="test")
+        self.store.insert_pricing_version(
+            "price-v1",
+            {"base": 1},
+            status="published",
+            created_at=1,
+            published_at=1,
+        )
+        self.store.insert_quote(
+            "alice",
+            "quote-1",
+            {},
+            pricing_version="price-v1",
+            min_points=1,
+            max_points=1,
+            breakdown={"base": 1},
+            expires_at=9_999_999,
+            created_at=1,
+        )
+
+    def seed_job(
+        self,
+        job_id,
+        state="queued",
+        *,
+        queued_at=1,
+        processing_deadline_at=None,
+    ):
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                """INSERT INTO edit_v3_jobs(
+                       job_id,environment,owner_id,state,normalized_request_json,
+                       request_sha256,quote_id,idempotency_key,queued_at,
+                       processing_deadline_at,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    "test",
+                    "alice",
+                    state,
+                    "{}",
+                    request_fingerprint({}),
+                    "quote-1",
+                    f"key-{job_id}",
+                    queued_at,
+                    processing_deadline_at,
+                    1,
+                    1,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def job_row(self, job_id):
+        connection = self.store._connect()
+        try:
+            return dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+
+    def protected_snapshot(self, job_id):
+        connection = self.store._connect()
+        try:
+            job = dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+            )
+            attempts = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_stage_attempts
+                       WHERE job_id=? ORDER BY stage,attempt""",
+                    (job_id,),
+                )
+            ]
+            checkpoints = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_checkpoints
+                       WHERE job_id=? ORDER BY stage,version""",
+                    (job_id,),
+                )
+            ]
+            providers = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_provider_tasks
+                       WHERE job_id=? ORDER BY operation_key""",
+                    (job_id,),
+                )
+            ]
+            return canonical_json(
+                {
+                    "attempt_count": len(attempts),
+                    "attempts": attempts,
+                    "checkpoint_count": len(checkpoints),
+                    "checkpoints": checkpoints,
+                    "job": job,
+                    "provider_count": len(providers),
+                    "providers": providers,
+                }
+            )
+        finally:
+            connection.close()
+
+    def test_task5_public_contract_surface_is_present_and_immutable(self):
+        self.assertTrue(hasattr(contracts_module, "LeaseClaim"))
+        self.assertTrue(hasattr(contracts_module, "ALL_STATES"))
+        self.assertTrue(hasattr(contracts_module, "QUEUE_CLAIMABLE_STATES"))
+
+        claim = contracts_module.LeaseClaim("job-1", "worker-1", 7, 123_000)
+        self.assertFalse(hasattr(claim, "__dict__"))
+        with self.assertRaises((AttributeError, TypeError)):
+            claim.fencing_token = 8
+
+    def test_claim_expiry_equality_and_renewal_never_shortens(self):
+        self.assertTrue(hasattr(self.store, "claim_next_job"))
+        self.seed_job("job-1")
+        claim = self.store.claim_next_job("worker-a", 10, 100_000)
+        self.assertEqual(
+            claim,
+            contracts_module.LeaseClaim("job-1", "worker-a", 1, 110_000),
+        )
+        self.assertTrue(self.store.lease_owned(claim, 109_999))
+        self.assertFalse(self.store.lease_owned(claim, 110_000))
+
+        self.assertTrue(self.store.renew_lease(claim, 5, 101_000))
+        self.assertEqual(self.job_row("job-1")["lease_until"], 110_000)
+        self.assertTrue(self.store.renew_lease(claim, 20, 102_000))
+        self.assertEqual(self.job_row("job-1")["lease_until"], 122_000)
+
+    def test_claim_next_is_deterministic_and_excludes_terminal_and_reconciliation(self):
+        self.assertTrue(hasattr(self.store, "claim_next_job"))
+        self.seed_job("terminal", "completed", queued_at=0)
+        self.seed_job("reconcile", "billing_reconciling", queued_at=0)
+        self.seed_job("job-b", queued_at=2)
+        self.seed_job("job-a", queued_at=2)
+        first = self.store.claim_next_job("worker-a", 10, 100_000)
+        second = self.store.claim_next_job("worker-b", 10, 100_000)
+        self.assertEqual(first.job_id, "job-a")
+        self.assertEqual(second.job_id, "job-b")
+        self.assertIsNone(self.store.claim_next_job("worker-c", 10, 100_000))
+
+    def test_named_claim_filters_actual_state_and_never_claims_terminal(self):
+        self.assertTrue(hasattr(self.store, "claim_job"))
+        self.seed_job("reconcile", "billing_reconciling")
+        self.seed_job("terminal", "refunded")
+        self.assertIsNone(
+            self.store.claim_job(
+                "reconcile", "worker-a", 10, 100_000, expected_states={"settling"}
+            )
+        )
+        claim = self.store.claim_job(
+            "reconcile",
+            "worker-a",
+            10,
+            100_000,
+            expected_states={"billing_reconciling"},
+        )
+        self.assertEqual(claim.job_id, "reconcile")
+        self.assertIsNone(
+            self.store.claim_job(
+                "terminal", "worker-b", 10, 100_000, expected_states={"refunded"}
+            )
+        )
+
+    def test_expired_worker_cannot_write_after_reclaim(self):
+        self.assertTrue(hasattr(self.store, "transition_leased"))
+        self.seed_job("job-1")
+        old = self.store.claim_next_job("worker-a", 10, 100_000)
+        new = self.store.claim_next_job("worker-b", 10, 110_000)
+        self.assertGreater(new.fencing_token, old.fencing_token)
+        before = self.job_row("job-1")
+        self.assertFalse(
+            self.store.transition_leased(
+                old,
+                {"queued"},
+                "generating_voice",
+                110_001,
+                lease_seconds=10,
+            )
+        )
+        self.assertEqual(self.job_row("job-1"), before)
+        self.assertTrue(
+            self.store.transition_leased(
+                new,
+                {"queued"},
+                "generating_voice",
+                110_001,
+                lease_seconds=10,
+            )
+        )
+
+    def test_transition_preserves_deadline_and_grants_repair_budget_once(self):
+        self.assertTrue(hasattr(self.store, "transition_leased"))
+        self.seed_job(
+            "job-1",
+            "quality_checking",
+            processing_deadline_at=5_000_000,
+        )
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        self.assertTrue(
+            self.store.transition_leased(
+                claim,
+                {"quality_checking"},
+                "repair_planning",
+                101_000,
+                lease_seconds=30,
+            )
+        )
+        first = self.job_row("job-1")
+        self.assertEqual(first["repair_count"], 1)
+        self.assertEqual(first["repair_budget_granted_at"], 101_000)
+        self.assertEqual(first["processing_deadline_at"], 5_600_000)
+        self.assertTrue(
+            self.store.transition_leased(
+                claim,
+                {"quality_checking"},
+                "repair_planning",
+                102_000,
+                lease_seconds=30,
+            )
+        )
+        replay = self.job_row("job-1")
+        self.assertEqual(replay["processing_deadline_at"], 5_600_000)
+        self.assertEqual(replay["repair_budget_granted_at"], 101_000)
+
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                "UPDATE edit_v3_jobs SET state='quality_checking' WHERE job_id='job-1'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertFalse(
+            self.store.transition_leased(
+                claim,
+                {"quality_checking"},
+                "repair_planning",
+                103_000,
+                lease_seconds=30,
+            )
+        )
+        self.assertEqual(self.job_row("job-1")["processing_deadline_at"], 5_600_000)
+
+    def test_invalid_edge_is_rejected_before_sql_and_terminal_clears_lease(self):
+        self.assertTrue(hasattr(self.store, "transition_leased"))
+        self.seed_job("job-1", "publishing", processing_deadline_at=9_000_000)
+        claim = self.store.claim_job(
+            "job-1", "worker-a", 30, 100_000, expected_states={"publishing"}
+        )
+        before = self.job_row("job-1")
+        with self.assertRaises(StoreConfigurationError):
+            self.store.transition_leased(
+                claim,
+                {"publishing"},
+                "queued",
+                101_000,
+                lease_seconds=30,
+            )
+        self.assertEqual(self.job_row("job-1"), before)
+        self.assertTrue(
+            self.store.transition_leased(
+                claim,
+                {"publishing"},
+                "completed",
+                101_000,
+                lease_seconds=30,
+            )
+        )
+        row = self.job_row("job-1")
+        self.assertEqual(row["state"], "completed")
+        self.assertIsNone(row["worker_id"])
+        self.assertIsNone(row["lease_until"])
+        self.assertEqual(row["processing_deadline_at"], 9_000_000)
+
+    def test_stage_attempt_checkpoint_replay_versions_and_skipped(self):
+        self.assertTrue(hasattr(self.store, "start_stage_attempt"))
+        self.seed_job("job-1")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 101_000
+        )
+        self.assertEqual(attempt["attempt"], 1)
+        self.assertEqual(
+            self.store.start_stage_attempt(claim, "queued", "a" * 64, 102_000),
+            attempt,
+        )
+        with self.assertRaises(StoreConflictError):
+            self.store.start_stage_attempt(claim, "queued", "b" * 64, 102_000)
+
+        checkpoint = self.store.save_checkpoint(
+            claim,
+            attempt["id"],
+            "a" * 64,
+            {"z": 2, "a": 1},
+            103_000,
+        )
+        self.assertEqual(checkpoint["version"], 1)
+        self.assertEqual(checkpoint["output_json"], '{"a":1,"z":2}')
+        self.assertEqual(
+            self.store.save_checkpoint(
+                claim,
+                attempt["id"],
+                "a" * 64,
+                {"a": 1, "z": 2},
+                104_000,
+            ),
+            checkpoint,
+        )
+        with self.assertRaises(StoreConflictError):
+            self.store.save_checkpoint(
+                claim, attempt["id"], "a" * 64, {"a": 9}, 104_000
+            )
+        finished = self.store.finish_stage_attempt(
+            claim, attempt["id"], "skipped", 105_000
+        )
+        self.assertEqual(finished["status"], "skipped")
+        self.assertEqual(
+            self.store.get_checkpoint_for_claim(claim, "queued", "a" * 64, 105_000),
+            checkpoint,
+        )
+
+        self.assertTrue(self.store.release_lease(claim, 106_000))
+        replacement = self.store.claim_next_job("worker-b", 30, 107_000)
+        second_attempt = self.store.start_stage_attempt(
+            replacement, "queued", "b" * 64, 108_000
+        )
+        second = self.store.save_checkpoint(
+            replacement,
+            second_attempt["id"],
+            "b" * 64,
+            {"version": 2},
+            109_000,
+        )
+        self.assertEqual(second["version"], 2)
+
+    def test_release_refuses_running_attempt_and_close_is_fenced(self):
+        self.assertTrue(hasattr(self.store, "close_running_attempts"))
+        self.seed_job("job-1")
+        old = self.store.claim_next_job("worker-a", 10, 100_000)
+        attempt = self.store.start_stage_attempt(old, "queued", "a" * 64, 101_000)
+        with self.assertRaises(StoreConflictError):
+            self.store.release_lease(old, 102_000)
+        self.assertEqual(self.store.close_running_attempts(old, 102_000), 1)
+        self.assertEqual(self.store.close_running_attempts(old, 102_000), 0)
+        self.assertTrue(self.store.release_lease(old, 102_000))
+        replacement = self.store.claim_next_job("worker-b", 10, 103_000)
+        self.assertGreater(replacement.fencing_token, old.fencing_token)
+        self.assertEqual(
+            self.store.close_running_attempts(replacement, 104_000), 0
+        )
+        self.assertFalse(self.store.release_lease(old, 104_000))
+        connection = self.store._connect()
+        try:
+            row = connection.execute(
+                "SELECT status FROM edit_v3_stage_attempts WHERE id=?",
+                (attempt["id"],),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(row["status"], "aborted_lease_lost")
+
+    def test_reclaim_update_zero_rolls_back_old_attempt_closure(self):
+        self.assertTrue(hasattr(self.store, "start_stage_attempt"))
+        self.seed_job("job-1")
+        old = self.store.claim_next_job("worker-a", 10, 100_000)
+        attempt = self.store.start_stage_attempt(old, "queued", "a" * 64, 101_000)
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                """CREATE TRIGGER reject_worker_b BEFORE UPDATE OF worker_id
+                   ON edit_v3_jobs WHEN NEW.worker_id='worker-b'
+                   BEGIN SELECT RAISE(IGNORE); END"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertIsNone(self.store.claim_next_job("worker-b", 10, 110_000))
+        row = self.job_row("job-1")
+        self.assertEqual(row["worker_id"], "worker-a")
+        self.assertEqual(row["fencing_token"], old.fencing_token)
+        connection = self.store._connect()
+        try:
+            status = connection.execute(
+                "SELECT status FROM edit_v3_stage_attempts WHERE id=?",
+                (attempt["id"],),
+            ).fetchone()["status"]
+        finally:
+            connection.close()
+        self.assertEqual(status, "running")
+
+    def test_provider_intent_is_immutable_and_new_token_recovers_result(self):
+        self.assertTrue(hasattr(self.store, "record_provider_intent"))
+        self.seed_job("job-1")
+        old = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(old, "queued", "a" * 64, 101_000)
+        intent = self.store.record_provider_intent(
+            old,
+            "queued",
+            attempt["id"],
+            "provider-a",
+            "render",
+            "op-1",
+            "b" * 64,
+            102_000,
+        )
+        self.assertEqual(intent["status"], "intent_recorded")
+        self.assertIsNone(intent["external_id"])
+        self.assertEqual(
+            self.store.record_provider_intent(
+                old,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-1",
+                "b" * 64,
+                103_000,
+            ),
+            intent,
+        )
+        with self.assertRaises(StoreConflictError):
+            self.store.record_provider_intent(
+                old,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-1",
+                "c" * 64,
+                103_000,
+            )
+        self.store.finish_stage_attempt(old, attempt["id"], "completed", 104_000)
+        self.assertTrue(self.store.release_lease(old, 105_000))
+        new = self.store.claim_next_job("worker-b", 30, 106_000)
+        self.assertEqual(
+            self.store.get_provider_task_for_claim(new, "op-1", 107_000)["id"],
+            intent["id"],
+        )
+        before = self.store.get_provider_task_for_claim(new, "op-1", 107_000)
+        with self.assertRaises(store_module.LeaseLost):
+            self.store.bind_provider_result(
+                old,
+                "op-1",
+                "external-1",
+                "done",
+                {"z": 2, "a": 1},
+                107_000,
+            )
+        self.assertEqual(
+            self.store.get_provider_task_for_claim(new, "op-1", 107_000), before
+        )
+        bound = self.store.bind_provider_result(
+            new,
+            "op-1",
+            "external-1",
+            "done",
+            {"z": 2, "a": 1},
+            108_000,
+        )
+        self.assertEqual(bound["result_json"], '{"a":1,"z":2}')
+        self.assertEqual(bound["fencing_token"], new.fencing_token)
+        self.assertEqual(
+            self.store.bind_provider_result(
+                new,
+                "op-1",
+                "external-1",
+                "done",
+                {"a": 1, "z": 2},
+                109_000,
+            ),
+            bound,
+        )
+        with self.assertRaises(StoreConflictError):
+            self.store.bind_provider_result(
+                new,
+                "op-1",
+                "external-2",
+                "done",
+                {"a": 1, "z": 2},
+                109_000,
+            )
+
+    def test_top_level_claim_has_one_winner_and_matches_store_surface(self):
+        self.assertTrue(hasattr(store_module, "claim_next_job"))
+        self.seed_job("job-1")
+        barrier = threading.Barrier(2)
+        results = []
+        failures = []
+
+        def worker(worker_id):
+            try:
+                barrier.wait()
+                with mock.patch.dict(
+                    os.environ, {"AI_EDIT_V2_DB": os.fspath(self.v2)}, clear=False
+                ):
+                    results.append(
+                        store_module.claim_next_job(
+                            worker_id, 10, 100_000, db_path=self.db
+                        )
+                    )
+            except Exception as exc:  # pragma: no cover - diagnostic capture
+                failures.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=(f"worker-{index}",))
+            for index in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertFalse(failures)
+        self.assertEqual(sum(result is not None for result in results), 1)
+        winner = next(result for result in results if result is not None)
+        self.assertTrue(self.store.lease_owned(winner, 100_001))
+
+    def test_protected_read_and_exact_replay_sql_are_fenced_in_one_statement(self):
+        self.seed_job("job-1")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 101_000
+        )
+        self.store.save_checkpoint(
+            claim, attempt["id"], "a" * 64, {"ok": True}, 102_000
+        )
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "provider-a",
+            "render",
+            "op-1",
+            "b" * 64,
+            102_000,
+        )
+        self.store.bind_provider_result(
+            claim, "op-1", "external-1", "done", {"ok": True}, 103_000
+        )
+
+        class RecordingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+                self.sql = []
+
+            def execute(self, statement, parameters=()):
+                self.sql.append(" ".join(statement.lower().split()))
+                return self.connection.execute(statement, parameters)
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+        def capture(callable_):
+            connection = self.store._connect()
+            recording = RecordingConnection(connection)
+            with mock.patch.object(self.store, "_connect", return_value=recording):
+                callable_()
+            return recording.sql
+
+        checkpoint_sql = capture(
+            lambda: self.store.get_checkpoint_for_claim(
+                claim, "queued", "a" * 64, 104_000
+            )
+        )
+        provider_get_sql = capture(
+            lambda: self.store.get_provider_task_for_claim(claim, "op-1", 104_000)
+        )
+        provider_record_replay_sql = capture(
+            lambda: self.store.record_provider_intent(
+                claim,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-1",
+                "b" * 64,
+                104_000,
+            )
+        )
+        provider_bind_replay_sql = capture(
+            lambda: self.store.bind_provider_result(
+                claim,
+                "op-1",
+                "external-1",
+                "done",
+                {"ok": True},
+                104_000,
+            )
+        )
+        checkpoint_replay_sql = capture(
+            lambda: self.store.save_checkpoint(
+                claim, attempt["id"], "a" * 64, {"ok": True}, 104_000
+            )
+        )
+        self.store.finish_stage_attempt(
+            claim, attempt["id"], "completed", 104_000
+        )
+        finish_replay_sql = capture(
+            lambda: self.store.finish_stage_attempt(
+                claim, attempt["id"], "completed", 105_000
+            )
+        )
+        for statements, table in (
+            (checkpoint_sql, "edit_v3_checkpoints"),
+            (provider_get_sql, "edit_v3_provider_tasks"),
+            (provider_record_replay_sql, "edit_v3_provider_tasks"),
+            (provider_bind_replay_sql, "edit_v3_provider_tasks"),
+            (checkpoint_replay_sql, "edit_v3_checkpoints"),
+            (checkpoint_replay_sql, "edit_v3_stage_attempts"),
+            (finish_replay_sql, "edit_v3_stage_attempts"),
+        ):
+            protected = [statement for statement in statements if table in statement]
+            self.assertTrue(protected)
+            for statement in protected:
+                self.assertIn("edit_v3_jobs", statement)
+                self.assertIn("worker_id", statement)
+                self.assertIn("fencing_token", statement)
+                self.assertIn("lease_until", statement)
+
+    def test_every_stale_leased_mutation_preserves_rows_json_and_sha(self):
+        self.seed_job("job-1")
+        old = self.store.claim_next_job("worker-a", 10, 100_000)
+        attempt = self.store.start_stage_attempt(old, "queued", "a" * 64, 101_000)
+        self.store.save_checkpoint(
+            old, attempt["id"], "a" * 64, {"output": 1}, 102_000
+        )
+        self.store.record_provider_intent(
+            old,
+            "queued",
+            attempt["id"],
+            "provider-a",
+            "render",
+            "op-1",
+            "b" * 64,
+            103_000,
+        )
+        new = self.store.claim_next_job("worker-b", 10, 110_000)
+        self.assertGreater(new.fencing_token, old.fencing_token)
+        before = self.protected_snapshot("job-1")
+
+        self.assertFalse(self.store.renew_lease(old, 10, 110_001))
+        self.assertFalse(self.store.release_lease(old, 110_001))
+        self.assertFalse(
+            self.store.transition_leased(
+                old,
+                {"queued"},
+                "generating_voice",
+                110_001,
+                lease_seconds=10,
+            )
+        )
+        stale_calls = (
+            lambda: self.store.start_stage_attempt(
+                old, "normalizing", "c" * 64, 110_001
+            ),
+            lambda: self.store.finish_stage_attempt(
+                old, attempt["id"], "completed", 110_001
+            ),
+            lambda: self.store.save_checkpoint(
+                old, attempt["id"], "a" * 64, {"output": 1}, 110_001
+            ),
+            lambda: self.store.get_checkpoint_for_claim(
+                old, "queued", "a" * 64, 110_001
+            ),
+            lambda: self.store.record_provider_intent(
+                old,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-2",
+                "d" * 64,
+                110_001,
+            ),
+            lambda: self.store.get_provider_task_for_claim(old, "op-1", 110_001),
+            lambda: self.store.bind_provider_result(
+                old,
+                "op-1",
+                "external-1",
+                "done",
+                {"ok": True},
+                110_001,
+            ),
+            lambda: self.store.close_running_attempts(old, 110_001),
+        )
+        for stale_call in stale_calls:
+            with self.subTest(call=repr(stale_call)):
+                with self.assertRaises(store_module.LeaseLost):
+                    stale_call()
+                self.assertEqual(self.protected_snapshot("job-1"), before)
+
+    def test_cross_job_stage_and_missing_attempt_writes_change_nothing(self):
+        self.seed_job("job-1")
+        self.seed_job("job-2")
+        first = self.store.claim_job(
+            "job-1", "worker-a", 30, 100_000, expected_states={"queued"}
+        )
+        second = self.store.claim_job(
+            "job-2", "worker-b", 30, 100_000, expected_states={"queued"}
+        )
+        first_attempt = self.store.start_stage_attempt(
+            first, "queued", "a" * 64, 101_000
+        )
+        second_attempt = self.store.start_stage_attempt(
+            second, "queued", "b" * 64, 101_000
+        )
+        before_first = self.protected_snapshot("job-1")
+        before_second = self.protected_snapshot("job-2")
+        conflicts = (
+            lambda: self.store.start_stage_attempt(
+                first, "normalizing", "c" * 64, 102_000
+            ),
+            lambda: self.store.finish_stage_attempt(
+                first, second_attempt["id"], "completed", 102_000
+            ),
+            lambda: self.store.save_checkpoint(
+                first, second_attempt["id"], "b" * 64, {"wrong": True}, 102_000
+            ),
+            lambda: self.store.save_checkpoint(
+                first, "missing-attempt", "a" * 64, {"wrong": True}, 102_000
+            ),
+            lambda: self.store.record_provider_intent(
+                first,
+                "queued",
+                second_attempt["id"],
+                "provider-a",
+                "render",
+                "cross-job-op",
+                "d" * 64,
+                102_000,
+            ),
+        )
+        for conflict in conflicts:
+            with self.subTest(call=repr(conflict)):
+                with self.assertRaises(StoreConflictError):
+                    conflict()
+                self.assertEqual(self.protected_snapshot("job-1"), before_first)
+                self.assertEqual(self.protected_snapshot("job-2"), before_second)
+        self.assertEqual(first_attempt["status"], "running")
+
+    def test_invalid_lease_stage_key_sha_and_timestamp_arguments_are_typed(self):
+        self.seed_job("job-1")
+        invalid_claim_calls = (
+            lambda: self.store.claim_next_job("", 10, 100_000),
+            lambda: self.store.claim_next_job("worker", 0, 100_000),
+            lambda: self.store.claim_next_job("worker", True, 100_000),
+            lambda: self.store.claim_next_job("worker", 10, True),
+            lambda: self.store.claim_job(
+                "job-1", "worker", 10, 100_000, expected_states=set()
+            ),
+            lambda: self.store.claim_job(
+                "", "worker", 10, 100_000, expected_states={"queued"}
+            ),
+        )
+        for invalid_call in invalid_claim_calls:
+            with self.subTest(call=repr(invalid_call)):
+                with self.assertRaises(StoreConfigurationError):
+                    invalid_call()
+        claim = self.store.claim_next_job("worker", 10, 100_000)
+        for invalid_call in (
+            lambda: self.store.start_stage_attempt(claim, "", "a" * 64, 101_000),
+            lambda: self.store.start_stage_attempt(claim, "queued", "A" * 64, 101_000),
+            lambda: self.store.start_stage_attempt(claim, "queued", "a", 101_000),
+            lambda: self.store.start_stage_attempt(claim, "queued", "a" * 64, True),
+            lambda: self.store.get_provider_task_for_claim(claim, "", 101_000),
+            lambda: self.store.renew_lease(
+                contracts_module.LeaseClaim("job-1", "worker", True, 110_000),
+                10,
+                101_000,
+            ),
+        ):
+            with self.subTest(call=repr(invalid_call)):
+                with self.assertRaises(StoreConfigurationError):
+                    invalid_call()
+
+    def test_crash_replay_sequence_is_immutable_at_every_commit_boundary(self):
+        self.seed_job("job-1")
+        first_claim = self.store.claim_next_job("worker-a", 10, 100_000)
+        self.assertIsNone(self.store.claim_next_job("worker-b", 10, 100_001))
+        claim = self.store.claim_next_job("worker-b", 30, 110_000)
+        self.assertGreater(claim.fencing_token, first_claim.fencing_token)
+
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 111_000
+        )
+        self.assertEqual(
+            self.store.start_stage_attempt(claim, "queued", "a" * 64, 112_000),
+            attempt,
+        )
+        intent = self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "provider-a",
+            "render",
+            "op-crash",
+            "b" * 64,
+            113_000,
+        )
+        self.assertEqual(
+            self.store.record_provider_intent(
+                claim,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-crash",
+                "b" * 64,
+                114_000,
+            ),
+            intent,
+        )
+        bound = self.store.bind_provider_result(
+            claim,
+            "op-crash",
+            "external-crash",
+            "done",
+            {"accepted": True},
+            115_000,
+        )
+        self.assertEqual(
+            self.store.bind_provider_result(
+                claim,
+                "op-crash",
+                "external-crash",
+                "done",
+                {"accepted": True},
+                116_000,
+            ),
+            bound,
+        )
+        checkpoint = self.store.save_checkpoint(
+            claim, attempt["id"], "a" * 64, {"result": "ok"}, 117_000
+        )
+        self.assertEqual(
+            self.store.save_checkpoint(
+                claim, attempt["id"], "a" * 64, {"result": "ok"}, 118_000
+            ),
+            checkpoint,
+        )
+        finished = self.store.finish_stage_attempt(
+            claim, attempt["id"], "completed", 119_000
+        )
+        self.assertEqual(
+            self.store.finish_stage_attempt(
+                claim, attempt["id"], "completed", 120_000
+            ),
+            finished,
+        )
+        self.assertTrue(
+            self.store.transition_leased(
+                claim,
+                {"queued"},
+                "generating_voice",
+                121_000,
+                lease_seconds=30,
+            )
+        )
+        after_transition = self.protected_snapshot("job-1")
+        self.assertFalse(
+            self.store.transition_leased(
+                claim,
+                {"queued"},
+                "generating_voice",
+                122_000,
+                lease_seconds=30,
+            )
+        )
+        self.assertEqual(self.protected_snapshot("job-1"), after_transition)
 
 
 if __name__ == "__main__":
