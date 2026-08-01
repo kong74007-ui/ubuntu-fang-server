@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from unittest import mock
 
@@ -36,6 +36,7 @@ from server.content_domains.ai_edit_v3.runtime import (
     build_runtime,
     preflight,
 )
+from server.content_domains.ai_edit_v3.store import V3Store
 
 
 class FeatureConfigTests(unittest.TestCase):
@@ -168,6 +169,13 @@ class FeatureConfigTests(unittest.TestCase):
             "AI_EDIT_V3_OWNER_HMAC_SECRET_VALUE",
             "AI_EDIT_V3_PROVIDER_API_KEY",
             "AI_EDIT_V3_PRIVATE_KEY",
+            "AI_EDIT_V3_ACCESS_KEY",
+            "AI_EDIT_V3_SIGNING_KEY",
+            "AI_EDIT_V3_KEY",
+            "AI_EDIT_V3_TOKEN",
+            "AI_EDIT_V3_PASSWORD",
+            "AI_EDIT_V3_CREDENTIAL",
+            "AI_EDIT_V3_COOKIE",
             "AI_EDIT_V3_AUTH_HEADER",
         ):
             with self.subTest(name=name):
@@ -179,6 +187,87 @@ class FeatureConfigTests(unittest.TestCase):
                 self.assertEqual(caught.exception.reason_code, "config_secret_forbidden")
                 self.assertNotIn(secret, str(caught.exception))
                 self.assertNotIn(secret, repr(caught.exception))
+
+    def test_security_sensitive_unknown_names_are_classified_case_insensitively(self):
+        names = (
+            "AI_EDIT_V3_owner_hmac_secret",
+            "AI_EDIT_V3_SIGNING_KEY",
+            "AI_EDIT_V3_COOKIE",
+            "AI_EDIT_V3_AUTH_HEADER",
+            "ai_edit_v3_mixed_token",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                secret = "mixed-case-secret-value"
+                env = self.enabled_env()
+                env[name] = secret
+                with self.assertRaises(FeatureConfigurationError) as caught:
+                    load_config(env)
+                self.assertEqual(caught.exception.reason_code, "config_secret_forbidden")
+                self.assertNotIn(secret, str(caught.exception))
+                self.assertNotIn(secret, repr(caught.exception))
+
+        env = self.enabled_env()
+        env["AI_EDIT_V3_TELEMETRY_LABEL"] = "safe-unknown-value"
+        config = load_config(env)
+        self.assertTrue(config.enabled)
+
+    def test_windows_reserved_device_aliases_are_rejected_in_every_path_role(self):
+        aliases = (
+            "NUL",
+            "nul.txt",
+            "CON ",
+            "PRN.",
+            "AUX.db",
+            "CLOCK$.log",
+            "CONIN$.txt",
+            "CONOUT$ ",
+            "COM1",
+            "com9.db",
+            "LPT1",
+            "lpt9.txt",
+        )
+        for field_name in (
+            "AI_EDIT_V3_DB_PATH",
+            "AI_EDIT_V2_DB",
+            "AI_EDIT_V3_OWNER_HMAC_SECRET_FILE",
+        ):
+            for alias in aliases:
+                with self.subTest(field_name=field_name, alias=alias):
+                    env = self.enabled_env()
+                    env[field_name] = os.fspath(self.root / alias / "value")
+                    self.assert_reason("config_path_reserved", env)
+
+    def test_db_filesystem_classification_rejects_remote_and_unknown(self):
+        for fs_type, reason_code in (
+            ("nfs", "config_db_filesystem_remote"),
+            ("windows_remote", "config_db_filesystem_remote"),
+            (None, "config_db_filesystem_unknown"),
+            ("mysteryfs", "config_db_filesystem_unknown"),
+        ):
+            with self.subTest(fs_type=fs_type):
+                with mock.patch(
+                    "server.content_domains.ai_edit_v3.feature._filesystem_type_for_path",
+                    return_value=fs_type,
+                    create=True,
+                ):
+                    self.assert_reason(reason_code, self.enabled_env())
+
+    def test_db_filesystem_classification_accepts_local_and_skips_secret_reference(self):
+        with mock.patch(
+            "server.content_domains.ai_edit_v3.feature._filesystem_type_for_path",
+            return_value="windows_fixed",
+            create=True,
+        ) as classify:
+            config = load_config(self.enabled_env())
+        self.assertTrue(config.enabled)
+        classified_paths = {Path(call.args[0]) for call in classify.call_args_list}
+        self.assertEqual(
+            classified_paths,
+            {self.root},
+        )
+        self.assertEqual(classify.call_count, 2)
+        self.assertNotIn(self.root / "owner-hmac.secret", classified_paths)
 
 
 class ProviderAndRendererContractTests(unittest.TestCase):
@@ -263,6 +352,26 @@ class ProviderAndRendererContractTests(unittest.TestCase):
         self.assertEqual(unknown.reason_code, "provider_response_unknown")
         self.assertEqual(str(unknown), "provider_response_unknown")
 
+    def test_provider_identifiers_reject_all_c0_and_c1_controls(self):
+        for field_name in ("provider", "capability", "request_id"):
+            for codepoint in (0x00, 0x1F, 0x7F, 0x85, 0x9F):
+                with self.subTest(field_name=field_name, codepoint=codepoint):
+                    values: dict[str, object] = {
+                        "provider": "fake",
+                        "capability": "director",
+                        "request_id": "request-1",
+                    }
+                    values[field_name] = f"bad{chr(codepoint)}identifier"
+                    with self.assertRaises(ValueError):
+                        ProviderResult(
+                            values["provider"],
+                            values["capability"],
+                            values["request_id"],
+                            {},
+                            {},
+                            1,
+                        )
+
     def test_renderer_dtos_have_exact_frozen_fields_and_no_authority_inputs(self):
         self.assertEqual(
             tuple(field.name for field in fields(RenderRequest)),
@@ -331,6 +440,79 @@ class ProviderAndRendererContractTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     self.render_result(performance={"elapsed_ms": value})
+
+    def test_render_result_rejects_uri_colon_and_control_relpaths(self):
+        unsafe = (
+            "https://host/path.mp4",
+            "https:/host/path.mp4",
+            "data:text/plain,value",
+            "file:/tmp/value",
+            "bad\x00path",
+            "bad\x1fpath",
+            "bad\x7fpath",
+            "bad\x85path",
+            "bad\x9fpath",
+        )
+        for field_name in ("silent_video_relpath", "report_relpath", "snapshots"):
+            for value in unsafe:
+                with self.subTest(field_name=field_name, value=repr(value)):
+                    override: object = (value,) if field_name == "snapshots" else value
+                    with self.assertRaises(ValueError):
+                        self.render_result(**{field_name: override})
+
+        result = self.render_result(
+            silent_video_relpath="video/silent.mp4",
+            report_relpath="reports/render.json",
+            snapshots=("snapshots/0001.png",),
+        )
+        self.assertEqual(result.silent_video_relpath, "video/silent.mp4")
+
+    def test_render_request_identifiers_reject_controls(self):
+        for field_name in ("instance_id", "job_id", "renderer_build_id"):
+            for codepoint in (0x00, 0x1F, 0x7F, 0x85, 0x9F):
+                with self.subTest(field_name=field_name, codepoint=codepoint):
+                    with self.assertRaises(ValueError):
+                        self.render_request(
+                            **{field_name: f"bad{chr(codepoint)}identifier"}
+                        )
+
+    def test_render_environment_uses_strict_non_secret_evidence_allowlist(self):
+        allowed = {
+            "node": "22.0.0",
+            "renderer": "build-1",
+            "os_name": "windows",
+            "architecture": "x86_64",
+        }
+        self.assertEqual(dict(self.render_result(environment=allowed).environment), allowed)
+
+        for name in (
+            "COOKIE",
+            "AUTH_HEADER",
+            "HMAC_KEY",
+            "API_KEY",
+            "PASSWORD",
+            "PATH",
+        ):
+            with self.subTest(name=name):
+                secret = "do-not-leak-environment-value"
+                with self.assertRaises(ValueError) as caught:
+                    self.render_result(environment={name: secret})
+                self.assertNotIn(secret, str(caught.exception))
+                self.assertNotIn(secret, repr(caught.exception))
+
+        for value in (
+            "https://secret.example/value",
+            "data:secret",
+            "Bearer-do-not-leak",
+            "AK" + "IDDO_NOT_LEAK",
+            "s" + "k-do-not-leak",
+            "bad\x00value",
+        ):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError) as caught:
+                    self.render_result(environment={"node": value})
+                self.assertNotIn(value, str(caught.exception))
+                self.assertNotIn(value, repr(caught.exception))
 
     def test_render_result_freezes_environment_performance_and_snapshots(self):
         environment = {"node": "22.0.0"}
@@ -568,6 +750,29 @@ class RuntimeContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             StageOutcome("planning", {}, "not-a-sha")
 
+    def test_runtime_identifiers_reject_all_c0_and_c1_controls(self):
+        claim = LeaseClaim("job", "worker", 1, 1000)
+        for field_name in ("attempt_id", "stage_attempt_id"):
+            for codepoint in (0x00, 0x1F, 0x7F, 0x85, 0x9F):
+                with self.subTest(field_name=field_name, codepoint=codepoint):
+                    values = {
+                        "attempt_id": "attempt",
+                        "stage_attempt_id": "stage-attempt",
+                    }
+                    values[field_name] = f"bad{chr(codepoint)}identifier"
+                    with self.assertRaises(ValueError):
+                        StageContext(
+                            claim,
+                            values["attempt_id"],
+                            values["stage_attempt_id"],
+                            10.0,
+                            lambda: None,
+                        )
+        for codepoint in (0x00, 0x1F, 0x7F, 0x85, 0x9F):
+            with self.subTest(next_state_codepoint=codepoint):
+                with self.assertRaises(ValueError):
+                    StageOutcome(f"bad{chr(codepoint)}state", {}, "f" * 64)
+
     def test_stage_checkpoint_rejects_non_json_mutable_leaves_and_non_string_keys(self):
         class MutableLeaf:
             pass
@@ -648,6 +853,97 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotIn(secret, item.detail)
         self.assertNotIn(secret, repr(report))
         self.assertFalse(report.accepts_new_jobs)
+
+    def test_runtime_errors_are_sanitized_but_process_control_exceptions_propagate(self):
+        dependencies, _probes = self.dependencies(
+            director=_ProbeFake(probe_error=RuntimeError("secret-runtime-error"))
+        )
+        report = preflight(build_runtime(dependencies, env=self.enabled_env()))
+        self.assertEqual(report.items["director"].reason_code, "capability_probe_failed")
+
+        dependencies, _probes = self.dependencies()
+        schema_secret = "secret-schema-runtime-error"
+        with mock.patch(
+            "server.content_domains.ai_edit_v3.runtime.schema_sha256",
+            side_effect=RuntimeError(schema_secret),
+        ):
+            report = preflight(build_runtime(dependencies, env=self.enabled_env()))
+        schema_item = report.items["schema:edit-plan-2.0.schema.json"]
+        self.assertEqual(schema_item.reason_code, "schema_unavailable")
+        self.assertNotIn(schema_secret, repr(report))
+
+        for exception in (KeyboardInterrupt(), SystemExit(7)):
+            with self.subTest(probe_exception=type(exception).__name__):
+                dependencies, _probes = self.dependencies(
+                    director=_ProbeFake(probe_error=exception)
+                )
+                with self.assertRaises(type(exception)):
+                    preflight(build_runtime(dependencies, env=self.enabled_env()))
+
+        for exception in (KeyboardInterrupt(), SystemExit(8)):
+            with self.subTest(schema_exception=type(exception).__name__):
+                dependencies, _probes = self.dependencies()
+                with mock.patch(
+                    "server.content_domains.ai_edit_v3.runtime.schema_sha256",
+                    side_effect=exception,
+                ):
+                    with self.assertRaises(type(exception)):
+                        preflight(build_runtime(dependencies, env=self.enabled_env()))
+
+    def test_interface_and_native_store_checks_do_not_swallow_process_control(self):
+        class ExplodingInterface:
+            def __init__(self, exception: BaseException):
+                self.exception = exception
+
+            def __getattribute__(self, name: str) -> object:
+                if name == "deduct":
+                    raise object.__getattribute__(self, "exception")
+                return object.__getattribute__(self, name)
+
+        base_dependencies, _probes = self.dependencies()
+        interface_secret = "secret-interface-runtime-error"
+        dependencies = replace(
+            base_dependencies,
+            points=ExplodingInterface(RuntimeError(interface_secret)),
+        )
+        report = preflight(build_runtime(dependencies, env=self.enabled_env()))
+        self.assertEqual(
+            report.items["points_transaction_query"].reason_code,
+            "capability_interface_invalid",
+        )
+        self.assertNotIn(interface_secret, repr(report))
+        for exception in (KeyboardInterrupt(), SystemExit(9)):
+            with self.subTest(interface_exception=type(exception).__name__):
+                dependencies = replace(
+                    base_dependencies,
+                    points=ExplodingInterface(exception),
+                )
+                with self.assertRaises(type(exception)):
+                    preflight(build_runtime(dependencies, env=self.enabled_env()))
+
+        native_store = object.__new__(V3Store)
+        native_store.db_path = self.root / "v3.db"
+        native_store.v2_db_path = self.root / "v2.db"
+        dependencies = replace(base_dependencies, store=native_store)
+        store_secret = "secret-native-store-runtime-error"
+        with mock.patch(
+            "server.content_domains.ai_edit_v3.runtime.assert_isolated_db",
+            side_effect=RuntimeError(store_secret),
+        ):
+            report = preflight(build_runtime(dependencies, env=self.enabled_env()))
+        self.assertEqual(
+            report.items["isolated_v3_store"].reason_code,
+            "v3_store_isolation_unavailable",
+        )
+        self.assertNotIn(store_secret, repr(report))
+        for exception in (KeyboardInterrupt(), SystemExit(10)):
+            with self.subTest(store_exception=type(exception).__name__):
+                with mock.patch(
+                    "server.content_domains.ai_edit_v3.runtime.assert_isolated_db",
+                    side_effect=exception,
+                ):
+                    with self.assertRaises(type(exception)):
+                        preflight(build_runtime(dependencies, env=self.enabled_env()))
 
     def test_capability_items_and_reports_are_strictly_immutable(self):
         with self.assertRaises(ValueError):

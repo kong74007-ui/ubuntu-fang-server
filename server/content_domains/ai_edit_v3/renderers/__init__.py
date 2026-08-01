@@ -13,18 +13,50 @@ from typing import Protocol, runtime_checkable
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WINDOWS_DRIVE = re.compile(r"[A-Za-z]:")
-_SENSITIVE_ENV_PARTS = (
-    "SECRET",
-    "TOKEN",
+_RENDER_EVIDENCE_KEYS = frozenset(
+    {
+        "architecture",
+        "chromium_build_id",
+        "ffmpeg_version",
+        "ffprobe_version",
+        "font_bundle_sha256",
+        "gsap_version",
+        "hyperframes_version",
+        "node",
+        "node_version",
+        "os_name",
+        "os_version",
+        "renderer",
+        "renderer_build_id",
+    }
+)
+_EVIDENCE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+()\-]{0,127}\Z")
+_SECRET_VALUE_PREFIXES = (
+    "AKID",
+    "ASIA",
+    "AUTH",
+    "BASIC",
+    "BEARER",
+    "COOKIE",
+    "HMAC",
     "PASSWORD",
-    "CREDENTIAL",
-    "API_KEY",
-    "AUTHORIZATION",
+    "SECRET",
+    "SK-",
+    "TOKEN",
 )
 
 
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+
+
 def _identifier(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or _has_control(value)
+    ):
         raise ValueError(f"render_{field_name}_invalid")
     return value
 
@@ -52,7 +84,7 @@ def _contains(parent: Path, child: Path) -> bool:
 def _relative_path(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"render_{field_name}_invalid")
-    if "\\" in value or _WINDOWS_DRIVE.match(value):
+    if "\\" in value or ":" in value or _WINDOWS_DRIVE.match(value) or _has_control(value):
         raise ValueError(f"render_{field_name}_invalid")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or path == PurePosixPath("."):
@@ -137,12 +169,13 @@ class RenderResult:
         environment: dict[str, str] = {}
         for name, value in self.environment.items():
             if (
-                not isinstance(name, str)
-                or not name
-                or any(part in name.upper() for part in _SENSITIVE_ENV_PARTS)
+                name not in _RENDER_EVIDENCE_KEYS
                 or not isinstance(value, str)
                 or not value
-                or "://" in value
+                or value != value.strip()
+                or _has_control(value)
+                or _EVIDENCE_VALUE.fullmatch(value) is None
+                or value.upper().startswith(_SECRET_VALUE_PREFIXES)
             ):
                 raise ValueError("render_environment_invalid")
             environment[name] = value

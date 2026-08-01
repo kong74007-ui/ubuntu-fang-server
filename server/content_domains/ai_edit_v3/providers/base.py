@@ -13,6 +13,10 @@ from typing import Any
 _REASON_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 
 
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
@@ -28,7 +32,12 @@ def _freeze(value: Any) -> Any:
 
 
 def _identifier(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or _has_control(value)
+    ):
         raise ValueError(f"provider_{field_name}_invalid")
     return value
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
+from .store import _classify_filesystem_type, _filesystem_type_for_path
+
 
 _CONFIG_NAMES = frozenset(
     {
@@ -23,23 +25,38 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
     }
 )
-_SECURITY_NAME_PARTS = (
-    "SECRET",
-    "TOKEN",
-    "PASSWORD",
-    "CREDENTIAL",
-    "API_KEY",
-    "PRIVATE_KEY",
-    "ACCESS_KEY",
-    "AUTH_",
-    "AUTHORIZATION",
-    "HMAC",
+_SECURITY_NAME_TOKENS = frozenset(
+    {
+        "AUTH",
+        "AUTHORIZATION",
+        "COOKIE",
+        "CREDENTIAL",
+        "CREDENTIALS",
+        "HMAC",
+        "KEY",
+        "PASSWORD",
+        "SECRET",
+        "TOKEN",
+    }
 )
 _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*\Z")
 _INT64_MAX = (1 << 63) - 1
 _CAPABILITY_REASON = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _CAPABILITY_STATUSES = frozenset(
     {"implemented", "configured_and_wired", "missing_or_unavailable"}
+)
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "AUX",
+        "CLOCK$",
+        "CON",
+        "CONIN$",
+        "CONOUT$",
+        "NUL",
+        "PRN",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
 )
 
 
@@ -148,6 +165,26 @@ def _error(reason_code: str, field_name: str) -> FeatureConfigurationError:
     return FeatureConfigurationError(reason_code, field_name)
 
 
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+
+
+def _has_windows_reserved_component(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    for index, raw_component in enumerate(normalized.split("/")):
+        if not raw_component:
+            continue
+        if index == 0 and re.fullmatch(r"[A-Za-z]:", raw_component):
+            continue
+        if ":" in raw_component or _has_control(raw_component):
+            return True
+        component = raw_component.rstrip(" .")
+        stem = component.split(".", 1)[0].rstrip(" .").upper()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            return True
+    return False
+
+
 def _path(value: str | None, field_name: str) -> Path | None:
     if value is None:
         return None
@@ -156,6 +193,8 @@ def _path(value: str | None, field_name: str) -> Path | None:
     normalized = value.replace("\\", "/")
     if normalized.startswith("//"):
         raise _error("config_path_network", field_name)
+    if _has_windows_reserved_component(value):
+        raise _error("config_path_reserved", field_name)
     path = Path(value)
     if not path.is_absolute():
         raise _error("config_path_not_absolute", field_name)
@@ -163,6 +202,22 @@ def _path(value: str | None, field_name: str) -> Path | None:
         return path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise _error("config_path_unresolvable", field_name) from exc
+
+
+def _validate_db_filesystem(path: Path, field_name: str) -> None:
+    candidates = [path.parent]
+    if os.path.lexists(path):
+        candidates.append(path)
+    for candidate in candidates:
+        try:
+            fs_type = _filesystem_type_for_path(candidate)
+            classification = _classify_filesystem_type(fs_type)
+        except Exception as exc:
+            raise _error("config_db_filesystem_unknown", field_name) from exc
+        if classification == "remote":
+            raise _error("config_db_filesystem_remote", field_name)
+        if classification != "local":
+            raise _error("config_db_filesystem_unknown", field_name)
 
 
 def _integer(
@@ -186,6 +241,15 @@ def _required(value: object | None, field_name: str, enabled: bool) -> None:
         raise _error("config_required", field_name)
 
 
+def _is_security_sensitive_config_name(name: str) -> bool:
+    normalized = name.upper()
+    prefix = "AI_EDIT_V3_"
+    if not normalized.startswith(prefix):
+        return False
+    tokens = {token for token in normalized[len(prefix):].split("_") if token}
+    return bool(tokens & _SECURITY_NAME_TOKENS)
+
+
 def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
     """Validate configuration without mutating or retaining ``os.environ``."""
 
@@ -193,11 +257,9 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
     for name in source:
         if not isinstance(name, str):
             continue
-        if name in _CONFIG_NAMES or not name.startswith("AI_EDIT_V3_"):
+        if name in _CONFIG_NAMES:
             continue
-        if name.startswith("AI_EDIT_V3_OWNER_HMAC_") or any(
-            part in name for part in _SECURITY_NAME_PARTS
-        ):
+        if _is_security_sensitive_config_name(name):
             raise _error("config_secret_forbidden", name)
 
     enabled_text = source.get("AI_EDIT_V3_ENABLED", "0")
@@ -211,6 +273,10 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         source.get("AI_EDIT_V3_OWNER_HMAC_SECRET_FILE"),
         "AI_EDIT_V3_OWNER_HMAC_SECRET_FILE",
     )
+    if db_path is not None:
+        _validate_db_filesystem(db_path, "AI_EDIT_V3_DB_PATH")
+    if v2_db_path is not None:
+        _validate_db_filesystem(v2_db_path, "AI_EDIT_V2_DB")
 
     environment = source.get("AI_EDIT_V3_ENVIRONMENT")
     if environment is not None and environment not in {"test", "production"}:

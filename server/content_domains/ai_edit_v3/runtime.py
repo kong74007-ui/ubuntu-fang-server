@@ -56,6 +56,10 @@ _DEPENDENCY_FIELDS = (
 _DEFAULT_REQUEST_CAPABILITIES = (*_DEPENDENCY_FIELDS, "stage_handlers")
 
 
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
@@ -71,7 +75,12 @@ def _freeze(value: Any) -> Any:
 
 
 def _identifier(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or value != value.strip():
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or _has_control(value)
+    ):
         raise ValueError(f"runtime_{field_name}_invalid")
     return value
 
@@ -214,7 +223,7 @@ def _missing(reason_code: str, detail: str) -> CapabilityItem:
 def _has_methods(dependency: object, names: tuple[str, ...]) -> bool:
     try:
         return all(callable(getattr(dependency, name, None)) for name in names)
-    except BaseException:
+    except Exception:
         return False
 
 
@@ -251,7 +260,7 @@ def _probe_dependency(
         )
     try:
         result = _explicit_probe_result(dependency, capability, environment)
-    except BaseException:
+    except Exception:
         return _missing(
             "capability_probe_failed",
             "side-effect-free capability probe failed",
@@ -326,7 +335,7 @@ def _schema_items(
         item_name = f"schema:{name}"
         try:
             actual = schema_sha256(name)
-        except BaseException:
+        except Exception:
             versions[name] = "unavailable"
             items[item_name] = _missing(
                 "schema_unavailable", "frozen schema is unavailable"
@@ -370,7 +379,7 @@ def _probe_store(
     if isinstance(store, V3Store):
         try:
             assert_isolated_db(store.db_path, store.v2_db_path)
-        except BaseException:
+        except Exception:
             return _missing(
                 "v3_store_isolation_unavailable",
                 "V3 store isolation evidence is unavailable",
