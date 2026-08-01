@@ -16,6 +16,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes; from . import ai_edit_api, ai_edit_v2_api, assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, video_asset_publish  # 领域存储模块均无反向依赖
+from .ai_edit_v3 import api as ai_edit_v3_api
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1284,6 +1285,8 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p.startswith("/api/v2/edit/"):
             route = self.path if "/webhooks/" in p else p; return ai_edit_v2_api.dispatch(self, "POST", route, None if "/webhooks/" in p else verify(self._token()))
+        if p.startswith("/api/v3/edit/"):
+            return ai_edit_v3_api.dispatch(self, "POST", self.path, verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
         handled, p = ai_edit_api.handle_post(self, p, points_domain, video_domain)
         if handled: return
@@ -1801,6 +1804,8 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p.startswith("/api/v2/edit/"):
             return ai_edit_v2_api.dispatch(self, "GET", p, None if "/webhooks/" in p else verify(self._token()))
+        if p.startswith("/api/v3/edit/"):
+            return ai_edit_v3_api.dispatch(self, "GET", self.path, verify(self._token()))
         audio_domain, points_domain, video_domain = _domains()
         if ai_edit_api.handle_get(self, p): return
         if p == "/api/gen/audio/clone-vip":

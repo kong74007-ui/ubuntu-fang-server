@@ -1,9 +1,11 @@
 import io
 import base64
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from server.content_domains.ai_edit_v3.api import dispatch
 from server.content_domains.ai_edit_v3.feature import CapabilityItem, CapabilityReport
@@ -514,6 +516,209 @@ class V3ApiDispatchTests(unittest.TestCase):
                 self.assertTrue(
                     any("\u4e00" <= character <= "\u9fff" for character in payload["message"])
                 )
+
+
+class V3CoreDispatchTests(unittest.TestCase):
+    user = {"username": "alice", "points": 23, "role": "user"}
+
+    @classmethod
+    def setUpClass(cls):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        from content_domains import core
+        from content_domains.ai_edit_v3 import api as ai_edit_v3_api
+
+        cls.core = core
+        cls.ai_edit_v3_api = ai_edit_v3_api
+
+    def handler(self, path):
+        handler = object.__new__(self.core.H)
+        handler.path = path
+        handler.headers = {}
+        return handler
+
+    def test_core_forwards_v3_get_and_post_once_with_authenticated_user(self):
+        for method_name, http_method in (("do_GET", "GET"), ("do_POST", "POST")):
+            with self.subTest(method=http_method):
+                handler = self.handler("/api/v3/edit/capabilities")
+                with patch.object(
+                    self.core, "verify", return_value=self.user
+                ) as verify, patch.object(
+                    self.ai_edit_v3_api, "dispatch", return_value=True
+                ) as v3_dispatch, patch.object(
+                    self.core.ai_edit_v2_api,
+                    "dispatch",
+                    side_effect=AssertionError("V3 must not enter V2"),
+                ), patch.object(
+                    self.core,
+                    "_domains",
+                    side_effect=AssertionError("V3 must not fall through"),
+                ):
+                    result = getattr(handler, method_name)()
+
+                self.assertTrue(result)
+                verify.assert_called_once_with("")
+                v3_dispatch.assert_called_once_with(
+                    handler, http_method, handler.path, self.user
+                )
+
+    def test_core_forwards_v3_get_query_string_intact(self):
+        path = "/api/v3/edit/jobs?cursor=next-page&limit=7"
+        handler = self.handler(path)
+        with patch.object(
+            self.core, "verify", return_value=self.user
+        ), patch.object(
+            self.ai_edit_v3_api, "dispatch", return_value=True
+        ) as v3_dispatch, patch.object(
+            self.core,
+            "_domains",
+            side_effect=AssertionError("V3 must not fall through"),
+        ):
+            handler.do_GET()
+
+        v3_dispatch.assert_called_once_with(handler, "GET", path, self.user)
+
+    def test_v2_get_and_post_never_enter_v3_and_keep_v2_forwarding(self):
+        for method_name, http_method in (("do_GET", "GET"), ("do_POST", "POST")):
+            with self.subTest(method=http_method):
+                handler = self.handler("/api/v2/edit/capabilities")
+                with patch.object(
+                    self.core, "verify", return_value=self.user
+                ), patch.object(
+                    self.core.ai_edit_v2_api, "dispatch", return_value=True
+                ) as v2_dispatch, patch.object(
+                    self.ai_edit_v3_api,
+                    "dispatch",
+                    side_effect=AssertionError("V2 must not enter V3"),
+                ) as v3_dispatch:
+                    result = getattr(handler, method_name)()
+
+                self.assertTrue(result)
+                v2_dispatch.assert_called_once_with(
+                    handler,
+                    http_method,
+                    "/api/v2/edit/capabilities",
+                    self.user,
+                )
+                v3_dispatch.assert_not_called()
+
+    def test_similar_and_legacy_prefixes_never_enter_v3(self):
+        paths = (
+            "/api/v3/editing/capabilities",
+            "/api/v3/edit",
+            "/api/v3/other/capabilities",
+            "/api/gen/assets",
+        )
+        for method_name in ("do_GET", "do_POST"):
+            for path in paths:
+                with self.subTest(method=method_name, path=path):
+                    handler = self.handler(path)
+                    with patch.object(
+                        self.core,
+                        "_domains",
+                        return_value=(object(), object(), object()),
+                    ), patch.object(
+                        self.ai_edit_v3_api,
+                        "dispatch",
+                        side_effect=AssertionError("non-V3 prefix entered V3"),
+                    ) as v3_dispatch, patch.object(
+                        self.core.ai_edit_api,
+                        "handle_get",
+                        return_value=True,
+                    ), patch.object(
+                        self.core.ai_edit_api,
+                        "handle_post",
+                        return_value=(True, path),
+                    ):
+                        getattr(handler, method_name)()
+
+                    v3_dispatch.assert_not_called()
+
+    def test_v3_dispatch_return_prevents_legacy_fallthrough_and_double_send(self):
+        for method_name, http_method in (("do_GET", "GET"), ("do_POST", "POST")):
+            with self.subTest(method=http_method):
+                handler = self.handler("/api/v3/edit/capabilities")
+                handler._send = Mock(return_value=None)
+
+                def dispatch_once(target, method, path, user):
+                    target._send(200, {"handled": True})
+                    return True
+
+                with patch.object(
+                    self.core, "verify", return_value=self.user
+                ), patch.object(
+                    self.ai_edit_v3_api,
+                    "dispatch",
+                    side_effect=dispatch_once,
+                ), patch.object(
+                    self.core,
+                    "_domains",
+                    side_effect=AssertionError("V3 response fell through"),
+                ):
+                    result = getattr(handler, method_name)()
+
+                self.assertTrue(result)
+                handler._send.assert_called_once_with(200, {"handled": True})
+
+    def test_unauthenticated_v3_is_handled_with_none_user_only_by_v3(self):
+        for method_name, http_method in (("do_GET", "GET"), ("do_POST", "POST")):
+            with self.subTest(method=http_method):
+                handler = self.handler("/api/v3/edit/capabilities")
+                with patch.object(
+                    self.core, "verify", return_value=None
+                ), patch.object(
+                    self.ai_edit_v3_api, "dispatch", return_value=True
+                ) as v3_dispatch, patch.object(
+                    self.core.ai_edit_v2_api,
+                    "dispatch",
+                    side_effect=AssertionError("V3 must not enter V2"),
+                ), patch.object(
+                    self.core,
+                    "_domains",
+                    side_effect=AssertionError("V3 must not fall through"),
+                ):
+                    result = getattr(handler, method_name)()
+
+                self.assertTrue(result)
+                v3_dispatch.assert_called_once_with(
+                    handler, http_method, handler.path, None
+                )
+
+    def test_v3_webhook_like_path_still_uses_shared_authentication(self):
+        path = "/api/v3/edit/webhooks/not-a-v3-route?token=untrusted"
+        handler = self.handler(path)
+        with patch.object(
+            self.core, "verify", return_value=self.user
+        ) as verify, patch.object(
+            self.ai_edit_v3_api, "dispatch", return_value=True
+        ) as v3_dispatch, patch.object(
+            self.core.ai_edit_v2_api,
+            "dispatch",
+            side_effect=AssertionError("V3 must not enter V2"),
+        ):
+            result = handler.do_POST()
+
+        self.assertTrue(result)
+        verify.assert_called_once_with("")
+        v3_dispatch.assert_called_once_with(handler, "POST", path, self.user)
+
+    def test_v2_webhook_query_still_bypasses_verify_and_only_enters_v2(self):
+        path = "/api/v2/edit/webhooks/shotstack?attempt_id=7&token=callback-token"
+        handler = self.handler(path)
+        with patch.object(self.core, "verify") as verify, patch.object(
+            self.core.ai_edit_v2_api, "dispatch", return_value=True
+        ) as v2_dispatch, patch.object(
+            self.ai_edit_v3_api,
+            "dispatch",
+            side_effect=AssertionError("V2 webhook must not enter V3"),
+        ) as v3_dispatch:
+            result = handler.do_POST()
+
+        self.assertTrue(result)
+        verify.assert_not_called()
+        v2_dispatch.assert_called_once_with(handler, "POST", path, None)
+        v3_dispatch.assert_not_called()
 
 
 if __name__ == "__main__":
