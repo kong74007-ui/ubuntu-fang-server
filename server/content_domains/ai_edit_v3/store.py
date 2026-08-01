@@ -87,6 +87,27 @@ _SQLITE_OPEN_LOCK = threading.RLock()
 _SQLITE_INT64_MAX = (1 << 63) - 1
 _PREHOLD_ADMISSION_TIMEOUT_MS = 300_000
 _PROCESSING_DEADLINE_MS = 2_700_000
+_PUBLISH_OPERATIONS = (
+    "register_generation",
+    "prepare_hidden",
+    "commit_publish",
+    "cancel_publish",
+    "query_decision",
+)
+_PUBLISH_KEY_SEGMENTS = {
+    "register_generation": "register",
+    "prepare_hidden": "prepare",
+    "commit_publish": "commit",
+    "cancel_publish": "cancel",
+    "query_decision": "query",
+}
+_PUBLISH_EXPECTED_DECISIONS = {
+    "register_generation": "accepted",
+    "prepare_hidden": "accepted",
+    "commit_publish": "publish_won",
+    "cancel_publish": "cancel_won",
+    "query_decision": "publish_won_or_cancel_won",
+}
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -2487,6 +2508,20 @@ def _require_sha256(name: str, value: Any) -> str:
             f"{name} must be a 64-character lowercase SHA-256",
         )
     return value
+
+
+def _require_publish_operation(operation: Any) -> str:
+    if operation not in _PUBLISH_OPERATIONS:
+        raise _configuration_error(
+            "publish_operation_invalid",
+            "publish operation is not part of the frozen outbox contract",
+        )
+    return operation
+
+
+def _publish_intent_id(job_id: str, generation: int, operation: str) -> str:
+    identity = f"{job_id}\0{generation}\0{operation}".encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
 
 
 def _lease_lost(claim: LeaseClaim) -> LeaseLost:
@@ -5570,6 +5605,639 @@ class V3Store:
             ]
 
         return self._write(write)
+
+    def create_publish_intents(
+        self,
+        claim: LeaseClaim,
+        metadata_sha256: str,
+        *,
+        now_ms: int,
+    ) -> tuple[dict[str, Any], ...]:
+        """Freeze the five external publication identities under a live claim."""
+
+        claim = _require_claim(claim)
+        metadata_sha256 = _require_sha256("metadata_sha256", metadata_sha256)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+            job = connection.execute(
+                """SELECT owner_id,delivery_object_key FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            object_key = job["delivery_object_key"]
+            if (
+                not isinstance(object_key, str)
+                or not object_key.strip()
+                or object_key != object_key.strip()
+                or "://" in object_key
+            ):
+                raise StoreConflictError(
+                    "delivery_object_missing",
+                    "publication requires one immutable stable delivery object key",
+                )
+
+            divergent = connection.execute(
+                """SELECT 1 FROM edit_v3_publish_intents
+                   WHERE job_id=? AND (object_key<>? OR metadata_sha256<>?)
+                   LIMIT 1""",
+                (claim.job_id, object_key, metadata_sha256),
+            ).fetchone()
+            if divergent is not None:
+                raise StoreConflictError(
+                    "publish_intent_conflict",
+                    "publication identity was reused with divergent immutable delivery data",
+                )
+
+            rows = connection.execute(
+                """SELECT * FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=?""",
+                (claim.job_id, claim.fencing_token),
+            ).fetchall()
+            if rows:
+                by_operation = {row["operation"]: row for row in rows}
+                if set(by_operation) != set(_PUBLISH_OPERATIONS):
+                    raise StoreConflictError(
+                        "publish_intent_conflict",
+                        "publication generation has an incomplete outbox identity set",
+                    )
+                for operation in _PUBLISH_OPERATIONS:
+                    row = by_operation[operation]
+                    expected_key = (
+                        f"ai-edit-v3:{claim.job_id}:publish:"
+                        f"{_PUBLISH_KEY_SEGMENTS[operation]}:{claim.fencing_token}"
+                    )
+                    if (
+                        row["id"]
+                        != _publish_intent_id(
+                            claim.job_id, claim.fencing_token, operation
+                        )
+                        or row["external_idempotency_key"] != expected_key
+                        or row["object_key"] != object_key
+                        or row["metadata_sha256"] != metadata_sha256
+                        or row["expected_decision"]
+                        != _PUBLISH_EXPECTED_DECISIONS[operation]
+                        or row["fencing_token"] != claim.fencing_token
+                    ):
+                        raise StoreConflictError(
+                            "publish_intent_conflict",
+                            "publication outbox replay diverged from its frozen identity",
+                        )
+                return tuple(dict(by_operation[name]) for name in _PUBLISH_OPERATIONS)
+
+            for operation in _PUBLISH_OPERATIONS:
+                external_key = (
+                    f"ai-edit-v3:{claim.job_id}:publish:"
+                    f"{_PUBLISH_KEY_SEGMENTS[operation]}:{claim.fencing_token}"
+                )
+                connection.execute(
+                    """INSERT INTO edit_v3_publish_intents(
+                           id,job_id,publish_generation,operation,
+                           external_idempotency_key,object_key,metadata_sha256,
+                           expected_decision,status,fencing_token,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _publish_intent_id(
+                            claim.job_id, claim.fencing_token, operation
+                        ),
+                        claim.job_id,
+                        claim.fencing_token,
+                        operation,
+                        external_key,
+                        object_key,
+                        metadata_sha256,
+                        _PUBLISH_EXPECTED_DECISIONS[operation],
+                        "planned",
+                        claim.fencing_token,
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+            created = connection.execute(
+                """SELECT * FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=?""",
+                (claim.job_id, claim.fencing_token),
+            ).fetchall()
+            by_operation = {row["operation"]: dict(row) for row in created}
+            return tuple(by_operation[name] for name in _PUBLISH_OPERATIONS)
+
+        try:
+            return self._write(write)
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError(
+                "publish_intent_conflict",
+                "publication outbox violates a frozen identity constraint",
+            ) from exc
+
+    def get_publish_context_for_claim(
+        self,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        now_ms = _require_now_ms(now_ms)
+
+        def read(connection: sqlite3.Connection) -> dict[str, Any]:
+            job = connection.execute(
+                """SELECT job_id,owner_id,state,delivery_object_key,asset_id,
+                          confirmed_preheld_total,confirmed_refunded_total,
+                          request_sha256
+                   FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            rows = connection.execute(
+                """SELECT * FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=?""",
+                (claim.job_id, claim.fencing_token),
+            ).fetchall()
+            by_operation = {row["operation"]: dict(row) for row in rows}
+            if rows and set(by_operation) != set(_PUBLISH_OPERATIONS):
+                raise StoreConflictError(
+                    "publish_intent_conflict",
+                    "publication generation has an incomplete outbox identity set",
+                )
+            return {
+                "job": dict(job),
+                "intents": tuple(
+                    by_operation[name]
+                    for name in _PUBLISH_OPERATIONS
+                    if name in by_operation
+                ),
+            }
+
+        return self._read(read)
+
+    def list_due_publish_intents(
+        self,
+        now_ms: int,
+        *,
+        limit: int = 100,
+        cursor: tuple[int, str] | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        now_ms = _require_now_ms(now_ms)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise _configuration_error(
+                "publish_limit_invalid",
+                "publish due-list limit must be an integer from 1 to 100",
+            )
+        if cursor is not None:
+            if not isinstance(cursor, tuple) or len(cursor) != 2:
+                raise _configuration_error(
+                    "publish_cursor_invalid",
+                    "publish cursor must be a due-time and intent-id tuple",
+                )
+            due_at, intent_id = cursor
+            if (
+                isinstance(due_at, bool)
+                or not isinstance(due_at, int)
+                or due_at < 0
+                or not isinstance(intent_id, str)
+                or not intent_id
+                or intent_id != intent_id.strip()
+            ):
+                raise _configuration_error(
+                    "publish_cursor_invalid",
+                    "publish cursor contains an invalid due time or intent id",
+                )
+
+        def read(connection: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+            if cursor is None:
+                rows = connection.execute(
+                    """SELECT p.*,COALESCE(p.first_unknown_at,p.updated_at) AS due_at
+                       FROM edit_v3_publish_intents AS p
+                       WHERE p.status IN ('pending','unknown')
+                         AND COALESCE(p.first_unknown_at,p.updated_at)<=?
+                       ORDER BY due_at,p.id LIMIT ?""",
+                    (now_ms, limit),
+                ).fetchall()
+            else:
+                due_at, intent_id = cursor
+                rows = connection.execute(
+                    """SELECT p.*,COALESCE(p.first_unknown_at,p.updated_at) AS due_at
+                       FROM edit_v3_publish_intents AS p
+                       WHERE p.status IN ('pending','unknown')
+                         AND COALESCE(p.first_unknown_at,p.updated_at)<=?
+                         AND (COALESCE(p.first_unknown_at,p.updated_at)>?
+                              OR (COALESCE(p.first_unknown_at,p.updated_at)=?
+                                  AND p.id>?))
+                       ORDER BY due_at,p.id LIMIT ?""",
+                    (now_ms, due_at, due_at, intent_id, limit),
+                ).fetchall()
+            return tuple(dict(row) for row in rows)
+
+        return self._read(read)
+
+    def begin_publish_operation(
+        self,
+        claim: LeaseClaim,
+        operation: str,
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        operation = _require_publish_operation(operation)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                """SELECT * FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=? AND operation=?""",
+                (claim.job_id, claim.fencing_token, operation),
+            ).fetchone()
+            if row is None:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "publish_intent_missing",
+                    "publication operation is missing its durable outbox identity",
+                )
+            if row["status"] in {"publish_won", "cancel_won", "stale_generation"}:
+                return dict(row)
+            updated = connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET status='pending',updated_at=?
+                   WHERE id=? AND EXISTS(
+                       SELECT 1 FROM edit_v3_jobs AS j
+                       WHERE j.job_id=edit_v3_publish_intents.job_id
+                         AND j.job_id=? AND j.worker_id=?
+                         AND j.fencing_token=? AND j.lease_until>?
+                   )""",
+                (
+                    now_ms,
+                    row["id"],
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise _lease_lost(claim)
+            return dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_publish_intents WHERE id=?",
+                    (row["id"],),
+                ).fetchone()
+            )
+
+        return self._write(write)
+
+    def record_publish_operation(
+        self,
+        claim: LeaseClaim,
+        operation: str,
+        status: str,
+        evidence: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        operation = _require_publish_operation(operation)
+        if status not in {"accepted", "pending", "unknown"}:
+            raise _configuration_error(
+                "publish_status_invalid",
+                "publication operation status is not persistable",
+            )
+        if not isinstance(evidence, Mapping):
+            raise _configuration_error(
+                "publish_evidence_invalid",
+                "publication evidence must be a stable mapping",
+            )
+        evidence_json = _json_text(evidence)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            updated = connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET status=?,
+                       first_unknown_at=CASE
+                           WHEN ?='unknown' THEN COALESCE(first_unknown_at,?)
+                           ELSE first_unknown_at
+                       END,
+                       last_decision_json=?,last_decision_at=?,updated_at=?
+                   WHERE job_id=? AND publish_generation=? AND operation=?
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_publish_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    status,
+                    status,
+                    now_ms,
+                    evidence_json,
+                    now_ms,
+                    now_ms,
+                    claim.job_id,
+                    claim.fencing_token,
+                    operation,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "publish_intent_missing",
+                    "publication response has no matching durable operation",
+                )
+            return dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_publish_intents
+                       WHERE job_id=? AND publish_generation=? AND operation=?""",
+                    (claim.job_id, claim.fencing_token, operation),
+                ).fetchone()
+            )
+
+        return self._write(write)
+
+    def record_publish_winner(
+        self,
+        claim: LeaseClaim,
+        operation: str,
+        asset_id: str,
+        decision: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        operation = _require_publish_operation(operation)
+        asset_id = _require_nonblank("asset_id", asset_id)
+        if asset_id != asset_id.strip() or len(asset_id) > 256:
+            raise _configuration_error(
+                "asset_id_invalid", "asset id must be a stable compact identifier"
+            )
+        if not isinstance(decision, Mapping):
+            raise _configuration_error(
+                "publish_evidence_invalid", "publication decision must be a mapping"
+            )
+        decision_json = _json_text(decision)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            job = connection.execute(
+                """SELECT asset_id FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            if job["asset_id"] not in {None, asset_id}:
+                raise StoreConflictError(
+                    "asset_decision_conflict",
+                    "publication winner conflicts with the frozen asset id",
+                )
+            refund = connection.execute(
+                """SELECT 1 FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation='refund_full' LIMIT 1""",
+                (claim.job_id,),
+            ).fetchone()
+            if refund is not None:
+                raise StoreConflictError(
+                    "asset_refund_conflict",
+                    "published asset cannot coexist with a full-refund intent",
+                )
+            operation_row = connection.execute(
+                """SELECT 1 FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=? AND operation=?""",
+                (claim.job_id, claim.fencing_token, operation),
+            ).fetchone()
+            if operation_row is None:
+                raise StoreConflictError(
+                    "publish_intent_missing",
+                    "publication winner has no matching durable operation",
+                )
+            updated = connection.execute(
+                """UPDATE edit_v3_jobs SET asset_id=?,updated_at=?
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>? AND (asset_id IS NULL OR asset_id=?)""",
+                (
+                    asset_id,
+                    now_ms,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                    asset_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise _lease_lost(claim)
+            connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET status='publish_won',last_decision_json=?,
+                       last_decision_at=?,asset_id=?,updated_at=?
+                   WHERE job_id=?""",
+                (decision_json, now_ms, asset_id, now_ms, claim.job_id),
+            )
+            return {
+                "job_id": claim.job_id,
+                "asset_id": asset_id,
+                "decision": dict(decision),
+            }
+
+        return self._write(write)
+
+    def record_cancel_winner_and_refund(
+        self,
+        claim: LeaseClaim,
+        operation: str,
+        decision: Mapping[str, Any],
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Persist cancel authority and freeze the Task 6 full-refund outbox."""
+
+        claim = _require_claim(claim)
+        operation = _require_publish_operation(operation)
+        if not isinstance(decision, Mapping):
+            raise _configuration_error(
+                "publish_evidence_invalid", "publication decision must be a mapping"
+            )
+        decision_json = _json_text(decision)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            job = connection.execute(
+                """SELECT * FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            operation_row = connection.execute(
+                """SELECT 1 FROM edit_v3_publish_intents
+                   WHERE job_id=? AND publish_generation=? AND operation=?""",
+                (claim.job_id, claim.fencing_token, operation),
+            ).fetchone()
+            if operation_row is None:
+                raise StoreConflictError(
+                    "publish_intent_missing",
+                    "cancel winner has no matching durable publication operation",
+                )
+            publish_winner = connection.execute(
+                """SELECT 1 FROM edit_v3_publish_intents
+                   WHERE job_id=? AND status='publish_won' LIMIT 1""",
+                (claim.job_id,),
+            ).fetchone()
+            if job["asset_id"] is not None or publish_winner is not None:
+                raise StoreConflictError(
+                    "asset_refund_conflict",
+                    "cancel winner cannot overwrite an authoritative publication",
+                )
+
+            target = job["confirmed_preheld_total"]
+            refunded = job["confirmed_refunded_total"]
+            request_amount = target - refunded
+            external_key = f"ai-edit-v3:{claim.job_id}:refund_full"
+            existing = connection.execute(
+                """SELECT * FROM edit_v3_billing_intents
+                   WHERE environment=? AND owner_id=? AND job_id=?
+                     AND operation='refund_full'""",
+                (job["environment"], job["owner_id"], claim.job_id),
+            ).fetchone()
+            if existing is None:
+                unresolved = connection.execute(
+                    """SELECT 1 FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_delta'
+                         AND status IN ('pending','retryable_absent','unknown',
+                                        'reconciliation_pending')
+                       LIMIT 1""",
+                    (claim.job_id,),
+                ).fetchone()
+                if unresolved is not None:
+                    raise StoreConflictError(
+                        "overlapping_refund_intent",
+                        "delta refund must converge before full refund is frozen",
+                    )
+                status = "completed" if request_amount == 0 else "pending"
+                completed_at = now_ms if request_amount == 0 else None
+                evidence_json = (
+                    _json_text({"zero_amount": True})
+                    if request_amount == 0
+                    else None
+                )
+                refund_identity = hashlib.sha256(
+                    f"{claim.job_id}\0refund_full".encode("utf-8")
+                ).hexdigest()
+                connection.execute(
+                    """INSERT INTO edit_v3_billing_intents(
+                           id,environment,owner_id,job_id,operation,
+                           external_idempotency_key,request_sha256,
+                           refund_target_total,request_amount,status,
+                           authority_evidence_json,reason,resume_state,
+                           created_at,updated_at,completed_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        refund_identity,
+                        job["environment"],
+                        job["owner_id"],
+                        claim.job_id,
+                        "refund_full",
+                        external_key,
+                        job["request_sha256"],
+                        target,
+                        request_amount,
+                        status,
+                        evidence_json,
+                        "refund",
+                        "refund_pending",
+                        now_ms,
+                        now_ms,
+                        completed_at,
+                    ),
+                )
+                existing = connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE id=?""",
+                    (refund_identity,),
+                ).fetchone()
+            else:
+                expected = {
+                    "environment": job["environment"],
+                    "owner_id": job["owner_id"],
+                    "job_id": claim.job_id,
+                    "operation": "refund_full",
+                    "external_idempotency_key": external_key,
+                    "request_sha256": job["request_sha256"],
+                    "refund_target_total": target,
+                    "reason": "refund",
+                    "resume_state": "refund_pending",
+                }
+                original_refunded = target - existing["request_amount"]
+                if (
+                    not self._same_values(existing, expected)
+                    or isinstance(existing["request_amount"], bool)
+                    or not isinstance(existing["request_amount"], int)
+                    or not 0 <= original_refunded <= refunded <= target
+                ):
+                    raise StoreConflictError(
+                        "billing_intent_conflict",
+                        "existing full-refund intent diverges from cancel authority",
+                    )
+
+            connection.execute(
+                """UPDATE edit_v3_publish_intents
+                   SET status='cancel_won',last_decision_json=?,
+                       last_decision_at=?,asset_id=NULL,updated_at=?
+                   WHERE job_id=?""",
+                (decision_json, now_ms, now_ms, claim.job_id),
+            )
+            return {
+                "job": {
+                    "job_id": claim.job_id,
+                    "state": job["state"],
+                    "confirmed_preheld_total": target,
+                    "confirmed_refunded_total": refunded,
+                },
+                "intent": dict(existing),
+                "decision": dict(decision),
+            }
+
+        try:
+            return self._write(write)
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError(
+                "billing_intent_conflict",
+                "cancel winner violates frozen refund or publication constraints",
+            ) from exc
 
     def get_job_for_owner(
         self,
