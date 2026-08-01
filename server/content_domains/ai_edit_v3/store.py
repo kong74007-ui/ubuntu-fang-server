@@ -4085,6 +4085,8 @@ class V3Store:
         *,
         now_ms: int,
         intent_id: str,
+        predecessor_job_id: str | None = None,
+        material_bindings: Sequence[Mapping[str, Any]] = (),
         fail_after_job: Exception | None = None,
         environment: str | None = None,
     ) -> dict[str, dict[str, Any]]:
@@ -4092,6 +4094,53 @@ class V3Store:
         environment = self._environment(environment)
         normalized_json = _json_text(normalized_request)
         request_sha256 = request_fingerprint(normalized_request)
+        if predecessor_job_id is not None:
+            _require_nonblank("predecessor_job_id", predecessor_job_id)
+            if predecessor_job_id == job_id:
+                raise _configuration_error(
+                    "predecessor_invalid", "a job cannot be its own predecessor"
+                )
+        normalized_bindings: list[tuple[str, str, int]] = []
+        if (
+            isinstance(material_bindings, (str, bytes))
+            or not isinstance(material_bindings, Sequence)
+            or len(material_bindings) > 10
+        ):
+            raise _configuration_error(
+                "job_material_binding_invalid", "material bindings are invalid"
+            )
+        for binding in material_bindings:
+            if not isinstance(binding, Mapping) or set(binding) != {
+                "material_id",
+                "purpose",
+                "ordinal",
+            }:
+                raise _configuration_error(
+                    "job_material_binding_invalid", "material binding fields are invalid"
+                )
+            material_id = binding["material_id"]
+            purpose = binding["purpose"]
+            ordinal = binding["ordinal"]
+            _require_integer("ordinal", ordinal)
+            if (
+                not isinstance(material_id, str)
+                or not material_id
+                or not isinstance(purpose, str)
+                or not purpose
+                or ordinal < 0
+            ):
+                raise _configuration_error(
+                    "job_material_binding_invalid", "material binding values are invalid"
+                )
+            normalized_bindings.append((material_id, purpose, ordinal))
+        if len({item[0] for item in normalized_bindings}) != len(
+            normalized_bindings
+        ) or len({(item[1], item[2]) for item in normalized_bindings}) != len(
+            normalized_bindings
+        ):
+            raise _configuration_error(
+                "job_material_binding_invalid", "material bindings contain duplicates"
+            )
 
         def conflict(code: str, message: str) -> StoreConflictError:
             return StoreConflictError(code, message)
@@ -4107,6 +4156,7 @@ class V3Store:
                     existing_job["request_sha256"] != request_sha256
                     or existing_job["normalized_request_json"] != normalized_json
                     or existing_job["quote_id"] != quote_id
+                    or existing_job["predecessor_job_id"] != predecessor_job_id
                 ):
                     raise conflict(
                         "idempotency_conflict",
@@ -4139,6 +4189,22 @@ class V3Store:
                     raise conflict(
                         "billing_intent_conflict",
                         "replayed pre-debit intent violates immutable fields",
+                    )
+                stored_bindings = [
+                    (row["material_id"], row["purpose"], row["ordinal"])
+                    for row in connection.execute(
+                        """SELECT material_id,purpose,ordinal
+                           FROM edit_v3_job_materials WHERE job_id=?
+                           ORDER BY ordinal,material_id""",
+                        (existing_job["job_id"],),
+                    )
+                ]
+                if stored_bindings != sorted(
+                    normalized_bindings, key=lambda item: (item[2], item[0])
+                ):
+                    raise conflict(
+                        "job_material_binding_conflict",
+                        "replayed job has divergent material bindings",
                     )
                 return {"job": dict(existing_job), "intent": dict(existing_intent)}
 
@@ -4174,13 +4240,42 @@ class V3Store:
                         "frozen template version is absent or unpublished",
                     )
 
+            if predecessor_job_id is not None:
+                predecessor = connection.execute(
+                    """SELECT state FROM edit_v3_jobs
+                       WHERE environment=? AND owner_id=? AND job_id=?""",
+                    (environment, owner_id, predecessor_job_id),
+                ).fetchone()
+                if predecessor is None:
+                    raise conflict(
+                        "retry_predecessor_not_found",
+                        "retry predecessor does not belong to this owner",
+                    )
+                if predecessor["state"] not in {"refunded", "prehold_absent"}:
+                    raise conflict(
+                        "retry_not_allowed",
+                        "retry predecessor is not a terminal failed outcome",
+                    )
+            for material_id, _purpose, _ordinal in normalized_bindings:
+                material = connection.execute(
+                    """SELECT 1 FROM edit_v3_materials
+                       WHERE environment=? AND owner_id=? AND material_id=?""",
+                    (environment, owner_id, material_id),
+                ).fetchone()
+                if material is None:
+                    raise conflict(
+                        "job_material_not_found",
+                        "job material does not belong to this owner",
+                    )
+
             external_key = f"ai-edit-v3:{job_id}:pre_debit"
             try:
                 connection.execute(
                     """INSERT INTO edit_v3_jobs(
                            job_id,environment,owner_id,state,normalized_request_json,
-                           request_sha256,quote_id,idempotency_key,created_at,updated_at
-                       ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                           request_sha256,quote_id,predecessor_job_id,idempotency_key,
+                           created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         job_id,
                         environment,
@@ -4189,11 +4284,19 @@ class V3Store:
                         normalized_json,
                         request_sha256,
                         quote_id,
+                        predecessor_job_id,
                         idempotency_key,
                         now_ms,
                         now_ms,
                     ),
                 )
+                for material_id, purpose, ordinal in normalized_bindings:
+                    connection.execute(
+                        """INSERT INTO edit_v3_job_materials(
+                               job_id,material_id,purpose,ordinal,created_at
+                           ) VALUES(?,?,?,?,?)""",
+                        (job_id, material_id, purpose, ordinal, now_ms),
+                    )
                 if fail_after_job is not None:
                     raise fail_after_job
                 connection.execute(
@@ -5426,6 +5529,91 @@ class V3Store:
 
         return self._write(write)
 
+    def get_upload_for_owner(
+        self,
+        owner_id: str,
+        upload_id: str,
+        *,
+        environment: str | None = None,
+    ) -> dict[str, Any] | None:
+        environment = self._environment(environment)
+        return self._read(
+            lambda connection: _row_dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_uploads
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, upload_id),
+                ).fetchone()
+            )
+        )
+
+    def get_material_for_upload(
+        self,
+        owner_id: str,
+        upload_id: str,
+        *,
+        environment: str | None = None,
+    ) -> dict[str, Any] | None:
+        environment = self._environment(environment)
+        return self._read(
+            lambda connection: _row_dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_materials
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, upload_id),
+                ).fetchone()
+            )
+        )
+
+    def resolve_request_uploads_for_owner(
+        self,
+        owner_id: str,
+        *,
+        source_upload_id: str | None,
+        material_ids: Sequence[str],
+        environment: str | None = None,
+    ) -> dict[str, Any] | None:
+        environment = self._environment(environment)
+        if source_upload_id is not None:
+            _require_nonblank("source_upload_id", source_upload_id)
+        if (
+            isinstance(material_ids, (str, bytes))
+            or not isinstance(material_ids, Sequence)
+            or len(material_ids) > 10
+            or any(not isinstance(value, str) or not value for value in material_ids)
+            or len(set(material_ids)) != len(material_ids)
+        ):
+            raise _configuration_error(
+                "material_ids_invalid", "material IDs must be a unique sequence of at most ten"
+            )
+
+        def read(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            source = None
+            if source_upload_id is not None:
+                source = connection.execute(
+                    """SELECT * FROM edit_v3_uploads
+                       WHERE environment=? AND owner_id=? AND upload_id=?""",
+                    (environment, owner_id, source_upload_id),
+                ).fetchone()
+                if source is None:
+                    return None
+            materials: list[dict[str, Any]] = []
+            for material_id in material_ids:
+                row = connection.execute(
+                    """SELECT * FROM edit_v3_materials
+                       WHERE environment=? AND owner_id=? AND material_id=?""",
+                    (environment, owner_id, material_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                materials.append(dict(row))
+            return {
+                "source_upload": None if source is None else dict(source),
+                "materials": materials,
+            }
+
+        return self._read(read)
+
     def insert_material(
         self,
         owner_id: str,
@@ -6382,6 +6570,44 @@ class V3Store:
                 connection.execute(
                     """SELECT * FROM edit_v3_jobs
                        WHERE environment=? AND owner_id=? AND job_id=?""",
+                    (environment, owner_id, job_id),
+                ).fetchone()
+            )
+        )
+
+    def get_job_by_idempotency_for_owner(
+        self,
+        owner_id: str,
+        idempotency_key: str,
+        *,
+        environment: str | None = None,
+    ) -> dict[str, Any] | None:
+        environment = self._environment(environment)
+        return self._read(
+            lambda connection: _row_dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_jobs
+                       WHERE environment=? AND owner_id=? AND idempotency_key=?""",
+                    (environment, owner_id, idempotency_key),
+                ).fetchone()
+            )
+        )
+
+    def get_latest_plan_for_owner(
+        self,
+        owner_id: str,
+        job_id: str,
+        *,
+        environment: str | None = None,
+    ) -> dict[str, Any] | None:
+        environment = self._environment(environment)
+        return self._read(
+            lambda connection: _row_dict(
+                connection.execute(
+                    """SELECT p.* FROM edit_v3_plans AS p
+                       JOIN edit_v3_jobs AS j ON j.job_id=p.job_id
+                       WHERE j.environment=? AND j.owner_id=? AND p.job_id=?
+                       ORDER BY p.version DESC LIMIT 1""",
                     (environment, owner_id, job_id),
                 ).fetchone()
             )

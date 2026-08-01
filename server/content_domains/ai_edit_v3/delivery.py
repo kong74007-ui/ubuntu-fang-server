@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
+import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -20,6 +24,87 @@ _DECISION_STATUSES = frozenset(
 )
 _FINAL_DECISIONS = frozenset({"publish_won", "cancel_won"})
 _ASSET_DECISION_TIMEOUT_MS = 300_000
+_OBJECT_KEY_ENVIRONMENTS = frozenset({"test", "production"})
+_OBJECT_KEY_UPLOAD_SCOPES = frozenset({"source", "materials/uploaded"})
+_OBJECT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_OBJECT_KEY_FILENAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+
+
+class ObjectKeyError(ValueError):
+    """Stable validation failure for a private V3 object key."""
+
+
+def _object_key_has_unsafe_character(value: str) -> bool:
+    return any(
+        ord(character) < 0x20
+        or 0x7F <= ord(character) <= 0x9F
+        or 0xD800 <= ord(character) <= 0xDFFF
+        for character in value
+    )
+
+
+def _object_key_filename(filename: Any) -> str:
+    if not isinstance(filename, str) or not filename or not filename.strip():
+        raise ObjectKeyError("filename_invalid")
+    if len(filename) > 180 or len(filename.encode("utf-8", "surrogatepass")) > 255:
+        raise ObjectKeyError("filename_too_long")
+    if (
+        _object_key_has_unsafe_character(filename)
+        or ".." in filename
+        or any(marker in filename for marker in ("/", "\\", ":", "?", "#"))
+        or filename.startswith(("~", "."))
+    ):
+        raise ObjectKeyError("filename_path_syntax")
+    ascii_name = unicodedata.normalize("NFKD", filename).encode(
+        "ascii", "ignore"
+    ).decode("ascii").lower()
+    sanitized = re.sub(r"[^a-z0-9._-]+", "-", ascii_name).strip("._-")
+    sanitized = re.sub(r"[-_.]{2,}", "-", sanitized)
+    if not sanitized or _OBJECT_KEY_FILENAME.fullmatch(sanitized) is None:
+        raise ObjectKeyError("filename_normalization_failed")
+    return sanitized
+
+
+def build_object_key(
+    environment: str,
+    owner: str,
+    object_id: str,
+    scope: str,
+    filename: str,
+    owner_hmac_secret: bytes,
+) -> str:
+    """Build a validated Task-9 upload key without exposing the raw owner."""
+
+    if environment not in _OBJECT_KEY_ENVIRONMENTS:
+        raise ObjectKeyError("environment_invalid")
+    if (
+        not isinstance(owner, str)
+        or not owner
+        or owner != owner.strip()
+        or _object_key_has_unsafe_character(owner)
+    ):
+        raise ObjectKeyError("owner_invalid")
+    if (
+        not isinstance(object_id, str)
+        or _OBJECT_KEY_ID.fullmatch(object_id) is None
+        or ".." in object_id
+    ):
+        raise ObjectKeyError("object_id_invalid")
+    if scope not in _OBJECT_KEY_UPLOAD_SCOPES:
+        raise ObjectKeyError("scope_invalid")
+    if (
+        not isinstance(owner_hmac_secret, bytes)
+        or len(owner_hmac_secret) < 16
+        or len(set(owner_hmac_secret)) < 8
+    ):
+        raise ObjectKeyError("owner_hmac_secret_invalid")
+    owner_hmac = hmac.new(
+        owner_hmac_secret, owner.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:24]
+    return (
+        f"{environment}/ai-edit-v3/{owner_hmac}/{object_id}/"
+        f"{scope}/{_object_key_filename(filename)}"
+    )
 
 
 def _freeze_json(value: Any) -> Any:
