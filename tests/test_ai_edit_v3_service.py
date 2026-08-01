@@ -1306,6 +1306,36 @@ class V3ApplicationServiceTests(unittest.TestCase):
         nested = {
             "headline": "safe public value",
             "summary": "Use A/B testing for Q3 growth.",
+            "semantic_slash_text": {
+                "headline": "Use A/B testing for Q3 growth.",
+                "title": "Use A/B testing for Q3 growth.",
+                "description": "使用 A/B 测试优化转化率。",
+                "intent": "开展 A/B 实验评估方案。",
+                "text": "进行 A/B 对比来选择版本。",
+                "label": "Use A/B testing for Q3 growth.",
+                "name": "Use A/B testing for Q3 growth.",
+            },
+            "slash_reference_cases": [
+                {
+                    "detail": "private A/B",
+                    "note": "private A/B",
+                    "reference": "private A/B",
+                    "summary": "private A/B",
+                },
+                {
+                    "detail": "folder A/B",
+                    "note": "folder A/B",
+                    "reference": "folder A/B",
+                    "summary": "folder A/B",
+                },
+                {
+                    "detail": "private A/B/secret.mov",
+                    "note": "private A/B/secret.mov",
+                    "reference": "private A/B/secret.mov",
+                    "summary": "private A/B/secret.mov",
+                },
+            ],
+            "innocuous": "Use A/B testing for Q3 growth.",
             "nested": {
                 "transcript": "private transcript",
                 "cos_key": "production/ai-edit-v3/private/object",
@@ -1330,7 +1360,9 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 "reference_mime": "image/png",
             },
         }
-        encoded = json.dumps(nested, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(
+            nested, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         def seed_plan(connection):
             connection.execute(
                 """INSERT INTO edit_v3_model_calls(
@@ -1385,6 +1417,36 @@ class V3ApplicationServiceTests(unittest.TestCase):
             self.service.get_plan("alice", job["job_id"])["plan"],
             self.service.get_result("alice", job["job_id"])["result"],
         )
+        expected_semantic_slash_text = {
+            "headline": "Use A/B testing for Q3 growth.",
+            "title": "Use A/B testing for Q3 growth.",
+            "description": "使用 A/B 测试优化转化率。",
+            "intent": "开展 A/B 实验评估方案。",
+            "text": "进行 A/B 对比来选择版本。",
+            "label": "Use A/B testing for Q3 growth.",
+            "name": "Use A/B testing for Q3 growth.",
+        }
+        expected_slash_reference_cases = [
+            {
+                "detail": "[redacted]",
+                "note": "[redacted]",
+                "reference": "[redacted]",
+                "summary": "[redacted]",
+            },
+            {
+                "detail": "[redacted]",
+                "note": "[redacted]",
+                "reference": "[redacted]",
+                "summary": "[redacted]",
+            },
+            {
+                "detail": "[redacted]",
+                "note": "[redacted]",
+                "reference": "[redacted]",
+                "summary": "[redacted]",
+            },
+        ]
+        semantic_failures = []
         for value in public_values:
             serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
             for private in (
@@ -1410,11 +1472,22 @@ class V3ApplicationServiceTests(unittest.TestCase):
                     leaks.append(("plan-or-result", private))
             self.assertEqual(value["headline"], "safe public value")
             self.assertEqual(value["summary"], "Use A/B testing for Q3 growth.")
+            if value["semantic_slash_text"] != expected_semantic_slash_text:
+                semantic_failures.append(
+                    ("semantic_slash_text", value["semantic_slash_text"])
+                )
+            if value["slash_reference_cases"] != expected_slash_reference_cases:
+                semantic_failures.append(
+                    ("slash_reference_cases", value["slash_reference_cases"])
+                )
+            if value["innocuous"] != "[redacted]":
+                semantic_failures.append(("innocuous", value["innocuous"]))
             self.assertEqual(value["nested"]["mime_type"], "video/mp4")
             self.assertEqual(value["nested"]["content_type"], "image/png")
             self.assertEqual(value["nested"]["note_mime"], "[redacted]")
             self.assertEqual(value["nested"]["reference_mime"], "[redacted]")
         self.assertEqual(leaks, [])
+        self.assertEqual(semantic_failures, [])
 
     def test_existing_job_replay_does_not_reresolve_catalog_and_rechecks_store(self):
         request = {
