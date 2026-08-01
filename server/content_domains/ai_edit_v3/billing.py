@@ -216,6 +216,80 @@ def _published_pricing(store: V3Store) -> tuple[dict[str, Any], dict[str, Any]]:
     return row, parameters
 
 
+def _validated_pricing_parts(
+    parameters: Mapping[str, Any],
+) -> dict[str, dict[str, int]]:
+    """Validate the frozen pricing schema and all published-ceiling arithmetic."""
+
+    if set(parameters) != {"parts"} or not isinstance(parameters.get("parts"), Mapping):
+        raise _error("pricing_parameters_invalid", "pricing requires exactly one parts object")
+    specifications = parameters["parts"]
+    if set(specifications) != set(PART_NAMES):
+        raise _error("pricing_parts_invalid", "pricing must contain exactly eight named parts")
+
+    validated: dict[str, dict[str, int]] = {}
+    ceiling_min_total = 0
+    ceiling_max_total = 0
+    for name in PART_NAMES:
+        specification = specifications[name]
+        expected_keys = {"ceiling_quantity", "min_rate", "max_rate"}
+        if name == "tts_ceiling":
+            expected_keys.add("unit_size")
+        if not isinstance(specification, Mapping) or set(specification) != expected_keys:
+            raise _error("pricing_part_invalid", f"{name} has invalid pricing keys")
+        ceiling = _require_int64(
+            f"{name}.ceiling_quantity", specification["ceiling_quantity"]
+        )
+        min_rate = _require_int64(f"{name}.min_rate", specification["min_rate"])
+        max_rate = _require_int64(f"{name}.max_rate", specification["max_rate"])
+        if min_rate > max_rate:
+            raise _error("pricing_rate_invalid", f"{name} min rate exceeds max rate")
+        if name in {"base_task", "one_repair_reserve"} and ceiling != 1:
+            raise _error("pricing_quantity_invalid", f"{name} quantity must be one")
+        item = {
+            "ceiling_quantity": ceiling,
+            "min_rate": min_rate,
+            "max_rate": max_rate,
+        }
+        if name == "tts_ceiling":
+            unit_size = _require_int64(
+                "tts_ceiling.unit_size", specification["unit_size"]
+            )
+            if unit_size == 0:
+                raise _error("pricing_quantity_invalid", "TTS unit size must be positive")
+            item["unit_size"] = unit_size
+        ceiling_min_total = _checked_add(
+            ceiling_min_total,
+            _checked_multiply(ceiling, min_rate),
+            "pricing_overflow",
+        )
+        ceiling_max_total = _checked_add(
+            ceiling_max_total,
+            _checked_multiply(ceiling, max_rate),
+            "pricing_overflow",
+        )
+        validated[name] = item
+    return validated
+
+
+def validate_published_pricing_readiness(store: V3Store) -> Mapping[str, str]:
+    """Read and validate the sole published pricing version without side effects.
+
+    The same frozen schema and signed-int64 arithmetic checks used for quote
+    calculation are applied at every published ceiling. No fictional request is
+    constructed and no Store mutation is performed.
+    """
+
+    pricing, parameters = _published_pricing(store)
+    _validated_pricing_parts(parameters)
+    return MappingProxyType(
+        {
+            "version": pricing["version"],
+            "parameters_sha256": pricing["parameters_sha256"],
+        }
+    )
+
+
 def _template_for_request(
     store: V3Store, normalized_request: Mapping[str, Any]
 ) -> tuple[str | None, str | None]:
@@ -263,35 +337,20 @@ def _template_for_request(
 def _calculate_parts(
     parameters: Mapping[str, Any], normalized_request: Mapping[str, Any]
 ) -> tuple[dict[str, dict[str, Any]], int, int]:
-    if set(parameters) != {"parts"} or not isinstance(parameters.get("parts"), Mapping):
-        raise _error("pricing_parameters_invalid", "pricing requires exactly one parts object")
-    specifications = parameters["parts"]
-    if set(specifications) != set(PART_NAMES):
-        raise _error("pricing_parts_invalid", "pricing must contain exactly eight named parts")
+    specifications = _validated_pricing_parts(parameters)
 
     parts: dict[str, dict[str, Any]] = {}
     min_total = 0
     max_total = 0
     for name in PART_NAMES:
         specification = specifications[name]
-        expected_keys = {"ceiling_quantity", "min_rate", "max_rate"}
-        if name == "tts_ceiling":
-            expected_keys.add("unit_size")
-        if not isinstance(specification, Mapping) or set(specification) != expected_keys:
-            raise _error("pricing_part_invalid", f"{name} has invalid pricing keys")
-        ceiling = _require_int64(f"{name}.ceiling_quantity", specification["ceiling_quantity"])
-        min_rate = _require_int64(f"{name}.min_rate", specification["min_rate"])
-        max_rate = _require_int64(f"{name}.max_rate", specification["max_rate"])
-        if min_rate > max_rate:
-            raise _error("pricing_rate_invalid", f"{name} min rate exceeds max rate")
-        if name in {"base_task", "one_repair_reserve"} and ceiling != 1:
-            raise _error("pricing_quantity_invalid", f"{name} quantity must be one")
+        ceiling = specification["ceiling_quantity"]
+        min_rate = specification["min_rate"]
+        max_rate = specification["max_rate"]
         quantity = ceiling
         quantity_source = "published_ceiling"
         if name == "tts_ceiling":
-            unit_size = _require_int64("tts_ceiling.unit_size", specification["unit_size"])
-            if unit_size == 0:
-                raise _error("pricing_quantity_invalid", "TTS unit size must be positive")
+            unit_size = specification["unit_size"]
             if normalized_request["input_type"] != "script_to_audio_video":
                 quantity = 0
                 quantity_source = "not_requested"

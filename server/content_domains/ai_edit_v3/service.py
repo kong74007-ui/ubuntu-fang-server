@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import re
@@ -17,10 +18,9 @@ from urllib.parse import urlsplit
 
 from .billing import (
     BillingError,
-    _calculate_parts as billing_calculate_parts,
-    _published_pricing as billing_published_pricing,
     create_job_with_predebit as billing_create_job_with_predebit,
     create_quote as billing_create_quote,
+    validate_published_pricing_readiness,
 )
 from .contracts import (
     ContractError,
@@ -62,6 +62,18 @@ _QUOTE_TTL_MS = 900_000
 _AUTHORITY_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 _ABSOLUTE_WINDOWS_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)")
+_PROBE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}\Z")
+_PROBE_FORMAT_LIST = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:,[A-Za-z0-9][A-Za-z0-9._+-]*)*\Z"
+)
+_PROBE_RATIONAL = re.compile(r"(?:[1-9][0-9]*/[1-9][0-9]*|[0-9]+(?:\.[0-9]+)?)\Z")
+_PROBE_LONG_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,_+():-]{0,255}\Z")
+_MIME_VALUE = re.compile(r"[a-z][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*\Z")
+_V3_COS_VALUE = re.compile(r"(?:^|/)(?:test|production)/ai-edit-v3(?:/|$)", re.I)
+_QUERY_SECRET_VALUE = re.compile(
+    r"(?:^|[?&;\s])(?:authorization|credential|password|secret|signature|token)=",
+    re.I,
+)
 _PROBE_FIELDS = frozenset(
     {
         "bit_rate",
@@ -147,6 +159,33 @@ _SENSITIVE_PROBE_MARKERS = (
     "token",
     "url",
 )
+_PROBE_NONNEGATIVE_INTEGER_FIELDS = frozenset(
+    {
+        "bit_rate",
+        "channels",
+        "duration_ms",
+        "height",
+        "level",
+        "sample_rate",
+        "stream_count",
+        "width",
+    }
+)
+_PROBE_TOKEN_FIELDS = frozenset(
+    {
+        "codec",
+        "codec_name",
+        "codec_tag_string",
+        "color_primaries",
+        "color_space",
+        "color_transfer",
+        "field_order",
+        "pixel_format",
+        "profile",
+    }
+)
+_PROBE_FORMAT_FIELDS = frozenset({"container", "format_name"})
+_PROBE_LONG_TEXT_FIELDS = frozenset({"codec_long_name", "format_long_name"})
 
 
 class ServiceError(RuntimeError):
@@ -381,36 +420,99 @@ def _safe_probe_evidence(value: Any) -> dict[str, Any]:
     for key, item in value.items():
         if not isinstance(key, str) or key not in _PROBE_FIELDS:
             raise ServiceError("input_probe_invalid", "probe field is unsafe")
-        if item is None or isinstance(item, bool):
-            result[key] = item
-        elif isinstance(item, int):
-            if item < -(1 << 63) or item > (1 << 63) - 1:
-                raise ServiceError("input_probe_invalid", "probe integer is invalid")
-            result[key] = item
-        elif isinstance(item, float):
-            if not math.isfinite(item):
-                raise ServiceError("input_probe_invalid", "probe number is invalid")
-            result[key] = item
-        elif isinstance(item, str):
+        if key in _PROBE_NONNEGATIVE_INTEGER_FIELDS:
             if (
-                not item
-                or len(item) > 256
-                or _has_control_or_surrogate(item)
-                or item.startswith("/")
-                or _ABSOLUTE_WINDOWS_PATH.match(item) is not None
-                or "://" in item
-                or "?" in item
-                or "#" in item
+                isinstance(item, bool)
+                or not isinstance(item, int)
+                or not 0 <= item <= (1 << 63) - 1
             ):
-                raise ServiceError("input_probe_invalid", "probe string is unsafe")
-            result[key] = item
-        else:
+                raise ServiceError("input_probe_invalid", "probe integer is invalid")
+        elif key == "rotation":
+            if (
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(item)
+                or not -360 <= item <= 360
+            ):
+                raise ServiceError("input_probe_invalid", "probe rotation is invalid")
+        elif key == "frame_rate":
+            if isinstance(item, bool) or not (
+                isinstance(item, (int, float))
+                and math.isfinite(item)
+                and item > 0
+                or isinstance(item, str)
+                and _PROBE_RATIONAL.fullmatch(item) is not None
+            ):
+                raise ServiceError("input_probe_invalid", "probe frame rate is invalid")
+        elif key in _PROBE_TOKEN_FIELDS:
+            if not isinstance(item, str) or _PROBE_TOKEN.fullmatch(item) is None:
+                raise ServiceError("input_probe_invalid", "probe token is invalid")
+        elif key in _PROBE_FORMAT_FIELDS:
+            if not isinstance(item, str) or _PROBE_FORMAT_LIST.fullmatch(item) is None:
+                raise ServiceError("input_probe_invalid", "probe format is invalid")
+        elif key == "channel_layout":
+            if not isinstance(item, str) or _PROBE_TOKEN.fullmatch(item) is None:
+                raise ServiceError("input_probe_invalid", "probe channel layout is invalid")
+        elif key in _PROBE_LONG_TEXT_FIELDS:
+            if not isinstance(item, str) or _PROBE_LONG_TEXT.fullmatch(item) is None:
+                raise ServiceError("input_probe_invalid", "probe description is invalid")
+        else:  # pragma: no cover - every allowlisted field has one frozen domain
             raise ServiceError("input_probe_invalid", "probe value is invalid")
+        if isinstance(item, str) and (
+            _has_control_or_surrogate(item)
+            or _V3_COS_VALUE.search(item) is not None
+            or _QUERY_SECRET_VALUE.search(item) is not None
+            or "://" in item
+            or "?" in item
+            or "#" in item
+            or "\\" in item
+            or any(segment in {".", ".."} for segment in item.split("/"))
+        ):
+            raise ServiceError("input_probe_invalid", "probe string is unsafe")
+        result[key] = item
     return result
+
+
+def _probe_frame_rate_number(value: int | float | str) -> float:
+    if isinstance(value, str):
+        if "/" in value:
+            numerator, denominator = value.split("/", 1)
+            return int(numerator) / int(denominator)
+        return float(value)
+    return float(value)
 
 
 def _is_absolute_local_path(value: str) -> bool:
     return value.startswith("/") or _ABSOLUTE_WINDOWS_PATH.match(value) is not None
+
+
+def _looks_like_private_reference(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    return bool(
+        _has_control_or_surrogate(value)
+        or "://" in value
+        or _V3_COS_VALUE.search(normalized) is not None
+        or _QUERY_SECRET_VALUE.search(value) is not None
+        or "\\" in value
+        or _is_absolute_local_path(value)
+        or any(segment in {".", ".."} for segment in normalized.split("/"))
+        or (
+            "/" in value
+            and not any(character.isspace() for character in value)
+            and _MIME_VALUE.fullmatch(value) is None
+        )
+    )
+
+
+def _safe_opaque_catalog_value(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or _OPAQUE_ID.fullmatch(value) is None
+        or ".." in value
+        or _looks_like_private_reference(value)
+    ):
+        raise ValueError("catalog_reference_invalid")
+    return value
 
 
 def _safe_summary_text(value: Any, *, maximum: int = 512) -> str:
@@ -420,8 +522,7 @@ def _safe_summary_text(value: Any, *, maximum: int = 512) -> str:
         or value != value.strip()
         or len(value) > maximum
         or _has_control_or_surrogate(value)
-        or _is_absolute_local_path(value)
-        or "://" in value
+        or _looks_like_private_reference(value)
     ):
         raise ValueError("catalog_text_invalid")
     return value
@@ -437,14 +538,25 @@ def _safe_cover_url(value: Any) -> str:
     ):
         raise ValueError("catalog_cover_url_invalid")
     parsed = urlsplit(value)
+    hostname = parsed.hostname
     if (
         parsed.scheme != "https"
-        or not parsed.hostname
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
+        or bool(parsed.query)
         or bool(parsed.fragment)
+        or hostname.lower() == "localhost"
+        or hostname.lower().endswith((".local", ".internal"))
     ):
         raise ValueError("catalog_cover_url_invalid")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise ValueError("catalog_cover_url_invalid")
     return value
 
 
@@ -482,6 +594,8 @@ def _public_catalog_record(capability: str, value: Any) -> dict[str, Any]:
             if text != text.lower() or not text.startswith("audio/"):
                 raise ValueError("catalog_mime_invalid")
             result[key] = text
+        elif key.endswith("_id") or key.endswith("_reference") or key == "version":
+            result[key] = _safe_opaque_catalog_value(item)
         else:
             result[key] = _safe_summary_text(item)
 
@@ -581,11 +695,7 @@ class EditV3Service:
 
     def _pricing_ready(self) -> bool:
         try:
-            _row, parameters = billing_published_pricing(self.store)
-            billing_calculate_parts(
-                parameters,
-                {"input_type": "uploaded_video", "tts_input": None},
-            )
+            validate_published_pricing_readiness(self.store)
         except Exception:
             return False
         return True
@@ -621,12 +731,7 @@ class EditV3Service:
         )
 
     def _require_write(self, *, upload: bool = False) -> None:
-        if not self.enabled:
-            raise ServiceError(
-                "feature_disabled",
-                "AI Edit V3 write operations are disabled",
-                status=503,
-            )
+        self._require_feature_enabled()
         report = self._capability_report()
         if report is None:
             raise ServiceError(
@@ -644,6 +749,14 @@ class EditV3Service:
             raise ServiceError(
                 "capability_unavailable",
                 "new job capability is unavailable",
+                status=503,
+            )
+
+    def _require_feature_enabled(self) -> None:
+        if not self.enabled:
+            raise ServiceError(
+                "feature_disabled",
+                "AI Edit V3 write operations are disabled",
                 status=503,
             )
 
@@ -807,6 +920,12 @@ class EditV3Service:
         evidence = _safe_probe_evidence(observation.probe_evidence)
         if not isinstance(evidence, dict):
             raise ServiceError("input_probe_invalid", "probe evidence is invalid")
+        if (
+            upload_type == "main_video"
+            and "frame_rate" in evidence
+            and _probe_frame_rate_number(evidence["frame_rate"]) > 60
+        ):
+            raise ServiceError("input_video_invalid", "video observation is invalid")
 
         duration = observation.duration_ms
         width = observation.width
@@ -866,6 +985,108 @@ class EditV3Service:
             evidence["frame_rate"] = frame_rate
         return observation, evidence
 
+    @staticmethod
+    def _completed_upload_response(row: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            upload_type = row["upload_type"]
+            declared_mime = row["declared_mime"]
+            declared_size = row["declared_size"]
+            observed_mime = row["observed_mime"]
+            observed_size = row["observed_size"]
+            duration = row["duration_ms"]
+            width = row["width"]
+            height = row["height"]
+            sha256 = row["sha256"]
+            if (
+                row["status"] != "completed"
+                or upload_type not in _UPLOAD_TYPES
+                or declared_mime not in _DECLARED_MIMES[upload_type]
+                or isinstance(declared_size, bool)
+                or not isinstance(declared_size, int)
+                or not 0 <= declared_size <= _MAX_UPLOAD_BYTES
+                or upload_type == "material_image"
+                and declared_size > _MAX_IMAGE_BYTES
+                or not isinstance(observed_mime, str)
+                or observed_mime != observed_mime.lower()
+                or len(observed_mime) > 128
+                or _has_control_or_surrogate(observed_mime)
+                or isinstance(observed_size, bool)
+                or not isinstance(observed_size, int)
+                or not 0 <= observed_size <= (1 << 63) - 1
+                or not isinstance(sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+                or any(
+                    isinstance(value, bool)
+                    or value is not None
+                    and (not isinstance(value, int) or value < 0)
+                    for value in (duration, width, height)
+                )
+            ):
+                raise ValueError("completed_upload_invalid")
+            EditV3Service._validate_head(
+                {
+                    "size_bytes": observed_size,
+                    "content_type": observed_mime,
+                    "etag": row["observed_etag"],
+                }
+            )
+            if upload_type == "material_image":
+                if (
+                    observed_mime not in _IMAGE_MIMES
+                    or observed_size > _MAX_IMAGE_BYTES
+                    or duration is not None
+                    or width is None
+                    or height is None
+                    or width <= 0
+                    or height <= 0
+                    or max(width, height) > 12_000
+                    or width * height > 80_000_000
+                ):
+                    raise ValueError("completed_image_invalid")
+            elif upload_type == "main_video":
+                if (
+                    not observed_mime.startswith("video/")
+                    or duration is None
+                    or not _MIN_MEDIA_DURATION_MS <= duration <= _MAX_MEDIA_DURATION_MS
+                    or width is None
+                    or height is None
+                    or width <= 0
+                    or height <= 0
+                    or max(width, height) > 4_096
+                ):
+                    raise ValueError("completed_video_invalid")
+            elif (
+                not observed_mime.startswith("audio/")
+                or duration is None
+                or not _MIN_MEDIA_DURATION_MS <= duration <= _MAX_MEDIA_DURATION_MS
+                or width is not None
+                or height is not None
+            ):
+                raise ValueError("completed_audio_invalid")
+            raw_probe = row["probe_json"]
+            evidence = parse_strict_json(
+                raw_probe,
+                max_bytes=16 * 1024,
+                max_depth=2,
+                max_items=len(_PROBE_FIELDS),
+                max_string_chars=256,
+            )
+            frozen_probe = _safe_probe_evidence(evidence)
+            if (
+                canonical_json(frozen_probe).decode("utf-8") != raw_probe
+                or upload_type == "main_video"
+                and "frame_rate" in frozen_probe
+                and _probe_frame_rate_number(frozen_probe["frame_rate"]) > 60
+            ):
+                raise ValueError("completed_probe_invalid")
+        except (ContractError, KeyError, ServiceError, TypeError, ValueError) as exc:
+            raise ServiceError(
+                "upload_storage_failed",
+                "stored completed upload is invalid",
+                status=503,
+            ) from exc
+        return _public_upload(row)
+
     def complete_upload(
         self,
         owner: str,
@@ -876,14 +1097,15 @@ class EditV3Service:
         owner = _require_owner(owner)
         upload_id = _require_identifier("upload_id", upload_id)
         now = _require_now(now)
-        self._require_write(upload=True)
+        self._require_feature_enabled()
         row = self.store.get_upload_for_owner(
             owner, upload_id, environment=self.environment
         )
         if row is None:
             raise ServiceError("not_found", "resource was not found", status=404)
         if row["status"] == "completed":
-            return _public_upload(row)
+            return self._completed_upload_response(row)
+        self._require_write(upload=True)
         if row["status"] != "pending":
             raise ServiceError("upload_not_completable", "upload cannot be completed", status=409)
         if now >= row["expires_at"]:
@@ -925,7 +1147,7 @@ class EditV3Service:
             raise ServiceError("upload_storage_failed", "upload could not be completed", status=503) from exc
         if completed is None:
             raise ServiceError("not_found", "resource was not found", status=404)
-        return _public_upload(completed)
+        return self._completed_upload_response(completed)
 
     def create_material(
         self,
@@ -1458,8 +1680,8 @@ class EditV3Service:
             idempotency_key, allow_retry_namespace=allow_retry_namespace
         )
         now = _require_now(now)
-        self._require_write()
         normalized = self._normalize_request(request)
+        self._require_feature_enabled()
         fingerprint = request_fingerprint(normalized)
         normalized_json = canonical_json(normalized).decode("utf-8")
         material_bindings = [
@@ -1507,6 +1729,7 @@ class EditV3Service:
                 )
             return self._public_job(replay)
 
+        self._require_write()
         quote = self.store.get_quote(owner, quote_id, environment=self.environment)
         if quote is None:
             raise ServiceError("quote_not_found", "quote was not found", status=404)
@@ -1590,7 +1813,7 @@ class EditV3Service:
         )
         client_key = self._validate_idempotency_key(idempotency_key)
         now = _require_now(now)
-        self._require_write()
+        self._require_feature_enabled()
         predecessor = self.store.get_job_for_owner(
             owner, predecessor_job_id, environment=self.environment
         )
@@ -1624,7 +1847,16 @@ class EditV3Service:
                     "retry identity conflicts with another predecessor",
                     status=409,
                 )
-            return self._public_job(existing)
+            return self._create_job(
+                owner,
+                request,
+                existing["quote_id"],
+                internal_key,
+                now=now,
+                allow_retry_namespace=True,
+                predecessor_job_id=predecessor_job_id,
+            )
+        self._require_write()
         if (
             not isinstance(self.owner_hmac_secret, bytes)
             or len(self.owner_hmac_secret) < 16
@@ -1796,9 +2028,7 @@ class EditV3Service:
         if isinstance(value, list):
             return [EditV3Service._redact_public_value(item) for item in value]
         if isinstance(value, str) and (
-            "://" in value
-            or _is_absolute_local_path(value)
-            or _has_control_or_surrogate(value)
+            _looks_like_private_reference(value)
         ):
             return "[redacted]"
         return value

@@ -220,6 +220,79 @@ class BillingTestCase(unittest.TestCase):
 
 
 class V3QuoteTests(BillingTestCase):
+    def test_public_pricing_readiness_is_read_only_and_requires_one_publish(self):
+        validate = getattr(self.billing, "validate_published_pricing_readiness", None)
+        self.assertTrue(callable(validate), "public pricing readiness API is missing")
+        def durable_counts():
+            return self.store._read(
+                lambda connection: tuple(
+                    connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "edit_v3_pricing_versions",
+                        "edit_v3_quotes",
+                        "edit_v3_jobs",
+                        "edit_v3_billing_intents",
+                    )
+                )
+            )
+
+        before = durable_counts()
+        with self.assertRaises(self.billing.BillingError) as absent:
+            validate(self.store)
+        self.assertEqual(absent.exception.error_code, "pricing_unavailable")
+        self.assertEqual(durable_counts(), before)
+
+        published = self.publish_pricing()
+        before = durable_counts()
+        ready = validate(self.store)
+        self.assertEqual(ready["version"], "price-v1")
+        self.assertEqual(ready["parameters_sha256"], published["parameters_sha256"])
+        self.assertEqual(durable_counts(), before)
+
+        original = self.store.list_published_pricing_versions
+        rows = original()
+        try:
+            self.store.list_published_pricing_versions = lambda: [
+                rows[0],
+                dict(rows[0], version="price-v2"),
+            ]
+            with self.assertRaises(self.billing.BillingError) as ambiguous:
+                validate(self.store)
+            self.assertEqual(ambiguous.exception.error_code, "pricing_ambiguous")
+        finally:
+            self.store.list_published_pricing_versions = original
+
+    def test_public_pricing_readiness_reuses_quote_schema_and_arithmetic_checks(self):
+        validate = getattr(self.billing, "validate_published_pricing_readiness", None)
+        self.assertTrue(callable(validate), "public pricing readiness API is missing")
+        cases = []
+        malformed = pricing_parameters()
+        del malformed["parts"]["image_ceiling"]
+        cases.append((malformed, "pricing_parts_invalid"))
+        invalid_rate = pricing_parameters()
+        invalid_rate["parts"]["base_task"]["min_rate"] = 11
+        cases.append((invalid_rate, "pricing_rate_invalid"))
+        invalid_quantity = pricing_parameters()
+        invalid_quantity["parts"]["base_task"]["ceiling_quantity"] = 2
+        cases.append((invalid_quantity, "pricing_quantity_invalid"))
+        overflow = pricing_parameters()
+        overflow["parts"]["duration_tier"]["ceiling_quantity"] = (1 << 63) - 1
+        cases.append((overflow, "pricing_overflow"))
+
+        for index, (parameters, expected) in enumerate(cases):
+            with self.subTest(expected=expected):
+                self.publish_pricing(f"readiness-{index}", parameters)
+                try:
+                    with self.assertRaises(self.billing.BillingError) as caught:
+                        validate(self.store)
+                    self.assertEqual(caught.exception.error_code, expected)
+                finally:
+                    self.store._write(
+                        lambda connection: connection.execute(
+                            "DELETE FROM edit_v3_pricing_versions"
+                        )
+                    )
+
     def test_quote_freezes_all_eight_parts_request_version_and_exact_ttl(self):
         self.publish_pricing()
         request = video_request()

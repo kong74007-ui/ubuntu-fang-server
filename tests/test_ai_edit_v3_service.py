@@ -472,6 +472,10 @@ class V3UploadTests(unittest.TestCase):
             {"codec": "/absolute/posix/value"},
             {"codec": "C:\\private\\probe.json"},
             {"codec": "\\\\server\\share\\probe.json"},
+            {"codec": "production/ai-edit-v3/private/object"},
+            {"format_name": "../private/probe.json"},
+            {"codec_long_name": "..\\private\\probe.json"},
+            {"container": "relative/private/probe.json"},
         )
         for index, evidence in enumerate(unsafe_evidence):
             with self.subTest(evidence=evidence):
@@ -505,8 +509,10 @@ class V3UploadTests(unittest.TestCase):
             width=observation.width,
             height=observation.height,
             probe_evidence={
-                "codec": "png",
-                "container": "image2",
+                "codec": "h264",
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "frame_rate": "30000/1001",
+                "channel_layout": "5.1(side)",
                 "bit_rate": 8000,
                 "sample_rate": 48000,
                 "channels": 2,
@@ -518,12 +524,116 @@ class V3UploadTests(unittest.TestCase):
             json.loads(stored["probe_json"]),
             {
                 "bit_rate": 8000,
+                "channel_layout": "5.1(side)",
                 "channels": 2,
-                "codec": "png",
-                "container": "image2",
+                "codec": "h264",
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "frame_rate": "30000/1001",
                 "sample_rate": 48000,
             },
         )
+
+    def test_completed_upload_replay_bypasses_runtime_readiness_but_revalidates_storage(self):
+        completed_upload = self.create_upload(filename="replay.png", now=21_000)
+        self.prepare_completion(completed_upload)
+        completed = self.service.complete_upload(
+            "alice", completed_upload["upload_id"], now=21_001
+        )
+
+        corrupt_upload = self.create_upload(filename="corrupt.png", now=21_010)
+        self.prepare_completion(corrupt_upload)
+        self.service.complete_upload("alice", corrupt_upload["upload_id"], now=21_011)
+
+        corrupt_video = self.create_upload(
+            "main_video",
+            filename="corrupt-video.mp4",
+            content_type="video/mp4",
+            now=21_012,
+        )
+        self.prepare_completion(
+            corrupt_video,
+            mime_type="video/mp4",
+            media_kind="video",
+            duration_ms=3_000,
+            width=1920,
+            height=1080,
+            frame_rate=30,
+        )
+        self.service.complete_upload("alice", corrupt_video["upload_id"], now=21_013)
+
+        pending_upload = self.create_upload(filename="pending.png", now=21_020)
+        self.prepare_completion(pending_upload)
+        self.store._write(
+            lambda connection: connection.execute(
+                "UPDATE edit_v3_uploads SET probe_json=? WHERE upload_id=?",
+                ('{"codec":"../private/probe.json"}', corrupt_upload["upload_id"]),
+            )
+        )
+        self.store._write(
+            lambda connection: connection.execute(
+                "UPDATE edit_v3_uploads SET probe_json=? WHERE upload_id=?",
+                ('{"codec":"h264","frame_rate":120}', corrupt_video["upload_id"]),
+            )
+        )
+
+        self.service.object_store = None
+        self.service.upload_inspector = None
+        self.service.owner_hmac_secret = b"weak"
+        self.service._capability_report_source = ready_capability_report(
+            accepts_uploads=False,
+            accepts_new_jobs=False,
+        )
+
+        replay = None
+        replay_error = None
+        try:
+            replay = self.service.complete_upload(
+                "alice", completed_upload["upload_id"], now=21_100
+            )
+        except ServiceError as exc:
+            replay_error = exc
+        self.assertIsNone(
+            replay_error,
+            f"completed replay unexpectedly required runtime readiness: {replay_error}",
+        )
+        self.assertEqual(replay, completed)
+
+        with self.assertRaises(ServiceError) as corrupt:
+            self.service.complete_upload(
+                "alice", corrupt_upload["upload_id"], now=21_101
+            )
+        self.assertEqual(corrupt.exception.error_code, "upload_storage_failed")
+        self.assertEqual(corrupt.exception.status, 503)
+
+        with self.assertRaises(ServiceError) as corrupt_frame_rate:
+            self.service.complete_upload(
+                "alice", corrupt_video["upload_id"], now=21_101
+            )
+        self.assertEqual(
+            corrupt_frame_rate.exception.error_code, "upload_storage_failed"
+        )
+        self.assertEqual(corrupt_frame_rate.exception.status, 503)
+
+        with self.assertRaises(ServiceError) as pending:
+            self.service.complete_upload(
+                "alice", pending_upload["upload_id"], now=21_102
+            )
+        self.assertEqual(pending.exception.error_code, "upload_capability_unavailable")
+        self.assertEqual(pending.exception.status, 503)
+
+        with self.assertRaises(ServiceError) as foreign:
+            self.service.complete_upload(
+                "bob", completed_upload["upload_id"], now=21_103
+            )
+        self.assertEqual(foreign.exception.error_code, "not_found")
+        self.assertEqual(foreign.exception.status, 404)
+
+        self.service.enabled = False
+        with self.assertRaises(ServiceError) as disabled:
+            self.service.complete_upload(
+                "alice", completed_upload["upload_id"], now=21_104
+            )
+        self.assertEqual(disabled.exception.error_code, "feature_disabled")
 
     def test_concurrent_completion_replays_first_time_but_metadata_drift_conflicts(self):
         upload = self.create_upload(filename="concurrent.png", now=30_000)
@@ -1122,6 +1232,40 @@ class V3ApplicationServiceTests(unittest.TestCase):
         else:
             leaks.append(("allowed-field-url", self.catalog.platform_rows[0]))
 
+        unsafe_catalog_values = (
+            ("asset_id", "production/ai-edit-v3/private/object"),
+            ("cover_asset_id", "../private/cover.jpg"),
+            ("cover_reference", "relative/private/cover.jpg"),
+            ("cover_url", "https://cdn.invalid/cover.jpg?token=secret"),
+        )
+        for field, unsafe in unsafe_catalog_values:
+            with self.subTest(field=field, unsafe=unsafe):
+                row = {
+                    "asset_id": "platform-safe",
+                    "title": "Use A/B testing for growth",
+                    "duration_ms": 3_000,
+                    "ratio": "16:9",
+                    field: unsafe,
+                }
+                self.catalog.platform_rows = [row]
+                try:
+                    returned = self.service.list_platform_assets("alice")
+                except ServiceError:
+                    continue
+                if unsafe in json.dumps(returned, ensure_ascii=False, sort_keys=True):
+                    leaks.append((f"catalog-{field}", unsafe))
+
+        self.catalog.platform_rows = [
+            {
+                "asset_id": "platform-legitimate",
+                "title": "Use A/B testing for growth",
+                "duration_ms": 3_000,
+                "ratio": "16:9",
+            }
+        ]
+        legitimate = self.service.list_platform_assets("alice")["items"][0]
+        self.assertEqual(legitimate["title"], "Use A/B testing for growth")
+
         request = self.request()
         quote = self.service.quote("alice", request, now=8_000)
         job = self.service.create_job(
@@ -1129,12 +1273,18 @@ class V3ApplicationServiceTests(unittest.TestCase):
         )
         nested = {
             "headline": "safe public value",
+            "summary": "Use A/B testing for Q3 growth.",
             "nested": {
                 "transcript": "private transcript",
                 "cos_key": "production/ai-edit-v3/private/object",
                 "path": "/srv/private/source.mp4",
                 "provider_payload": {"request_id": "provider-private"},
                 "signed_url": "https://private.invalid/a?token=secret",
+                "reference": "production/ai-edit-v3/private/innocuous-key",
+                "detail": "relative/private/source.mp4",
+                "note": "../private/source.mp4",
+                "more": "C:\\private\\source.mp4",
+                "other": "\\\\server\\share\\source.mp4",
             },
         }
         encoded = json.dumps(nested, sort_keys=True, separators=(",", ":"))
@@ -1200,10 +1350,16 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 "/srv/private/source.mp4",
                 "provider-private",
                 "private.invalid",
+                "production/ai-edit-v3/private/innocuous-key",
+                "relative/private/source.mp4",
+                "../private/source.mp4",
+                "C:\\private\\source.mp4",
+                "\\\\server\\share\\source.mp4",
             ):
                 if private in serialized:
                     leaks.append(("plan-or-result", private))
             self.assertEqual(value["headline"], "safe public value")
+            self.assertEqual(value["summary"], "Use A/B testing for Q3 growth.")
         self.assertEqual(leaks, [])
 
     def test_existing_job_replay_does_not_reresolve_catalog_and_rechecks_store(self):
@@ -1225,6 +1381,15 @@ class V3ApplicationServiceTests(unittest.TestCase):
             "alice", request, quote["quote_id"], "catalog-replay-1", now=9_001
         )
         self.service.source_catalog = None
+        self.service.capacity_gate = None
+        self.service.owner_hmac_secret = b"changed-replay-secret"
+        self.service._capability_report_source = None
+        published = self.store.list_published_pricing_versions()
+        original_pricing = self.store.list_published_pricing_versions
+        self.store.list_published_pricing_versions = lambda: [
+            published[0],
+            dict(published[0], version="ambiguous-replay-version"),
+        ]
 
         replay = None
         replay_error = None
@@ -1260,6 +1425,13 @@ class V3ApplicationServiceTests(unittest.TestCase):
             self.service.create_job(
                 "alice", request, quote["quote_id"], "catalog-replay-1", now=9_004
             )
+        self.service.enabled = False
+        with self.assertRaises(ServiceError) as disabled:
+            self.service.create_job(
+                "alice", request, quote["quote_id"], "catalog-replay-1", now=9_005
+            )
+        self.assertEqual(disabled.exception.error_code, "feature_disabled")
+        self.store.list_published_pricing_versions = original_pricing
 
     def test_capabilities_include_local_dependencies_and_usable_pricing(self):
         def service(**overrides):
@@ -1359,8 +1531,26 @@ class V3ApplicationServiceTests(unittest.TestCase):
         successor = self.service.retry_job(
             "alice", original["job_id"], "retry-client-1", now=1_004
         )
-        replay = self.service.retry_job(
-            "alice", original["job_id"], "retry-client-1", now=1_005
+        self.service.capacity_gate = None
+        self.service.owner_hmac_secret = b"changed-retry-replay-secret"
+        self.service._capability_report_source = None
+        published = self.store.list_published_pricing_versions()
+        self.store.list_published_pricing_versions = lambda: [
+            published[0],
+            dict(published[0], version="ambiguous-retry-replay"),
+        ]
+
+        replay = None
+        replay_error = None
+        try:
+            replay = self.service.retry_job(
+                "alice", original["job_id"], "retry-client-1", now=1_005
+            )
+        except ServiceError as exc:
+            replay_error = exc
+        self.assertIsNone(
+            replay_error,
+            f"retry replay unexpectedly required current capabilities: {replay_error}",
         )
 
         self.assertNotEqual(successor["job_id"], original["job_id"])
@@ -1373,6 +1563,18 @@ class V3ApplicationServiceTests(unittest.TestCase):
             if row["job_id"] == successor["job_id"]
         ]
         self.assertEqual(len(intents), 1)
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET request_amount=request_amount+1 WHERE job_id=?
+                     AND operation='pre_debit'""",
+                (successor["job_id"],),
+            )
+        )
+        with self.assertRaisesRegex(ServiceError, "billing_intent_conflict"):
+            self.service.retry_job(
+                "alice", original["job_id"], "retry-client-1", now=1_006
+            )
 
     def test_retry_predecessor_and_predebit_are_one_crash_safe_transaction(self):
         request = self.request()

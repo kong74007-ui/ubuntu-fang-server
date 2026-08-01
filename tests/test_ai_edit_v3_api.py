@@ -1,9 +1,18 @@
 import io
+import base64
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from server.content_domains.ai_edit_v3.api import dispatch
-from server.content_domains.ai_edit_v3.service import ServiceError
+from server.content_domains.ai_edit_v3.feature import CapabilityItem, CapabilityReport
+from server.content_domains.ai_edit_v3.service import (
+    CapacityDecision,
+    EditV3Service,
+    ServiceError,
+)
+from server.content_domains.ai_edit_v3.store import V3Store
 
 
 class FakeHandler:
@@ -368,6 +377,143 @@ class V3ApiDispatchTests(unittest.TestCase):
                     "GET", f"/api/v3/edit/jobs?{query}"
                 )
                 self.assertEqual(handler.statuses, [400])
+
+    def test_real_service_reachable_client_errors_stay_closed_nonretryable_4xx(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        v2 = root / "ai_edit_v2.db"
+        v2.write_bytes(b"V2 marker; do not open")
+        store = V3Store(root / "ai_edit_v3.db", v2_db_path=v2, environment="test")
+        parts = {}
+        for name in (
+            "base_task",
+            "duration_tier",
+            "tts_ceiling",
+            "qwen_ceiling",
+            "image_ceiling",
+            "bgm_sfx_ceiling",
+            "render_complexity",
+            "one_repair_reserve",
+        ):
+            part = {"ceiling_quantity": 1, "min_rate": 1, "max_rate": 2}
+            if name == "tts_ceiling":
+                part["unit_size"] = 1
+            parts[name] = part
+        store.insert_pricing_version(
+            "price-api-v1",
+            {"parts": parts},
+            status="published",
+            created_at=1,
+            published_at=2,
+        )
+
+        class Catalog:
+            @staticmethod
+            def resolve_voice(owner, voice_id):
+                return {"voice_id": voice_id, "status": "ready", "version": "v1"}
+
+        class Capacity:
+            @staticmethod
+            def check(_request):
+                return CapacityDecision(True, 1, 1, None)
+
+        report = CapabilityReport(
+            items={
+                "common": CapabilityItem(
+                    "configured_and_wired", "capability_ready", "ready"
+                )
+            },
+            runtime_versions={"python": "3.12"},
+            allows_existing_reads=True,
+            accepts_uploads=False,
+            accepts_new_jobs=True,
+        )
+        service = EditV3Service(
+            store,
+            owner_hmac_secret=b"api-error-test-secret",
+            enabled=True,
+            source_catalog=Catalog(),
+            capacity_gate=Capacity(),
+            capability_report=report,
+            clock=lambda: 1_000,
+        )
+
+        tts_base = {
+            "input_type": "script_to_audio_video",
+            "tts_input": {"text": "a", "voice_id": "voice-1"},
+            "ratio": "16:9",
+            "creation_mode": "ai_auto",
+            "material_asset_ids": [],
+        }
+        scope_cursor = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "created_at": 1,
+                    "environment": "test",
+                    "job_id": "job-1",
+                    "owner_id": "bob",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).rstrip(b"=").decode("ascii")
+        scenarios = (
+            (
+                "identifier_invalid",
+                "POST",
+                "/api/v3/edit/quote",
+                {
+                    "input_type": "uploaded_video",
+                    "source_upload_id": "",
+                    "ratio": "auto",
+                    "creation_mode": "ai_auto",
+                    "material_asset_ids": [],
+                },
+            ),
+            (
+                "template_reference_unpublished",
+                "POST",
+                "/api/v3/edit/quote",
+                {
+                    **tts_base,
+                    "creation_mode": "template_reference",
+                    "template_id": "draft:template-1",
+                },
+            ),
+            ("job_cursor_invalid", "GET", "/api/v3/edit/jobs?cursor=%25", None),
+            (
+                "job_cursor_scope_mismatch",
+                "GET",
+                f"/api/v3/edit/jobs?cursor={scope_cursor}",
+                None,
+            ),
+            (
+                "pricing_ceiling_exceeded",
+                "POST",
+                "/api/v3/edit/quote",
+                {
+                    **tts_base,
+                    "tts_input": {"text": "aa", "voice_id": "voice-1"},
+                },
+            ),
+        )
+        for expected, method, path, body in scenarios:
+            with self.subTest(expected=expected):
+                if body is not None:
+                    body = json.dumps(body, separators=(",", ":"))
+                handler = FakeHandler(body)
+                self.assertTrue(
+                    dispatch(handler, method, path, self.user, service=service)
+                )
+                payload = handler.response_json()
+                self.assertGreaterEqual(handler.statuses[0], 400)
+                self.assertLess(handler.statuses[0], 500)
+                self.assertEqual(payload["error_code"], expected)
+                self.assertFalse(payload["retryable"])
+                self.assertTrue(
+                    any("\u4e00" <= character <= "\u9fff" for character in payload["message"])
+                )
 
 
 if __name__ == "__main__":
