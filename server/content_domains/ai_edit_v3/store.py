@@ -109,6 +109,15 @@ _PUBLISH_EXPECTED_DECISIONS = {
     "query_decision": "publish_won_or_cancel_won",
 }
 _PUBLISH_ASSET_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
+_PUBLISH_DECISION_KEYS = frozenset(
+    {"asset_id", "current_generation", "status"}
+)
+_PUBLISH_DECISION_STATUSES = frozenset(
+    {"accepted", "stale_generation", "publish_won", "cancel_won"}
+)
+_PUBLISH_SAFE_EVIDENCE_KEYS = frozenset({"outcome", "reason_code"})
+_PUBLISH_SAFE_OUTCOMES = frozenset({"unknown", "definitive_not_accepted"})
+_PUBLISH_REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -2527,6 +2536,82 @@ def is_valid_publish_asset_id(value: Any) -> bool:
         isinstance(value, str)
         and _PUBLISH_ASSET_ID_PATTERN.fullmatch(value) is not None
     )
+
+
+def _normalize_publish_decision(decision: Any) -> dict[str, Any]:
+    if (
+        not isinstance(decision, Mapping)
+        or frozenset(decision) != _PUBLISH_DECISION_KEYS
+    ):
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication decision must contain only the frozen canonical fields",
+        )
+    status = decision["status"]
+    generation = decision["current_generation"]
+    asset_id = decision["asset_id"]
+    if not isinstance(status, str) or status not in _PUBLISH_DECISION_STATUSES:
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication decision status is not canonical",
+        )
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 0 <= generation <= _SQLITE_INT64_MAX
+    ):
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication decision generation must be a non-negative 64-bit integer",
+        )
+    if status == "publish_won":
+        if not is_valid_publish_asset_id(asset_id):
+            raise _configuration_error(
+                "publish_evidence_invalid",
+                "publication winner must contain one opaque asset id",
+            )
+    elif asset_id is not None:
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "non-publish decisions must not contain an asset id",
+        )
+    return {
+        "asset_id": asset_id,
+        "current_generation": generation,
+        "status": status,
+    }
+
+
+def _normalize_publish_evidence(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, Mapping):
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication evidence must be a stable mapping",
+        )
+    keys = frozenset(evidence)
+    if keys == _PUBLISH_DECISION_KEYS:
+        return _normalize_publish_decision(evidence)
+    if keys != _PUBLISH_SAFE_EVIDENCE_KEYS:
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication evidence must contain only frozen safe fields",
+        )
+    outcome = evidence["outcome"]
+    reason_code = evidence["reason_code"]
+    if not isinstance(outcome, str) or outcome not in _PUBLISH_SAFE_OUTCOMES:
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication evidence outcome is not frozen",
+        )
+    if (
+        not isinstance(reason_code, str)
+        or _PUBLISH_REASON_CODE_PATTERN.fullmatch(reason_code) is None
+    ):
+        raise _configuration_error(
+            "publish_evidence_invalid",
+            "publication evidence reason code is not safe",
+        )
+    return {"outcome": outcome, "reason_code": reason_code}
 
 
 def _publish_intent_id(job_id: str, generation: int, operation: str) -> str:
@@ -5930,10 +6015,23 @@ class V3Store:
                 "publish_status_invalid",
                 "publication operation status is not persistable",
             )
-        if not isinstance(evidence, Mapping):
+        evidence = _normalize_publish_evidence(evidence)
+        if "outcome" in evidence:
+            expected_status = (
+                "unknown" if evidence["outcome"] == "unknown" else "pending"
+            )
+            if status != expected_status:
+                raise _configuration_error(
+                    "publish_evidence_invalid",
+                    "publication operation status conflicts with safe evidence",
+                )
+        elif evidence["status"] != "accepted" or status not in {
+            "accepted",
+            "unknown",
+        }:
             raise _configuration_error(
                 "publish_evidence_invalid",
-                "publication evidence must be a stable mapping",
+                "publication operation accepts only canonical accepted evidence",
             )
         evidence_json = _json_text(evidence)
         now_ms = _require_now_ms(now_ms)
@@ -6002,9 +6100,11 @@ class V3Store:
             raise _configuration_error(
                 "asset_id_invalid", "asset id must be one opaque stable identifier"
             )
-        if not isinstance(decision, Mapping):
+        decision = _normalize_publish_decision(decision)
+        if decision["status"] != "publish_won" or decision["asset_id"] != asset_id:
             raise _configuration_error(
-                "publish_evidence_invalid", "publication decision must be a mapping"
+                "publish_evidence_invalid",
+                "publication winner decision must match the frozen asset id",
             )
         decision_json = _json_text(decision)
         now_ms = _require_now_ms(now_ms)
@@ -6074,7 +6174,7 @@ class V3Store:
             return {
                 "job_id": claim.job_id,
                 "asset_id": asset_id,
-                "decision": dict(decision),
+                "decision": decision,
             }
 
         return self._write(write)
@@ -6091,9 +6191,11 @@ class V3Store:
 
         claim = _require_claim(claim)
         operation = _require_publish_operation(operation)
-        if not isinstance(decision, Mapping):
+        decision = _normalize_publish_decision(decision)
+        if decision["status"] != "cancel_won" or decision["asset_id"] is not None:
             raise _configuration_error(
-                "publish_evidence_invalid", "publication decision must be a mapping"
+                "publish_evidence_invalid",
+                "cancel winner decision must be canonical",
             )
         decision_json = _json_text(decision)
         now_ms = _require_now_ms(now_ms)
@@ -6238,7 +6340,7 @@ class V3Store:
                     "confirmed_refunded_total": refunded,
                 },
                 "intent": dict(existing),
-                "decision": dict(decision),
+                "decision": decision,
             }
 
         try:

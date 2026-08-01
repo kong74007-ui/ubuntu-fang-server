@@ -859,6 +859,81 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(len(publisher.calls["cancel_publish"]), 2)
         self.assertIsNone(self.billing_intent("refund_full"))
 
+    def test_earlier_register_unknown_blocks_later_planned_work_at_timeout(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=23)
+        publisher = ScriptedPublisher(lose_once=("register_generation",))
+
+        first = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=publisher,
+        )
+        self.assertTrue(self.store.renew_lease(claim, 400, 1_001))
+        accepted = delivery.reconcile_asset_decision(
+            claim,
+            now=1_010,
+            store=self.store,
+            publisher=publisher,
+        )
+        timed_out = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=301_000,
+            store=self.store,
+            publisher=publisher,
+        )
+
+        self.assertEqual(first.next_state, "asset_decision_reconciling")
+        self.assertEqual(accepted.checkpoint["outcome"], "accepted")
+        self.assertEqual(timed_out.next_state, "failed_asset_decision_pending")
+        self.assertEqual(publisher.calls["prepare_hidden"], [])
+        self.assertEqual(publisher.calls["commit_publish"], [])
+
+    def test_pure_definitive_not_accepted_has_no_synthetic_timeout(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=24)
+
+        class DefinitiveThenPublish(ScriptedPublisher):
+            def commit_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls["commit_publish"].append(idempotency_key)
+                self.order.append("commit_publish")
+                if len(self.calls["commit_publish"]) == 1:
+                    raise DefinitiveNotAccepted("not_accepted")
+                return PublicationDecision("publish_won", generation, "asset-24")
+
+        publisher = DefinitiveThenPublish()
+        first = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=publisher,
+        )
+        self.assertTrue(self.store.renew_lease(claim, 400, 1_001))
+        row = self.store._read(
+            lambda connection: connection.execute(
+                """SELECT first_unknown_at FROM edit_v3_publish_intents
+                   WHERE job_id='job-publish' AND operation='commit_publish'"""
+            ).fetchone()
+        )
+        replay = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=301_000,
+            store=self.store,
+            publisher=publisher,
+        )
+
+        self.assertEqual(first.checkpoint["outcome"], "definitive_not_accepted")
+        self.assertIsNone(row["first_unknown_at"])
+        self.assertEqual(replay.next_state, "completed")
+        self.assertEqual(len(publisher.calls["commit_publish"]), 2)
+
     def test_stale_claims_before_and_after_intent_never_call_shared_service(self):
         delivery = self.delivery_module()
         for after_intent in (False, True):
@@ -1454,6 +1529,270 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         dump = self.store._read(lambda connection: "\n".join(connection.iterdump()))
         self.assertNotIn("TOP-SECRET", dump)
         self.assertNotIn("signed.invalid", dump)
+
+    def test_store_rejects_secret_bearing_evidence_at_all_write_entries(self):
+        delivery = self.delivery_module()
+        secret_url = "https://signed.invalid/result?token=TOP-SECRET"
+
+        for entry in ("publish_winner", "cancel_winner", "operation"):
+            with self.subTest(entry=entry):
+                self.setUp()
+                claim = self.seed_publish_job(fencing_token=25)
+                delivery.create_publish_intent(
+                    claim,
+                    metadata_sha256=METADATA_SHA256,
+                    now=1_000,
+                    store=self.store,
+                )
+                caught = None
+                try:
+                    if entry == "publish_winner":
+                        self.store.record_publish_winner(
+                            claim,
+                            "commit_publish",
+                            "asset-25",
+                            {
+                                "asset_id": "asset-25",
+                                "current_generation": 25,
+                                "signed_url": secret_url,
+                                "status": "publish_won",
+                            },
+                            now_ms=1_001,
+                        )
+                    elif entry == "cancel_winner":
+                        self.store.record_cancel_winner_and_refund(
+                            claim,
+                            "cancel_publish",
+                            {
+                                "asset_id": None,
+                                "current_generation": 25,
+                                "signed_url": secret_url,
+                                "status": "cancel_won",
+                            },
+                            now_ms=1_001,
+                        )
+                    else:
+                        self.store.record_publish_operation(
+                            claim,
+                            "commit_publish",
+                            "unknown",
+                            {
+                                "outcome": "unknown",
+                                "reason_code": "response_lost",
+                                "signed_url": secret_url,
+                            },
+                            now_ms=1_001,
+                        )
+                except StoreConfigurationError as exc:
+                    caught = exc
+                dump = self.store._read(
+                    lambda connection: "\n".join(connection.iterdump())
+                )
+                self.assertNotIn("TOP-SECRET", dump)
+                self.assertNotIn("signed.invalid", dump)
+                self.assertIsNotNone(caught)
+                self.assertEqual(caught.error_code, "publish_evidence_invalid")
+
+    def test_store_requires_exact_canonical_decision_and_safe_evidence(self):
+        delivery = self.delivery_module()
+        cases = (
+            (
+                "publish_status",
+                "publish_winner",
+                {
+                    "asset_id": None,
+                    "current_generation": 26,
+                    "status": "cancel_won",
+                },
+            ),
+            (
+                "publish_asset_mismatch",
+                "publish_winner",
+                {
+                    "asset_id": "asset-other",
+                    "current_generation": 26,
+                    "status": "publish_won",
+                },
+            ),
+            (
+                "publish_bool_generation",
+                "publish_winner",
+                {
+                    "asset_id": "asset-26",
+                    "current_generation": True,
+                    "status": "publish_won",
+                },
+            ),
+            (
+                "publish_overflow_generation",
+                "publish_winner",
+                {
+                    "asset_id": "asset-26",
+                    "current_generation": 1 << 63,
+                    "status": "publish_won",
+                },
+            ),
+            (
+                "publish_negative_generation",
+                "publish_winner",
+                {
+                    "asset_id": "asset-26",
+                    "current_generation": -1,
+                    "status": "publish_won",
+                },
+            ),
+            (
+                "cancel_status_and_asset",
+                "cancel_winner",
+                {
+                    "asset_id": "asset-26",
+                    "current_generation": 26,
+                    "status": "publish_won",
+                },
+            ),
+            (
+                "cancel_bool_generation",
+                "cancel_winner",
+                {
+                    "asset_id": None,
+                    "current_generation": True,
+                    "status": "cancel_won",
+                },
+            ),
+            (
+                "operation_unknown_status",
+                "operation",
+                {
+                    "asset_id": None,
+                    "current_generation": 26,
+                    "status": "winner",
+                },
+            ),
+            (
+                "operation_missing_asset_id",
+                "operation",
+                {
+                    "current_generation": 26,
+                    "status": "accepted",
+                },
+            ),
+            (
+                "operation_nonpublish_asset",
+                "operation",
+                {
+                    "asset_id": "asset-26",
+                    "current_generation": 26,
+                    "status": "accepted",
+                },
+            ),
+            (
+                "operation_unsafe_reason",
+                "operation",
+                {
+                    "outcome": "unknown",
+                    "reason_code": "https://signed.invalid/secret",
+                },
+            ),
+            (
+                "operation_unknown_outcome",
+                "operation",
+                {"outcome": "provider_payload", "reason_code": "response_lost"},
+            ),
+        )
+        for name, entry, evidence in cases:
+            with self.subTest(name=name):
+                self.setUp()
+                claim = self.seed_publish_job(fencing_token=26)
+                delivery.create_publish_intent(
+                    claim,
+                    metadata_sha256=METADATA_SHA256,
+                    now=1_000,
+                    store=self.store,
+                )
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    if entry == "publish_winner":
+                        self.store.record_publish_winner(
+                            claim,
+                            "commit_publish",
+                            "asset-26",
+                            evidence,
+                            now_ms=1_001,
+                        )
+                    elif entry == "cancel_winner":
+                        self.store.record_cancel_winner_and_refund(
+                            claim,
+                            "cancel_publish",
+                            evidence,
+                            now_ms=1_001,
+                        )
+                    else:
+                        self.store.record_publish_operation(
+                            claim,
+                            "commit_publish",
+                            "unknown",
+                            evidence,
+                            now_ms=1_001,
+                        )
+                self.assertEqual(
+                    caught.exception.error_code, "publish_evidence_invalid"
+                )
+
+    def test_store_binds_operation_status_to_evidence_semantics(self):
+        delivery = self.delivery_module()
+        cases = (
+            (
+                "accepted_with_unknown",
+                "accepted",
+                {"outcome": "unknown", "reason_code": "response_lost"},
+            ),
+            (
+                "unknown_with_definitive",
+                "unknown",
+                {
+                    "outcome": "definitive_not_accepted",
+                    "reason_code": "definitive_not_accepted",
+                },
+            ),
+            (
+                "pending_with_accepted",
+                "pending",
+                {
+                    "asset_id": None,
+                    "current_generation": 27,
+                    "status": "accepted",
+                },
+            ),
+            (
+                "unknown_with_winner",
+                "unknown",
+                {
+                    "asset_id": "asset-27",
+                    "current_generation": 27,
+                    "status": "publish_won",
+                },
+            ),
+        )
+        for name, status, evidence in cases:
+            with self.subTest(name=name):
+                self.setUp()
+                claim = self.seed_publish_job(fencing_token=27)
+                delivery.create_publish_intent(
+                    claim,
+                    metadata_sha256=METADATA_SHA256,
+                    now=1_000,
+                    store=self.store,
+                )
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    self.store.record_publish_operation(
+                        claim,
+                        "commit_publish",
+                        status,
+                        evidence,
+                        now_ms=1_001,
+                    )
+                self.assertEqual(
+                    caught.exception.error_code, "publish_evidence_invalid"
+                )
 
     def test_due_listing_is_read_only_bounded_ordered_and_strict(self):
         delivery = self.delivery_module()

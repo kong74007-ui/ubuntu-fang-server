@@ -182,6 +182,27 @@ def _unknown_progress(
     )
 
 
+def _timed_out_generation_progress(
+    context: Mapping[str, Any], now: int
+) -> PublicationProgress | None:
+    anchors = tuple(
+        row
+        for row in context["intents"]
+        if not isinstance(row.get("first_unknown_at"), bool)
+        and isinstance(row.get("first_unknown_at"), int)
+    )
+    if not anchors:
+        return None
+    anchor = min(
+        anchors,
+        key=lambda row: (row["first_unknown_at"], row["id"]),
+    )
+    progress = _unknown_progress(anchor, now, reason="submission_timeout")
+    if progress.next_state != "failed_asset_decision_pending":
+        return None
+    return progress
+
+
 def _current_progress(context: Mapping[str, Any], **checkpoint: Any) -> PublicationProgress:
     return PublicationProgress(context["job"]["state"], checkpoint)
 
@@ -267,11 +288,9 @@ def _invoke_operation(
                 now_ms=now,
             )
         return stored_final
-    if operation != "query_decision" and row["status"] in {"pending", "unknown"}:
-        timed_progress = _unknown_progress(
-            row, now, reason="submission_timeout"
-        )
-        if timed_progress.next_state == "failed_asset_decision_pending":
+    if operation != "query_decision":
+        timed_progress = _timed_out_generation_progress(context, now)
+        if timed_progress is not None:
             return _StepResult("timed_out", timed_progress)
     outbound = store.begin_publish_operation(claim, operation, now_ms=now)
     key = outbound["external_idempotency_key"]
@@ -696,20 +715,6 @@ def reconcile_asset_decision(
             row["id"],
         ),
     )
-    unknown_anchor = min(
-        (
-            row
-            for row in rows.values()
-            if row["status"] in {"pending", "unknown"}
-        ),
-        key=lambda row: (
-            row["first_unknown_at"]
-            if row["first_unknown_at"] is not None
-            else row["updated_at"],
-            row["id"],
-        ),
-        default=rows["query_decision"],
-    )
     query_result = _invoke_operation(
         claim=claim,
         row=rows["query_decision"],
@@ -721,19 +726,23 @@ def reconcile_asset_decision(
     if query_result.outcome in _FINAL_DECISIONS or query_result.outcome == "stale":
         return query_result.progress
     if query_result.outcome in {"unknown", "definitive_not_accepted"}:
+        context = store.get_publish_context_for_claim(claim, now)
+        rows = _row_map(context)
+        anchor = min(
+            (
+                row
+                for row in rows.values()
+                if not isinstance(row.get("first_unknown_at"), bool)
+                and isinstance(row.get("first_unknown_at"), int)
+            ),
+            key=lambda row: (row["first_unknown_at"], row["id"]),
+            default=rows["query_decision"],
+        )
         return _unknown_progress(
-            unknown_anchor,
+            anchor,
             now,
             reason=query_result.progress.checkpoint["outcome"],
         )
-    if recoverable:
-        timed_progress = _unknown_progress(
-            unknown_anchor,
-            now,
-            reason=query_result.progress.checkpoint["outcome"],
-        )
-        if timed_progress.next_state == "failed_asset_decision_pending":
-            return timed_progress
     if not recoverable:
         return query_result.progress
     context = store.get_publish_context_for_claim(claim, now)
