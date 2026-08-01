@@ -72,15 +72,6 @@ _MIME_VALUE = re.compile(
 )
 _V3_COS_VALUE = re.compile(r"(?:^|/)(?:test|production)/ai-edit-v3(?:/|$)", re.I)
 _ENCODED_PATH_MARKER = re.compile(r"%(?:2f|5c)", re.I)
-_AB_SEMANTIC_PHRASE = re.compile(
-    r"(?<![A-Za-z0-9])A/B[ \t]*(?:testing|experiments?|comparisons?|测试|实验|对比|比较)"
-    r"(?![A-Za-z0-9])",
-    re.I,
-)
-_FILE_LIKE_PATH_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,16}\Z")
-_SEMANTIC_TEXT_FIELDS = frozenset(
-    {"summary", "headline", "title", "description", "intent", "text", "label", "name"}
-)
 _QUERY_SECRET_VALUE = re.compile(
     r"(?:^|[?&;\s])(?:authorization|credential|password|secret|signature|token)=",
     re.I,
@@ -496,24 +487,7 @@ def _is_absolute_local_path(value: str) -> bool:
     return value.startswith("/") or _ABSOLUTE_WINDOWS_PATH.match(value) is not None
 
 
-def _is_public_semantic_slash_text(value: str, field_name: str | None) -> bool:
-    return bool(
-        isinstance(field_name, str)
-        and field_name.lower() in _SEMANTIC_TEXT_FIELDS
-        and value.count("/") == 1
-        and "?" not in value
-        and "#" not in value
-        and _FILE_LIKE_PATH_SUFFIX.search(value) is None
-        and _AB_SEMANTIC_PHRASE.search(value) is not None
-    )
-
-
-def _looks_like_private_reference(
-    value: str,
-    *,
-    allow_mime: bool = False,
-    field_name: str | None = None,
-) -> bool:
+def _looks_like_private_reference(value: str, *, allow_mime: bool = False) -> bool:
     normalized = value.replace("\\", "/")
     return bool(
         _has_control_or_surrogate(value)
@@ -526,7 +500,6 @@ def _looks_like_private_reference(
         or any(segment in {".", ".."} for segment in normalized.split("/"))
         or (
             "/" in value
-            and not _is_public_semantic_slash_text(value, field_name)
             and not (allow_mime and _MIME_VALUE.fullmatch(value) is not None)
         )
     )
@@ -548,7 +521,6 @@ def _safe_summary_text(
     *,
     maximum: int = 512,
     allow_mime: bool = False,
-    field_name: str | None = None,
 ) -> str:
     if (
         not isinstance(value, str)
@@ -556,9 +528,7 @@ def _safe_summary_text(
         or value != value.strip()
         or len(value) > maximum
         or _has_control_or_surrogate(value)
-        or _looks_like_private_reference(
-            value, allow_mime=allow_mime, field_name=field_name
-        )
+        or _looks_like_private_reference(value, allow_mime=allow_mime)
     ):
         raise ValueError("catalog_text_invalid")
     return value
@@ -592,16 +562,14 @@ def _public_catalog_record(capability: str, value: Any) -> dict[str, Any]:
                 raise ValueError("catalog_ratios_invalid")
             result[key] = list(item)
         elif key == "mime_type":
-            text = _safe_summary_text(
-                item, maximum=128, allow_mime=True, field_name=key
-            )
+            text = _safe_summary_text(item, maximum=128, allow_mime=True)
             if text != text.lower() or not text.startswith("audio/"):
                 raise ValueError("catalog_mime_invalid")
             result[key] = text
         elif key.endswith("_id") or key.endswith("_reference") or key == "version":
             result[key] = _safe_opaque_catalog_value(item)
         else:
-            result[key] = _safe_summary_text(item, field_name=key)
+            result[key] = _safe_summary_text(item)
 
     identity = {
         "platform_assets": "asset_id",
@@ -2039,7 +2007,6 @@ class EditV3Service:
                 value,
                 allow_mime=isinstance(field_name, str)
                 and field_name.lower() in {"mime_type", "content_type"},
-                field_name=field_name,
             )
         ):
             return "[redacted]"
