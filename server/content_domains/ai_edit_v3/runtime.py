@@ -7,6 +7,7 @@ import math
 import platform
 import re
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -25,7 +26,7 @@ from .feature import (
 )
 from .providers.base import ProviderResult
 from .renderers import Renderer
-from .store import V3Store, assert_isolated_db
+from .store import LeaseLost, V3Store, assert_isolated_db
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -93,6 +94,59 @@ class Clock(Protocol):
 @runtime_checkable
 class ProcessSupervisor(Protocol):
     def terminate_job(self, job_id: str) -> None: ...
+
+
+class LeaseHeartbeat:
+    """Renew one claim until stopped; any failed renewal is permanently fatal."""
+
+    def __init__(self, claim, lease_seconds, clock, renew):
+        if not isinstance(claim, LeaseClaim):
+            raise ValueError("runtime_claim_invalid")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds <= 0:
+            raise ValueError("runtime_lease_seconds_invalid")
+        self._claim = claim
+        self._lease_seconds = lease_seconds
+        self._clock = clock
+        self._renew = renew
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"ai-edit-v3-lease-{claim.job_id}",
+            daemon=True,
+        )
+        self._started = False
+
+    def _run(self):
+        if self._stop.wait(max(0.01, self._lease_seconds / 3)):
+            return
+        while not self._stop.is_set():
+            try:
+                now_ms = int(self._clock.now() * 1000)
+                renewed = self._renew(
+                    self._claim, self._lease_seconds, now_ms
+                )
+            except Exception:
+                renewed = False
+            if not renewed:
+                self._lost.set()
+                return
+            if self._stop.wait(max(0.01, self._lease_seconds / 3)):
+                return
+
+    def start(self):
+        if not self._started:
+            self._started = True
+            self._thread.start()
+
+    def assert_active(self):
+        if self._lost.is_set():
+            raise LeaseLost("lease_lost", "lease renewal failed")
+
+    def close(self):
+        self._stop.set()
+        if self._started:
+            self._thread.join()
 
 
 @runtime_checkable
@@ -606,6 +660,7 @@ def assert_ready_for_request(
 
 __all__ = (
     "Clock",
+    "LeaseHeartbeat",
     "ProcessSupervisor",
     "Runtime",
     "RuntimeDependencies",

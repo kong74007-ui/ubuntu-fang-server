@@ -2769,6 +2769,31 @@ def _lease_owned_tx(
     )
 
 
+def _get_job_for_claim_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    environment: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = _require_claim(claim)
+    now_ms = _require_now_ms(now_ms)
+    row = connection.execute(
+        """SELECT * FROM edit_v3_jobs
+           WHERE job_id=? AND environment=? AND worker_id=?
+             AND fencing_token=? AND lease_until>?""",
+        (
+            claim.job_id,
+            environment,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if row is None:
+        raise _lease_lost(claim)
+    return dict(row)
+
+
 def _transition_leased_tx(
     connection: sqlite3.Connection,
     claim: LeaseClaim,
@@ -3717,6 +3742,20 @@ class V3Store:
     def lease_owned(self, claim: LeaseClaim, now_ms: int) -> bool:
         return self._read(
             lambda connection: _lease_owned_tx(connection, claim, now_ms)
+        )
+
+    def get_job_for_claim(
+        self,
+        claim: LeaseClaim,
+        now_ms: int,
+        *,
+        environment: str | None = None,
+    ) -> dict[str, Any]:
+        scoped_environment = self._environment(environment)
+        return self._read(
+            lambda connection: _get_job_for_claim_tx(
+                connection, claim, scoped_environment, now_ms
+            )
         )
 
     def transition_leased(
