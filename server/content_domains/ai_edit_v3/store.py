@@ -84,6 +84,7 @@ _REMOTE_FILESYSTEMS = frozenset(
 _WINDOWS_DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:[^\\/]")
 _MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
 _SQLITE_OPEN_LOCK = threading.RLock()
+_SQLITE_INT64_MAX = (1 << 63) - 1
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -2482,6 +2483,11 @@ def _claim_row(
     lease_until: int,
     now_ms: int,
 ) -> LeaseClaim | None:
+    if row["fencing_token"] >= _SQLITE_INT64_MAX:
+        raise StoreConflictError(
+            "fencing_token_exhausted",
+            f"fencing token space is exhausted for job {row['job_id']}",
+        )
     connection.execute(
         """UPDATE edit_v3_stage_attempts
            SET status='aborted_lease_lost',finished_at=?,error_code='lease_lost',
@@ -2493,6 +2499,7 @@ def _claim_row(
         """UPDATE edit_v3_jobs
            SET worker_id=?,fencing_token=fencing_token+1,lease_until=?,updated_at=?
            WHERE job_id=? AND state=? AND fencing_token=?
+             AND fencing_token<?
              AND (worker_id IS NULL OR lease_until IS NULL OR lease_until<=?)""",
         (
             worker_id,
@@ -2501,6 +2508,7 @@ def _claim_row(
             row["job_id"],
             row["state"],
             row["fencing_token"],
+            _SQLITE_INT64_MAX,
             now_ms,
         ),
     )
@@ -2643,7 +2651,8 @@ def _transition_leased_tx(
                     updated_at=?
                 WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
                   AND state IN ({placeholders}) AND repair_count=0
-                  AND processing_deadline_at IS NOT NULL{running_guard}""",
+                  AND processing_deadline_at IS NOT NULL
+                  AND processing_deadline_at<=?{running_guard}""",
             (
                 now_ms,
                 desired,
@@ -2654,10 +2663,31 @@ def _transition_leased_tx(
                 claim.fencing_token,
                 now_ms,
                 *sorted(states),
+                _SQLITE_INT64_MAX - 600_000,
             ),
         )
         if updated.rowcount == 1:
             return True
+        deadline_overflow = connection.execute(
+            f"""SELECT 1 FROM edit_v3_jobs
+                WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                  AND state IN ({placeholders}) AND repair_count=0
+                  AND processing_deadline_at IS NOT NULL
+                  AND processing_deadline_at>?{running_guard}""",
+            (
+                claim.job_id,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+                *sorted(states),
+                _SQLITE_INT64_MAX - 600_000,
+            ),
+        ).fetchone()
+        if deadline_overflow is not None:
+            raise StoreConflictError(
+                "processing_deadline_overflow",
+                "repair budget would exceed the SQLite signed integer range",
+            )
         replay = connection.execute(
             f"""UPDATE edit_v3_jobs
                 SET lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END,
@@ -3142,7 +3172,7 @@ def _record_provider_intent_tx(
                JOIN edit_v3_stage_attempts AS a ON a.job_id=j.job_id
                WHERE j.job_id=? AND j.worker_id=? AND j.fencing_token=?
                  AND j.lease_until>? AND a.id=? AND a.stage=?
-                 AND a.fencing_token=j.fencing_token""",
+                 AND a.fencing_token=j.fencing_token AND a.status='running'""",
             (
                 provider_task_id,
                 stage,
@@ -3169,6 +3199,26 @@ def _record_provider_intent_tx(
     if inserted.rowcount != 1:
         if not _lease_owned_tx(connection, claim, now_ms):
             raise _lease_lost(claim)
+        attempt = connection.execute(
+            """SELECT a.status FROM edit_v3_stage_attempts AS a
+               JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+               WHERE a.id=? AND a.job_id=? AND a.stage=?
+                 AND a.fencing_token=j.fencing_token
+                 AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+            (
+                stage_attempt_id,
+                claim.job_id,
+                stage,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+            ),
+        ).fetchone()
+        if attempt is not None and attempt["status"] != "running":
+            raise StoreConflictError(
+                "provider_attempt_not_running",
+                "new provider intent requires a running stage attempt",
+            )
         raise StoreConflictError(
             "provider_attempt_mismatch",
             "provider intent stage attempt does not match the current leased stage",

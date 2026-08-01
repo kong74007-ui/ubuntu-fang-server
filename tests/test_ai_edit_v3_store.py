@@ -4601,6 +4601,49 @@ class V3LeaseTests(unittest.TestCase):
         self.assertTrue(self.store.renew_lease(claim, 20, 102_000))
         self.assertEqual(self.job_row("job-1")["lease_until"], 122_000)
 
+    def test_claim_fencing_token_int64_boundary_is_typed_and_atomic(self):
+        int64_max = (1 << 63) - 1
+        self.seed_job("exhausted")
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                "UPDATE edit_v3_jobs SET fencing_token=? WHERE job_id=?",
+                (int64_max, "exhausted"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        before = self.protected_snapshot("exhausted")
+        with self.assertRaises(StoreConflictError) as captured:
+            self.store.claim_job(
+                "exhausted",
+                "worker-a",
+                10,
+                100_000,
+                expected_states={"queued"},
+            )
+        self.assertEqual(captured.exception.error_code, "fencing_token_exhausted")
+        self.assertEqual(self.protected_snapshot("exhausted"), before)
+
+        self.seed_job("last-safe")
+        connection = self.store._connect()
+        try:
+            connection.execute(
+                "UPDATE edit_v3_jobs SET fencing_token=? WHERE job_id=?",
+                (int64_max - 1, "last-safe"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        claim = self.store.claim_job(
+            "last-safe",
+            "worker-b",
+            10,
+            100_000,
+            expected_states={"queued"},
+        )
+        self.assertEqual(claim.fencing_token, int64_max)
+
     def test_claim_next_is_deterministic_and_excludes_terminal_and_reconciliation(self):
         self.assertTrue(hasattr(self.store, "claim_next_job"))
         self.seed_job("terminal", "completed", queued_at=0)
@@ -4715,6 +4758,59 @@ class V3LeaseTests(unittest.TestCase):
             )
         )
         self.assertEqual(self.job_row("job-1")["processing_deadline_at"], 5_600_000)
+
+    def test_repair_deadline_int64_boundary_is_typed_and_atomic(self):
+        int64_max = (1 << 63) - 1
+        self.seed_job(
+            "overflow",
+            "quality_checking",
+            processing_deadline_at=int64_max - 599_999,
+        )
+        overflow = self.store.claim_job(
+            "overflow",
+            "worker-a",
+            30,
+            100_000,
+            expected_states={"quality_checking"},
+        )
+        before = self.protected_snapshot("overflow")
+        with self.assertRaises(StoreConflictError) as captured:
+            self.store.transition_leased(
+                overflow,
+                {"quality_checking"},
+                "repair_planning",
+                101_000,
+                lease_seconds=30,
+            )
+        self.assertEqual(
+            captured.exception.error_code, "processing_deadline_overflow"
+        )
+        self.assertEqual(self.protected_snapshot("overflow"), before)
+
+        self.seed_job(
+            "last-safe",
+            "quality_checking",
+            processing_deadline_at=int64_max - 600_000,
+        )
+        last_safe = self.store.claim_job(
+            "last-safe",
+            "worker-b",
+            30,
+            100_000,
+            expected_states={"quality_checking"},
+        )
+        self.assertTrue(
+            self.store.transition_leased(
+                last_safe,
+                {"quality_checking"},
+                "repair_planning",
+                101_000,
+                lease_seconds=30,
+            )
+        )
+        self.assertEqual(
+            self.job_row("last-safe")["processing_deadline_at"], int64_max
+        )
 
     def test_invalid_edge_is_rejected_before_sql_and_terminal_clears_lease(self):
         self.assertTrue(hasattr(self.store, "transition_leased"))
@@ -4954,6 +5050,73 @@ class V3LeaseTests(unittest.TestCase):
                 {"a": 1, "z": 2},
                 109_000,
             )
+
+    def test_closed_attempt_replays_existing_intent_but_rejects_new_intent(self):
+        for index, status in enumerate(("completed", "failed", "skipped"), 1):
+            with self.subTest(status=status):
+                job_id = f"closed-{status}"
+                operation_key = f"op-existing-{status}"
+                self.seed_job(job_id, queued_at=index)
+                claim = self.store.claim_job(
+                    job_id,
+                    f"worker-{index}",
+                    30,
+                    100_000,
+                    expected_states={"queued"},
+                )
+                attempt = self.store.start_stage_attempt(
+                    claim, "queued", f"{index}" * 64, 101_000
+                )
+                intent = self.store.record_provider_intent(
+                    claim,
+                    "queued",
+                    attempt["id"],
+                    "provider-a",
+                    "render",
+                    operation_key,
+                    "a" * 64,
+                    102_000,
+                )
+                if status == "skipped":
+                    self.store.save_checkpoint(
+                        claim,
+                        attempt["id"],
+                        f"{index}" * 64,
+                        {"skipped": True},
+                        103_000,
+                    )
+                self.store.finish_stage_attempt(
+                    claim, attempt["id"], status, 104_000
+                )
+                self.assertEqual(
+                    self.store.record_provider_intent(
+                        claim,
+                        "queued",
+                        attempt["id"],
+                        "provider-a",
+                        "render",
+                        operation_key,
+                        "a" * 64,
+                        105_000,
+                    ),
+                    intent,
+                )
+                before = self.protected_snapshot(job_id)
+                with self.assertRaises(StoreConflictError) as captured:
+                    self.store.record_provider_intent(
+                        claim,
+                        "queued",
+                        attempt["id"],
+                        "provider-a",
+                        "render",
+                        f"op-new-{status}",
+                        "b" * 64,
+                        105_000,
+                    )
+                self.assertEqual(
+                    captured.exception.error_code, "provider_attempt_not_running"
+                )
+                self.assertEqual(self.protected_snapshot(job_id), before)
 
     def test_top_level_claim_has_one_winner_and_matches_store_surface(self):
         self.assertTrue(hasattr(store_module, "claim_next_job"))
