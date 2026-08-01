@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import unicodedata
+import weakref
 from contextlib import suppress
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
@@ -1113,6 +1114,20 @@ class _GuardBundle:
         raise NotImplementedError
 
 
+def _cleanup_preserving_error(
+    error: BaseException,
+    cleanup: Callable[[], None],
+    *,
+    description: str,
+) -> bool:
+    try:
+        cleanup()
+    except Exception as cleanup_error:
+        error.add_note(f"{description} failed during cleanup: {cleanup_error!r}")
+        return False
+    return True
+
+
 class _GuardedConnection(sqlite3.Connection):
     """A native connection retaining its verified path-identity evidence."""
 
@@ -1121,11 +1136,27 @@ class _GuardedConnection(sqlite3.Connection):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._cursor_lock = threading.RLock()
-        self._tracked_cursors: dict[int, sqlite3.Cursor] = {}
+        self._tracked_cursors: dict[
+            int,
+            weakref.ReferenceType[sqlite3.Cursor],
+        ] = {}
 
     def _track_cursor(self, cursor: sqlite3.Cursor) -> sqlite3.Cursor:
         try:
-            self._tracked_cursors[id(cursor)] = cursor
+            cursor_id = id(cursor)
+            connection_ref = weakref.ref(self)
+
+            def discard(
+                cursor_ref: weakref.ReferenceType[sqlite3.Cursor],
+            ) -> None:
+                connection = connection_ref()
+                if connection is None:
+                    return
+                with connection._cursor_lock:
+                    if connection._tracked_cursors.get(cursor_id) is cursor_ref:
+                        connection._tracked_cursors.pop(cursor_id, None)
+
+            self._tracked_cursors[cursor_id] = weakref.ref(cursor, discard)
         except BaseException:
             sqlite3.Cursor.close(cursor)
             raise
@@ -1167,9 +1198,15 @@ class _GuardedConnection(sqlite3.Connection):
     def close(self) -> None:
         with _SQLITE_OPEN_LOCK:
             with self._cursor_lock:
-                for cursor_id, cursor in tuple(self._tracked_cursors.items()):
+                for cursor_id, cursor_ref in tuple(self._tracked_cursors.items()):
+                    cursor = cursor_ref()
+                    if cursor is None:
+                        if self._tracked_cursors.get(cursor_id) is cursor_ref:
+                            self._tracked_cursors.pop(cursor_id, None)
+                        continue
                     sqlite3.Cursor.close(cursor)
-                    self._tracked_cursors.pop(cursor_id, None)
+                    if self._tracked_cursors.get(cursor_id) is cursor_ref:
+                        self._tracked_cursors.pop(cursor_id, None)
                 guard = self._identity_guard
                 sqlite3.Connection.close(self)
                 if guard is not None:
@@ -1196,11 +1233,14 @@ class _WindowsGuardBundle(_GuardBundle):
         import ctypes
         from ctypes import wintypes
 
-        close_handle = ctypes.windll.kernel32.CloseHandle
+        close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
         close_handle.argtypes = (wintypes.HANDLE,)
         close_handle.restype = wintypes.BOOL
         while self.handles:
-            close_handle(wintypes.HANDLE(self.handles.pop()))
+            handle = self.handles[-1]
+            if not close_handle(wintypes.HANDLE(handle)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.handles.pop()
 
 
 class _LinuxGuardBundle(_GuardBundle):
@@ -1219,14 +1259,14 @@ class _LinuxGuardBundle(_GuardBundle):
 
     def release(self) -> None:
         if self.leaf_fd >= 0:
-            with suppress(OSError):
-                os.close(self.leaf_fd)
+            os.close(self.leaf_fd)
             self.leaf_fd = -1
         while self.ancestor_fds:
-            descriptor = self.ancestor_fds.pop()
-            with suppress(OSError):
-                os.close(descriptor)
-        self.parent_fd = -1
+            descriptor = self.ancestor_fds[-1]
+            os.close(descriptor)
+            self.ancestor_fds.pop()
+            if self.parent_fd == descriptor:
+                self.parent_fd = -1
 
 
 def _v2_path_syntax(v2_db_path: Path | None) -> Path:
@@ -1346,8 +1386,13 @@ def _open_windows_ancestor_handles(path: Path, *, role: str) -> list[int]:
                     f"{role.upper()} database ancestor may not be a reparse point",
                 )
         return handles
-    except Exception:
-        _WindowsGuardBundle(handles, (0, 0)).release()
+    except Exception as exc:
+        bundle = _WindowsGuardBundle(handles, (0, 0))
+        _cleanup_preserving_error(
+            exc,
+            bundle.release,
+            description="Windows ancestor guard release",
+        )
         raise
 
 
@@ -1371,8 +1416,13 @@ def _open_windows_v2_guard(
                 "V2 database leaf does not have one stable ordinary-file identity",
             )
         return _WindowsGuardBundle(handles, leaf_identity)
-    except Exception:
-        _WindowsGuardBundle(handles, (0, 0)).release()
+    except Exception as exc:
+        bundle = _WindowsGuardBundle(handles, (0, 0))
+        _cleanup_preserving_error(
+            exc,
+            bundle.release,
+            description="Windows V2 guard release",
+        )
         raise
 
 
@@ -1422,8 +1472,13 @@ def _open_windows_guard(
                 "V2 and V3 database files share one filesystem identity",
             )
         return _WindowsGuardBundle(handles, leaf_identity)
-    except Exception:
-        _WindowsGuardBundle(handles, (0, 0)).release()
+    except Exception as exc:
+        bundle = _WindowsGuardBundle(handles, (0, 0))
+        _cleanup_preserving_error(
+            exc,
+            bundle.release,
+            description="Windows V3 guard release",
+        )
         raise
 
 
@@ -1490,14 +1545,19 @@ def _open_linux_v2_guard(
             leaf_identity,
             ancestor_fds=ancestor_fds,
         )
-    except Exception:
+    except Exception as exc:
         parent_fd = ancestor_fds[-1] if ancestor_fds else -1
-        _LinuxGuardBundle(
+        bundle = _LinuxGuardBundle(
             parent_fd,
             leaf_fd,
             (0, 0),
             ancestor_fds=ancestor_fds,
-        ).release()
+        )
+        _cleanup_preserving_error(
+            exc,
+            bundle.release,
+            description="Linux V2 guard release",
+        )
         raise
 
 
@@ -1535,8 +1595,13 @@ def _open_linux_guard(
                 "V2 and V3 database files share one filesystem identity",
             )
         return _LinuxGuardBundle(parent_fd, leaf_fd, leaf_identity)
-    except Exception:
-        _LinuxGuardBundle(parent_fd, leaf_fd, (0, 0)).release()
+    except Exception as exc:
+        bundle = _LinuxGuardBundle(parent_fd, leaf_fd, (0, 0))
+        _cleanup_preserving_error(
+            exc,
+            bundle.release,
+            description="Linux V3 guard release",
+        )
         raise
 
 
@@ -1649,6 +1714,9 @@ def _connect_with_verified_identity_under_lock(
                     "v3_db_main_handle_mismatch",
                     "SQLite returned a connection without the required identity guard",
                 )
+            connection_guard = guard
+            connection._retain_identity_guard(connection_guard)
+            guard = None
             main_path = _main_database_path(connection)
             if os.name == "nt":
                 if not _same_path(main_path.resolve(strict=True), path.resolve(strict=True)):
@@ -1659,9 +1727,17 @@ def _connect_with_verified_identity_under_lock(
                 main_handle = _windows_create_handle(main_path, directory=False)
                 try:
                     main_identity, _attributes, _links = _windows_handle_identity(main_handle)
-                finally:
+                except Exception as exc:
+                    bundle = _WindowsGuardBundle([main_handle], (0, 0))
+                    _cleanup_preserving_error(
+                        exc,
+                        bundle.release,
+                        description="Windows SQLite main-handle release",
+                    )
+                    raise
+                else:
                     _WindowsGuardBundle([main_handle], (0, 0)).release()
-                if main_identity != guard.leaf_identity:
+                if main_identity != connection_guard.leaf_identity:
                     raise _configuration_error(
                         "v3_db_main_handle_mismatch",
                         "SQLite main handle does not match the guarded V3 leaf",
@@ -1683,25 +1759,36 @@ def _connect_with_verified_identity_under_lock(
                     if stat.S_ISREG(metadata.st_mode) and (
                         metadata.st_dev,
                         metadata.st_ino,
-                    ) == guard.leaf_identity:
+                    ) == connection_guard.leaf_identity:
                         matches.append(descriptor)
                 if len(matches) != 1:
                     raise _configuration_error(
                         "v3_db_main_handle_mismatch",
                         "SQLite main descriptor does not uniquely match the guarded V3 leaf",
                     )
-            connection._retain_identity_guard(guard)
             verified_connection = connection
             connection = None
-            guard = None
             return verified_connection
-    except Exception:
-        try:
-            if connection is not None:
-                connection.close()
-        finally:
-            if guard is not None:
-                guard.release()
+    except Exception as exc:
+        connection_closed = True
+        if connection is not None:
+            connection_closed = _cleanup_preserving_error(
+                exc,
+                connection.close,
+                description="unverified SQLite connection close",
+            )
+        if guard is not None:
+            if connection_closed:
+                _cleanup_preserving_error(
+                    exc,
+                    guard.release,
+                    description="unretained V3 guard release",
+                )
+            else:
+                exc._unreleased_identity_guard = guard
+                exc.add_note(
+                    "V3 identity guard retained because native connection close failed"
+                )
         raise
 
 
@@ -1831,13 +1918,34 @@ def _open_store_ordered(
             _revalidate_open_identity(path, before, raw_v2_path)
             verified_connection = connection
             connection = None
-            return path, verified_connection
-        except Exception:
+        except Exception as exc:
             if connection is not None:
-                connection.close()
+                _cleanup_preserving_error(
+                    exc,
+                    connection.close,
+                    description="partially opened V3 connection close",
+                )
+            _cleanup_preserving_error(
+                exc,
+                v2_guard.release,
+                description="V2 handshake guard release",
+            )
             raise
-        finally:
+        try:
             v2_guard.release()
+        except Exception as exc:
+            _cleanup_preserving_error(
+                exc,
+                verified_connection.close,
+                description="unreturned verified V3 connection close",
+            )
+            _cleanup_preserving_error(
+                exc,
+                v2_guard.release,
+                description="V2 handshake guard release retry",
+            )
+            raise
+        return path, verified_connection
 
 
 def _apply_schema_v1(connection: sqlite3.Connection) -> None:
