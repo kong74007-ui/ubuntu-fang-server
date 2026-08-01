@@ -15,7 +15,6 @@ from .billing import (
     process_pending_intent,
     reconcile_unknown_intent,
     request_delta_refund,
-    request_full_refund,
 )
 from .contracts import ALLOWED_TRANSITIONS, MEDIA_STATES, LeaseClaim
 from .delivery import (
@@ -24,6 +23,7 @@ from .delivery import (
     list_due_publish_intents,
     reconcile_asset_decision,
 )
+from .providers import SubmissionUnknown
 from .runtime import LeaseHeartbeat, RuntimeDependencies, StageContext, StageOutcome
 from .store import LeaseLost, StoreConflictError
 
@@ -40,6 +40,38 @@ class _StageFailure(RuntimeError):
     def __init__(self, error_code: str):
         self.error_code = error_code
         super().__init__(error_code)
+
+
+class _AuthorityOnlyPublisher:
+    """Expose authoritative publication lookup without outbound mutation."""
+
+    def __init__(self, publisher: object):
+        self._publisher = publisher
+
+    def query_decision(
+        self,
+        mode: str,
+        source_job_id: str,
+        idempotency_key: str,
+    ) -> object:
+        decision = self._publisher.query_decision(
+            mode, source_job_id, idempotency_key
+        )
+        if decision is None or getattr(decision, "status", None) == "accepted":
+            raise SubmissionUnknown("authority_not_final")
+        return decision
+
+    def register_generation(self, *args: object) -> object:
+        raise SubmissionUnknown("new_work_blocked")
+
+    def prepare_hidden(self, *args: object) -> object:
+        raise SubmissionUnknown("new_work_blocked")
+
+    def commit_publish(self, *args: object) -> object:
+        raise SubmissionUnknown("new_work_blocked")
+
+    def cancel_publish(self, *args: object) -> object:
+        raise SubmissionUnknown("new_work_blocked")
 
 
 def _billing_expected_states(operation: str, status: str) -> frozenset[str]:
@@ -239,24 +271,10 @@ def run_job(
     state = job["state"]
 
     if state == "failed":
-        if not store.transition_leased(
-            claim, {"failed"}, "refund_pending", now_ms, lease_seconds=lease_seconds
-        ):
-            raise LeaseLost("lease_lost", "fenced failed transition was rejected")
-        refund = request_full_refund(claim, now=now_ms, store=store)
-        result_state = refund.next_state
-        if result_state != "refund_pending":
-            if not store.transition_leased(
-                claim,
-                {"refund_pending"},
-                result_state,
-                now_ms,
-                lease_seconds=lease_seconds,
-            ):
-                raise LeaseLost(
-                    "lease_lost", "fenced zero-refund transition was rejected"
-                )
-        store.release_lease(claim, now_ms)
+        refund = store.freeze_failed_full_refund(claim, now_ms=now_ms)
+        result_state = refund["job"]["state"]
+        if store.lease_owned(claim, now_ms):
+            store.release_lease(claim, now_ms)
         return JobRunResult(claim.job_id, result_state, "transitioned")
     if state == "settling":
         checkpoint = store.get_checkpoint_for_claim(
@@ -548,12 +566,20 @@ def run_reconciliation_pass(
     worker_id: str = "ai-edit-v3-reconciler",
     lease_seconds: int = 30,
     limit: int = 100,
+    allow_new_work: bool = True,
 ) -> dict[str, int]:
     """Process billing then asset authority decisions with fenced claims."""
 
+    if type(allow_new_work) is not bool:
+        raise ValueError("reconciliation_new_work_mode_invalid")
     now_ms = _now_ms(runtime)
     counts = {"billing": 0, "assets": 0}
     for intent in list_due_billing_intents(now=now_ms, store=runtime.store, limit=limit):
+        if not allow_new_work and intent.status not in {
+            "unknown",
+            "reconciliation_pending",
+        }:
+            continue
         claim = runtime.store.claim_job(
             intent.job_id,
             worker_id,
@@ -603,6 +629,8 @@ def run_reconciliation_pass(
 
     seen_publish_jobs: set[str] = set()
     for row in list_due_publish_intents(now=now_ms, store=runtime.store, limit=limit):
+        if not allow_new_work and row["status"] != "unknown":
+            continue
         if row["job_id"] in seen_publish_jobs:
             continue
         seen_publish_jobs.add(row["job_id"])
@@ -621,7 +649,20 @@ def run_reconciliation_pass(
             continue
         try:
             job = runtime.store.get_job_for_claim(claim, now_ms)
-            if job["state"] == "publishing" and row["status"] == "pending":
+            if not allow_new_work:
+                create_publish_intent(
+                    claim,
+                    metadata_sha256=row["metadata_sha256"],
+                    now=now_ms,
+                    store=runtime.store,
+                )
+                progress = reconcile_asset_decision(
+                    claim,
+                    now=now_ms,
+                    store=runtime.store,
+                    publisher=_AuthorityOnlyPublisher(runtime.assets),
+                )
+            elif job["state"] == "publishing" and row["status"] == "pending":
                 progress = advance_publish(
                     claim,
                     metadata_sha256=row["metadata_sha256"],
@@ -663,7 +704,12 @@ def run_reconciliation_pass(
             if runtime.store.lease_owned(claim, now_ms):
                 runtime.store.release_lease(claim, now_ms)
 
-    for ready in runtime.store.list_publication_ready_jobs(now_ms, limit=limit):
+    ready_jobs = (
+        runtime.store.list_publication_ready_jobs(now_ms, limit=limit)
+        if allow_new_work
+        else ()
+    )
+    for ready in ready_jobs:
         if ready["job_id"] in seen_publish_jobs:
             continue
         seen_publish_jobs.add(ready["job_id"])

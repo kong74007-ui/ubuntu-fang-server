@@ -4888,6 +4888,182 @@ class V3Store:
                 "refund intent violates frozen uniqueness or cumulative constraints",
             ) from exc
 
+    def freeze_failed_full_refund(
+        self,
+        claim: LeaseClaim,
+        *,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Atomically freeze the full-refund outbox and leave failed state."""
+
+        claim = _require_claim(claim)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            job = connection.execute(
+                """SELECT * FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            if job["state"] not in {"failed", "refund_pending"}:
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "full refund freeze requires failed or refund-pending state",
+                )
+
+            target = job["confirmed_preheld_total"]
+            refunded = job["confirmed_refunded_total"]
+            existing = connection.execute(
+                """SELECT * FROM edit_v3_billing_intents
+                   WHERE environment=? AND owner_id=? AND job_id=?
+                     AND operation='refund_full'""",
+                (job["environment"], job["owner_id"], claim.job_id),
+            ).fetchone()
+            if existing is None:
+                unresolved = connection.execute(
+                    """SELECT 1 FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_delta'
+                         AND status IN ('pending','retryable_absent','unknown',
+                                        'reconciliation_pending')
+                       LIMIT 1""",
+                    (claim.job_id,),
+                ).fetchone()
+                if unresolved is not None:
+                    raise StoreConflictError(
+                        "overlapping_refund_intent",
+                        "delta refund must converge before full refund is frozen",
+                    )
+                if not 0 <= refunded <= target:
+                    raise StoreConflictError(
+                        "refund_target_invalid",
+                        "full refund target conflicts with cumulative totals",
+                    )
+                request_amount = target - refunded
+                status = "completed" if request_amount == 0 else "pending"
+                completed_at = now_ms if request_amount == 0 else None
+                evidence_json = (
+                    _json_text({"zero_amount": True})
+                    if request_amount == 0
+                    else None
+                )
+                intent_id = hashlib.sha256(
+                    f"{claim.job_id}\0refund_full".encode("utf-8")
+                ).hexdigest()
+                connection.execute(
+                    """INSERT INTO edit_v3_billing_intents(
+                           id,environment,owner_id,job_id,operation,
+                           external_idempotency_key,request_sha256,
+                           refund_target_total,request_amount,status,
+                           authority_evidence_json,reason,resume_state,
+                           created_at,updated_at,completed_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        intent_id,
+                        job["environment"],
+                        job["owner_id"],
+                        claim.job_id,
+                        "refund_full",
+                        f"ai-edit-v3:{claim.job_id}:refund_full",
+                        job["request_sha256"],
+                        target,
+                        request_amount,
+                        status,
+                        evidence_json,
+                        "refund",
+                        "refund_pending",
+                        now_ms,
+                        now_ms,
+                        completed_at,
+                    ),
+                )
+                existing = connection.execute(
+                    "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+                    (intent_id,),
+                ).fetchone()
+            else:
+                expected = {
+                    "environment": job["environment"],
+                    "owner_id": job["owner_id"],
+                    "job_id": claim.job_id,
+                    "operation": "refund_full",
+                    "external_idempotency_key": (
+                        f"ai-edit-v3:{claim.job_id}:refund_full"
+                    ),
+                    "request_sha256": job["request_sha256"],
+                    "refund_target_total": target,
+                    "reason": "refund",
+                    "resume_state": "refund_pending",
+                }
+                original_refunded = target - existing["request_amount"]
+                if (
+                    not self._same_values(existing, expected)
+                    or isinstance(existing["request_amount"], bool)
+                    or not isinstance(existing["request_amount"], int)
+                    or not 0 <= original_refunded <= refunded <= target
+                ):
+                    raise StoreConflictError(
+                        "billing_intent_conflict",
+                        "existing full-refund intent diverges from failed recovery",
+                    )
+
+            if job["state"] == "failed" and not _transition_leased_tx(
+                connection,
+                claim,
+                {"failed"},
+                "refund_pending",
+                now_ms,
+                1,
+                preserve_current_lease=True,
+            ):
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "failed job could not enter refund-pending state",
+                )
+
+            terminal_refund = (
+                existing["status"] == "completed"
+                and refunded == target
+            )
+            if terminal_refund and not _transition_leased_tx(
+                connection,
+                claim,
+                {"refund_pending"},
+                "refunded",
+                now_ms,
+                1,
+                preserve_current_lease=True,
+            ):
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "zero or confirmed full refund could not become terminal",
+                )
+
+            current_job = connection.execute(
+                "SELECT * FROM edit_v3_jobs WHERE job_id=?",
+                (claim.job_id,),
+            ).fetchone()
+            return {"job": dict(current_job), "intent": dict(existing)}
+
+        try:
+            return self._write(write)
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError(
+                "billing_intent_conflict",
+                "failed full-refund freeze violates frozen constraints",
+            ) from exc
+
     def get_job_billing_for_claim(
         self,
         claim: LeaseClaim,

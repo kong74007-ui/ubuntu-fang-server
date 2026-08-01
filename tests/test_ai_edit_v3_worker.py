@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from server.content_domains.ai_edit_v3.billing import LedgerResult, LedgerTransaction
+from server.content_domains.ai_edit_v3.delivery import (
+    advance_publish,
+    create_publish_intent,
+)
 from server.content_domains.ai_edit_v3.feature import FeatureConfig
 from server.content_domains.ai_edit_v3.runtime import Runtime, RuntimeDependencies
 from server.content_domains.ai_edit_v3.contracts import LeaseClaim
-from server.content_domains.ai_edit_v3.store import LeaseLost, StoreConflictError
+from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+from server.content_domains.ai_edit_v3.store import (
+    LeaseLost,
+    StoreConflictError,
+    V3Store,
+)
+from server.content_domains.video_asset_publish import PublicationDecision
 
 
 class FakeClock:
@@ -54,6 +67,473 @@ class StopAfterOneLoop:
 
 
 class V3WorkerTests(unittest.TestCase):
+    def real_store(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        v2 = root / "ai_edit_v2.db"
+        v2.write_bytes(b"V2 identity marker; never open")
+        store = V3Store(
+            root / "ai_edit_v3.db",
+            v2_db_path=v2,
+            environment="test",
+        )
+        store.insert_pricing_version(
+            "price-v1",
+            {"base": 1},
+            status="published",
+            created_at=1,
+            published_at=1,
+        )
+        store.insert_quote(
+            "alice",
+            "quote-1",
+            {},
+            pricing_version="price-v1",
+            min_points=1,
+            max_points=1,
+            breakdown={"base": 1},
+            expires_at=9_999_999,
+            created_at=1,
+        )
+        return store
+
+    def seed_real_job(self, store, job_id, state, *, preheld=0):
+        connection = store._connect()
+        try:
+            connection.execute(
+                """INSERT INTO edit_v3_jobs(
+                       job_id,environment,owner_id,state,normalized_request_json,
+                       request_sha256,quote_id,idempotency_key,queued_at,
+                       processing_deadline_at,confirmed_preheld_total,
+                       created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    "test",
+                    "alice",
+                    state,
+                    "{}",
+                    "0" * 64,
+                    "quote-1",
+                    f"key-{job_id}",
+                    1,
+                    5_000_000,
+                    preheld,
+                    1,
+                    1,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def real_job(self, store, job_id):
+        return store._read(
+            lambda connection: dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_jobs WHERE job_id=?", (job_id,)
+                ).fetchone()
+            )
+        )
+
+    def runtime_for_gate(self, store, *, enabled, ledger, publisher):
+        class Clock:
+            def now(self):
+                return 0.2
+
+        dependencies = RuntimeDependencies(
+            store=store,
+            clock=Clock(),
+            points=ledger,
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+        return Runtime(
+            config=FeatureConfig(enabled, None, None, "test", None, 1, 1, 1),
+            dependencies=dependencies,
+        )
+
+    def assert_pending_predebit_is_gated(self, *, enabled, ready):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+
+        store = self.real_store()
+        created = store.create_job_with_predebit(
+            "alice",
+            f"job-gated-predebit-{enabled}",
+            "quote-1",
+            f"key-gated-predebit-{enabled}",
+            {},
+            now_ms=100,
+            intent_id=f"intent-gated-predebit-{enabled}",
+        )
+
+        class Ledger:
+            def __init__(self):
+                self.deduct_calls = 0
+
+            def deduct(self, owner, amount, transaction_key, reason):
+                self.deduct_calls += 1
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key, "deduct", owner, amount, 99, 101
+                    ),
+                    None,
+                )
+
+            def refund(self, *args):
+                raise AssertionError("pending pre-debit must not refund")
+
+            def query_transaction(self, *args):
+                raise AssertionError("pending pre-debit must not query")
+
+        class Publisher:
+            pass
+
+        ledger = Ledger()
+        runtime = self.runtime_for_gate(
+            store,
+            enabled=enabled,
+            ledger=ledger,
+            publisher=Publisher(),
+        )
+        preflight_result = SimpleNamespace(accepts_new_jobs=ready)
+        with patch(
+            "server.ai_edit_v3_worker.preflight",
+            return_value=preflight_result,
+        ):
+            run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        job = self.real_job(store, created["job"]["job_id"])
+        intent = store._read(
+            lambda connection: dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+                    (created["intent"]["id"],),
+                ).fetchone()
+            )
+        )
+        self.assertEqual(ledger.deduct_calls, 0)
+        self.assertEqual(job["state"], "created_draft")
+        self.assertEqual(intent["status"], "pending")
+
+    def seed_publication_ready_job(self, store, job_id):
+        self.seed_real_job(store, job_id, "staging_delivery")
+        claim = store.claim_job(
+            job_id,
+            "worker-publication-ready-setup",
+            30,
+            100,
+            expected_states={"staging_delivery"},
+        )
+        checkpoint = {
+            "actual_charge": 0,
+            "metadata_sha256": "a" * 64,
+            "delivery_object_key": (
+                f"test/ai-edit-v3/owner/{job_id}/delivery/final.mp4"
+            ),
+        }
+        attempt = store.start_stage_attempt(
+            claim, "staging_delivery", "0" * 64, 101
+        )
+        store.save_checkpoint(
+            claim,
+            attempt["id"],
+            "0" * 64,
+            {
+                "next_state": "settling",
+                "checkpoint": checkpoint,
+                "provider_evidence": None,
+            },
+            102,
+        )
+        store.freeze_delivery_object_key(
+            claim, checkpoint["delivery_object_key"], 103
+        )
+        create_publish_intent(
+            claim,
+            metadata_sha256=checkpoint["metadata_sha256"],
+            now=104,
+            store=store,
+        )
+        store.finish_stage_attempt(claim, attempt["id"], "completed", 105)
+        self.assertTrue(
+            store.transition_leased(
+                claim,
+                {"staging_delivery"},
+                "settling",
+                106,
+                lease_seconds=30,
+            )
+        )
+        store.release_lease(claim, 107)
+
+    def assert_publication_ready_is_gated(self, *, enabled, ready):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+
+        store = self.real_store()
+        job_id = f"job-gated-publication-{enabled}"
+        self.seed_publication_ready_job(store, job_id)
+
+        class Ledger:
+            def deduct(self, *args):
+                raise AssertionError("publication recovery must not deduct")
+
+            def refund(self, *args):
+                raise AssertionError("gated publication must not refund")
+
+            def query_transaction(self, *args):
+                raise AssertionError("gated publication must not query billing")
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def register_generation(self, *args):
+                self.calls.append("register_generation")
+                generation = args[2]
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(self, *args):
+                self.calls.append("prepare_hidden")
+                generation = args[4]
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(self, *args):
+                self.calls.append("commit_publish")
+                generation = args[2]
+                return PublicationDecision("publish_won", generation, "asset-gated")
+
+            def cancel_publish(self, *args):
+                self.calls.append("cancel_publish")
+                raise AssertionError("gated publication must not cancel")
+
+            def query_decision(self, *args):
+                self.calls.append("query_decision")
+                raise AssertionError("planned publication must not query")
+
+        publisher = Publisher()
+        runtime = self.runtime_for_gate(
+            store,
+            enabled=enabled,
+            ledger=Ledger(),
+            publisher=publisher,
+        )
+        with patch(
+            "server.ai_edit_v3_worker.preflight",
+            return_value=SimpleNamespace(accepts_new_jobs=ready),
+        ):
+            run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        self.assertEqual(publisher.calls, [])
+        self.assertEqual(self.real_job(store, job_id)["state"], "settling")
+
+    def test_disabled_worker_does_not_submit_pending_predebit(self):
+        self.assert_pending_predebit_is_gated(enabled=False, ready=False)
+
+    def test_not_ready_worker_does_not_submit_pending_predebit(self):
+        self.assert_pending_predebit_is_gated(enabled=True, ready=False)
+
+    def test_disabled_worker_does_not_advance_publication_ready_job(self):
+        self.assert_publication_ready_is_gated(enabled=False, ready=False)
+
+    def test_not_ready_worker_does_not_advance_publication_ready_job(self):
+        self.assert_publication_ready_is_gated(enabled=True, ready=False)
+
+    def test_disabled_worker_queries_unknown_publication_without_resuming_work(self):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+
+        store = self.real_store()
+        job_id = "job-gated-unknown-publication"
+        self.seed_real_job(store, job_id, "publishing", preheld=1)
+        setup_claim = store.claim_job(
+            job_id,
+            "worker-unknown-setup",
+            30,
+            100,
+            expected_states={"publishing"},
+        )
+        store.freeze_delivery_object_key(
+            setup_claim,
+            f"test/ai-edit-v3/owner/{job_id}/delivery/final.mp4",
+            101,
+        )
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+                self.generation = None
+
+            def register_generation(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("register_generation")
+                self.generation = generation
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(
+                self,
+                mode,
+                source_job_id,
+                owner,
+                object_key,
+                generation,
+                idempotency_key,
+            ):
+                self.calls.append("prepare_hidden")
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(self, *args):
+                self.calls.append("commit_publish")
+                raise SubmissionUnknown("response_lost")
+
+            def cancel_publish(self, *args):
+                self.calls.append("cancel_publish")
+                raise AssertionError("unknown publish must not cancel")
+
+            def query_decision(self, mode, source_job_id, idempotency_key):
+                self.calls.append("query_decision")
+                current_generation = int(idempotency_key.rsplit(":", 1)[1])
+                return PublicationDecision("accepted", current_generation, None)
+
+        publisher = Publisher()
+        progress = advance_publish(
+            setup_claim,
+            metadata_sha256="b" * 64,
+            now=102,
+            store=store,
+            publisher=publisher,
+        )
+        self.assertEqual(progress.next_state, "asset_decision_reconciling")
+        self.assertTrue(
+            store.transition_leased(
+                setup_claim,
+                {"publishing"},
+                progress.next_state,
+                103,
+                lease_seconds=30,
+            )
+        )
+        publisher.calls.clear()
+        media_claims = []
+        original_claim_next = store.claim_next_job
+        original_claim_job = store.claim_job
+
+        def count_media_claim(*args, **kwargs):
+            media_claims.append(args)
+            return original_claim_next(*args, **kwargs)
+
+        def reuse_reconciliation_claim(job_id, *args, **kwargs):
+            if job_id == setup_claim.job_id:
+                return setup_claim
+            return original_claim_job(job_id, *args, **kwargs)
+
+        store.claim_next_job = count_media_claim
+        store.claim_job = reuse_reconciliation_claim
+        runtime = self.runtime_for_gate(
+            store,
+            enabled=False,
+            ledger=object(),
+            publisher=publisher,
+        )
+        run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        self.assertEqual(publisher.calls, ["query_decision"])
+        self.assertEqual(media_claims, [])
+        self.assertEqual(
+            self.real_job(store, job_id)["state"],
+            "asset_decision_reconciling",
+        )
+
+    def test_not_ready_worker_queries_unknown_billing_without_claiming_media(self):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+        from server.content_domains.ai_edit_v3.billing import process_pending_intent
+
+        store = self.real_store()
+        created = store.create_job_with_predebit(
+            "alice",
+            "job-gated-unknown-billing",
+            "quote-1",
+            "key-gated-unknown-billing",
+            {},
+            now_ms=100,
+            intent_id="intent-gated-unknown-billing",
+        )
+        setup_claim = store.claim_job(
+            created["job"]["job_id"],
+            "worker-billing-unknown-setup",
+            30,
+            101,
+            expected_states={"created_draft"},
+        )
+
+        class Ledger:
+            def __init__(self):
+                self.deduct_calls = 0
+                self.refund_calls = 0
+                self.query_calls = 0
+
+            def deduct(self, *args):
+                self.deduct_calls += 1
+                raise RuntimeError("injected unknown transmission")
+
+            def refund(self, *args):
+                self.refund_calls += 1
+                raise AssertionError("unknown pre-debit must not refund")
+
+            def query_transaction(self, *args):
+                self.query_calls += 1
+                raise RuntimeError("injected unknown authority query")
+
+        ledger = Ledger()
+        outcome = process_pending_intent(
+            created["intent"]["id"],
+            claim=setup_claim,
+            ledger=ledger,
+            now=102,
+            store=store,
+        )
+        self.assertEqual(outcome.next_state, "billing_reconciling")
+        store.release_lease(setup_claim, 103)
+        ledger.deduct_calls = 0
+        media_claims = []
+        original_claim_next = store.claim_next_job
+
+        def count_media_claim(*args, **kwargs):
+            media_claims.append(args)
+            return original_claim_next(*args, **kwargs)
+
+        store.claim_next_job = count_media_claim
+        runtime = self.runtime_for_gate(
+            store,
+            enabled=True,
+            ledger=ledger,
+            publisher=object(),
+        )
+        with patch(
+            "server.ai_edit_v3_worker.preflight",
+            return_value=SimpleNamespace(accepts_new_jobs=False),
+        ):
+            run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        self.assertEqual(ledger.query_calls, 1)
+        self.assertEqual(ledger.deduct_calls, 0)
+        self.assertEqual(ledger.refund_calls, 0)
+        self.assertEqual(media_claims, [])
+        self.assertEqual(
+            self.real_job(store, created["job"]["job_id"])["state"],
+            "billing_reconciling",
+        )
+
     def test_worker_config_rejects_boolean_and_non_numeric_bounds(self):
         from server.ai_edit_v3_worker import WorkerConfig
 

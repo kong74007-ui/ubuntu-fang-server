@@ -1782,6 +1782,269 @@ class V3StateCASTests(unittest.TestCase):
                     )
                 self.assertIsNone(self.row(job_id)["delivery_object_key"])
 
+    def atomic_failed_refund(self, claim, now_ms):
+        operation = getattr(self.store, "freeze_failed_full_refund", None)
+        self.assertTrue(
+            callable(operation),
+            "failed transition and full-refund intent must share one transaction",
+        )
+        return operation(claim, now_ms=now_ms)
+
+    def test_zero_full_refund_intent_and_terminal_state_commit_atomically(self):
+        self.seed_job("job-atomic-zero-refund", "failed")
+        claim = self.store.claim_job(
+            "job-atomic-zero-refund",
+            "worker-atomic-zero-refund",
+            30,
+            100_000,
+            expected_states={"failed"},
+        )
+
+        result = self.atomic_failed_refund(claim, 100_001)
+
+        intent = self.store._read(
+            lambda connection: dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_full'""",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+        )
+        self.assertEqual(result["job"]["state"], "refunded")
+        self.assertEqual(self.row(claim.job_id)["state"], "refunded")
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["request_amount"], 0)
+        self.assertIsNone(self.row(claim.job_id)["worker_id"])
+
+    def test_stale_claim_cannot_freeze_failed_full_refund(self):
+        self.seed_job("job-atomic-stale-refund", "failed")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-atomic-stale-refund'"""
+            )
+        )
+        stale = self.store.claim_job(
+            "job-atomic-stale-refund",
+            "worker-atomic-stale",
+            30,
+            100_000,
+            expected_states={"failed"},
+        )
+        self.store.release_lease(stale, 100_001)
+        current = self.store.claim_job(
+            stale.job_id,
+            "worker-atomic-current",
+            30,
+            100_002,
+            expected_states={"failed"},
+        )
+
+        with self.assertRaises(LeaseLost):
+            self.atomic_failed_refund(stale, 100_003)
+
+        count = self.store._read(
+            lambda connection: connection.execute(
+                """SELECT COUNT(*) FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation='refund_full'""",
+                (stale.job_id,),
+            ).fetchone()[0]
+        )
+        self.assertEqual(count, 0)
+        self.assertEqual(self.row(stale.job_id)["state"], "failed")
+        self.assertEqual(self.row(stale.job_id)["worker_id"], current.worker_id)
+
+    def test_crash_before_atomic_refund_commit_rolls_back_state_and_intent(self):
+        self.seed_job("job-atomic-refund-rollback", "failed")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-atomic-refund-rollback'"""
+            )
+        )
+        claim = self.store.claim_job(
+            "job-atomic-refund-rollback",
+            "worker-atomic-refund-rollback",
+            30,
+            100_000,
+            expected_states={"failed"},
+        )
+        operation = getattr(self.store, "freeze_failed_full_refund", None)
+        self.assertTrue(callable(operation), "atomic refund operation is absent")
+        original_write = self.store._write
+
+        def inject_before_commit(write):
+            def crash(connection):
+                write(connection)
+                raise RuntimeError("injected crash before atomic commit")
+
+            return original_write(crash)
+
+        with patch.object(self.store, "_write", side_effect=inject_before_commit):
+            with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                operation(claim, now_ms=100_001)
+
+        count = self.store._read(
+            lambda connection: connection.execute(
+                """SELECT COUNT(*) FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation='refund_full'""",
+                (claim.job_id,),
+            ).fetchone()[0]
+        )
+        self.assertEqual(self.row(claim.job_id)["state"], "failed")
+        self.assertEqual(count, 0)
+        self.assertTrue(self.store.lease_owned(claim, 100_002))
+
+    def test_committed_atomic_refund_restarts_and_refunds_exactly_once(self):
+        from server.content_domains.ai_edit_v3.billing import (
+            LedgerResult,
+            LedgerTransaction,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_reconciliation_pass,
+        )
+
+        class Clock:
+            def __init__(self):
+                self.value = 31.0
+
+            def now(self):
+                return self.value
+
+        class Ledger:
+            def __init__(self):
+                self.refund_calls = []
+
+            def deduct(self, *args):
+                raise AssertionError("failed recovery must not deduct")
+
+            def refund(self, owner, amount, transaction_key, reason):
+                self.refund_calls.append(transaction_key)
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key, "refund", owner, amount, 100, 31_001
+                    ),
+                    None,
+                )
+
+            def query_transaction(self, *args):
+                raise AssertionError("pending refund must transmit before query")
+
+        self.seed_job("job-atomic-refund-restart", "failed")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-atomic-refund-restart'"""
+            )
+        )
+        crashed_claim = self.store.claim_job(
+            "job-atomic-refund-restart",
+            "worker-atomic-refund-crashed",
+            30,
+            100,
+            expected_states={"failed"},
+        )
+        frozen = self.atomic_failed_refund(crashed_claim, 101)
+        self.assertEqual(frozen["job"]["state"], "refund_pending")
+
+        clock = Clock()
+        ledger = Ledger()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=clock,
+            points=ledger,
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+        first = run_reconciliation_pass(runtime, limit=10)
+        clock.value = 31.1
+        second = run_reconciliation_pass(runtime, limit=10)
+
+        intents = self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_full'""",
+                    (crashed_claim.job_id,),
+                )
+            )
+        )
+        self.assertEqual(first["billing"], 1)
+        self.assertEqual(second["billing"], 0)
+        self.assertEqual(self.row(crashed_claim.job_id)["state"], "refunded")
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0]["status"], "completed")
+        self.assertEqual(len(ledger.refund_calls), 1)
+
+    def test_failed_pipeline_uses_only_atomic_refund_store_operation(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        self.seed_job("job-pipeline-atomic-refund", "failed")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-pipeline-atomic-refund'"""
+            )
+        )
+        claim = self.store.claim_job(
+            "job-pipeline-atomic-refund",
+            "worker-pipeline-atomic-refund",
+            30,
+            100_000,
+            expected_states={"failed"},
+        )
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        with patch.object(
+            self.store,
+            "transition_leased",
+            side_effect=AssertionError("split failed transition is forbidden"),
+        ), patch(
+            "server.content_domains.ai_edit_v3.pipeline.request_full_refund",
+            create=True,
+            side_effect=AssertionError("split full-refund creation is forbidden"),
+        ):
+            result = run_job(claim, runtime, db_path=self.db)
+
+        count = self.store._read(
+            lambda connection: connection.execute(
+                """SELECT COUNT(*) FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation='refund_full'""",
+                (claim.job_id,),
+            ).fetchone()[0]
+        )
+        self.assertEqual(result.state, "refund_pending")
+        self.assertEqual(count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

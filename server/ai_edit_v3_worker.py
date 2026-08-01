@@ -87,17 +87,19 @@ def run_worker(stop_event, *, config=None, runtime=None) -> None:
         return
 
     while not stop_event.is_set():
+        allow_new_work = _ready(runtime.config, runtime)
         try:
             run_reconciliation_pass(
                 dependencies,
                 worker_id=f"{config.worker_id}:reconcile",
                 lease_seconds=config.lease_seconds,
                 limit=config.reconciliation_limit,
+                allow_new_work=allow_new_work,
             )
         except (LeaseLost, StoreConflictError):
             stop_event.wait(config.poll_interval_seconds)
             continue
-        if _ready(runtime.config, runtime):
+        if allow_new_work:
             concurrency = runtime.config.worker_concurrency or 0
             claims = []
             for _ in range(concurrency):
