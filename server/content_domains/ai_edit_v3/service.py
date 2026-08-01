@@ -2006,7 +2006,7 @@ class EditV3Service:
             _looks_like_private_reference(
                 value,
                 allow_mime=isinstance(field_name, str)
-                and field_name.lower() in {"mime_type", "content_type"},
+                and field_name in {"mime_type", "content_type"},
             )
         ):
             return "[redacted]"

@@ -1360,6 +1360,35 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 },
             ],
             "innocuous": "Use A/B testing for Q3 growth.",
+            "mime_key_cases": {
+                "MIME_TYPE": "video/mp4",
+                "Mime_Type": "video/mp4",
+                "CONTENT_TYPE": "image/png",
+                "Content_Type": "image/png",
+                " mime_type": "video/mp4",
+                "mime_type ": "video/mp4",
+                "mіme_type": "video/mp4",
+                "mime＿type": "video/mp4",
+                "arbitrary": "video/private.mov",
+                "invalid_mime": {
+                    "mime_type": "custom/mp4",
+                    "content_type": "video/private/path",
+                },
+                "nested_context": {
+                    "mime_type": [
+                        "video/mp4",
+                        {
+                            "MIME_TYPE": "video/mp4",
+                            "mime_type": "video/mp4",
+                            "arbitrary": "video/private.mov",
+                        },
+                    ],
+                    "MIME_TYPE": [
+                        "video/mp4",
+                        {"content_type": "image/png"},
+                    ],
+                },
+            },
             "nested": {
                 "transcript": "private transcript",
                 "cos_key": "production/ai-edit-v3/private/object",
@@ -1530,6 +1559,37 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 )
             if value["innocuous"] != "[redacted]":
                 semantic_failures.append(("innocuous", value["innocuous"]))
+            expected_mime_key_cases = {
+                "MIME_TYPE": "[redacted]",
+                "Mime_Type": "[redacted]",
+                "CONTENT_TYPE": "[redacted]",
+                "Content_Type": "[redacted]",
+                " mime_type": "[redacted]",
+                "mime_type ": "[redacted]",
+                "mіme_type": "[redacted]",
+                "mime＿type": "[redacted]",
+                "arbitrary": "[redacted]",
+                "invalid_mime": {
+                    "mime_type": "[redacted]",
+                    "content_type": "[redacted]",
+                },
+                "nested_context": {
+                    "mime_type": [
+                        "video/mp4",
+                        {
+                            "MIME_TYPE": "[redacted]",
+                            "mime_type": "video/mp4",
+                            "arbitrary": "[redacted]",
+                        },
+                    ],
+                    "MIME_TYPE": [
+                        "[redacted]",
+                        {"content_type": "image/png"},
+                    ],
+                },
+            }
+            if value["mime_key_cases"] != expected_mime_key_cases:
+                semantic_failures.append(("mime_key_cases", value["mime_key_cases"]))
             self.assertEqual(value["nested"]["mime_type"], "video/mp4")
             self.assertEqual(value["nested"]["content_type"], "image/png")
             self.assertEqual(value["nested"]["note_mime"], "[redacted]")
