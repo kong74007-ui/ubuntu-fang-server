@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
@@ -13,41 +13,52 @@ from typing import Protocol, runtime_checkable
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _WINDOWS_DRIVE = re.compile(r"[A-Za-z]:")
-_RENDER_EVIDENCE_KEYS = frozenset(
-    {
-        "architecture",
-        "chromium_build_id",
-        "ffmpeg_version",
-        "ffprobe_version",
-        "font_bundle_sha256",
-        "gsap_version",
-        "hyperframes_version",
-        "node",
-        "node_version",
-        "os_name",
-        "os_version",
-        "renderer",
-        "renderer_build_id",
-    }
+_EXACT_VERSION = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){1,3}\Z")
+_CHROMIUM_BUILD_ID = re.compile(
+    r"chromium-(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){3}\Z"
 )
-_EVIDENCE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+()\-]{0,127}\Z")
-_SECRET_VALUE_PREFIXES = (
-    "AKID",
-    "ASIA",
-    "AUTH",
-    "BASIC",
-    "BEARER",
-    "COOKIE",
-    "HMAC",
-    "PASSWORD",
-    "SECRET",
-    "SK-",
-    "TOKEN",
+_RENDERER_BUILD_ID = re.compile(r"renderer-[0-9]{8}-[0-9a-f]{12}\Z")
+_CODE_COMMIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_RENDER_EVIDENCE_CONTRACTS: Mapping[
+    str, frozenset[str] | re.Pattern[str]
+] = MappingProxyType(
+    {
+        "architecture": frozenset({"aarch64", "amd64", "arm64", "x86_64"}),
+        "chromium_build_id": _CHROMIUM_BUILD_ID,
+        "chromium_version": _EXACT_VERSION,
+        "code_commit_sha": _CODE_COMMIT_SHA,
+        "component_registry_sha256": _SHA256,
+        "ffmpeg_version": _EXACT_VERSION,
+        "ffprobe_version": _EXACT_VERSION,
+        "font_bundle_sha256": _SHA256,
+        "gsap_version": _EXACT_VERSION,
+        "hyperframes_version": _EXACT_VERSION,
+        "locale": frozenset({"C", "C.UTF-8", "en_US.UTF-8", "zh_CN.UTF-8"}),
+        "node_version": _EXACT_VERSION,
+        "os_name": frozenset({"darwin", "linux", "windows"}),
+        "os_version": _EXACT_VERSION,
+        "package_lock_sha256": _SHA256,
+        "render_bundle_sha256": _SHA256,
+        "renderer": frozenset({"hyperframes"}),
+        "renderer_build_id": _RENDERER_BUILD_ID,
+        "timezone": frozenset({"UTC"}),
+    }
 )
 
 
 def _has_control(value: str) -> bool:
     return any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in value)
+
+
+def _valid_render_evidence(name: object, value: object) -> bool:
+    if not isinstance(name, str) or not isinstance(value, str):
+        return False
+    contract = _RENDER_EVIDENCE_CONTRACTS.get(name)
+    if contract is None:
+        return False
+    if isinstance(contract, frozenset):
+        return value in contract
+    return contract.fullmatch(value) is not None
 
 
 def _identifier(value: object, field_name: str) -> str:
@@ -143,7 +154,7 @@ class RenderResult:
     sha256: str
     report_relpath: str
     snapshots: tuple[str, ...]
-    environment: Mapping[str, str]
+    environment: Mapping[str, str] = field(repr=False)
     performance: Mapping[str, int | float]
 
     def __post_init__(self) -> None:
@@ -168,15 +179,7 @@ class RenderResult:
             raise ValueError("render_environment_invalid")
         environment: dict[str, str] = {}
         for name, value in self.environment.items():
-            if (
-                name not in _RENDER_EVIDENCE_KEYS
-                or not isinstance(value, str)
-                or not value
-                or value != value.strip()
-                or _has_control(value)
-                or _EVIDENCE_VALUE.fullmatch(value) is None
-                or value.upper().startswith(_SECRET_VALUE_PREFIXES)
-            ):
+            if not _valid_render_evidence(name, value):
                 raise ValueError("render_environment_invalid")
             environment[name] = value
         if not isinstance(self.performance, Mapping):

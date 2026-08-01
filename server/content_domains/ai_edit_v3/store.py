@@ -19,7 +19,7 @@ import uuid
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
-from typing import Any, TypeVar
+from typing import Any, Literal, NamedTuple, TypeVar
 from urllib.parse import quote
 
 from .contracts import (
@@ -1048,19 +1048,37 @@ def _classify_filesystem_type(fs_type: str | None) -> str:
     return "unknown"
 
 
+class FilesystemClassification(NamedTuple):
+    """Read-only filesystem identity and the V3 local-storage policy result."""
+
+    filesystem_type: str | None
+    policy: Literal["local", "remote", "unknown"]
+
+
+def classify_filesystem(path: Path) -> FilesystemClassification:
+    """Classify a path without creating, opening, or changing filesystem state."""
+
+    if not isinstance(path, Path):
+        return FilesystemClassification(filesystem_type=None, policy="unknown")
+    filesystem_type = _filesystem_type_for_path(path)
+    return FilesystemClassification(
+        filesystem_type=filesystem_type,
+        policy=_classify_filesystem_type(filesystem_type),
+    )
+
+
 def _assert_local_filesystem(path: Path) -> None:
     candidates = [path.parent]
     if os.path.lexists(path):
         candidates.append(path)
     for candidate in candidates:
-        fs_type = _filesystem_type_for_path(candidate)
-        classification = _classify_filesystem_type(fs_type)
-        if classification == "remote":
+        result = classify_filesystem(candidate)
+        if result.policy == "remote":
             raise _configuration_error(
                 "v3_db_network_filesystem",
-                f"V3 database may not use network filesystem {fs_type}",
+                f"V3 database may not use network filesystem {result.filesystem_type}",
             )
-        if classification != "local":
+        if result.policy != "local":
             raise _configuration_error(
                 "v3_db_filesystem_unknown",
                 "V3 database filesystem identity cannot be established",

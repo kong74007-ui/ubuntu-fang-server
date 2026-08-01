@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from unittest import mock
 
+import server.content_domains.ai_edit_v3.store as store_module
 from server.content_domains.ai_edit_v3.contracts import LeaseClaim
 from server.content_domains.ai_edit_v3.feature import (
     CapabilityItem,
@@ -212,6 +213,55 @@ class FeatureConfigTests(unittest.TestCase):
         config = load_config(env)
         self.assertTrue(config.enabled)
 
+    def test_common_compound_security_names_are_rejected_without_value_leaks(self):
+        names = (
+            "AI_EDIT_V3_APIKEY",
+            "AI_EDIT_V3_DASHSCOPE_APIKEY",
+            "AI_EDIT_V3_SECRETKEY",
+            "AI_EDIT_V3_PROVIDER_SECRETKEY",
+            "AI_EDIT_V3_PRIVATEKEY",
+            "AI_EDIT_V3_AWS_PRIVATEKEY",
+            "AI_EDIT_V3_ACCESSKEY",
+            "AI_EDIT_V3_AWS_ACCESSKEY",
+            "AI_EDIT_V3_SIGNINGKEY",
+            "AI_EDIT_V3_PROVIDER_SIGNINGKEY",
+            "AI_EDIT_V3_HMACKEY",
+            "AI_EDIT_V3_OWNER_HMACKEY",
+            "AI_EDIT_V3_AUTHHEADER",
+            "AI_EDIT_V3_PROVIDER_AUTHHEADER",
+            "AI_EDIT_V3_AUTHTOKEN",
+            "AI_EDIT_V3_PROVIDER_AUTHTOKEN",
+            "AI_EDIT_V3_BEARERTOKEN",
+            "AI_EDIT_V3_PROVIDER_BEARERTOKEN",
+            "AI_EDIT_V3_SESSIONCOOKIE",
+            "AI_EDIT_V3_PROVIDER_SESSIONCOOKIE",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                secret = "compound-name-value-must-not-leak"
+                env = self.enabled_env()
+                env[name] = secret
+                with self.assertRaises(FeatureConfigurationError) as caught:
+                    load_config(env)
+                self.assertEqual(caught.exception.reason_code, "config_secret_forbidden")
+                self.assertNotIn(secret, str(caught.exception))
+                self.assertNotIn(secret, repr(caught.exception))
+
+    def test_security_name_classifier_preserves_safe_compound_lookalikes(self):
+        env = self.enabled_env()
+        for name in (
+            "AI_EDIT_V3_MONKEY",
+            "AI_EDIT_V3_KEYFRAME",
+            "AI_EDIT_V3_SECRETARY",
+            "AI_EDIT_V3_COOKIECUTTER",
+            "AI_EDIT_V3_PROVIDER_MONKEY",
+            "AI_EDIT_V3_PROVIDER_KEYFRAME",
+            "AI_EDIT_V3_PROVIDER_SECRETARY",
+            "AI_EDIT_V3_PROVIDER_COOKIECUTTER",
+        ):
+            env[name] = "safe-lookalike"
+        self.assertTrue(load_config(env).enabled)
+
     def test_windows_reserved_device_aliases_are_rejected_in_every_path_role(self):
         aliases = (
             "NUL",
@@ -239,24 +289,22 @@ class FeatureConfigTests(unittest.TestCase):
                     self.assert_reason("config_path_reserved", env)
 
     def test_db_filesystem_classification_rejects_remote_and_unknown(self):
-        for fs_type, reason_code in (
-            ("nfs", "config_db_filesystem_remote"),
-            ("windows_remote", "config_db_filesystem_remote"),
-            (None, "config_db_filesystem_unknown"),
-            ("mysteryfs", "config_db_filesystem_unknown"),
+        for classification, reason_code in (
+            ("remote", "config_db_filesystem_remote"),
+            ("unknown", "config_db_filesystem_unknown"),
         ):
-            with self.subTest(fs_type=fs_type):
+            with self.subTest(classification=classification):
                 with mock.patch(
-                    "server.content_domains.ai_edit_v3.feature._filesystem_type_for_path",
-                    return_value=fs_type,
+                    "server.content_domains.ai_edit_v3.feature.classify_filesystem",
+                    return_value=mock.Mock(policy=classification),
                     create=True,
                 ):
                     self.assert_reason(reason_code, self.enabled_env())
 
     def test_db_filesystem_classification_accepts_local_and_skips_secret_reference(self):
         with mock.patch(
-            "server.content_domains.ai_edit_v3.feature._filesystem_type_for_path",
-            return_value="windows_fixed",
+            "server.content_domains.ai_edit_v3.feature.classify_filesystem",
+            return_value=mock.Mock(policy="local"),
             create=True,
         ) as classify:
             config = load_config(self.enabled_env())
@@ -268,6 +316,45 @@ class FeatureConfigTests(unittest.TestCase):
         )
         self.assertEqual(classify.call_count, 2)
         self.assertNotIn(self.root / "owner-hmac.secret", classified_paths)
+
+    def test_public_filesystem_classifier_and_feature_share_store_policy(self):
+        classify = getattr(store_module, "classify_filesystem", None)
+        self.assertTrue(callable(classify), "public filesystem policy is required")
+        for fs_type, expected in (
+            ("windows_fixed", "local"),
+            ("nfs", "remote"),
+            (None, "unknown"),
+            ("mysteryfs", "unknown"),
+        ):
+            with self.subTest(fs_type=fs_type):
+                with mock.patch.object(
+                    store_module, "_filesystem_type_for_path", return_value=fs_type
+                ):
+                    result = classify(self.root)
+                    self.assertEqual(result.policy, expected)
+                    self.assertEqual(result.filesystem_type, fs_type)
+
+        with mock.patch(
+            "server.content_domains.ai_edit_v3.feature.classify_filesystem",
+            wraps=classify,
+            create=True,
+        ) as feature_policy, mock.patch.object(
+            store_module, "_filesystem_type_for_path", return_value="windows_fixed"
+        ):
+            self.assertTrue(load_config(self.enabled_env()).enabled)
+        self.assertEqual(feature_policy.call_count, 2)
+
+    def test_public_filesystem_classifier_fails_closed_for_non_path_input(self):
+        classify = getattr(store_module, "classify_filesystem")
+        with mock.patch.object(
+            store_module,
+            "_filesystem_type_for_path",
+            return_value="windows_fixed",
+        ) as probe:
+            result = classify("not-a-path")
+        self.assertEqual(result.policy, "unknown")
+        self.assertIsNone(result.filesystem_type)
+        probe.assert_not_called()
 
 
 class ProviderAndRendererContractTests(unittest.TestCase):
@@ -301,7 +388,10 @@ class ProviderAndRendererContractTests(unittest.TestCase):
             "sha256": "b" * 64,
             "report_relpath": "reports/render.json",
             "snapshots": ("snapshots/0001.png",),
-            "environment": {"node": "22.0.0", "renderer": "build-1"},
+            "environment": {
+                "node_version": "22.14.0",
+                "renderer": "hyperframes",
+            },
             "performance": {"elapsed_ms": 10, "peak_memory_mb": 2.5},
         }
         values.update(overrides)
@@ -478,10 +568,25 @@ class ProviderAndRendererContractTests(unittest.TestCase):
 
     def test_render_environment_uses_strict_non_secret_evidence_allowlist(self):
         allowed = {
-            "node": "22.0.0",
-            "renderer": "build-1",
+            "renderer": "hyperframes",
+            "renderer_build_id": "renderer-20260801-0123456789ab",
+            "code_commit_sha": "1" * 40,
+            "package_lock_sha256": "2" * 64,
+            "render_bundle_sha256": "3" * 64,
+            "component_registry_sha256": "4" * 64,
+            "font_bundle_sha256": "5" * 64,
+            "node_version": "22.14.0",
+            "chromium_version": "128.0.6613.84",
+            "chromium_build_id": "chromium-128.0.6613.84",
+            "ffmpeg_version": "7.1.0",
+            "ffprobe_version": "7.1.0",
+            "hyperframes_version": "0.7.84",
+            "gsap_version": "3.15.0",
             "os_name": "windows",
+            "os_version": "11.0.26100",
             "architecture": "x86_64",
+            "locale": "en_US.UTF-8",
+            "timezone": "UTC",
         }
         self.assertEqual(dict(self.render_result(environment=allowed).environment), allowed)
 
@@ -500,22 +605,35 @@ class ProviderAndRendererContractTests(unittest.TestCase):
                 self.assertNotIn(secret, str(caught.exception))
                 self.assertNotIn(secret, repr(caught.exception))
 
-        for value in (
-            "https://secret.example/value",
-            "data:secret",
-            "Bearer-do-not-leak",
-            "AK" + "IDDO_NOT_LEAK",
-            "s" + "k-do-not-leak",
-            "bad\x00value",
-        ):
-            with self.subTest(value=repr(value)):
-                with self.assertRaises(ValueError) as caught:
-                    self.render_result(environment={"node": value})
-                self.assertNotIn(value, str(caught.exception))
-                self.assertNotIn(value, repr(caught.exception))
+        secret_values = (
+            ("aws_access", "AK" + "IA" + "IOSFODNN7EXAMPLE"),
+            ("aws_session", "AS" + "IA" + "IOSFODNN7EXAMPLE"),
+            ("aws_legacy", "A3" + "T" + "IOSFODNN7EXAMPLE"),
+            ("github_classic", "gh" + "p_" + "exampletokenvalue"),
+            ("github_fine_grained", "github_" + "pat_" + "exampletokenvalue"),
+            ("slack_bot", "xox" + "b-" + "example-token-value"),
+            ("slack_user", "xox" + "p-" + "example-token-value"),
+            (
+                "jwt",
+                "ey" + "JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
+            ),
+            ("bearer", "Bearer " + "example-token-value"),
+            ("basic", "Basic " + "ZXhhbXBsZTpleGFtcGxl"),
+            ("cookie_header", "Cookie: session=" + "example-cookie-value"),
+            ("cookie_fragment", "session=" + "example-cookie-value; csrf=example"),
+            ("control", "bad\x00value"),
+        )
+
+        for name in allowed:
+            for secret_kind, value in secret_values:
+                with self.subTest(name=name, secret_kind=secret_kind):
+                    with self.assertRaises(ValueError) as caught:
+                        self.render_result(environment={name: value})
+                    self.assertNotIn(value, str(caught.exception))
+                    self.assertNotIn(value, repr(caught.exception))
 
     def test_render_result_freezes_environment_performance_and_snapshots(self):
-        environment = {"node": "22.0.0"}
+        environment = {"node_version": "22.14.0"}
         performance = {"elapsed_ms": 10}
         snapshots = ["snapshots/0001.png"]
         result = self.render_result(
@@ -523,14 +641,24 @@ class ProviderAndRendererContractTests(unittest.TestCase):
             performance=performance,
             snapshots=snapshots,
         )
-        environment["node"] = "changed"
+        environment["node_version"] = "changed"
         performance["elapsed_ms"] = 99
         snapshots.append("snapshots/0002.png")
-        self.assertEqual(dict(result.environment), {"node": "22.0.0"})
+        self.assertEqual(dict(result.environment), {"node_version": "22.14.0"})
         self.assertEqual(dict(result.performance), {"elapsed_ms": 10})
         self.assertEqual(result.snapshots, ("snapshots/0001.png",))
         with self.assertRaises(TypeError):
-            result.environment["node"] = "changed"
+            result.environment["node_version"] = "changed"
+
+    def test_render_result_repr_omits_legitimate_environment_evidence(self):
+        environment = {
+            "code_commit_sha": "6" * 40,
+            "renderer_build_id": "renderer-20260801-abcdef012345",
+        }
+        result_repr = repr(self.render_result(environment=environment))
+        self.assertNotIn("environment=", result_repr)
+        for value in environment.values():
+            self.assertNotIn(value, result_repr)
 
     def test_renderer_protocol_is_runtime_checkable(self):
         class FakeRenderer:

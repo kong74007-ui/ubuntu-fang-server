@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
-from .store import _classify_filesystem_type, _filesystem_type_for_path
+from .store import classify_filesystem
 
 
 _CONFIG_NAMES = frozenset(
@@ -27,15 +27,25 @@ _CONFIG_NAMES = frozenset(
 )
 _SECURITY_NAME_TOKENS = frozenset(
     {
+        "ACCESSKEY",
+        "APIKEY",
         "AUTH",
+        "AUTHHEADER",
         "AUTHORIZATION",
+        "AUTHTOKEN",
+        "BEARERTOKEN",
         "COOKIE",
         "CREDENTIAL",
         "CREDENTIALS",
         "HMAC",
+        "HMACKEY",
         "KEY",
         "PASSWORD",
+        "PRIVATEKEY",
         "SECRET",
+        "SECRETKEY",
+        "SESSIONCOOKIE",
+        "SIGNINGKEY",
         "TOKEN",
     }
 )
@@ -210,8 +220,7 @@ def _validate_db_filesystem(path: Path, field_name: str) -> None:
         candidates.append(path)
     for candidate in candidates:
         try:
-            fs_type = _filesystem_type_for_path(candidate)
-            classification = _classify_filesystem_type(fs_type)
+            classification = classify_filesystem(candidate).policy
         except Exception as exc:
             raise _error("config_db_filesystem_unknown", field_name) from exc
         if classification == "remote":
