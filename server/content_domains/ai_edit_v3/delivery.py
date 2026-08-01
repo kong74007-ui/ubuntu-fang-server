@@ -11,7 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .contracts import ALL_STATES, LeaseClaim
 from .providers import DefinitiveNotAccepted, SubmissionUnknown
-from .store import LeaseLost, V3Store
+from .store import LeaseLost, V3Store, is_valid_publish_asset_id
 
 
 _MODE = "ai_edit_v3"
@@ -146,13 +146,7 @@ def _decision_values(value: object) -> dict[str, Any]:
     ):
         raise ValueError("publication_generation_invalid")
     if status == "publish_won":
-        if (
-            not isinstance(asset_id, str)
-            or not asset_id.strip()
-            or asset_id != asset_id.strip()
-            or len(asset_id) > 256
-            or any(ord(character) < 0x20 for character in asset_id)
-        ):
+        if not is_valid_publish_asset_id(asset_id):
             raise ValueError("publication_asset_id_invalid")
     elif asset_id is not None:
         raise ValueError("publication_asset_id_invalid")
@@ -197,7 +191,7 @@ def _stored_final_progress(
 ) -> _StepResult | None:
     if row["status"] == "publish_won":
         asset_id = row.get("asset_id") or context["job"].get("asset_id")
-        if not isinstance(asset_id, str) or not asset_id:
+        if not is_valid_publish_asset_id(asset_id):
             raise ValueError("publication_asset_id_invalid")
         return _StepResult(
             "publish_won",
@@ -273,6 +267,12 @@ def _invoke_operation(
                 now_ms=now,
             )
         return stored_final
+    if operation != "query_decision" and row["status"] in {"pending", "unknown"}:
+        timed_progress = _unknown_progress(
+            row, now, reason="submission_timeout"
+        )
+        if timed_progress.next_state == "failed_asset_decision_pending":
+            return _StepResult("timed_out", timed_progress)
     outbound = store.begin_publish_operation(claim, operation, now_ms=now)
     key = outbound["external_idempotency_key"]
     generation = outbound["publish_generation"]

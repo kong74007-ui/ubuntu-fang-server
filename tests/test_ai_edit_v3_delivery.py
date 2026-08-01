@@ -17,8 +17,10 @@ from server.content_domains.ai_edit_v3.providers import (
 )
 from server.content_domains.ai_edit_v3.store import (
     LeaseLost,
+    StoreConfigurationError,
     StoreConflictError,
     V3Store,
+    is_valid_publish_asset_id,
     request_fingerprint,
 )
 from server.content_domains import video_asset_publish as shared_publish
@@ -768,6 +770,95 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(late.next_state, "completed")
         self.assertEqual(len(publisher.calls["commit_publish"]), 1)
 
+    def test_definitive_publish_retry_at_timeout_never_calls_shared_service(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=20)
+
+        class UnknownThenDefinitivePublish(ScriptedPublisher):
+            def commit_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls["commit_publish"].append(idempotency_key)
+                self.order.append("commit_publish")
+                if len(self.calls["commit_publish"]) == 1:
+                    raise SubmissionUnknown("response_lost")
+                if len(self.calls["commit_publish"]) == 2:
+                    raise DefinitiveNotAccepted("not_accepted")
+                raise AssertionError("timed-out publish must not be replayed")
+
+        publisher = UnknownThenDefinitivePublish()
+        first = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=publisher,
+        )
+        self.assertTrue(self.store.renew_lease(claim, 400, 1_001))
+        definitive = delivery.reconcile_asset_decision(
+            claim,
+            now=1_010,
+            store=self.store,
+            publisher=publisher,
+        )
+        timed_out = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=301_000,
+            store=self.store,
+            publisher=publisher,
+        )
+
+        self.assertEqual(first.next_state, "asset_decision_reconciling")
+        self.assertEqual(definitive.checkpoint["outcome"], "definitive_not_accepted")
+        self.assertEqual(timed_out.next_state, "failed_asset_decision_pending")
+        self.assertEqual(len(publisher.calls["commit_publish"]), 2)
+
+    def test_definitive_cancel_retry_at_timeout_never_calls_shared_service(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=21)
+
+        class UnknownThenDefinitiveCancel(ScriptedPublisher):
+            def cancel_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls["cancel_publish"].append(idempotency_key)
+                self.order.append("cancel_publish")
+                if len(self.calls["cancel_publish"]) == 1:
+                    raise SubmissionUnknown("response_lost")
+                if len(self.calls["cancel_publish"]) == 2:
+                    raise DefinitiveNotAccepted("not_accepted")
+                raise AssertionError("timed-out cancel must not be replayed")
+
+        publisher = UnknownThenDefinitiveCancel()
+        first = delivery.request_cancel(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=publisher,
+        )
+        self.assertTrue(self.store.renew_lease(claim, 400, 1_001))
+        definitive = delivery.reconcile_asset_decision(
+            claim,
+            now=1_010,
+            store=self.store,
+            publisher=publisher,
+        )
+        timed_out = delivery.request_cancel(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=301_000,
+            store=self.store,
+            publisher=publisher,
+        )
+
+        self.assertEqual(first.next_state, "asset_decision_reconciling")
+        self.assertEqual(definitive.checkpoint["outcome"], "definitive_not_accepted")
+        self.assertEqual(timed_out.next_state, "failed_asset_decision_pending")
+        self.assertEqual(len(publisher.calls["cancel_publish"]), 2)
+        self.assertIsNone(self.billing_intent("refund_full"))
+
     def test_stale_claims_before_and_after_intent_never_call_shared_service(self):
         delivery = self.delivery_module()
         for after_intent in (False, True):
@@ -909,6 +1000,80 @@ class V3PublicationRecoveryTests(unittest.TestCase):
             self.store.get_job_for_owner("alice", old.job_id)["asset_id"]
         )
         self.assertIsNone(self.billing_intent("refund_full"))
+
+    def test_frozen_query_key_refreshes_late_cancel_verdict_after_timeout(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=22)
+        backend, connect = self.real_shared_publisher()
+
+        class CancelUnknownBeforeEffect(LossySharedPublisher):
+            def cancel_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls["cancel_publish"].append(idempotency_key)
+                raise SubmissionUnknown("response_lost")
+
+        cancel_unknown = CancelUnknownBeforeEffect(backend)
+        first = delivery.request_cancel(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=cancel_unknown,
+        )
+        self.assertTrue(self.store.renew_lease(claim, 400, 1_001))
+
+        first_query = LossySharedPublisher(
+            backend, lose_once=("query_decision",)
+        )
+        query_lost = delivery.reconcile_asset_decision(
+            claim,
+            now=1_010,
+            store=self.store,
+            publisher=first_query,
+        )
+        cancel_key = cancel_unknown.calls["cancel_publish"][0]
+        external_winner = backend.cancel_publish(
+            "ai_edit_v3",
+            claim.job_id,
+            claim.fencing_token,
+            cancel_key,
+        )
+
+        late_query = LossySharedPublisher(backend)
+        late = delivery.reconcile_asset_decision(
+            claim,
+            now=301_000,
+            store=self.store,
+            publisher=late_query,
+        )
+
+        expected_query_key = (
+            f"ai-edit-v3:{claim.job_id}:publish:query:{claim.fencing_token}"
+        )
+        self.assertEqual(first.next_state, "asset_decision_reconciling")
+        self.assertEqual(query_lost.next_state, "asset_decision_reconciling")
+        self.assertEqual(external_winner.status, "cancel_won")
+        self.assertEqual(first_query.calls["query_decision"], [expected_query_key])
+        self.assertEqual(late_query.calls["query_decision"], [expected_query_key])
+        self.assertEqual(late.next_state, "failed")
+        self.assertIsNotNone(self.billing_intent("refund_full"))
+        with closing(connect()) as connection:
+            self.assertEqual(
+                connection.execute(
+                    """SELECT count(*) FROM video_asset_publication_ops
+                       WHERE idempotency_key=?""",
+                    (expected_query_key,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    """SELECT count(*) FROM video_assets
+                       WHERE source_job_id='job-publish'"""
+                ).fetchone()[0],
+                0,
+            )
 
     def test_real_shared_sqlite_concurrent_publish_cancel_has_one_local_outcome(self):
         delivery = self.delivery_module()
@@ -1227,6 +1392,69 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         )
         self.assertNotIn("publication_asset_id_invalid", dump)
 
+    def test_asset_id_is_opaque_at_delivery_and_store_write_boundaries(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=18)
+        secret_url = "https://signed.invalid/video.mp4?token=TOP-SECRET"
+
+        for invalid in (
+            secret_url,
+            "asset?token=TOP-SECRET",
+            "asset#fragment",
+            "user:password@host",
+            "token=TOP-SECRET",
+            "asset/42",
+            "asset\\42",
+            "asset\x00id",
+            "asset\x7fid",
+        ):
+            with self.subTest(invalid=repr(invalid)):
+                self.assertFalse(is_valid_publish_asset_id(invalid))
+        for valid in ("1", "asset-42", "video_123", "asset.42"):
+            with self.subTest(valid=valid):
+                self.assertTrue(is_valid_publish_asset_id(valid))
+
+        class SignedUrlDecision(ScriptedPublisher):
+            def register_generation(self, mode, source_job_id, generation, key):
+                return PublicationDecision("publish_won", generation, secret_url)
+
+        progress = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+            publisher=SignedUrlDecision(),
+        )
+        self.assertEqual(progress.next_state, "asset_decision_reconciling")
+        dump = self.store._read(lambda connection: "\n".join(connection.iterdump()))
+        self.assertNotIn("TOP-SECRET", dump)
+        self.assertNotIn("signed.invalid", dump)
+
+        self.setUp()
+        claim = self.seed_publish_job(fencing_token=19)
+        delivery.create_publish_intent(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+        )
+        with self.assertRaises(StoreConfigurationError) as caught:
+            self.store.record_publish_winner(
+                claim,
+                "register_generation",
+                secret_url,
+                {
+                    "asset_id": secret_url,
+                    "current_generation": claim.fencing_token,
+                    "status": "publish_won",
+                },
+                now_ms=1_001,
+            )
+        self.assertEqual(caught.exception.error_code, "asset_id_invalid")
+        dump = self.store._read(lambda connection: "\n".join(connection.iterdump()))
+        self.assertNotIn("TOP-SECRET", dump)
+        self.assertNotIn("signed.invalid", dump)
+
     def test_due_listing_is_read_only_bounded_ordered_and_strict(self):
         delivery = self.delivery_module()
         claim = self.seed_publish_job(fencing_token=1)
@@ -1286,9 +1514,15 @@ class V3PublicationRecoveryTests(unittest.TestCase):
                     delivery.list_due_publish_intents(
                         now=1_000, store=self.store, limit=bad_limit
                     )
-        for bad_cursor in ("opaque", (1,), (True, "id"), (1, "")):
+        for bad_cursor in (
+            "opaque",
+            (1,),
+            (True, "id"),
+            (1 << 63, "id"),
+            (1, ""),
+        ):
             with self.subTest(bad_cursor=bad_cursor):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "publish_cursor_invalid"):
                     delivery.list_due_publish_intents(
                         now=1_000,
                         store=self.store,

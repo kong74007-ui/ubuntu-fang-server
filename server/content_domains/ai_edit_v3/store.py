@@ -108,6 +108,7 @@ _PUBLISH_EXPECTED_DECISIONS = {
     "cancel_publish": "cancel_won",
     "query_decision": "publish_won_or_cancel_won",
 }
+_PUBLISH_ASSET_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -2517,6 +2518,15 @@ def _require_publish_operation(operation: Any) -> str:
             "publish operation is not part of the frozen outbox contract",
         )
     return operation
+
+
+def is_valid_publish_asset_id(value: Any) -> bool:
+    """Return whether *value* is one frozen opaque publication identifier."""
+
+    return (
+        isinstance(value, str)
+        and _PUBLISH_ASSET_ID_PATTERN.fullmatch(value) is not None
+    )
 
 
 def _publish_intent_id(job_id: str, generation: int, operation: str) -> str:
@@ -5812,6 +5822,7 @@ class V3Store:
                 isinstance(due_at, bool)
                 or not isinstance(due_at, int)
                 or due_at < 0
+                or due_at > _SQLITE_INT64_MAX
                 or not isinstance(intent_id, str)
                 or not intent_id
                 or intent_id != intent_id.strip()
@@ -5987,10 +5998,9 @@ class V3Store:
     ) -> dict[str, Any]:
         claim = _require_claim(claim)
         operation = _require_publish_operation(operation)
-        asset_id = _require_nonblank("asset_id", asset_id)
-        if asset_id != asset_id.strip() or len(asset_id) > 256:
+        if not is_valid_publish_asset_id(asset_id):
             raise _configuration_error(
-                "asset_id_invalid", "asset id must be a stable compact identifier"
+                "asset_id_invalid", "asset id must be one opaque stable identifier"
             )
         if not isinstance(decision, Mapping):
             raise _configuration_error(
