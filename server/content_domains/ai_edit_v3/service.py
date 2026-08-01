@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import math
 import re
@@ -14,7 +13,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
-from urllib.parse import urlsplit
 
 from .billing import (
     BillingError,
@@ -68,8 +66,13 @@ _PROBE_FORMAT_LIST = re.compile(
 )
 _PROBE_RATIONAL = re.compile(r"(?:[1-9][0-9]*/[1-9][0-9]*|[0-9]+(?:\.[0-9]+)?)\Z")
 _PROBE_LONG_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,_+():-]{0,255}\Z")
-_MIME_VALUE = re.compile(r"[a-z][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*\Z")
+_MIME_VALUE = re.compile(
+    r"(?:application|audio|font|image|message|model|multipart|text|video)/"
+    r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\Z"
+)
 _V3_COS_VALUE = re.compile(r"(?:^|/)(?:test|production)/ai-edit-v3(?:/|$)", re.I)
+_ENCODED_PATH_MARKER = re.compile(r"%(?:2f|5c)", re.I)
+_AB_PROSE_TOKEN = re.compile(r"(?<![A-Za-z0-9])A/B(?![A-Za-z0-9])")
 _QUERY_SECRET_VALUE = re.compile(
     r"(?:^|[?&;\s])(?:authorization|credential|password|secret|signature|token)=",
     re.I,
@@ -109,7 +112,6 @@ _CATALOG_FIELDS = {
             "title",
             "cover_asset_id",
             "cover_reference",
-            "cover_url",
             "duration_ms",
             "ratio",
         }
@@ -486,20 +488,25 @@ def _is_absolute_local_path(value: str) -> bool:
     return value.startswith("/") or _ABSOLUTE_WINDOWS_PATH.match(value) is not None
 
 
-def _looks_like_private_reference(value: str) -> bool:
+def _looks_like_private_reference(value: str, *, allow_mime: bool = False) -> bool:
     normalized = value.replace("\\", "/")
+    slash_is_only_ab_prose = bool(
+        any(character.isspace() for character in value)
+        and "/" not in _AB_PROSE_TOKEN.sub("", value)
+    )
     return bool(
         _has_control_or_surrogate(value)
         or "://" in value
         or _V3_COS_VALUE.search(normalized) is not None
+        or _ENCODED_PATH_MARKER.search(value) is not None
         or _QUERY_SECRET_VALUE.search(value) is not None
         or "\\" in value
         or _is_absolute_local_path(value)
         or any(segment in {".", ".."} for segment in normalized.split("/"))
         or (
             "/" in value
-            and not any(character.isspace() for character in value)
-            and _MIME_VALUE.fullmatch(value) is None
+            and not slash_is_only_ab_prose
+            and not (allow_mime and _MIME_VALUE.fullmatch(value) is not None)
         )
     )
 
@@ -515,48 +522,21 @@ def _safe_opaque_catalog_value(value: Any) -> str:
     return value
 
 
-def _safe_summary_text(value: Any, *, maximum: int = 512) -> str:
+def _safe_summary_text(
+    value: Any,
+    *,
+    maximum: int = 512,
+    allow_mime: bool = False,
+) -> str:
     if (
         not isinstance(value, str)
         or not value
         or value != value.strip()
         or len(value) > maximum
         or _has_control_or_surrogate(value)
-        or _looks_like_private_reference(value)
+        or _looks_like_private_reference(value, allow_mime=allow_mime)
     ):
         raise ValueError("catalog_text_invalid")
-    return value
-
-
-def _safe_cover_url(value: Any) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > 2_048
-        or _has_control_or_surrogate(value)
-    ):
-        raise ValueError("catalog_cover_url_invalid")
-    parsed = urlsplit(value)
-    hostname = parsed.hostname
-    if (
-        parsed.scheme != "https"
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or bool(parsed.query)
-        or bool(parsed.fragment)
-        or hostname.lower() == "localhost"
-        or hostname.lower().endswith((".local", ".internal"))
-    ):
-        raise ValueError("catalog_cover_url_invalid")
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        pass
-    else:
-        if not address.is_global:
-            raise ValueError("catalog_cover_url_invalid")
     return value
 
 
@@ -587,10 +567,8 @@ def _public_catalog_record(capability: str, value: Any) -> dict[str, Any]:
             ):
                 raise ValueError("catalog_ratios_invalid")
             result[key] = list(item)
-        elif key == "cover_url":
-            result[key] = _safe_cover_url(item)
         elif key == "mime_type":
-            text = _safe_summary_text(item, maximum=128)
+            text = _safe_summary_text(item, maximum=128, allow_mime=True)
             if text != text.lower() or not text.startswith("audio/"):
                 raise ValueError("catalog_mime_invalid")
             result[key] = text
@@ -2000,7 +1978,7 @@ class EditV3Service:
         return self._catalog_list(owner, "templates", "list_templates")
 
     @staticmethod
-    def _redact_public_value(value: Any) -> Any:
+    def _redact_public_value(value: Any, *, field_name: str | None = None) -> Any:
         blocked = (
             "authorization",
             "cos_key",
@@ -2020,15 +1998,22 @@ class EditV3Service:
         )
         if isinstance(value, Mapping):
             return {
-                key: EditV3Service._redact_public_value(item)
+                key: EditV3Service._redact_public_value(item, field_name=key)
                 for key, item in value.items()
                 if isinstance(key, str)
                 and not any(marker in key.lower() for marker in blocked)
             }
         if isinstance(value, list):
-            return [EditV3Service._redact_public_value(item) for item in value]
+            return [
+                EditV3Service._redact_public_value(item, field_name=field_name)
+                for item in value
+            ]
         if isinstance(value, str) and (
-            _looks_like_private_reference(value)
+            _looks_like_private_reference(
+                value,
+                allow_mime=isinstance(field_name, str)
+                and field_name.lower() in {"mime_type", "content_type"},
+            )
         ):
             return "[redacted]"
         return value

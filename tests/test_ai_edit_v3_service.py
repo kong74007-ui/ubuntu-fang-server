@@ -1164,6 +1164,38 @@ class V3ApplicationServiceTests(unittest.TestCase):
         self.assertEqual(context.exception.status, 503)
         self.assertEqual(context.exception.error_code, "platform_assets_unavailable")
 
+    def test_public_catalog_omits_every_raw_cover_url_and_keeps_opaque_refs(self):
+        public = {
+            "asset_id": "platform-cover-safe",
+            "title": "Platform title",
+            "cover_asset_id": "cover-asset-1",
+            "cover_reference": "cover-reference-1",
+            "duration_ms": 3_000,
+            "ratio": "16:9",
+        }
+        raw_cover_urls = (
+            "https://cdn.example.com/cover.jpg",
+            "https://localhost./cover.jpg",
+            "https://foo.localhost/cover.jpg",
+            "https://2130706433/cover.jpg",
+            "https://0x7f000001/cover.jpg",
+            "https://0177.0.0.1/cover.jpg",
+            "https://192.168.1.1/cover.jpg",
+            "https://cdn.example.com/cover.jpg?token=secret",
+        )
+        failures = []
+        for cover_url in raw_cover_urls:
+            with self.subTest(cover_url=cover_url):
+                self.catalog.platform_rows = [{**public, "cover_url": cover_url}]
+                try:
+                    returned = self.service.list_platform_assets("alice")["items"][0]
+                except ServiceError as exc:
+                    failures.append((cover_url, exc.error_code))
+                    continue
+                if returned != public:
+                    failures.append((cover_url, returned))
+        self.assertEqual(failures, [])
+
     def test_public_catalog_plan_and_result_dtos_drop_nested_private_data(self):
         malicious = {
             "transcript": "private transcript",
@@ -1285,6 +1317,17 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 "note": "../private/source.mp4",
                 "more": "C:\\private\\source.mp4",
                 "other": "\\\\server\\share\\source.mp4",
+                "detail_one": "private dir/file.mp4",
+                "detail_two": "bucket/path",
+                "detail_three": "folder name/sub folder/private.mov",
+                "encoded_one": "private%2fobject",
+                "encoded_two": "private%2Fobject",
+                "encoded_three": "private%5cobject",
+                "encoded_four": "private%5Cobject",
+                "mime_type": "video/mp4",
+                "content_type": "image/png",
+                "note_mime": "video/mp4",
+                "reference_mime": "image/png",
             },
         }
         encoded = json.dumps(nested, sort_keys=True, separators=(",", ":"))
@@ -1355,11 +1398,22 @@ class V3ApplicationServiceTests(unittest.TestCase):
                 "../private/source.mp4",
                 "C:\\private\\source.mp4",
                 "\\\\server\\share\\source.mp4",
+                "private dir/file.mp4",
+                "bucket/path",
+                "folder name/sub folder/private.mov",
+                "private%2fobject",
+                "private%2Fobject",
+                "private%5cobject",
+                "private%5Cobject",
             ):
                 if private in serialized:
                     leaks.append(("plan-or-result", private))
             self.assertEqual(value["headline"], "safe public value")
             self.assertEqual(value["summary"], "Use A/B testing for Q3 growth.")
+            self.assertEqual(value["nested"]["mime_type"], "video/mp4")
+            self.assertEqual(value["nested"]["content_type"], "image/png")
+            self.assertEqual(value["nested"]["note_mime"], "[redacted]")
+            self.assertEqual(value["nested"]["reference_mime"], "[redacted]")
         self.assertEqual(leaks, [])
 
     def test_existing_job_replay_does_not_reresolve_catalog_and_rechecks_store(self):
