@@ -40,6 +40,109 @@ from server.content_domains.ai_edit_v3.runtime import (
 from server.content_domains.ai_edit_v3.store import V3Store
 
 
+class V3EnvironmentManifestTests(unittest.TestCase):
+    EXPECTED_V3_ENV = {
+        "AI_EDIT_V3_ENABLED": "0",
+        "AI_EDIT_V3_ENVIRONMENT": "test",
+        "AI_EDIT_V3_DB_PATH": "/home/ubuntu/content-api/ai_edit_v3.db",
+        "AI_EDIT_V3_OWNER_HMAC_SECRET_FILE": (
+            "/etc/huangque/ai-edit-v3-owner-hmac.secret"
+        ),
+        "AI_EDIT_V3_WORKER_CONCURRENCY": "5",
+        "AI_EDIT_V3_QUEUE_CAPACITY": "50",
+        "AI_EDIT_V3_TEMP_BYTES_LIMIT": "10737418240",
+    }
+    FORBIDDEN_V3_NAMES = {
+        "AI_EDIT_V3_OWNER_HMAC_SECRET",
+        "AI_EDIT_V3_COS_SECRET_ID",
+        "AI_EDIT_V3_COS_SECRET_KEY",
+        "AI_EDIT_V3_COS_REGION",
+        "AI_EDIT_V3_COS_BUCKET",
+        "AI_EDIT_V3_COS_PREFIX",
+        "AI_EDIT_V3_PROVIDER_API_KEY",
+        "AI_EDIT_V3_PIPELINE_CONCURRENCY",
+        "AI_EDIT_V3_RENDER_SLOTS",
+        "AI_EDIT_V3_QUEUE_LIMIT",
+    }
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        example = (
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "huangque-secrets.env.example"
+        )
+        self.entries = []
+        for line in example.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            self.entries.append(tuple(stripped.split("=", 1)))
+
+    def manifest_env(self) -> dict[str, str]:
+        return {
+            name: value
+            for name, value in self.entries
+            if name.startswith("AI_EDIT_V3_")
+        }
+
+    def test_manifest_declares_the_exact_default_off_v3_contract(self):
+        v3_entries = [
+            (name, value)
+            for name, value in self.entries
+            if name.startswith("AI_EDIT_V3_")
+        ]
+        self.assertEqual(dict(v3_entries), self.EXPECTED_V3_ENV)
+        self.assertEqual(len(v3_entries), len(self.EXPECTED_V3_ENV))
+
+    def test_manifest_excludes_secrets_providers_cos_and_stale_aliases(self):
+        names = {name for name, _value in self.entries}
+        self.assertTrue(self.FORBIDDEN_V3_NAMES.isdisjoint(names))
+
+    def test_manifest_preserves_one_existing_v2_database_definition(self):
+        self.assertEqual(
+            [value for name, value in self.entries if name == "AI_EDIT_V2_DB"],
+            ["/home/ubuntu/content-api/ai_edit_v2.db"],
+        )
+
+    def test_manifest_is_accepted_without_creating_configured_files(self):
+        env = self.manifest_env()
+        env["AI_EDIT_V3_DB_PATH"] = os.fspath(self.root / "v3.db")
+        env["AI_EDIT_V2_DB"] = os.fspath(self.root / "v2.db")
+        env["AI_EDIT_V3_OWNER_HMAC_SECRET_FILE"] = os.fspath(
+            self.root / "owner-hmac.secret"
+        )
+
+        before = tuple(self.root.iterdir())
+        config = load_config(env)
+
+        self.assertFalse(config.enabled)
+        self.assertEqual(config.environment, "test")
+        self.assertEqual(config.worker_concurrency, 5)
+        self.assertEqual(config.queue_capacity, 50)
+        self.assertEqual(config.temp_bytes_limit, 10737418240)
+        self.assertEqual(tuple(self.root.iterdir()), before)
+
+    def test_file_reference_alone_does_not_make_the_runtime_ready(self):
+        env = self.manifest_env()
+        env["AI_EDIT_V3_DB_PATH"] = os.fspath(self.root / "v3.db")
+        env["AI_EDIT_V2_DB"] = os.fspath(self.root / "v2.db")
+        env["AI_EDIT_V3_OWNER_HMAC_SECRET_FILE"] = os.fspath(
+            self.root / "owner-hmac.secret"
+        )
+
+        report = preflight(build_runtime(env=env))
+
+        self.assertFalse(report.accepts_uploads)
+        self.assertFalse(report.accepts_new_jobs)
+        self.assertEqual(
+            report.items["isolated_v3_store"].reason_code,
+            "capability_not_injected",
+        )
+
+
 class FeatureConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -188,6 +291,18 @@ class FeatureConfigTests(unittest.TestCase):
                 self.assertEqual(caught.exception.reason_code, "config_secret_forbidden")
                 self.assertNotIn(secret, str(caught.exception))
                 self.assertNotIn(secret, repr(caught.exception))
+
+    def test_raw_security_variables_are_forbidden_even_when_blank(self):
+        for name in (
+            "AI_EDIT_V3_OWNER_HMAC_SECRET",
+            "AI_EDIT_V3_COS_SECRET_ID",
+            "AI_EDIT_V3_COS_SECRET_KEY",
+            "AI_EDIT_V3_PROVIDER_API_KEY",
+        ):
+            with self.subTest(name=name):
+                env = self.enabled_env()
+                env[name] = ""
+                self.assert_reason("config_secret_forbidden", env)
 
     def test_security_sensitive_unknown_names_are_classified_case_insensitively(self):
         names = (
