@@ -25,27 +25,32 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
     }
 )
-_SECURITY_NAME_TOKENS = frozenset(
+_SECURITY_COMPOUND_MARKERS = frozenset(
     {
         "ACCESSKEY",
         "APIKEY",
-        "AUTH",
         "AUTHHEADER",
-        "AUTHORIZATION",
         "AUTHTOKEN",
         "BEARERTOKEN",
+        "HMACKEY",
+        "PRIVATEKEY",
+        "SECRETKEY",
+        "SESSIONCOOKIE",
+        "SIGNINGKEY",
+    }
+)
+_SECURITY_NAME_TOKENS = frozenset(
+    {
+        *_SECURITY_COMPOUND_MARKERS,
+        "AUTH",
+        "AUTHORIZATION",
         "COOKIE",
         "CREDENTIAL",
         "CREDENTIALS",
         "HMAC",
-        "HMACKEY",
         "KEY",
         "PASSWORD",
-        "PRIVATEKEY",
         "SECRET",
-        "SECRETKEY",
-        "SESSIONCOOKIE",
-        "SIGNINGKEY",
         "TOKEN",
     }
 )
@@ -256,7 +261,11 @@ def _is_security_sensitive_config_name(name: str) -> bool:
     if not normalized.startswith(prefix):
         return False
     tokens = {token for token in normalized[len(prefix):].split("_") if token}
-    return bool(tokens & _SECURITY_NAME_TOKENS)
+    return bool(tokens & _SECURITY_NAME_TOKENS) or any(
+        marker in token
+        for token in tokens
+        for marker in _SECURITY_COMPOUND_MARKERS
+    )
 
 
 def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:

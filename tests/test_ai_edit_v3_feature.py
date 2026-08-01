@@ -247,6 +247,42 @@ class FeatureConfigTests(unittest.TestCase):
                 self.assertNotIn(secret, str(caught.exception))
                 self.assertNotIn(secret, repr(caught.exception))
 
+    def test_concatenated_provider_compounds_are_rejected_without_value_leaks(self):
+        compound_tokens = (
+            "PROVIDERAPIKEY",
+            "DASHSCOPEAPIKEY",
+            "DASHSCOPEAPIKEYPRIMARY",
+            "PROVIDERSECRETKEY",
+            "KMSSECRETKEY",
+            "AWSPRIVATEKEY",
+            "PROVIDERPRIVATEKEY",
+            "ALIYUNACCESSKEY",
+            "PROVIDERACCESSKEY",
+            "WEBHOOKSIGNINGKEY",
+            "PROVIDERSIGNINGKEY",
+            "OWNERHMACKEY",
+            "PROVIDERHMACKEY",
+            "XAUTHHEADER",
+            "PROVIDERAUTHHEADER",
+            "UPSTREAMAUTHTOKEN",
+            "PROVIDERAUTHTOKEN",
+            "OAUTHBEARERTOKEN",
+            "PROVIDERBEARERTOKEN",
+            "BROWSERSESSIONCOOKIE",
+            "PROVIDERSESSIONCOOKIE",
+        )
+        for token in compound_tokens:
+            name = f"AI_EDIT_V3_{token}"
+            with self.subTest(name=name):
+                secret = "concatenated-marker-value-must-not-leak"
+                env = self.enabled_env()
+                env[name] = secret
+                with self.assertRaises(FeatureConfigurationError) as caught:
+                    load_config(env)
+                self.assertEqual(caught.exception.reason_code, "config_secret_forbidden")
+                self.assertNotIn(secret, str(caught.exception))
+                self.assertNotIn(secret, repr(caught.exception))
+
     def test_security_name_classifier_preserves_safe_compound_lookalikes(self):
         env = self.enabled_env()
         for name in (
@@ -258,6 +294,14 @@ class FeatureConfigTests(unittest.TestCase):
             "AI_EDIT_V3_PROVIDER_KEYFRAME",
             "AI_EDIT_V3_PROVIDER_SECRETARY",
             "AI_EDIT_V3_PROVIDER_COOKIECUTTER",
+            "AI_EDIT_V3_KEYBOARD",
+            "AI_EDIT_V3_KEYSTONE",
+            "AI_EDIT_V3_KEYNOTE",
+            "AI_EDIT_V3_HOCKEY",
+            "AI_EDIT_V3_AUTHENTICATION",
+            "AI_EDIT_V3_COOKIEJAR",
+            "AI_EDIT_V3_TOKENIZER",
+            "AI_EDIT_V3_SECRETARIAT",
         ):
             env[name] = "safe-lookalike"
         self.assertTrue(load_config(env).enabled)
