@@ -276,6 +276,8 @@ class AssetPublicationService:
                 request_sha256=request_sha256,
             )
             if replay is not _NO_REPLAY:
+                if operation == "query_decision":
+                    replay = mutate(conn)
                 conn.commit()
                 return replay
             decision = mutate(conn)

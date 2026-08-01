@@ -465,7 +465,7 @@ class VideoAssetPublishArbitrationTests(unittest.TestCase):
         self.assertIsNone(row["verdict"])
         self.assertEqual(self.visible_assets("job-fence"), [])
 
-    def test_query_key_replay_is_deterministic_and_read_only(self):
+    def test_query_key_replay_refreshes_the_authoritative_final_verdict(self):
         self.publisher.register_generation(
             "ai_edit_v3", "job-query", 5, "query-register"
         )
@@ -490,7 +490,7 @@ class VideoAssetPublishArbitrationTests(unittest.TestCase):
             "ai_edit_v3", "job-query", "query-after-final"
         )
         self.assertEqual(before.status, "accepted")
-        self.assertEqual(replay, before)
+        self.assertEqual(replay, won)
         self.assertEqual(current, won)
         self.assertEqual(self.operation_count("query-before-final"), 1)
         row = self.publication("job-query")
@@ -571,20 +571,23 @@ class VideoAssetPublishArbitrationTests(unittest.TestCase):
         self.assertEqual(cancel_row["verdict"], "cancel_won")
         self.assertEqual(self.visible_assets("job-final-cancel"), [])
 
-    def test_missing_query_replay_stays_none_after_publication_is_created(self):
+    def test_missing_query_replay_refreshes_to_the_authoritative_final_verdict(self):
         first = self.publisher.query_decision(
             "ai_edit_v3", "job-query-missing", "query-missing"
         )
         self.publisher.register_generation(
             "ai_edit_v3", "job-query-missing", 2, "query-missing-register"
         )
+        won = self.publisher.cancel_publish(
+            "ai_edit_v3", "job-query-missing", 2, "query-missing-cancel"
+        )
         replay = self.publisher.query_decision(
             "ai_edit_v3", "job-query-missing", "query-missing"
         )
         self.assertIsNone(first)
-        self.assertIsNone(replay)
+        self.assertEqual(replay, won)
         self.assertEqual(self.operation_count("query-missing"), 1)
-        self.assertEqual(self.publication("job-query-missing")["current_generation"], 2)
+        self.assertEqual(self.publication("job-query-missing")["verdict"], "cancel_won")
 
     def test_commit_writes_exactly_one_immutable_v3_asset(self):
         object_key = "test/ai-edit-v3/o/job-fields/delivery/final.mp4"
