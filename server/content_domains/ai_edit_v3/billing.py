@@ -466,19 +466,26 @@ def _outcome(
         )
     next_state = result["job"]["state"]
     if intent.status == "completed" and intent.operation == "refund_delta":
-        if context == ("refund", "refund_pending"):
-            if next_state not in {
-                "refund_pending",
-                "billing_reconciling",
-                "failed_reconciliation_pending",
-            }:
-                raise _error(
-                    "billing_context_conflict",
-                    "refund recovery context conflicts with the current job state",
-                )
+        if next_state in {
+            "failed_reconciliation_pending",
+            "refund_pending",
+        }:
             next_state = "refund_pending"
-        else:
+        elif (
+            context == ("refund", "refund_pending")
+            and next_state == "billing_reconciling"
+        ):
+            next_state = "refund_pending"
+        elif (
+            context == ("settlement", "settling")
+            and next_state in {"settling", "billing_reconciling"}
+        ):
             next_state = "publishing"
+        else:
+            raise _error(
+                "billing_context_conflict",
+                "completed delta context conflicts with the current job state",
+            )
     elif intent.status == "completed" and intent.operation == "refund_full":
         next_state = "refunded"
     return BillingOutcome(

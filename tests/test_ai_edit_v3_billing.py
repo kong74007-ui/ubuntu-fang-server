@@ -1689,6 +1689,157 @@ class V3RefundTests(BillingTestCase):
         self.assertEqual(len(ledger.query_calls), 1)
         self.assertEqual(len(self.intent_rows()), 2)
 
+    def test_completed_delta_outcome_uses_context_and_current_job_state_matrix(self):
+        delta = self.billing.request_delta_refund(
+            self.claim, actual_charge=25, now=4_000, store=self.store
+        )
+        ledger = FakeLedger(self.billing)
+        completed = self.billing.process_pending_intent(
+            delta.intent.intent_id,
+            claim=self.claim,
+            ledger=ledger,
+            now=4_100,
+            store=self.store,
+        )
+        self.assertEqual(completed.next_state, "publishing")
+        ledger.refund_calls.clear()
+
+        def set_durable_state(state, reason, resume_state):
+            self.store._write(
+                lambda connection: connection.execute(
+                    """UPDATE edit_v3_jobs
+                       SET state=?,reconciliation_reason=?,resume_state=?
+                       WHERE job_id=?""",
+                    (state, reason, resume_state, self.created.job_id),
+                )
+            )
+
+        settlement_states = (
+            ("settling", None, None, "publishing"),
+            ("billing_reconciling", "settlement", "settling", "publishing"),
+            (
+                "failed_reconciliation_pending",
+                "settlement",
+                "settling",
+                "refund_pending",
+            ),
+            ("refund_pending", None, None, "refund_pending"),
+        )
+        for state, reason, resume_state, expected in settlement_states:
+            with self.subTest(context="settlement", state=state):
+                set_durable_state(state, reason, resume_state)
+                for replay_now in (4_200, 4_201):
+                    replay = self.billing.process_pending_intent(
+                        delta.intent.intent_id,
+                        claim=self.claim,
+                        ledger=ledger,
+                        now=replay_now,
+                        store=self.store,
+                    )
+                    self.assertEqual(replay.next_state, expected)
+
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET reason='refund',resume_state='refund_pending'
+                   WHERE id=?""",
+                (delta.intent.intent_id,),
+            )
+        )
+        refund_states = (
+            ("refund_pending", None, None),
+            ("billing_reconciling", "refund", "refund_pending"),
+            ("failed_reconciliation_pending", "refund", "refund_pending"),
+        )
+        for state, reason, resume_state in refund_states:
+            with self.subTest(context="refund", state=state):
+                set_durable_state(state, reason, resume_state)
+                replay = self.billing.process_pending_intent(
+                    delta.intent.intent_id,
+                    claim=self.claim,
+                    ledger=ledger,
+                    now=4_202,
+                    store=self.store,
+                )
+                self.assertEqual(replay.next_state, "refund_pending")
+
+        with self.subTest(context="refund", state="settling"):
+            set_durable_state("settling", None, None)
+            with self.assertRaises(self.billing.BillingError) as caught:
+                self.billing.process_pending_intent(
+                    delta.intent.intent_id,
+                    claim=self.claim,
+                    ledger=ledger,
+                    now=4_203,
+                    store=self.store,
+                )
+            self.assertEqual(caught.exception.error_code, "billing_context_conflict")
+
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET reason='refund',resume_state='settling'
+                   WHERE id=?""",
+                (delta.intent.intent_id,),
+            )
+        )
+        set_durable_state("refund_pending", None, None)
+        with self.subTest(context="invalid", state="refund_pending"):
+            with self.assertRaises(self.billing.BillingError) as caught:
+                self.billing.process_pending_intent(
+                    delta.intent.intent_id,
+                    claim=self.claim,
+                    ledger=ledger,
+                    now=4_204,
+                    store=self.store,
+                )
+            self.assertEqual(caught.exception.error_code, "billing_context_conflict")
+
+        self.assertEqual(ledger.refund_calls, [])
+        self.assertEqual(ledger.query_calls, [])
+
+    def test_completed_delta_outcome_replay_is_stale_fenced(self):
+        delta = self.billing.request_delta_refund(
+            self.claim, actual_charge=25, now=4_000, store=self.store
+        )
+        ledger = FakeLedger(self.billing)
+        self.billing.process_pending_intent(
+            delta.intent.intent_id,
+            claim=self.claim,
+            ledger=ledger,
+            now=4_100,
+            store=self.store,
+        )
+        ledger.refund_calls.clear()
+        self.set_state("billing_reconciling")
+        successor = self.store.claim_job(
+            self.created.job_id,
+            "completed-delta-successor",
+            100,
+            1_003_000,
+            expected_states={"billing_reconciling"},
+        )
+        self.assertIsNotNone(successor)
+        before = json.dumps(
+            (self.job(), self.intent_rows()), sort_keys=True, separators=(",", ":")
+        )
+
+        with self.assertRaises(LeaseLost):
+            self.billing.process_pending_intent(
+                delta.intent.intent_id,
+                claim=self.claim,
+                ledger=ledger,
+                now=1_003_001,
+                store=self.store,
+            )
+
+        after = json.dumps(
+            (self.job(), self.intent_rows()), sort_keys=True, separators=(",", ":")
+        )
+        self.assertEqual(after, before)
+        self.assertEqual(ledger.refund_calls, [])
+        self.assertEqual(ledger.query_calls, [])
+
     def test_exact_refund_replay_is_idempotent_but_divergent_target_conflicts(self):
         first = self.billing.request_delta_refund(
             self.claim, actual_charge=25, now=4_000, store=self.store
@@ -1853,9 +2004,46 @@ class V3RefundTests(BillingTestCase):
             store=self.store,
         )
 
-        self.assertEqual(outcome.next_state, "publishing")
+        self.assertEqual(outcome.next_state, "refund_pending")
         self.assertEqual(self.job()["confirmed_refunded_total"], 20)
         self.assertEqual(self.job()["state"], "failed_reconciliation_pending")
+
+        transitioned = self.store.transition_leased(
+            recovered_claim,
+            {"failed_reconciliation_pending"},
+            outcome.next_state,
+            304_103,
+            lease_seconds=100,
+        )
+        self.assertTrue(transitioned)
+        full = self.billing.request_full_refund(
+            recovered_claim,
+            now=304_104,
+            store=self.store,
+        )
+        ledger.refund_behavior = "success"
+        full_done = self.billing.process_pending_intent(
+            full.intent.intent_id,
+            claim=recovered_claim,
+            ledger=ledger,
+            now=304_105,
+            store=self.store,
+        )
+
+        self.assertEqual(full.next_state, "refund_pending")
+        self.assertEqual(full.intent.request_amount, 25)
+        self.assertEqual(full.intent.refund_target_total, 45)
+        self.assertEqual(
+            full.intent.external_idempotency_key,
+            f"ai-edit-v3:{self.created.job_id}:refund_full",
+        )
+        self.assertEqual(full_done.next_state, "refunded")
+        self.assertEqual(self.job()["confirmed_refunded_total"], 45)
+        self.assertEqual([call[1] for call in ledger.refund_calls], [20, 25])
+        self.assertNotIn(
+            "publishing",
+            (outcome.next_state, full.next_state, full_done.next_state),
+        )
 
 
 class V3LateBillingRecoveryTests(BillingTestCase):
