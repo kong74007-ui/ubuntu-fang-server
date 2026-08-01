@@ -448,15 +448,37 @@ def _outcome(
     *,
     error_code: str | None = None,
 ) -> BillingOutcome:
-    intent = _intent_from_row(result["intent"])
+    intent_row = result["intent"]
+    intent = _intent_from_row(intent_row)
+    context = (intent_row["reason"], intent_row["resume_state"])
+    allowed_contexts = {
+        "pre_debit": {("prehold", "preholding")},
+        "refund_delta": {
+            ("settlement", "settling"),
+            ("refund", "refund_pending"),
+        },
+        "refund_full": {("refund", "refund_pending")},
+    }
+    if context not in allowed_contexts.get(intent.operation, set()):
+        raise _error(
+            "billing_context_conflict",
+            "billing intent has an invalid durable recovery context",
+        )
     next_state = result["job"]["state"]
     if intent.status == "completed" and intent.operation == "refund_delta":
-        next_state = (
-            "refund_pending"
-            if result["job"]["state"]
-            in {"failed_reconciliation_pending", "refund_pending"}
-            else "publishing"
-        )
+        if context == ("refund", "refund_pending"):
+            if next_state not in {
+                "refund_pending",
+                "billing_reconciling",
+                "failed_reconciliation_pending",
+            }:
+                raise _error(
+                    "billing_context_conflict",
+                    "refund recovery context conflicts with the current job state",
+                )
+            next_state = "refund_pending"
+        else:
+            next_state = "publishing"
     elif intent.status == "completed" and intent.operation == "refund_full":
         next_state = "refunded"
     return BillingOutcome(
@@ -565,13 +587,9 @@ def _confirm_transaction(
 ) -> BillingOutcome:
     try:
         if intent.operation == "pre_debit":
-            try:
-                deadline = _checked_add(
-                    transaction.created_at,
-                    PROCESSING_DEADLINE_MS,
-                    "processing_deadline_overflow",
-                )
-            except BillingError as exc:
+            current = store.get_billing_for_claim(intent.intent_id, claim, now)
+            job_created_at = current["job"]["created_at"]
+            if transaction.created_at < job_created_at:
                 return _mark_unknown(
                     intent.intent_id,
                     claim,
@@ -579,10 +597,34 @@ def _confirm_transaction(
                     store=store,
                     evidence={
                         **dict(evidence),
-                        "conflict": "processing_deadline_overflow",
+                        "conflict": "authority_before_job",
                     },
-                    error_code=exc.error_code,
+                    error_code="billing_authority_conflict",
                 )
+            refund_route = (
+                transaction.created_at - job_created_at >= UNKNOWN_TIMEOUT_MS
+                or current["job"]["state"] == "failed_reconciliation_pending"
+            )
+            deadline = None
+            if not refund_route:
+                try:
+                    deadline = _checked_add(
+                        transaction.created_at,
+                        PROCESSING_DEADLINE_MS,
+                        "processing_deadline_overflow",
+                    )
+                except BillingError as exc:
+                    return _mark_unknown(
+                        intent.intent_id,
+                        claim,
+                        now=now,
+                        store=store,
+                        evidence={
+                            **dict(evidence),
+                            "conflict": "processing_deadline_overflow",
+                        },
+                        error_code=exc.error_code,
+                    )
             result = store.confirm_predebit(
                 intent.intent_id,
                 claim,

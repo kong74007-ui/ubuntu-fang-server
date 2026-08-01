@@ -757,6 +757,167 @@ class V3BillingRecoveryTests(BillingTestCase):
         self.assertEqual(ledger.refund_calls, [])
         self.assertEqual(ledger.query_calls, [])
 
+    def test_predebit_authority_transaction_time_controls_boundary_route(self):
+        for authority_created_at, expected_state in (
+            (301_999, "queued"),
+            (302_000, "refund_pending"),
+            (302_001, "refund_pending"),
+        ):
+            with self.subTest(authority_created_at=authority_created_at):
+                self.created = self.billing.create_job_with_predebit(
+                    "alice",
+                    self.request,
+                    self.quote.quote_id,
+                    f"authority-boundary-{authority_created_at}",
+                    now=2_000,
+                    store=self.store,
+                )
+                claim = self.claim(now=301_999)
+                ledger = FakeLedger(
+                    self.billing, created_at=authority_created_at
+                )
+
+                outcome = self.billing.process_pending_intent(
+                    self.created.intent.intent_id,
+                    claim=claim,
+                    ledger=ledger,
+                    now=301_999,
+                    store=self.store,
+                )
+
+                job, intent = self.rows()
+                self.assertEqual(outcome.next_state, expected_state)
+                self.assertTrue(outcome.confirmed)
+                self.assertEqual(job["state"], expected_state)
+                self.assertEqual(
+                    job["confirmed_preheld_total"], self.quote.max_points
+                )
+                self.assertEqual(len(ledger.deduct_calls), 1)
+                self.assertEqual(
+                    {call[2] for call in ledger.deduct_calls},
+                    {self.created.intent.external_idempotency_key},
+                )
+                self.assertEqual(intent["status"], "completed")
+                if expected_state == "queued":
+                    self.assertEqual(job["queued_at"], authority_created_at)
+                    self.assertEqual(
+                        job["processing_deadline_at"],
+                        authority_created_at + self.billing.PROCESSING_DEADLINE_MS,
+                    )
+                else:
+                    self.assertIsNone(job["queued_at"])
+                    self.assertIsNone(job["processing_deadline_at"])
+                replay = self.billing.process_pending_intent(
+                    self.created.intent.intent_id,
+                    claim=claim,
+                    ledger=ledger,
+                    now=302_000,
+                    store=self.store,
+                )
+                self.assertEqual(replay.next_state, expected_state)
+                self.assertEqual(len(ledger.deduct_calls), 1)
+                self.assertEqual(ledger.query_calls, [])
+
+    def test_query_found_uses_authority_time_not_observation_time_at_cutoff(self):
+        claim = self.claim(now=301_999)
+        ledger = FakeLedger(self.billing, created_at=302_000)
+        ledger.deduct_behavior = "apply_then_raise"
+
+        unknown = self.billing.process_pending_intent(
+            self.created.intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=301_999,
+            store=self.store,
+        )
+        recovered = self.billing.reconcile_unknown_intent(
+            self.created.intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=302_001,
+            store=self.store,
+        )
+
+        job, intent = self.rows()
+        self.assertEqual(unknown.next_state, "billing_reconciling")
+        self.assertEqual(recovered.next_state, "refund_pending")
+        self.assertTrue(recovered.confirmed)
+        self.assertEqual(job["state"], "refund_pending")
+        self.assertEqual(job["confirmed_preheld_total"], self.quote.max_points)
+        self.assertIsNone(job["queued_at"])
+        self.assertIsNone(job["processing_deadline_at"])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(len(ledger.deduct_calls), 1)
+        self.assertEqual(len(ledger.query_calls), 1)
+
+    def test_late_predebit_confirmation_uses_only_existing_legal_edges(self):
+        claim = self.claim(now=301_999)
+        ledger = FakeLedger(self.billing, created_at=302_000)
+        store_module = importlib.import_module(
+            "server.content_domains.ai_edit_v3.store"
+        )
+        original_transition = store_module._transition_leased_tx
+        transitions = []
+
+        def record_transition(*args, **kwargs):
+            transitions.append(
+                (frozenset(args[2]), args[3], kwargs.get("preserve_current_lease"))
+            )
+            return original_transition(*args, **kwargs)
+
+        with patch.object(
+            store_module, "_transition_leased_tx", side_effect=record_transition
+        ):
+            outcome = self.billing.process_pending_intent(
+                self.created.intent.intent_id,
+                claim=claim,
+                ledger=ledger,
+                now=301_999,
+                store=self.store,
+            )
+
+        self.assertEqual(outcome.next_state, "refund_pending")
+        self.assertEqual(
+            transitions,
+            [
+                (frozenset({"created_draft"}), "preholding", None),
+                (frozenset({"preholding"}), "billing_reconciling", True),
+                (frozenset({"billing_reconciling"}), "refund_pending", True),
+            ],
+        )
+
+    def test_predebit_authority_time_validation_includes_job_causality(self):
+        invalid_created_at = (True, "302000", -1, (1 << 63), 1_999)
+        for index, authority_created_at in enumerate(invalid_created_at):
+            with self.subTest(authority_created_at=authority_created_at):
+                self.created = self.billing.create_job_with_predebit(
+                    "alice",
+                    self.request,
+                    self.quote.quote_id,
+                    f"authority-invalid-{index}",
+                    now=2_000,
+                    store=self.store,
+                )
+                claim = self.claim()
+                ledger = FakeLedger(self.billing, created_at=authority_created_at)
+
+                outcome = self.billing.process_pending_intent(
+                    self.created.intent.intent_id,
+                    claim=claim,
+                    ledger=ledger,
+                    now=3_000,
+                    store=self.store,
+                )
+
+                job, intent = self.rows()
+                self.assertEqual(outcome.next_state, "billing_reconciling")
+                self.assertEqual(outcome.error_code, "billing_authority_conflict")
+                self.assertFalse(outcome.confirmed)
+                self.assertEqual(job["confirmed_preheld_total"], 0)
+                self.assertIsNone(job["queued_at"])
+                self.assertIsNone(job["processing_deadline_at"])
+                self.assertEqual(intent["status"], "unknown")
+
     def test_created_draft_prehold_admission_expires_at_exact_300000(self):
         claim = self.claim()
         ledger = FakeLedger(self.billing)
@@ -1231,18 +1392,24 @@ class V3BillingRecoveryTests(BillingTestCase):
         self.assertEqual(self.billing.list_due_billing_intents(now=3_003, store=self.store), ())
 
     def test_authority_deadline_int64_overflow_remains_reconcilable(self):
-        claim = self.claim()
-        ledger = FakeLedger(
-            self.billing,
-            created_at=(1 << 63) - self.billing.PROCESSING_DEADLINE_MS,
+        authority_created_at = (
+            (1 << 63) - self.billing.PROCESSING_DEADLINE_MS
         )
-        ledger.created_at += 1
+        authority_created_at += 1
+        self.store._write(
+            lambda connection: connection.execute(
+                "UPDATE edit_v3_jobs SET created_at=? WHERE job_id=?",
+                (authority_created_at - 299_999, self.created.job_id),
+            )
+        )
+        claim = self.claim(now=authority_created_at - 1)
+        ledger = FakeLedger(self.billing, created_at=authority_created_at)
 
         outcome = self.billing.process_pending_intent(
             self.created.intent.intent_id,
             claim=claim,
             ledger=ledger,
-            now=3_000,
+            now=authority_created_at,
             store=self.store,
         )
 
@@ -1253,22 +1420,49 @@ class V3BillingRecoveryTests(BillingTestCase):
         self.assertEqual(intent["status"], "unknown")
 
     def test_authority_deadline_exact_int64_max_is_accepted(self):
-        claim = self.claim()
-        ledger = FakeLedger(
-            self.billing,
-            created_at=(1 << 63) - 1 - self.billing.PROCESSING_DEADLINE_MS,
+        authority_created_at = (
+            (1 << 63) - 1 - self.billing.PROCESSING_DEADLINE_MS
         )
+        self.store._write(
+            lambda connection: connection.execute(
+                "UPDATE edit_v3_jobs SET created_at=? WHERE job_id=?",
+                (authority_created_at - 299_999, self.created.job_id),
+            )
+        )
+        claim = self.claim(now=authority_created_at - 1)
+        ledger = FakeLedger(self.billing, created_at=authority_created_at)
 
         outcome = self.billing.process_pending_intent(
             self.created.intent.intent_id,
             claim=claim,
             ledger=ledger,
-            now=3_000,
+            now=authority_created_at,
             store=self.store,
         )
 
         self.assertEqual(outcome.next_state, "queued")
         self.assertEqual(self.rows()[0]["processing_deadline_at"], (1 << 63) - 1)
+
+    def test_late_int64_max_authority_confirms_without_deadline_overflow(self):
+        claim = self.claim(now=301_999)
+        ledger = FakeLedger(self.billing, created_at=(1 << 63) - 1)
+
+        outcome = self.billing.process_pending_intent(
+            self.created.intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=301_999,
+            store=self.store,
+        )
+
+        job, intent = self.rows()
+        self.assertEqual(outcome.next_state, "refund_pending")
+        self.assertTrue(outcome.confirmed)
+        self.assertEqual(job["state"], "refund_pending")
+        self.assertEqual(job["confirmed_preheld_total"], self.quote.max_points)
+        self.assertIsNone(job["queued_at"])
+        self.assertIsNone(job["processing_deadline_at"])
+        self.assertEqual(intent["status"], "completed")
 
     def test_nonboolean_accepted_marker_is_malformed_authority(self):
         claim = self.claim()
@@ -1320,6 +1514,7 @@ class V3BillingRecoveryTests(BillingTestCase):
         )
         self.assertIsNotNone(recovered_claim)
         ledger.query_behavior = "stored"
+        ledger.created_at = 302_000
         ledger.transactions[self.created.intent.external_idempotency_key] = (
             ledger._transaction(
                 "alice",
@@ -1340,6 +1535,8 @@ class V3BillingRecoveryTests(BillingTestCase):
         self.assertEqual(outcome.next_state, "refund_pending")
         self.assertEqual(self.rows()[0]["state"], "refund_pending")
         self.assertEqual(self.rows()[0]["confirmed_preheld_total"], self.quote.max_points)
+        self.assertIsNone(self.rows()[0]["queued_at"])
+        self.assertIsNone(self.rows()[0]["processing_deadline_at"])
 
 
 class V3RefundTests(BillingTestCase):
@@ -1656,7 +1853,7 @@ class V3RefundTests(BillingTestCase):
             store=self.store,
         )
 
-        self.assertEqual(outcome.next_state, "refund_pending")
+        self.assertEqual(outcome.next_state, "publishing")
         self.assertEqual(self.job()["confirmed_refunded_total"], 20)
         self.assertEqual(self.job()["state"], "failed_reconciliation_pending")
 
@@ -1950,6 +2147,139 @@ class V3LateBillingRecoveryTests(BillingTestCase):
         )
         self.assertEqual(snapshot["job"]["worker_id"], claim.worker_id)
         self.assertEqual(len(snapshot["intents"]), 2)
+
+    def test_late_delta_query_found_uses_refund_context_from_reconciling(self):
+        created, intent, ledger, claim, retry_at = self.late_delta_absent_scenario(
+            "refund-context-query-found"
+        )
+        original_refund_calls = len(ledger.refund_calls)
+        ledger.refund_behavior = "apply_then_raise"
+
+        unknown = self.billing.process_pending_intent(
+            intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=retry_at,
+            store=self.store,
+        )
+        ledger.query_behavior = "stored"
+        recovered = self.billing.reconcile_unknown_intent(
+            intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=retry_at + 1,
+            store=self.store,
+        )
+
+        snapshot = self.raw_snapshot(created.job_id)
+        persisted = next(
+            row for row in snapshot["intents"] if row["id"] == intent.intent_id
+        )
+        self.assertEqual(unknown.next_state, "billing_reconciling")
+        self.assertEqual(recovered.next_state, "refund_pending")
+        self.assertTrue(recovered.confirmed)
+        self.assertEqual(snapshot["job"]["state"], "billing_reconciling")
+        self.assertEqual(snapshot["job"]["confirmed_refunded_total"], 20)
+        self.assertEqual(persisted["status"], "completed")
+        self.assertEqual(
+            (persisted["reason"], persisted["resume_state"]),
+            ("refund", "refund_pending"),
+        )
+        self.assertEqual(len(ledger.refund_calls), original_refund_calls + 1)
+        self.assertEqual(len(ledger.query_calls), 1)
+        self.assertEqual(
+            {call[2] for call in ledger.refund_calls},
+            {intent.external_idempotency_key},
+        )
+
+    def test_late_delta_refund_context_completes_from_failed_pending(self):
+        created, intent, ledger, claim, retry_at = self.late_delta_absent_scenario(
+            "refund-context-failed"
+        )
+        original_refund_calls = len(ledger.refund_calls)
+        ledger.refund_behavior = "apply_then_raise"
+        self.billing.process_pending_intent(
+            intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=retry_at,
+            store=self.store,
+        )
+        ledger.query_behavior = "transport"
+        timed_out = self.billing.reconcile_unknown_intent(
+            intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=retry_at + self.billing.UNKNOWN_TIMEOUT_MS,
+            store=self.store,
+        )
+        recovery_now = retry_at + self.billing.UNKNOWN_TIMEOUT_MS + 1
+        recovery_claim = self.store.claim_job(
+            created.job_id,
+            "refund-context-failed-successor",
+            100,
+            recovery_now,
+            expected_states={"failed_reconciliation_pending"},
+        )
+        self.assertIsNotNone(recovery_claim)
+        ledger.query_behavior = "stored"
+        recovered = self.billing.reconcile_unknown_intent(
+            intent.intent_id,
+            claim=recovery_claim,
+            ledger=ledger,
+            now=recovery_now + 1,
+            store=self.store,
+        )
+        queries_after_confirmation = len(ledger.query_calls)
+        replay = self.billing.process_pending_intent(
+            intent.intent_id,
+            claim=recovery_claim,
+            ledger=ledger,
+            now=recovery_now + 2,
+            store=self.store,
+        )
+
+        snapshot = self.raw_snapshot(created.job_id)
+        self.assertEqual(timed_out.next_state, "failed_reconciliation_pending")
+        self.assertEqual(recovered.next_state, "refund_pending")
+        self.assertEqual(replay.next_state, "refund_pending")
+        self.assertEqual(snapshot["job"]["state"], "failed_reconciliation_pending")
+        self.assertEqual(snapshot["job"]["confirmed_refunded_total"], 20)
+        self.assertEqual(len(ledger.refund_calls), original_refund_calls + 1)
+        self.assertEqual(len(ledger.query_calls), queries_after_confirmation)
+
+    def test_completed_refund_outcome_rejects_invalid_persisted_context(self):
+        created, intent, ledger, claim, retry_at = self.late_delta_absent_scenario(
+            "invalid-completed-context"
+        )
+        ledger.refund_behavior = "success"
+        completed = self.billing.process_pending_intent(
+            intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=retry_at,
+            store=self.store,
+        )
+        self.assertEqual(completed.next_state, "refund_pending")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET reason='refund',resume_state='settling'
+                   WHERE id=?""",
+                (intent.intent_id,),
+            )
+        )
+
+        with self.assertRaises(self.billing.BillingError) as caught:
+            self.billing.process_pending_intent(
+                intent.intent_id,
+                claim=claim,
+                ledger=ledger,
+                now=retry_at + 1,
+                store=self.store,
+            )
+
+        self.assertEqual(caught.exception.error_code, "billing_context_conflict")
 
     def test_repeated_late_delta_recovery_matrix_reuses_one_intent_and_key(self):
         for result_kind in (

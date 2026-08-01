@@ -86,6 +86,7 @@ _MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
 _SQLITE_OPEN_LOCK = threading.RLock()
 _SQLITE_INT64_MAX = (1 << 63) - 1
 _PREHOLD_ADMISSION_TIMEOUT_MS = 300_000
+_PROCESSING_DEADLINE_MS = 2_700_000
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -4559,12 +4560,14 @@ class V3Store:
         claim: LeaseClaim,
         *,
         authority_created_at: int,
-        processing_deadline_at: int,
+        processing_deadline_at: int | None,
         authority_evidence: Mapping[str, Any],
         now_ms: int,
     ) -> dict[str, dict[str, Any]]:
         _require_integer("authority_created_at", authority_created_at)
-        _require_integer("processing_deadline_at", processing_deadline_at)
+        _require_integer(
+            "processing_deadline_at", processing_deadline_at, nullable=True
+        )
         evidence_json = _json_text(authority_evidence)
 
         def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
@@ -4583,47 +4586,118 @@ class V3Store:
                     )
                 return _billing_result(row)
             source_state = row["job_state"]
-            if source_state in {"preholding", "billing_reconciling"}:
-                target_state = "queued"
-            elif source_state == "failed_reconciliation_pending":
-                target_state = "refund_pending"
-            else:
+            if source_state not in {
+                "preholding",
+                "billing_reconciling",
+                "failed_reconciliation_pending",
+            }:
                 raise StoreConflictError(
                     "billing_state_conflict",
                     "pre-debit confirmation is invalid in the current job state",
                 )
-            if not _transition_leased_tx(
-                connection,
-                claim,
-                {source_state},
-                target_state,
-                now_ms,
-                1,
-            ):
-                raise _lease_lost(claim)
-            job_update = connection.execute(
-                """UPDATE edit_v3_jobs
-                   SET confirmed_preheld_total=?,queued_at=COALESCE(queued_at,?),
-                       processing_deadline_at=COALESCE(processing_deadline_at,?),
-                       reconciliation_reason=NULL,resume_state=NULL,updated_at=?
-                   WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
-                     AND confirmed_preheld_total IN (0,?)
-                     AND (queued_at IS NULL OR queued_at=?)
-                     AND (processing_deadline_at IS NULL OR processing_deadline_at=?)""",
-                (
-                    amount,
-                    authority_created_at,
-                    processing_deadline_at,
-                    now_ms,
-                    claim.job_id,
-                    claim.worker_id,
-                    claim.fencing_token,
-                    now_ms,
-                    amount,
-                    authority_created_at,
-                    processing_deadline_at,
-                ),
+            job_created_at = row["job_created_at"]
+            if authority_created_at < job_created_at:
+                raise StoreConflictError(
+                    "billing_authority_conflict",
+                    "pre-debit authority cannot predate its job",
+                )
+            late_authority = (
+                authority_created_at - job_created_at
+                >= _PREHOLD_ADMISSION_TIMEOUT_MS
             )
+            refund_route = (
+                late_authority
+                or source_state == "failed_reconciliation_pending"
+            )
+            if refund_route:
+                if processing_deadline_at is not None:
+                    raise StoreConflictError(
+                        "processing_deadline_conflict",
+                        "refund-routed pre-debit authority cannot start media time",
+                    )
+                if source_state == "preholding":
+                    if not _transition_leased_tx(
+                        connection,
+                        claim,
+                        {"preholding"},
+                        "billing_reconciling",
+                        now_ms,
+                        1,
+                        preserve_current_lease=True,
+                    ):
+                        raise _lease_lost(claim)
+                    source_state = "billing_reconciling"
+                if not _transition_leased_tx(
+                    connection,
+                    claim,
+                    {source_state},
+                    "refund_pending",
+                    now_ms,
+                    1,
+                    preserve_current_lease=True,
+                ):
+                    raise _lease_lost(claim)
+                job_update = connection.execute(
+                    """UPDATE edit_v3_jobs
+                       SET confirmed_preheld_total=?,reconciliation_reason=NULL,
+                           resume_state=NULL,updated_at=?
+                       WHERE job_id=? AND worker_id=? AND fencing_token=?
+                         AND lease_until>? AND state='refund_pending'
+                         AND confirmed_preheld_total IN (0,?)
+                         AND queued_at IS NULL AND processing_deadline_at IS NULL""",
+                    (
+                        amount,
+                        now_ms,
+                        claim.job_id,
+                        claim.worker_id,
+                        claim.fencing_token,
+                        now_ms,
+                        amount,
+                    ),
+                )
+            else:
+                if (
+                    authority_created_at
+                    > _SQLITE_INT64_MAX - _PROCESSING_DEADLINE_MS
+                    or processing_deadline_at
+                    != authority_created_at + _PROCESSING_DEADLINE_MS
+                ):
+                    raise StoreConflictError(
+                        "processing_deadline_conflict",
+                        "timely pre-debit authority has an invalid media deadline",
+                    )
+                if not _transition_leased_tx(
+                    connection,
+                    claim,
+                    {source_state},
+                    "queued",
+                    now_ms,
+                    1,
+                ):
+                    raise _lease_lost(claim)
+                job_update = connection.execute(
+                    """UPDATE edit_v3_jobs
+                       SET confirmed_preheld_total=?,queued_at=COALESCE(queued_at,?),
+                           processing_deadline_at=COALESCE(processing_deadline_at,?),
+                           reconciliation_reason=NULL,resume_state=NULL,updated_at=?
+                       WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                         AND confirmed_preheld_total IN (0,?)
+                         AND (queued_at IS NULL OR queued_at=?)
+                         AND (processing_deadline_at IS NULL OR processing_deadline_at=?)""",
+                    (
+                        amount,
+                        authority_created_at,
+                        processing_deadline_at,
+                        now_ms,
+                        claim.job_id,
+                        claim.worker_id,
+                        claim.fencing_token,
+                        now_ms,
+                        amount,
+                        authority_created_at,
+                        processing_deadline_at,
+                    ),
+                )
             if job_update.rowcount != 1:
                 if not _lease_owned_tx(connection, claim, now_ms):
                     raise _lease_lost(claim)
