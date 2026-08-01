@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
 import tempfile
 import threading
@@ -1793,6 +1794,224 @@ class V3PublicationRecoveryTests(unittest.TestCase):
                 self.assertEqual(
                     caught.exception.error_code, "publish_evidence_invalid"
                 )
+
+    def test_store_rejects_stale_accepted_generation_before_delivery_order(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=59)
+        self.assertEqual(claim.fencing_token, 60)
+        delivery.create_publish_intent(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+        )
+
+        caught = None
+        try:
+            self.store.record_publish_operation(
+                claim,
+                "register_generation",
+                "accepted",
+                {
+                    "asset_id": None,
+                    "current_generation": 59,
+                    "status": "accepted",
+                },
+                now_ms=1_001,
+            )
+        except StoreConfigurationError as exc:
+            caught = exc
+
+        publisher = ScriptedPublisher()
+        completed = delivery.advance_publish(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_002,
+            store=self.store,
+            publisher=publisher,
+        )
+
+        self.assertEqual(
+            (
+                getattr(caught, "error_code", None),
+                completed.next_state,
+                publisher.order[:3],
+            ),
+            (
+                "publish_evidence_invalid",
+                "completed",
+                ["register_generation", "prepare_hidden", "commit_publish"],
+            ),
+        )
+
+    def test_store_rejects_crossed_operation_and_reason_semantics(self):
+        delivery = self.delivery_module()
+        cases = (
+            (
+                "register_unknown_accepted",
+                "register_generation",
+                "unknown",
+                {
+                    "asset_id": None,
+                    "current_generation": 61,
+                    "status": "accepted",
+                },
+            ),
+            (
+                "commit_accepted_accepted",
+                "commit_publish",
+                "accepted",
+                {
+                    "asset_id": None,
+                    "current_generation": 61,
+                    "status": "accepted",
+                },
+            ),
+            (
+                "unknown_reserved_definitive_reason",
+                "commit_publish",
+                "unknown",
+                {
+                    "outcome": "unknown",
+                    "reason_code": "definitive_not_accepted",
+                },
+            ),
+            (
+                "definitive_with_unknown_reason",
+                "commit_publish",
+                "pending",
+                {
+                    "outcome": "definitive_not_accepted",
+                    "reason_code": "response_lost",
+                },
+            ),
+        )
+        for name, operation, status, evidence in cases:
+            with self.subTest(name=name):
+                self.setUp()
+                claim = self.seed_publish_job(fencing_token=60)
+                self.assertEqual(claim.fencing_token, 61)
+                delivery.create_publish_intent(
+                    claim,
+                    metadata_sha256=METADATA_SHA256,
+                    now=1_000,
+                    store=self.store,
+                )
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    self.store.record_publish_operation(
+                        claim,
+                        operation,
+                        status,
+                        evidence,
+                        now_ms=1_001,
+                    )
+                row = self.store._read(
+                    lambda connection: connection.execute(
+                        """SELECT status,last_decision_json
+                           FROM edit_v3_publish_intents
+                           WHERE job_id=? AND publish_generation=?
+                             AND operation=?""",
+                        (claim.job_id, claim.fencing_token, operation),
+                    ).fetchone()
+                )
+                self.assertEqual(
+                    caught.exception.error_code, "publish_evidence_invalid"
+                )
+                self.assertEqual(
+                    (row["status"], row["last_decision_json"]),
+                    ("planned", None),
+                )
+
+    def test_store_accepts_exact_five_operation_canonical_matrix(self):
+        delivery = self.delivery_module()
+        claim = self.seed_publish_job(fencing_token=61)
+        self.assertEqual(claim.fencing_token, 62)
+        delivery.create_publish_intent(
+            claim,
+            metadata_sha256=METADATA_SHA256,
+            now=1_000,
+            store=self.store,
+        )
+        expected = (
+            ("register_generation", "accepted"),
+            ("prepare_hidden", "accepted"),
+            ("commit_publish", "unknown"),
+            ("cancel_publish", "unknown"),
+            ("query_decision", "unknown"),
+        )
+        evidence = {
+            "asset_id": None,
+            "current_generation": claim.fencing_token,
+            "status": "accepted",
+        }
+
+        persisted = []
+        for offset, (operation, status) in enumerate(expected, start=1):
+            row = self.store.record_publish_operation(
+                claim,
+                operation,
+                status,
+                evidence,
+                now_ms=1_000 + offset,
+            )
+            persisted.append(
+                (
+                    row["operation"],
+                    row["status"],
+                    json.loads(row["last_decision_json"]),
+                )
+            )
+
+        self.assertEqual(
+            persisted,
+            [
+                (
+                    "register_generation",
+                    "accepted",
+                    {
+                        "asset_id": None,
+                        "current_generation": 62,
+                        "status": "accepted",
+                    },
+                ),
+                (
+                    "prepare_hidden",
+                    "accepted",
+                    {
+                        "asset_id": None,
+                        "current_generation": 62,
+                        "status": "accepted",
+                    },
+                ),
+                (
+                    "commit_publish",
+                    "unknown",
+                    {
+                        "asset_id": None,
+                        "current_generation": 62,
+                        "status": "accepted",
+                    },
+                ),
+                (
+                    "cancel_publish",
+                    "unknown",
+                    {
+                        "asset_id": None,
+                        "current_generation": 62,
+                        "status": "accepted",
+                    },
+                ),
+                (
+                    "query_decision",
+                    "unknown",
+                    {
+                        "asset_id": None,
+                        "current_generation": 62,
+                        "status": "accepted",
+                    },
+                ),
+            ],
+        )
 
     def test_due_listing_is_read_only_bounded_ordered_and_strict(self):
         delivery = self.delivery_module()

@@ -118,6 +118,9 @@ _PUBLISH_DECISION_STATUSES = frozenset(
 _PUBLISH_SAFE_EVIDENCE_KEYS = frozenset({"outcome", "reason_code"})
 _PUBLISH_SAFE_OUTCOMES = frozenset({"unknown", "definitive_not_accepted"})
 _PUBLISH_REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
+_PUBLISH_ACCEPTED_OPERATIONS = frozenset(
+    {"register_generation", "prepare_hidden"}
+)
 SCHEMA_VERSION = 1
 _STAGE_ATTEMPT_STATUSES = (
     "running",
@@ -6017,22 +6020,37 @@ class V3Store:
             )
         evidence = _normalize_publish_evidence(evidence)
         if "outcome" in evidence:
-            expected_status = (
-                "unknown" if evidence["outcome"] == "unknown" else "pending"
+            outcome = evidence["outcome"]
+            reason_code = evidence["reason_code"]
+            valid_safe_evidence = (
+                outcome == "unknown"
+                and status == "unknown"
+                and reason_code != "definitive_not_accepted"
+            ) or (
+                outcome == "definitive_not_accepted"
+                and status == "pending"
+                and reason_code == "definitive_not_accepted"
             )
-            if status != expected_status:
+            if not valid_safe_evidence:
                 raise _configuration_error(
                     "publish_evidence_invalid",
                     "publication operation status conflicts with safe evidence",
                 )
-        elif evidence["status"] != "accepted" or status not in {
-            "accepted",
-            "unknown",
-        }:
-            raise _configuration_error(
-                "publish_evidence_invalid",
-                "publication operation accepts only canonical accepted evidence",
+        else:
+            expected_status = (
+                "accepted"
+                if operation in _PUBLISH_ACCEPTED_OPERATIONS
+                else "unknown"
             )
+            if (
+                evidence["status"] != "accepted"
+                or evidence["current_generation"] != claim.fencing_token
+                or status != expected_status
+            ):
+                raise _configuration_error(
+                    "publish_evidence_invalid",
+                    "publication operation accepts only its current canonical evidence",
+                )
         evidence_json = _json_text(evidence)
         now_ms = _require_now_ms(now_ms)
 
