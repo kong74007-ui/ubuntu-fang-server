@@ -1862,6 +1862,43 @@ class _ReleaseCountingGuard:
 
 
 class V3StoreNativeGuardReleaseTests(unittest.TestCase):
+    def test_cleanup_owner_records_actions_deduplicates_and_retries_under_lock(self):
+        events = []
+
+        class RecordingLock:
+            active = False
+
+            def __enter__(self):
+                self.active = True
+                events.append("lock-enter")
+
+            def __exit__(self, exc_type, exc, traceback):
+                events.append("lock-exit")
+                self.active = False
+
+        lock = RecordingLock()
+
+        class Resource:
+            def close(self):
+                self_test.assertTrue(lock.active)
+                events.append("close")
+
+        self_test = self
+        resource = Resource()
+        owner = store_module._CleanupOwner()
+        owner.append(resource, "close", description="test resource close")
+        owner.append(resource, "close", description="duplicate test resource close")
+
+        self.assertEqual(
+            owner.pending_actions,
+            ((resource, "close", "test resource close"),),
+        )
+        with mock.patch.object(store_module, "_SQLITE_OPEN_LOCK", lock):
+            owner.retry()
+
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(events, ["lock-enter", "close", "lock-exit"])
+
     def test_windows_bundle_retains_failed_and_pending_handles_for_retry(self):
         close_handle = mock.Mock(side_effect=(1, 0, 1, 1))
         kernel32 = SimpleNamespace(CloseHandle=close_handle)
@@ -1918,6 +1955,109 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         self.assertEqual(bundle.ancestor_fds, [])
         self.assertEqual(calls, [22, 11, 11, 10])
 
+    def test_linux_empty_bundle_preserves_explicit_empty_ancestors_and_is_idempotent(self):
+        explicit_empty = store_module._LinuxGuardBundle(
+            11,
+            -1,
+            (1, 2),
+            ancestor_fds=[],
+        )
+        invalid_default = store_module._LinuxGuardBundle(-1, -1, (1, 2))
+
+        with mock.patch.object(store_module.os, "close") as close_descriptor:
+            explicit_empty.release()
+            explicit_empty.release()
+            invalid_default.release()
+            invalid_default.release()
+
+        self.assertEqual(explicit_empty.ancestor_fds, [])
+        self.assertEqual(invalid_default.ancestor_fds, [])
+        close_descriptor.assert_not_called()
+
+    def test_windows_main_identity_error_owns_failed_temporary_handle_for_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp).resolve() / "requested.db"
+            target.touch()
+            connection = sqlite3.connect(
+                ":memory:",
+                isolation_level=None,
+                factory=store_module._GuardedConnection,
+                check_same_thread=False,
+            )
+            v3_guard = SimpleNamespace(
+                leaf_identity=(1, 2),
+                release=mock.Mock(),
+            )
+            v2_guard = SimpleNamespace(leaf_identity=(3, 4))
+            close_handle = mock.Mock(side_effect=(0, 1))
+            kernel32 = SimpleNamespace(CloseHandle=close_handle)
+            fake_ctypes = SimpleNamespace(
+                WinDLL=mock.Mock(return_value=kernel32),
+                WinError=lambda code: OSError(code, "injected CloseHandle failure"),
+                get_last_error=mock.Mock(return_value=6),
+                wintypes=SimpleNamespace(BOOL=bool, HANDLE=lambda value: value),
+            )
+
+            with mock.patch.object(store_module.os, "name", "nt"):
+                with mock.patch.object(
+                    store_module,
+                    "_open_windows_guard",
+                    return_value=v3_guard,
+                ):
+                    with mock.patch.object(sqlite3, "connect", return_value=connection):
+                        with mock.patch.object(
+                            store_module,
+                            "_main_database_path",
+                            return_value=target,
+                        ):
+                            with mock.patch.object(store_module, "_same_path", return_value=True):
+                                with mock.patch.object(
+                                    store_module,
+                                    "_windows_create_handle",
+                                    return_value=99,
+                                ):
+                                    with mock.patch.object(
+                                        store_module,
+                                        "_windows_handle_identity",
+                                        return_value=((9, 9), 0, 1),
+                                    ):
+                                        with mock.patch.dict(
+                                            store_module.sys.modules,
+                                            {"ctypes": fake_ctypes},
+                                        ):
+                                            with self.assertRaises(
+                                                StoreConfigurationError
+                                            ) as caught:
+                                                store_module._connect_with_verified_identity_under_lock(
+                                                    target,
+                                                    Path(temp).resolve() / "v2.db",
+                                                    v2_guard,
+                                                )
+                                            owner = caught.exception.cleanup_owner
+                                            self.assertEqual(
+                                                caught.exception.error_code,
+                                                "v3_db_main_handle_mismatch",
+                                            )
+                                            self.assertIn(
+                                                "CloseHandle failure",
+                                                "\n".join(caught.exception.__notes__),
+                                            )
+                                            self.assertEqual(len(owner.pending_resources), 1)
+                                            self.assertEqual(
+                                                owner.pending_resources[0].handles,
+                                                [99],
+                                            )
+
+                                            owner.retry()
+                                            owner.retry()
+
+            self.assertEqual(owner.pending_resources, ())
+            self.assertEqual(
+                [call.args[0] for call in close_handle.call_args_list],
+                [99, 99],
+            )
+            v3_guard.release.assert_called_once()
+
     def test_platform_open_cleanup_does_not_mask_stable_identity_errors(self):
         windows_release_error = OSError("injected Windows cleanup failure")
         with mock.patch.object(
@@ -1934,7 +2074,7 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                     with mock.patch.object(
                         store_module._WindowsGuardBundle,
                         "release",
-                        side_effect=windows_release_error,
+                        side_effect=(windows_release_error, None),
                     ) as release:
                         with self.assertRaises(StoreConfigurationError) as caught:
                             store_module._open_windows_guard(
@@ -1942,8 +2082,12 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                                 Path("C:/v2.db"),
                                 v2_identity=(3, 4),
                             )
+                        windows_owner = caught.exception.cleanup_owner
+                        self.assertEqual(len(windows_owner.pending_resources), 1)
+                        windows_owner.retry()
         self.assertEqual(caught.exception.error_code, "v3_db_identity_unprovable")
-        release.assert_called_once()
+        self.assertEqual(windows_owner.pending_resources, ())
+        self.assertEqual(release.call_count, 2)
 
         linux_release_error = OSError("injected Linux cleanup failure")
         metadata = SimpleNamespace(
@@ -1958,7 +2102,7 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                     with mock.patch.object(
                         store_module._LinuxGuardBundle,
                         "release",
-                        side_effect=linux_release_error,
+                        side_effect=(linux_release_error, None),
                     ) as release:
                         with self.assertRaises(StoreConfigurationError) as caught:
                             store_module._open_linux_guard(
@@ -1966,8 +2110,70 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                                 Path("/tmp/v2.db"),
                                 v2_identity=(3, 4),
                             )
+                        linux_owner = caught.exception.cleanup_owner
+                        self.assertEqual(len(linux_owner.pending_resources), 1)
+                        linux_owner.retry()
         self.assertEqual(caught.exception.error_code, "v3_db_identity_unprovable")
-        release.assert_called_once()
+        self.assertEqual(linux_owner.pending_resources, ())
+        self.assertEqual(release.call_count, 2)
+
+    def test_v2_platform_error_mapping_preserves_cleanup_owner_and_note(self):
+        native_error = OSError("injected native V2 open failure")
+        guard = SimpleNamespace(release=mock.Mock())
+        owner = store_module._CleanupOwner()
+        owner.append(
+            guard,
+            "release",
+            description="injected V2 guard release",
+        )
+        native_error.cleanup_owner = owner
+        native_error.add_note("injected retained V2 cleanup")
+
+        with mock.patch.object(store_module.os, "name", "nt"):
+            with mock.patch.object(
+                store_module,
+                "_open_windows_v2_guard",
+                side_effect=native_error,
+            ):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    store_module._open_v2_handshake_guard(Path("C:/v2.db"))
+
+        self.assertEqual(caught.exception.error_code, "v2_db_identity_unknown")
+        self.assertIs(caught.exception.cleanup_owner, owner)
+        self.assertIn(
+            "injected retained V2 cleanup",
+            "\n".join(caught.exception.__notes__),
+        )
+
+    def test_linux_parent_build_failure_owns_failed_cleanup_for_retry(self):
+        metadata = SimpleNamespace(st_uid=123, st_mode=0o777)
+        close_descriptor = mock.Mock(side_effect=(None, OSError("close 22 failed"), None))
+
+        with mock.patch.object(store_module.os, "open", side_effect=(11, 22)):
+            with mock.patch.object(store_module.os, "close", close_descriptor):
+                with mock.patch.object(store_module.os, "fstat", return_value=metadata):
+                    with mock.patch.object(
+                        store_module.os,
+                        "geteuid",
+                        return_value=456,
+                        create=True,
+                    ):
+                        with self.assertRaises(StoreConfigurationError) as caught:
+                            store_module._open_linux_parent(Path("/tmp/v3.db"))
+                        owner = caught.exception.cleanup_owner
+                        self.assertEqual(
+                            caught.exception.error_code,
+                            "v3_db_identity_unprovable",
+                        )
+                        self.assertEqual(len(owner.pending_resources), 1)
+                        self.assertEqual(owner.pending_resources[0].ancestor_fds, [22])
+                        owner.retry()
+
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(
+            [call.args[0] for call in close_descriptor.call_args_list],
+            [11, 22, 22],
+        )
 
     def test_verified_open_cleanup_failure_does_not_mask_stable_error(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1978,7 +2184,9 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
             guard = SimpleNamespace(
                 leaf_identity=(1, 2),
                 parent_fd=11,
-                release=mock.Mock(side_effect=OSError("injected V3 cleanup failure")),
+                release=mock.Mock(
+                    side_effect=(OSError("injected V3 cleanup failure"), None)
+                ),
             )
             v2_guard = SimpleNamespace(leaf_identity=(3, 4))
 
@@ -1998,16 +2206,33 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                         )
 
         self.assertEqual(caught.exception.error_code, "v3_db_main_handle_mismatch")
-        guard.release.assert_called_once()
+        owner = caught.exception.cleanup_owner
+        self.assertEqual(owner.pending_resources, (guard,))
+        owner.retry()
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(guard.release.call_count, 2)
 
     def test_unverified_native_close_failure_does_not_release_raw_guard(self):
+        cleanup_order = []
+        close_failed = False
+
+        def close_connection():
+            nonlocal close_failed
+            cleanup_order.append("connection")
+            if not close_failed:
+                close_failed = True
+                raise OSError("injected raw connection close failure")
+
+        def release_guard():
+            cleanup_order.append("guard")
+
         connection = SimpleNamespace(
-            close=mock.Mock(side_effect=OSError("injected raw connection close failure")),
+            close=mock.Mock(side_effect=close_connection),
         )
         guard = SimpleNamespace(
             leaf_identity=(1, 2),
             parent_fd=11,
-            release=mock.Mock(),
+            release=mock.Mock(side_effect=release_guard),
         )
         v2_guard = SimpleNamespace(leaf_identity=(3, 4))
         guard_name = "_open_windows_guard" if os.name == "nt" else "_open_linux_guard"
@@ -2024,15 +2249,108 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         self.assertEqual(caught.exception.error_code, "v3_db_main_handle_mismatch")
         connection.close.assert_called_once()
         guard.release.assert_not_called()
-        self.assertIs(caught.exception._unreleased_identity_guard, guard)
+        owner = caught.exception.cleanup_owner
+        self.assertEqual(owner.pending_resources, (connection, guard))
+
+        owner.retry()
+        owner.retry()
+
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(cleanup_order, ["connection", "connection", "guard"])
+
+    def test_nested_cleanup_owner_retries_connection_then_v3_then_v2(self):
+        cleanup_order = []
+        close_attempts = 0
+
+        def close_connection():
+            nonlocal close_attempts
+            close_attempts += 1
+            cleanup_order.append("connection")
+            if close_attempts <= 2:
+                raise OSError(f"injected close failure {close_attempts}")
+
+        connection = SimpleNamespace(close=mock.Mock(side_effect=close_connection))
+        v3_guard = SimpleNamespace(
+            leaf_identity=(1, 2),
+            parent_fd=11,
+            release=mock.Mock(side_effect=lambda: cleanup_order.append("v3")),
+        )
+        v2_guard = SimpleNamespace(
+            leaf_identity=(3, 4),
+            release=mock.Mock(side_effect=lambda: cleanup_order.append("v2")),
+        )
+        guard_name = "_open_windows_guard" if os.name == "nt" else "_open_linux_guard"
+
+        with mock.patch.object(
+            store_module,
+            "_open_v2_handshake_guard",
+            return_value=v2_guard,
+        ):
+            with mock.patch.object(store_module, "resolve_db_path", side_effect=lambda path: path):
+                with mock.patch.object(store_module, "assert_isolated_db"):
+                    with mock.patch.object(store_module, "_assert_local_filesystem"):
+                        with mock.patch.object(
+                            store_module,
+                            "_path_identity",
+                            return_value=(False, None),
+                        ):
+                            with mock.patch.object(
+                                store_module,
+                                guard_name,
+                                return_value=v3_guard,
+                            ):
+                                with mock.patch.object(
+                                    sqlite3,
+                                    "connect",
+                                    return_value=connection,
+                                ):
+                                    with self.assertRaises(StoreConfigurationError) as caught:
+                                        store_module._open_store_ordered(
+                                            Path("C:/v3.db"),
+                                            Path("C:/v2.db"),
+                                        )
+
+        owner = caught.exception.cleanup_owner
+        self.assertEqual(
+            owner.pending_resources,
+            (connection, v3_guard, v2_guard),
+        )
+        self.assertEqual(cleanup_order, ["connection"])
+
+        with self.assertRaisesRegex(OSError, "close failure 2"):
+            owner.retry()
+
+        self.assertEqual(
+            owner.pending_resources,
+            (connection, v3_guard, v2_guard),
+        )
+        self.assertEqual(cleanup_order, ["connection", "connection"])
+        v3_guard.release.assert_not_called()
+        v2_guard.release.assert_not_called()
+
+        owner.retry()
+
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(
+            cleanup_order,
+            ["connection", "connection", "connection", "v3", "v2"],
+        )
 
     def test_v2_guard_cleanup_failure_does_not_mask_stable_open_error(self):
         original = StoreConfigurationError(
             "v3_injected_stable_error",
             "injected stable open failure",
         )
+        cleanup_failed = False
+
+        def release_guard():
+            nonlocal cleanup_failed
+            if not cleanup_failed:
+                cleanup_failed = True
+                raise OSError("injected V2 cleanup failure")
+
         guard = SimpleNamespace(
-            release=mock.Mock(side_effect=OSError("injected V2 cleanup failure")),
+            release=mock.Mock(side_effect=release_guard),
         )
         with mock.patch.object(
             store_module,
@@ -2048,6 +2366,11 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
 
         self.assertIs(caught.exception, original)
         guard.release.assert_called_once()
+        owner = caught.exception.cleanup_owner
+        self.assertEqual(owner.pending_resources, (guard,))
+        owner.retry()
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(guard.release.call_count, 2)
 
     def test_success_path_v2_release_failure_closes_unreturned_v3_and_retries(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2056,7 +2379,7 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
             v2 = root / "v2.db"
             release_error = OSError("injected successful-open V2 release failure")
             v2_guard = SimpleNamespace(
-                release=mock.Mock(side_effect=(release_error, None)),
+                release=mock.Mock(side_effect=(release_error, release_error, None)),
             )
             v3_guard = SimpleNamespace(release=mock.Mock())
             connection = sqlite3.connect(
@@ -2084,7 +2407,11 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                                     store_module._open_store_ordered(target, v2)
 
         self.assertIs(caught.exception, release_error)
-        self.assertEqual(v2_guard.release.call_count, 2)
+        owner = caught.exception.cleanup_owner
+        self.assertEqual(owner.pending_resources, (v2_guard,))
+        owner.retry()
+        self.assertEqual(owner.pending_resources, ())
+        self.assertEqual(v2_guard.release.call_count, 3)
         v3_guard.release.assert_called_once()
         self.assertIsNone(connection._identity_guard)
         with self.assertRaises(sqlite3.ProgrammingError):

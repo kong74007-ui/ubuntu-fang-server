@@ -16,7 +16,6 @@ import threading
 import time
 import unicodedata
 import weakref
-from contextlib import suppress
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any, TypeVar
@@ -1114,16 +1113,104 @@ class _GuardBundle:
         raise NotImplementedError
 
 
+class _CleanupAction:
+    """One explicit cleanup action retained by object identity."""
+
+    __slots__ = ("resource", "method_name", "description")
+
+    def __init__(self, resource: Any, method_name: str, description: str) -> None:
+        self.resource = resource
+        self.method_name = method_name
+        self.description = description
+
+
+class _CleanupOwner:
+    """Ordered owner for resources whose cleanup has not yet succeeded."""
+
+    def __init__(self) -> None:
+        self._actions: list[_CleanupAction] = []
+
+    @property
+    def pending_resources(self) -> tuple[Any, ...]:
+        return tuple(action.resource for action in self._actions)
+
+    @property
+    def pending_actions(self) -> tuple[tuple[Any, str, str], ...]:
+        return tuple(
+            (action.resource, action.method_name, action.description)
+            for action in self._actions
+        )
+
+    @property
+    def pending_description(self) -> str:
+        if not self._actions:
+            return "resource cleanup"
+        return self._actions[0].description
+
+    def append(
+        self,
+        resource: Any,
+        method_name: str,
+        *,
+        description: str,
+    ) -> None:
+        if any(action.resource is resource for action in self._actions):
+            return
+        self._actions.append(_CleanupAction(resource, method_name, description))
+
+    def extend(self, other: _CleanupOwner) -> None:
+        if other is self:
+            return
+        for action in other._actions:
+            self.append(
+                action.resource,
+                action.method_name,
+                description=action.description,
+            )
+        other._actions.clear()
+
+    def retry(self) -> None:
+        with _SQLITE_OPEN_LOCK:
+            while self._actions:
+                action = self._actions[0]
+                getattr(action.resource, action.method_name)()
+                self._actions.pop(0)
+
+
+def _retain_cleanup_owner(
+    error: BaseException,
+    owner: _CleanupOwner,
+    *,
+    before_existing: bool = True,
+) -> _CleanupOwner:
+    existing = getattr(error, "cleanup_owner", None)
+    if isinstance(existing, _CleanupOwner) and existing is not owner:
+        if before_existing:
+            owner.extend(existing)
+        else:
+            existing.extend(owner)
+            owner = existing
+    error.cleanup_owner = owner
+    return owner
+
+
 def _cleanup_preserving_error(
     error: BaseException,
-    cleanup: Callable[[], None],
+    owner: _CleanupOwner,
     *,
-    description: str,
+    before_existing: bool = True,
 ) -> bool:
     try:
-        cleanup()
+        owner.retry()
     except Exception as cleanup_error:
-        error.add_note(f"{description} failed during cleanup: {cleanup_error!r}")
+        error.add_note(
+            f"{owner.pending_description} failed during cleanup: {cleanup_error!r}"
+        )
+        _retain_cleanup_owner(
+            error,
+            owner,
+            before_existing=before_existing,
+        )
         return False
     return True
 
@@ -1255,7 +1342,10 @@ class _LinuxGuardBundle(_GuardBundle):
         self.parent_fd = parent_fd
         self.leaf_fd = leaf_fd
         self.leaf_identity = leaf_identity
-        self.ancestor_fds = list(ancestor_fds or [parent_fd])
+        if ancestor_fds is None:
+            self.ancestor_fds = [parent_fd] if parent_fd >= 0 else []
+        else:
+            self.ancestor_fds = list(ancestor_fds)
 
     def release(self) -> None:
         if self.leaf_fd >= 0:
@@ -1388,10 +1478,15 @@ def _open_windows_ancestor_handles(path: Path, *, role: str) -> list[int]:
         return handles
     except Exception as exc:
         bundle = _WindowsGuardBundle(handles, (0, 0))
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Windows ancestor guard release",
+        )
         _cleanup_preserving_error(
             exc,
-            bundle.release,
-            description="Windows ancestor guard release",
+            owner,
         )
         raise
 
@@ -1418,10 +1513,15 @@ def _open_windows_v2_guard(
         return _WindowsGuardBundle(handles, leaf_identity)
     except Exception as exc:
         bundle = _WindowsGuardBundle(handles, (0, 0))
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Windows V2 guard release",
+        )
         _cleanup_preserving_error(
             exc,
-            bundle.release,
-            description="Windows V2 guard release",
+            owner,
         )
         raise
 
@@ -1474,10 +1574,15 @@ def _open_windows_guard(
         return _WindowsGuardBundle(handles, leaf_identity)
     except Exception as exc:
         bundle = _WindowsGuardBundle(handles, (0, 0))
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Windows V3 guard release",
+        )
         _cleanup_preserving_error(
             exc,
-            bundle.release,
-            description="Windows V3 guard release",
+            owner,
         )
         raise
 
@@ -1485,10 +1590,13 @@ def _open_windows_guard(
 def _open_linux_parent(path: Path) -> int:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path.anchor or "/", flags)
+    open_descriptors = [descriptor]
     try:
         for part in path.parent.parts[1:]:
             next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            open_descriptors.append(next_descriptor)
             os.close(descriptor)
+            open_descriptors.remove(descriptor)
             descriptor = next_descriptor
         metadata = os.fstat(descriptor)
         if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
@@ -1496,10 +1604,23 @@ def _open_linux_parent(path: Path) -> int:
                 "v3_db_identity_unprovable",
                 "V3 database parent must be owned by the service user and not writable by others",
             )
+        open_descriptors.remove(descriptor)
         return descriptor
-    except Exception:
-        with suppress(OSError):
-            os.close(descriptor)
+    except Exception as exc:
+        parent_fd = open_descriptors[-1] if open_descriptors else -1
+        bundle = _LinuxGuardBundle(
+            parent_fd,
+            -1,
+            (0, 0),
+            ancestor_fds=open_descriptors,
+        )
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Linux V3 parent guard release",
+        )
+        _cleanup_preserving_error(exc, owner)
         raise
 
 
@@ -1553,10 +1674,15 @@ def _open_linux_v2_guard(
             (0, 0),
             ancestor_fds=ancestor_fds,
         )
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Linux V2 guard release",
+        )
         _cleanup_preserving_error(
             exc,
-            bundle.release,
-            description="Linux V2 guard release",
+            owner,
         )
         raise
 
@@ -1597,10 +1723,15 @@ def _open_linux_guard(
         return _LinuxGuardBundle(parent_fd, leaf_fd, leaf_identity)
     except Exception as exc:
         bundle = _LinuxGuardBundle(parent_fd, leaf_fd, (0, 0))
+        owner = _CleanupOwner()
+        owner.append(
+            bundle,
+            "release",
+            description="Linux V3 guard release",
+        )
         _cleanup_preserving_error(
             exc,
-            bundle.release,
-            description="Linux V3 guard release",
+            owner,
         )
         raise
 
@@ -1632,6 +1763,20 @@ def _linux_fd_snapshot() -> set[int]:
         ) from exc
 
 
+def _configuration_error_preserving_cleanup(
+    error_code: str,
+    message: str,
+    cause: BaseException,
+) -> StoreConfigurationError:
+    error = _configuration_error(error_code, message)
+    owner = getattr(cause, "cleanup_owner", None)
+    if isinstance(owner, _CleanupOwner):
+        error.cleanup_owner = owner
+    for note in getattr(cause, "__notes__", ()):
+        error.add_note(note)
+    return error
+
+
 def _open_v2_handshake_guard(
     v2_path: Path,
 ) -> _GuardBundle:
@@ -1647,14 +1792,16 @@ def _open_v2_handshake_guard(
     except StoreConfigurationError:
         raise
     except FileNotFoundError as exc:
-        raise _configuration_error(
+        raise _configuration_error_preserving_cleanup(
             "v2_db_identity_unknown",
             "V2 database ancestor identity cannot be established",
+            exc,
         ) from exc
     except OSError as exc:
-        raise _configuration_error(
+        raise _configuration_error_preserving_cleanup(
             "v2_db_identity_unknown",
             "V2 database ancestor or leaf identity cannot be opened safely",
+            exc,
         ) from exc
 
 
@@ -1715,6 +1862,7 @@ def _connect_with_verified_identity_under_lock(
                     "SQLite returned a connection without the required identity guard",
                 )
             connection_guard = guard
+            assert connection_guard is not None
             connection._retain_identity_guard(connection_guard)
             guard = None
             main_path = _main_database_path(connection)
@@ -1725,28 +1873,45 @@ def _connect_with_verified_identity_under_lock(
                         "SQLite main database is not the requested V3 file",
                     )
                 main_handle = _windows_create_handle(main_path, directory=False)
+                bundle = _WindowsGuardBundle([main_handle], (0, 0))
                 try:
                     main_identity, _attributes, _links = _windows_handle_identity(main_handle)
+                    if main_identity != connection_guard.leaf_identity:
+                        raise _configuration_error(
+                            "v3_db_main_handle_mismatch",
+                            "SQLite main handle does not match the guarded V3 leaf",
+                        )
+                    if main_identity == v2_guard.leaf_identity:
+                        raise _configuration_error(
+                            "v2_v3_db_same_file",
+                            "SQLite main handle is the guarded V2 database",
+                        )
                 except Exception as exc:
-                    bundle = _WindowsGuardBundle([main_handle], (0, 0))
-                    _cleanup_preserving_error(
-                        exc,
-                        bundle.release,
+                    owner = _CleanupOwner()
+                    owner.append(
+                        bundle,
+                        "release",
                         description="Windows SQLite main-handle release",
                     )
+                    _cleanup_preserving_error(
+                        exc,
+                        owner,
+                    )
                     raise
-                else:
-                    _WindowsGuardBundle([main_handle], (0, 0)).release()
-                if main_identity != connection_guard.leaf_identity:
-                    raise _configuration_error(
-                        "v3_db_main_handle_mismatch",
-                        "SQLite main handle does not match the guarded V3 leaf",
+                try:
+                    bundle.release()
+                except Exception as cleanup_error:
+                    owner = _CleanupOwner()
+                    owner.append(
+                        bundle,
+                        "release",
+                        description="Windows SQLite main-handle release",
                     )
-                if main_identity == v2_guard.leaf_identity:
-                    raise _configuration_error(
-                        "v2_v3_db_same_file",
-                        "SQLite main handle is the guarded V2 database",
+                    cleanup_error.add_note(
+                        "Windows SQLite main handle retained for deterministic cleanup retry"
                     )
+                    _retain_cleanup_owner(cleanup_error, owner)
+                    raise
             else:
                 assert before_descriptors is not None
                 after_descriptors = _linux_fd_snapshot()
@@ -1770,25 +1935,21 @@ def _connect_with_verified_identity_under_lock(
             connection = None
             return verified_connection
     except Exception as exc:
-        connection_closed = True
+        owner = _CleanupOwner()
         if connection is not None:
-            connection_closed = _cleanup_preserving_error(
-                exc,
-                connection.close,
+            owner.append(
+                connection,
+                "close",
                 description="unverified SQLite connection close",
             )
         if guard is not None:
-            if connection_closed:
-                _cleanup_preserving_error(
-                    exc,
-                    guard.release,
-                    description="unretained V3 guard release",
-                )
-            else:
-                exc._unreleased_identity_guard = guard
-                exc.add_note(
-                    "V3 identity guard retained because native connection close failed"
-                )
+            owner.append(
+                guard,
+                "release",
+                description="unretained V3 guard release",
+            )
+        if owner.pending_resources:
+            _cleanup_preserving_error(exc, owner)
         raise
 
 
@@ -1919,30 +2080,61 @@ def _open_store_ordered(
             verified_connection = connection
             connection = None
         except Exception as exc:
-            if connection is not None:
+            existing_owner = getattr(exc, "cleanup_owner", None)
+            if isinstance(existing_owner, _CleanupOwner) and existing_owner.pending_resources:
+                if connection is not None:
+                    connection_owner = _CleanupOwner()
+                    connection_owner.append(
+                        connection,
+                        "close",
+                        description="partially opened V3 connection close",
+                    )
+                    _cleanup_preserving_error(exc, connection_owner)
+                retained_owner = getattr(exc, "cleanup_owner", existing_owner)
+                retained_owner.append(
+                    v2_guard,
+                    "release",
+                    description="V2 handshake guard release",
+                )
+                exc.cleanup_owner = retained_owner
+                exc.add_note(
+                    "V2 handshake guard retained behind earlier pending cleanup"
+                )
+            else:
+                owner = _CleanupOwner()
+                if connection is not None:
+                    owner.append(
+                        connection,
+                        "close",
+                        description="partially opened V3 connection close",
+                    )
+                owner.append(
+                    v2_guard,
+                    "release",
+                    description="V2 handshake guard release",
+                )
                 _cleanup_preserving_error(
                     exc,
-                    connection.close,
-                    description="partially opened V3 connection close",
+                    owner,
                 )
-            _cleanup_preserving_error(
-                exc,
-                v2_guard.release,
-                description="V2 handshake guard release",
-            )
             raise
         try:
             v2_guard.release()
         except Exception as exc:
-            _cleanup_preserving_error(
-                exc,
-                verified_connection.close,
+            owner = _CleanupOwner()
+            owner.append(
+                verified_connection,
+                "close",
                 description="unreturned verified V3 connection close",
+            )
+            owner.append(
+                v2_guard,
+                "release",
+                description="V2 handshake guard release retry",
             )
             _cleanup_preserving_error(
                 exc,
-                v2_guard.release,
-                description="V2 handshake guard release retry",
+                owner,
             )
             raise
         return path, verified_connection
