@@ -453,7 +453,8 @@ def _outcome(
     if intent.status == "completed" and intent.operation == "refund_delta":
         next_state = (
             "refund_pending"
-            if result["job"]["state"] == "failed_reconciliation_pending"
+            if result["job"]["state"]
+            in {"failed_reconciliation_pending", "refund_pending"}
             else "publishing"
         )
     elif intent.status == "completed" and intent.operation == "refund_full":
@@ -465,6 +466,52 @@ def _outcome(
         confirmed=intent.status == "completed",
         error_code=error_code,
     )
+
+
+def _is_prehold_admission_timeout(
+    result: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    intent = result["intent"]
+    job = result["job"]
+    if not (
+        intent["operation"] == "pre_debit"
+        and intent["status"] == "reconciliation_pending"
+        and intent["reason"] == "prehold"
+        and intent["resume_state"] == "preholding"
+        and job["state"] == "failed_reconciliation_pending"
+        and job["reconciliation_reason"] == "prehold"
+        and job["resume_state"] == "preholding"
+    ):
+        return False
+    evidence_raw = intent["authority_evidence_json"]
+    if not isinstance(evidence_raw, str):
+        raise _error(
+            "prehold_admission_evidence_invalid",
+            "expired prehold admission is missing durable evidence",
+        )
+    evidence = _parse_json_object(
+        evidence_raw,
+        error_code="prehold_admission_evidence_invalid",
+    )
+    created_at = job["created_at"]
+    if not (
+        isinstance(created_at, int)
+        and not isinstance(created_at, bool)
+        and 0 <= created_at <= INT64_MAX - UNKNOWN_TIMEOUT_MS
+        and intent["first_unknown_at"] == created_at
+        and set(evidence)
+        == {"admission_deadline_at", "observed_at", "transmission"}
+        and evidence["admission_deadline_at"] == created_at + UNKNOWN_TIMEOUT_MS
+        and isinstance(evidence["observed_at"], int)
+        and not isinstance(evidence["observed_at"], bool)
+        and evidence["admission_deadline_at"] <= evidence["observed_at"] <= INT64_MAX
+        and evidence["transmission"] == "not_started"
+    ):
+        raise _error(
+            "prehold_admission_evidence_invalid",
+            "expired prehold admission evidence is inconsistent",
+        )
+    return True
 
 
 def _transaction_evidence(transaction: LedgerTransaction) -> dict[str, Any]:
@@ -564,6 +611,8 @@ def _unresolved_outcome(
     store: V3Store,
     error_code: str,
 ) -> BillingOutcome:
+    if result["job"]["state"] == "failed_reconciliation_pending":
+        return _outcome(result, error_code=error_code)
     first_unknown_at = result["intent"]["first_unknown_at"]
     if first_unknown_at is None:
         raise _error(
@@ -616,6 +665,7 @@ def process_pending_intent(
     now = _require_now(now)
     allowed_failpoints = {
         None,
+        "after_admission_timeout_commit",
         "after_intent_commit_before_ledger",
         "after_external_effect_before_local_confirmation",
         "after_local_confirmation",
@@ -623,6 +673,12 @@ def process_pending_intent(
     if failpoint not in allowed_failpoints:
         raise _error("billing_failpoint_invalid", "unknown billing failpoint")
     current = store.get_billing_for_claim(intent_id, claim, now)
+    if _is_prehold_admission_timeout(current):
+        if failpoint == "after_admission_timeout_commit":
+            raise InjectedCommitFailure(
+                "injected crash after prehold admission timeout commit"
+            )
+        return _outcome(current, error_code="prehold_admission_timeout")
     if current["intent"]["status"] == "completed":
         return _outcome(current)
     if current["intent"]["status"] not in {"pending", "retryable_absent"}:
@@ -634,6 +690,12 @@ def process_pending_intent(
             store=store,
         )
     current = store.begin_billing_transmission(intent_id, claim, now)
+    if _is_prehold_admission_timeout(current):
+        if failpoint == "after_admission_timeout_commit":
+            raise InjectedCommitFailure(
+                "injected crash after prehold admission timeout commit"
+            )
+        return _outcome(current, error_code="prehold_admission_timeout")
     intent = _intent_from_row(current["intent"])
     if failpoint == "after_intent_commit_before_ledger":
         raise InjectedCommitFailure("injected crash before external ledger call")
