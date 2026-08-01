@@ -1,5 +1,7 @@
+import json
 import re
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from server.content_domains.ai_edit_v3.feature import (
     CapabilityItem,
     CapabilityReport,
 )
-from server.content_domains.ai_edit_v3.store import V3Store
+from server.content_domains.ai_edit_v3.store import StoreConflictError, V3Store
 
 
 MIB = 1024 * 1024
@@ -118,6 +120,10 @@ class FakeSourceCatalog:
         self.audio = {}
         self.voices = {}
         self.templates = {}
+        self.platform_rows = []
+        self.audio_rows = []
+        self.voice_rows = []
+        self.template_rows = []
         self.calls = []
 
     def resolve_platform_asset(self, owner, asset_id):
@@ -135,6 +141,22 @@ class FakeSourceCatalog:
     def resolve_template(self, template_id, ratio):
         self.calls.append(("template", template_id, ratio))
         return self.templates.get((template_id, ratio))
+
+    def list_platform_assets(self, owner):
+        self.calls.append(("platform-list", owner))
+        return list(self.platform_rows)
+
+    def list_audio_assets(self, owner):
+        self.calls.append(("audio-list", owner))
+        return list(self.audio_rows)
+
+    def list_voices(self, owner):
+        self.calls.append(("voice-list", owner))
+        return list(self.voice_rows)
+
+    def list_templates(self, owner):
+        self.calls.append(("template-list", owner))
+        return list(self.template_rows)
 
 
 class V3ObjectKeyTests(unittest.TestCase):
@@ -441,6 +463,152 @@ class V3UploadTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ServiceError, "input_duration_invalid"):
             self.service.complete_upload("alice", audio["upload_id"], now=2_001)
+
+    def test_probe_evidence_uses_a_frozen_allowlist_and_rejects_paths(self):
+        unsafe_evidence = (
+            {"path": "/srv/private/probe.json"},
+            {"file_path": "relative/probe.json"},
+            {"cos_key": "production/ai-edit-v3/private/object"},
+            {"codec": "/absolute/posix/value"},
+            {"codec": "C:\\private\\probe.json"},
+            {"codec": "\\\\server\\share\\probe.json"},
+        )
+        for index, evidence in enumerate(unsafe_evidence):
+            with self.subTest(evidence=evidence):
+                upload = self.create_upload(
+                    filename=f"unsafe-{index}.png", now=10_000 + index * 10
+                )
+                key = self.prepare_completion(upload)
+                observation = self.inspector.observations[key]
+                self.inspector.observations[key] = UploadObservation(
+                    mime_type=observation.mime_type,
+                    media_kind=observation.media_kind,
+                    size_bytes=observation.size_bytes,
+                    sha256=observation.sha256,
+                    width=observation.width,
+                    height=observation.height,
+                    probe_evidence=evidence,
+                )
+                with self.assertRaisesRegex(ServiceError, "input_probe_invalid"):
+                    self.service.complete_upload(
+                        "alice", upload["upload_id"], now=10_001 + index * 10
+                    )
+
+        safe = self.create_upload(filename="safe.png", now=20_000)
+        key = self.prepare_completion(safe)
+        observation = self.inspector.observations[key]
+        self.inspector.observations[key] = UploadObservation(
+            mime_type=observation.mime_type,
+            media_kind=observation.media_kind,
+            size_bytes=observation.size_bytes,
+            sha256=observation.sha256,
+            width=observation.width,
+            height=observation.height,
+            probe_evidence={
+                "codec": "png",
+                "container": "image2",
+                "bit_rate": 8000,
+                "sample_rate": 48000,
+                "channels": 2,
+            },
+        )
+        self.service.complete_upload("alice", safe["upload_id"], now=20_001)
+        stored = self.store.get_upload_for_owner("alice", safe["upload_id"])
+        self.assertEqual(
+            json.loads(stored["probe_json"]),
+            {
+                "bit_rate": 8000,
+                "channels": 2,
+                "codec": "png",
+                "container": "image2",
+                "sample_rate": 48000,
+            },
+        )
+
+    def test_concurrent_completion_replays_first_time_but_metadata_drift_conflicts(self):
+        upload = self.create_upload(filename="concurrent.png", now=30_000)
+        key = self.prepare_completion(upload, size_bytes=321, width=80, height=60)
+        observation = self.inspector.observations[key]
+        barrier = threading.Barrier(2)
+
+        def inspect(_key, *, upload_type, head):
+            barrier.wait(timeout=5)
+            return observation
+
+        self.inspector.inspect = inspect
+        results = []
+        errors = []
+
+        def complete(at):
+            try:
+                results.append(
+                    self.service.complete_upload("alice", upload["upload_id"], now=at)
+                )
+            except Exception as exc:  # captured for assertion in the test thread
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=complete, args=(30_001,)),
+            threading.Thread(target=complete, args=(30_002,)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0], results[1])
+        stored = self.store.get_upload_for_owner("alice", upload["upload_id"])
+        self.assertIn(stored["completed_at"], {30_001, 30_002})
+        with self.assertRaises(StoreConflictError):
+            self.store.complete_upload(
+                "alice",
+                upload["upload_id"],
+                observed_mime="image/png",
+                observed_size=321,
+                observed_etag="different-etag",
+                sha256="a" * 64,
+                duration_ms=None,
+                width=80,
+                height=60,
+                probe={"codec": "png"},
+                completed_at=30_003,
+                environment="test",
+            )
+
+    def test_zero_image_and_video_dimensions_fail_as_stable_input_errors(self):
+        cases = (
+            ("material_image", "zero.png", "image/png", "image/png", "image", None),
+            ("main_video", "zero.mp4", "video/mp4", "video/mp4", "video", 3_000),
+        )
+        for index, (upload_type, filename, declared, observed, kind, duration) in enumerate(cases):
+            with self.subTest(upload_type=upload_type):
+                upload = self.create_upload(
+                    upload_type,
+                    filename=filename,
+                    content_type=declared,
+                    now=40_000 + index * 10,
+                )
+                self.prepare_completion(
+                    upload,
+                    mime_type=observed,
+                    media_kind=kind,
+                    duration_ms=duration,
+                    width=0,
+                    height=100,
+                    frame_rate=30 if upload_type == "main_video" else None,
+                )
+                captured = None
+                try:
+                    self.service.complete_upload(
+                        "alice", upload["upload_id"], now=40_001 + index * 10
+                    )
+                except Exception as exc:
+                    captured = exc
+                self.assertIsInstance(captured, ServiceError)
+                self.assertTrue(captured.error_code.startswith("input_"))
+                self.assertLess(captured.status, 500)
 
     def test_material_promotion_is_owner_bound_typed_and_idempotent(self):
         upload = self.create_upload()
@@ -818,6 +986,47 @@ class V3ApplicationServiceTests(unittest.TestCase):
             now=3_001,
         )
 
+    def test_main_upload_alone_obeys_the_one_gib_authoritative_limit(self):
+        oversized = self.completed_upload(
+            "main_video",
+            filename="oversized-main.mp4",
+            content_type="video/mp4",
+            mime_type="video/mp4",
+            media_kind="video",
+            size_bytes=GIB + 1,
+            duration_ms=3_000,
+            width=1920,
+            height=1080,
+            frame_rate=30,
+            now=4_000,
+        )
+        with self.assertRaisesRegex(ServiceError, "input_upload_total_exceeded"):
+            self.service.quote(
+                "alice",
+                self.request(source_upload_id=oversized["upload_id"]),
+                now=5_000,
+            )
+
+        exact = self.completed_upload(
+            "main_video",
+            filename="exact-main.mp4",
+            content_type="video/mp4",
+            mime_type="video/mp4",
+            media_kind="video",
+            size_bytes=GIB,
+            duration_ms=3_000,
+            width=1920,
+            height=1080,
+            frame_rate=30,
+            now=6_000,
+        )
+        quote = self.service.quote(
+            "alice",
+            self.request(source_upload_id=exact["upload_id"]),
+            now=7_000,
+        )
+        self.assertEqual(quote["request_sha256"], quote["request_fingerprint"])
+
     def test_source_resolution_is_owner_bound_and_catalog_unready_is_503(self):
         platform_request = {
             "input_type": "platform_talking_head",
@@ -844,6 +1053,291 @@ class V3ApplicationServiceTests(unittest.TestCase):
             self.service.quote("alice", platform_request, now=1_002)
         self.assertEqual(context.exception.status, 503)
         self.assertEqual(context.exception.error_code, "platform_assets_unavailable")
+
+    def test_public_catalog_plan_and_result_dtos_drop_nested_private_data(self):
+        malicious = {
+            "transcript": "private transcript",
+            "cos_key": "production/ai-edit-v3/private/object",
+            "path": "/srv/private/source.mp4",
+            "provider_payload": {"request_id": "provider-private"},
+        }
+        catalog_cases = (
+            (
+                "platform_rows",
+                self.service.list_platform_assets,
+                {
+                    "asset_id": "platform-1",
+                    "title": "Platform title",
+                    "cover_asset_id": "cover-1",
+                    "duration_ms": 3_000,
+                    "ratio": "16:9",
+                },
+            ),
+            (
+                "audio_rows",
+                self.service.list_audio_assets,
+                {
+                    "asset_id": "audio-1",
+                    "title": "Audio title",
+                    "duration_ms": 3_000,
+                    "mime_type": "audio/mp4",
+                },
+            ),
+            (
+                "voice_rows",
+                self.service.list_voices,
+                {"voice_id": "voice-1", "name": "Voice", "language": "zh-CN"},
+            ),
+            (
+                "template_rows",
+                self.service.list_templates,
+                {
+                    "template_id": "template-1",
+                    "version": "v1",
+                    "title": "Template",
+                    "preview_asset_id": "preview-1",
+                    "supported_ratios": ["16:9"],
+                },
+            ),
+        )
+        leaks = []
+        for attribute, method, public in catalog_cases:
+            setattr(self.catalog, attribute, [{**public, **malicious}])
+            returned = method("alice")["items"][0]
+            if returned != public:
+                leaks.append((attribute, returned))
+
+        self.catalog.platform_rows = [
+            {
+                "asset_id": "platform-url-title",
+                "title": "https://private.invalid/title?token=secret",
+                "duration_ms": 3_000,
+                "ratio": "16:9",
+            }
+        ]
+        try:
+            self.service.list_platform_assets("alice")
+        except ServiceError:
+            pass
+        else:
+            leaks.append(("allowed-field-url", self.catalog.platform_rows[0]))
+
+        request = self.request()
+        quote = self.service.quote("alice", request, now=8_000)
+        job = self.service.create_job(
+            "alice", request, quote["quote_id"], "privacy-key-1", now=8_001
+        )
+        nested = {
+            "headline": "safe public value",
+            "nested": {
+                "transcript": "private transcript",
+                "cos_key": "production/ai-edit-v3/private/object",
+                "path": "/srv/private/source.mp4",
+                "provider_payload": {"request_id": "provider-private"},
+                "signed_url": "https://private.invalid/a?token=secret",
+            },
+        }
+        encoded = json.dumps(nested, sort_keys=True, separators=(",", ":"))
+        def seed_plan(connection):
+            connection.execute(
+                """INSERT INTO edit_v3_model_calls(
+                       id,job_id,stage_attempt_id,provider,model,purpose,prompt_version,
+                       request_schema_sha256,response_schema_sha256,request_id,
+                       redacted_final_output_json,validation_json,usage_json,elapsed_ms,
+                       created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "model-call-private",
+                    job["job_id"],
+                    None,
+                    "test-provider",
+                    "test-model",
+                    "director",
+                    "v1",
+                    "a" * 64,
+                    "b" * 64,
+                    "request-safe",
+                    "{}",
+                    "{}",
+                    None,
+                    1,
+                    8_002,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO edit_v3_plans(
+                       id,job_id,version,model_call_id,raw_final_output_json,
+                       normalized_plan_json,plan_sha256,schema_sha256,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    "plan-privacy",
+                    job["job_id"],
+                    1,
+                    "model-call-private",
+                    encoded,
+                    encoded,
+                    "d" * 64,
+                    "e" * 64,
+                    8_002,
+                ),
+            )
+        self.store._write(seed_plan)
+        self.store._write(
+            lambda connection: connection.execute(
+                "UPDATE edit_v3_jobs SET result_json=?,updated_at=? WHERE job_id=?",
+                (encoded, 8_003, job["job_id"]),
+            )
+        )
+        public_values = (
+            self.service.get_plan("alice", job["job_id"])["plan"],
+            self.service.get_result("alice", job["job_id"])["result"],
+        )
+        for value in public_values:
+            serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            for private in (
+                "private transcript",
+                "production/ai-edit-v3/private/object",
+                "/srv/private/source.mp4",
+                "provider-private",
+                "private.invalid",
+            ):
+                if private in serialized:
+                    leaks.append(("plan-or-result", private))
+            self.assertEqual(value["headline"], "safe public value")
+        self.assertEqual(leaks, [])
+
+    def test_existing_job_replay_does_not_reresolve_catalog_and_rechecks_store(self):
+        request = {
+            "input_type": "platform_talking_head",
+            "source_asset_id": "platform-replay",
+            "ratio": "auto",
+            "creation_mode": "ai_auto",
+            "material_asset_ids": [],
+        }
+        self.catalog.platform[("alice", "platform-replay")] = {
+            "asset_id": "platform-replay",
+            "duration_ms": 3_000,
+            "ratio": "16:9",
+            "transcript_sha256": "c" * 64,
+        }
+        quote = self.service.quote("alice", request, now=9_000)
+        job = self.service.create_job(
+            "alice", request, quote["quote_id"], "catalog-replay-1", now=9_001
+        )
+        self.service.source_catalog = None
+
+        replay = None
+        replay_error = None
+        try:
+            replay = self.service.create_job(
+                "alice", request, quote["quote_id"], "catalog-replay-1", now=9_002
+            )
+        except ServiceError as exc:
+            replay_error = exc
+        self.assertIsNone(replay_error, f"replay unexpectedly resolved catalog: {replay_error}")
+        self.assertEqual(replay["job_id"], job["job_id"])
+        with self.assertRaisesRegex(ServiceError, "idempotency_conflict"):
+            self.service.create_job(
+                "alice",
+                {
+                    **request,
+                    "creation_mode": "style_prompt",
+                    "style_prompt": "a different valid request",
+                },
+                quote["quote_id"],
+                "catalog-replay-1",
+                now=9_003,
+            )
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET request_amount=request_amount+1 WHERE job_id=?
+                     AND operation='pre_debit'""",
+                (job["job_id"],),
+            )
+        )
+        with self.assertRaisesRegex(ServiceError, "billing_intent_conflict"):
+            self.service.create_job(
+                "alice", request, quote["quote_id"], "catalog-replay-1", now=9_004
+            )
+
+    def test_capabilities_include_local_dependencies_and_usable_pricing(self):
+        def service(**overrides):
+            values = {
+                "object_store": self.objects,
+                "upload_inspector": self.inspector,
+                "owner_hmac_secret": b"task-nine-test-secret",
+                "enabled": True,
+                "source_catalog": self.catalog,
+                "capacity_gate": self.capacity,
+                "capability_report": ready_capability_report(),
+            }
+            values.update(overrides)
+            return EditV3Service(self.store, **values)
+
+        for name, candidate in (
+            ("object-store", service(object_store=None)),
+            ("object-store-shape", service(object_store=object())),
+            ("inspector", service(upload_inspector=None)),
+            ("inspector-shape", service(upload_inspector=object())),
+            ("upload-secret", service(owner_hmac_secret=b"weak")),
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(candidate.get_capabilities("alice")["accepts_uploads"])
+
+        for name, candidate in (
+            ("capacity", service(capacity_gate=None)),
+            ("capacity-shape", service(capacity_gate=object())),
+            ("job-secret", service(owner_hmac_secret=b"weak")),
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(candidate.get_capabilities("alice")["accepts_new_jobs"])
+
+        original = self.store.list_published_pricing_versions
+        published = original()
+        try:
+            for name, replacement in (
+                ("missing", lambda: []),
+                ("ambiguous", lambda: [published[0], dict(published[0], version="other")]),
+            ):
+                with self.subTest(name=name):
+                    self.store.list_published_pricing_versions = replacement
+                    self.assertFalse(service().get_capabilities("alice")["accepts_new_jobs"])
+
+            def unavailable():
+                raise RuntimeError("local store unavailable")
+
+            self.store.list_published_pricing_versions = unavailable
+            self.assertFalse(service().get_capabilities("alice")["accepts_new_jobs"])
+        finally:
+            self.store.list_published_pricing_versions = original
+
+    def test_foreign_or_missing_quote_is_404_before_authority_drift_checks(self):
+        request = {
+            "input_type": "platform_talking_head",
+            "source_asset_id": "shared-platform-id",
+            "ratio": "auto",
+            "creation_mode": "ai_auto",
+            "material_asset_ids": [],
+        }
+        record = {
+            "asset_id": "shared-platform-id",
+            "duration_ms": 3_000,
+            "ratio": "16:9",
+            "transcript_sha256": "f" * 64,
+        }
+        self.catalog.platform[("alice", "shared-platform-id")] = dict(record)
+        self.catalog.platform[("bob", "shared-platform-id")] = dict(record)
+        quote = self.service.quote("alice", request, now=10_000)
+
+        for quote_id in (quote["quote_id"], "quote-does-not-exist"):
+            with self.subTest(quote_id=quote_id):
+                with self.assertRaises(ServiceError) as context:
+                    self.service.create_job(
+                        "bob", request, quote_id, "bob-client-key-1", now=10_001
+                    )
+                self.assertEqual(context.exception.error_code, "quote_not_found")
+                self.assertEqual(context.exception.status, 404)
 
     def test_retry_rejects_active_job_then_creates_fresh_successor_and_replays(self):
         request = self.request()

@@ -5486,7 +5486,6 @@ class V3Store:
             "width": width,
             "height": height,
             "probe_json": _json_text(probe),
-            "completed_at": completed_at,
         }
 
         def write(connection: sqlite3.Connection) -> dict[str, Any] | None:
@@ -5513,6 +5512,7 @@ class V3Store:
                    WHERE environment=? AND owner_id=? AND upload_id=? AND status='pending'""",
                 (
                     *completion.values(),
+                    completed_at,
                     completed_at,
                     environment,
                     owner_id,

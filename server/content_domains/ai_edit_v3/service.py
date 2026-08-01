@@ -13,9 +13,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 from .billing import (
     BillingError,
+    _calculate_parts as billing_calculate_parts,
+    _published_pricing as billing_published_pricing,
     create_job_with_predebit as billing_create_job_with_predebit,
     create_quote as billing_create_quote,
 )
@@ -56,8 +59,82 @@ _MAX_MATERIAL_IMAGES = 10
 _MIN_MEDIA_DURATION_MS = 3_000
 _MAX_MEDIA_DURATION_MS = 600_000
 _QUOTE_TTL_MS = 900_000
-_PROBE_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_AUTHORITY_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
+_ABSOLUTE_WINDOWS_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)")
+_PROBE_FIELDS = frozenset(
+    {
+        "bit_rate",
+        "channel_layout",
+        "channels",
+        "codec",
+        "codec_long_name",
+        "codec_name",
+        "codec_tag_string",
+        "color_primaries",
+        "color_space",
+        "color_transfer",
+        "container",
+        "duration_ms",
+        "field_order",
+        "format_long_name",
+        "format_name",
+        "frame_rate",
+        "height",
+        "level",
+        "pixel_format",
+        "profile",
+        "rotation",
+        "sample_rate",
+        "stream_count",
+        "width",
+    }
+)
+_CATALOG_FIELDS = {
+    "platform_assets": frozenset(
+        {
+            "asset_id",
+            "title",
+            "cover_asset_id",
+            "cover_reference",
+            "cover_url",
+            "duration_ms",
+            "ratio",
+        }
+    ),
+    "audio_assets": frozenset(
+        {
+            "asset_id",
+            "title",
+            "duration_ms",
+            "mime_type",
+            "cover_asset_id",
+            "cover_reference",
+        }
+    ),
+    "voices": frozenset(
+        {
+            "voice_id",
+            "name",
+            "title",
+            "language",
+            "gender",
+            "description",
+            "preview_asset_id",
+        }
+    ),
+    "templates": frozenset(
+        {
+            "template_id",
+            "version",
+            "title",
+            "description",
+            "preview_asset_id",
+            "preview_reference",
+            "supported_ratios",
+        }
+    ),
+}
 _SENSITIVE_PROBE_MARKERS = (
     "authorization",
     "cookie",
@@ -254,7 +331,7 @@ def _require_identifier(name: str, value: Any, *, maximum: int = 128) -> str:
     return value
 
 
-def _safe_probe_value(value: Any, *, depth: int = 0) -> Any:
+def _safe_authority_value(value: Any, *, depth: int = 0) -> Any:
     if depth > 4:
         raise ServiceError("input_probe_invalid", "probe evidence is too deep")
     if value is None or isinstance(value, bool):
@@ -284,17 +361,141 @@ def _safe_probe_value(value: Any, *, depth: int = 0) -> Any:
         for key, item in value.items():
             if (
                 not isinstance(key, str)
-                or _PROBE_KEY.fullmatch(key) is None
+                or _AUTHORITY_KEY.fullmatch(key) is None
                 or any(marker in key for marker in _SENSITIVE_PROBE_MARKERS)
             ):
                 raise ServiceError("input_probe_invalid", "probe field is unsafe")
-            result[key] = _safe_probe_value(item, depth=depth + 1)
+            result[key] = _safe_authority_value(item, depth=depth + 1)
         return result
     if isinstance(value, (list, tuple)):
         if len(value) > 64:
             raise ServiceError("input_probe_invalid", "probe evidence is too large")
-        return [_safe_probe_value(item, depth=depth + 1) for item in value]
+        return [_safe_authority_value(item, depth=depth + 1) for item in value]
     raise ServiceError("input_probe_invalid", "probe evidence type is invalid")
+
+
+def _safe_probe_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or len(value) > len(_PROBE_FIELDS):
+        raise ServiceError("input_probe_invalid", "probe evidence is invalid")
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or key not in _PROBE_FIELDS:
+            raise ServiceError("input_probe_invalid", "probe field is unsafe")
+        if item is None or isinstance(item, bool):
+            result[key] = item
+        elif isinstance(item, int):
+            if item < -(1 << 63) or item > (1 << 63) - 1:
+                raise ServiceError("input_probe_invalid", "probe integer is invalid")
+            result[key] = item
+        elif isinstance(item, float):
+            if not math.isfinite(item):
+                raise ServiceError("input_probe_invalid", "probe number is invalid")
+            result[key] = item
+        elif isinstance(item, str):
+            if (
+                not item
+                or len(item) > 256
+                or _has_control_or_surrogate(item)
+                or item.startswith("/")
+                or _ABSOLUTE_WINDOWS_PATH.match(item) is not None
+                or "://" in item
+                or "?" in item
+                or "#" in item
+            ):
+                raise ServiceError("input_probe_invalid", "probe string is unsafe")
+            result[key] = item
+        else:
+            raise ServiceError("input_probe_invalid", "probe value is invalid")
+    return result
+
+
+def _is_absolute_local_path(value: str) -> bool:
+    return value.startswith("/") or _ABSOLUTE_WINDOWS_PATH.match(value) is not None
+
+
+def _safe_summary_text(value: Any, *, maximum: int = 512) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+        or _has_control_or_surrogate(value)
+        or _is_absolute_local_path(value)
+        or "://" in value
+    ):
+        raise ValueError("catalog_text_invalid")
+    return value
+
+
+def _safe_cover_url(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 2_048
+        or _has_control_or_surrogate(value)
+    ):
+        raise ValueError("catalog_cover_url_invalid")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or bool(parsed.fragment)
+    ):
+        raise ValueError("catalog_cover_url_invalid")
+    return value
+
+
+def _public_catalog_record(capability: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("catalog_record_invalid")
+    fields = _CATALOG_FIELDS[capability]
+    result: dict[str, Any] = {}
+    for key in fields:
+        if key not in value:
+            continue
+        item = value[key]
+        if key in {"duration_ms"}:
+            if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+                raise ValueError("catalog_duration_invalid")
+            result[key] = item
+        elif key == "ratio":
+            if item not in {"16:9", "9:16"}:
+                raise ValueError("catalog_ratio_invalid")
+            result[key] = item
+        elif key == "supported_ratios":
+            if (
+                not isinstance(item, (list, tuple))
+                or not item
+                or len(item) > 2
+                or any(ratio not in {"16:9", "9:16"} for ratio in item)
+                or len(set(item)) != len(item)
+            ):
+                raise ValueError("catalog_ratios_invalid")
+            result[key] = list(item)
+        elif key == "cover_url":
+            result[key] = _safe_cover_url(item)
+        elif key == "mime_type":
+            text = _safe_summary_text(item, maximum=128)
+            if text != text.lower() or not text.startswith("audio/"):
+                raise ValueError("catalog_mime_invalid")
+            result[key] = text
+        else:
+            result[key] = _safe_summary_text(item)
+
+    identity = {
+        "platform_assets": "asset_id",
+        "audio_assets": "asset_id",
+        "voices": "voice_id",
+        "templates": "template_id",
+    }[capability]
+    if identity not in result:
+        raise ValueError("catalog_identity_invalid")
+    if capability in {"platform_assets", "audio_assets"} and "duration_ms" not in result:
+        raise ValueError("catalog_duration_invalid")
+    return result
 
 
 def _public_upload(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -370,6 +571,55 @@ class EditV3Service:
             return None
         return report if isinstance(report, CapabilityReport) else None
 
+    def _owner_secret_ready(self) -> bool:
+        secret = self.owner_hmac_secret
+        return (
+            isinstance(secret, bytes)
+            and len(secret) >= 16
+            and len(set(secret)) >= 8
+        )
+
+    def _pricing_ready(self) -> bool:
+        try:
+            _row, parameters = billing_published_pricing(self.store)
+            billing_calculate_parts(
+                parameters,
+                {"input_type": "uploaded_video", "tts_input": None},
+            )
+        except Exception:
+            return False
+        return True
+
+    def _accepts_uploads(self, report: CapabilityReport | None) -> bool:
+        object_store_ready = self.object_store is not None and all(
+            callable(getattr(self.object_store, method, None))
+            for method in ("presign_put", "head_object", "delete_object")
+        )
+        inspector_ready = self.upload_inspector is not None and callable(
+            getattr(self.upload_inspector, "inspect", None)
+        )
+        return bool(
+            self.enabled
+            and report is not None
+            and report.accepts_uploads
+            and object_store_ready
+            and inspector_ready
+            and self._owner_secret_ready()
+        )
+
+    def _accepts_new_jobs(self, report: CapabilityReport | None) -> bool:
+        capacity_ready = self.capacity_gate is not None and callable(
+            getattr(self.capacity_gate, "check", None)
+        )
+        return bool(
+            self.enabled
+            and report is not None
+            and report.accepts_new_jobs
+            and capacity_ready
+            and self._owner_secret_ready()
+            and self._pricing_ready()
+        )
+
     def _require_write(self, *, upload: bool = False) -> None:
         if not self.enabled:
             raise ServiceError(
@@ -384,22 +634,16 @@ class EditV3Service:
                 "runtime readiness is unavailable",
                 status=503,
             )
-        if upload and not report.accepts_uploads:
+        if upload and not self._accepts_uploads(report):
             raise ServiceError(
                 "upload_capability_unavailable",
                 "upload capability is unavailable",
                 status=503,
             )
-        if not upload and not report.accepts_new_jobs:
+        if not upload and not self._accepts_new_jobs(report):
             raise ServiceError(
                 "capability_unavailable",
                 "new job capability is unavailable",
-                status=503,
-            )
-        if upload and (self.object_store is None or self.upload_inspector is None):
-            raise ServiceError(
-                "upload_capability_unavailable",
-                "upload capability is unavailable",
                 status=503,
             )
 
@@ -560,7 +804,7 @@ class EditV3Service:
         }[upload_type]
         if observation.media_kind != expected_kind:
             raise ServiceError("input_media_kind_mismatch", "uploaded media kind is invalid")
-        evidence = _safe_probe_value(observation.probe_evidence)
+        evidence = _safe_probe_evidence(observation.probe_evidence)
         if not isinstance(evidence, dict):
             raise ServiceError("input_probe_invalid", "probe evidence is invalid")
 
@@ -590,6 +834,8 @@ class EditV3Service:
                 duration is not None
                 or width is None
                 or height is None
+                or width <= 0
+                or height <= 0
                 or max(width, height) > 12_000
                 or width * height > 80_000_000
             ):
@@ -602,6 +848,8 @@ class EditV3Service:
                     not observation.mime_type.startswith("video/")
                     or width is None
                     or height is None
+                    or width <= 0
+                    or height <= 0
                     or max(width, height) > 4_096
                     or frame_rate is not None
                     and frame_rate > 60
@@ -786,7 +1034,7 @@ class EditV3Service:
                 f"{capability.replace('_', ' ')} capability returned invalid data",
                 status=503,
             )
-        safe_record = _safe_probe_value(record)
+        safe_record = _safe_authority_value(record)
         if not isinstance(safe_record, dict):
             raise ServiceError(
                 f"{capability}_unavailable",
@@ -848,6 +1096,11 @@ class EditV3Service:
                 or size < 0
             ):
                 raise ServiceError("input_source_invalid", "uploaded source is invalid")
+            if size > _MAX_UPLOAD_BYTES:
+                raise ServiceError(
+                    "input_upload_total_exceeded",
+                    "selected uploads exceed 1 GiB",
+                )
             total_bytes = size
             source_authority = {
                 "upload_id": source_upload["upload_id"],
@@ -1207,8 +1460,8 @@ class EditV3Service:
         now = _require_now(now)
         self._require_write()
         normalized = self._normalize_request(request)
-        resolved = self._resolve_authorities(owner, normalized)
         fingerprint = request_fingerprint(normalized)
+        normalized_json = canonical_json(normalized).decode("utf-8")
         material_bindings = [
             {"material_id": material_id, "purpose": "supplemental", "ordinal": index}
             for index, material_id in enumerate(normalized["material_asset_ids"])
@@ -1226,8 +1479,7 @@ class EditV3Service:
             if (
                 existing["quote_id"] != quote_id
                 or existing["request_sha256"] != fingerprint
-                or existing["normalized_request_json"]
-                != canonical_json(normalized).decode("utf-8")
+                or existing["normalized_request_json"] != normalized_json
             ):
                 raise ServiceError(
                     "idempotency_conflict",
@@ -1255,14 +1507,6 @@ class EditV3Service:
                 )
             return self._public_job(replay)
 
-        authority_token = self._authority_token(owner, resolved)
-        if not quote_id.endswith(f"-{authority_token}"):
-            raise ServiceError(
-                "quote_authority_mismatch",
-                "resolved authorities changed after quote",
-                status=409,
-            )
-
         quote = self.store.get_quote(owner, quote_id, environment=self.environment)
         if quote is None:
             raise ServiceError("quote_not_found", "quote was not found", status=404)
@@ -1270,12 +1514,19 @@ class EditV3Service:
             raise ServiceError("quote_expired", "quote has expired", status=409)
         if (
             quote["request_sha256"] != fingerprint
-            or quote["normalized_request_json"]
-            != canonical_json(normalized).decode("utf-8")
+            or quote["normalized_request_json"] != normalized_json
         ):
             raise ServiceError(
                 "quote_request_mismatch",
                 "request does not match the frozen quote",
+                status=409,
+            )
+        resolved = self._resolve_authorities(owner, normalized)
+        authority_token = self._authority_token(owner, resolved)
+        if not quote_id.endswith(f"-{authority_token}"):
+            raise ServiceError(
+                "quote_authority_mismatch",
+                "resolved authorities changed after quote",
                 status=409,
             )
         if (
@@ -1455,8 +1706,8 @@ class EditV3Service:
             },
             "runtime_versions": dict(report.runtime_versions),
             "allows_existing_reads": report.allows_existing_reads,
-            "accepts_uploads": self.enabled and report.accepts_uploads,
-            "accepts_new_jobs": self.enabled and report.accepts_new_jobs,
+            "accepts_uploads": self._accepts_uploads(report),
+            "accepts_new_jobs": self._accepts_new_jobs(report),
             "feature_enabled": self.enabled,
         }
 
@@ -1494,10 +1745,9 @@ class EditV3Service:
                 f"{capability.replace('_', ' ')} capability returned invalid data",
                 status=503,
             )
-        safe_rows = _safe_probe_value(rows)
-        if not isinstance(safe_rows, list) or any(
-            not isinstance(row, dict) for row in safe_rows
-        ):
+        try:
+            safe_rows = [_public_catalog_record(capability, row) for row in rows]
+        except (KeyError, TypeError, ValueError):
             raise ServiceError(
                 f"{capability}_unavailable",
                 f"{capability.replace('_', ' ')} capability returned invalid data",
@@ -1521,16 +1771,19 @@ class EditV3Service:
     def _redact_public_value(value: Any) -> Any:
         blocked = (
             "authorization",
+            "cos_key",
             "cost",
             "credential",
             "local_path",
             "manifest",
             "object_key",
+            "path",
             "provider",
             "raw_",
             "secret",
             "signed",
             "token",
+            "transcript",
             "url",
         )
         if isinstance(value, Mapping):
@@ -1543,7 +1796,9 @@ class EditV3Service:
         if isinstance(value, list):
             return [EditV3Service._redact_public_value(item) for item in value]
         if isinstance(value, str) and (
-            "://" in value or "\\" in value or _has_control_or_surrogate(value)
+            "://" in value
+            or _is_absolute_local_path(value)
+            or _has_control_or_surrogate(value)
         ):
             return "[redacted]"
         return value

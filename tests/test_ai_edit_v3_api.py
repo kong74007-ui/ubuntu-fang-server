@@ -290,6 +290,58 @@ class V3ApiDispatchTests(unittest.TestCase):
         self.assertNotIn("token", payload)
         self.assertNotIn("sqlite", payload)
 
+    def test_every_error_uses_closed_chinese_dto_with_stage_and_retryability(self):
+        scenarios = []
+
+        self.service.failure = ServiceError(
+            "not_found",
+            "provider payload at C:\\private\\db?token=secret",
+            status=418,
+        )
+        scenarios.append(self.call("GET", "/api/v3/edit/jobs/foreign")[1])
+
+        self.service.failure = ServiceError(
+            "unregistered_internal_code",
+            "private provider response",
+            status=499,
+        )
+        scenarios.append(self.call("GET", "/api/v3/edit/jobs/job-1")[1])
+
+        known_handlers = []
+        for code in ("material_upload_invalid", "quote_capability_unavailable"):
+            self.service.failure = ServiceError(code, "private internal detail", status=418)
+            handler = self.call("GET", "/api/v3/edit/jobs/job-1")[1]
+            known_handlers.append(handler)
+            scenarios.append(handler)
+
+        self.service.failure = None
+        scenarios.append(self.call("GET", "/api/v3/edit/not-a-route")[1])
+        scenarios.append(self.call("DELETE", "/api/v3/edit/jobs/job-1")[1])
+
+        for handler in scenarios:
+            payload = handler.response_json()
+            with self.subTest(status=handler.statuses[0], payload=payload):
+                self.assertTrue(
+                    {"error_code", "message", "stage", "retryable"}.issubset(payload)
+                )
+                self.assertTrue(
+                    any("\u4e00" <= character <= "\u9fff" for character in payload["message"])
+                )
+                serialized = repr(payload)
+                for private in ("provider", "private", "token", "secret"):
+                    self.assertNotIn(private, serialized)
+
+        self.assertEqual(scenarios[0].statuses, [404])
+        self.assertEqual(scenarios[0].response_json()["error_code"], "not_found")
+        self.assertEqual(scenarios[0].response_json()["stage"], "request")
+        self.assertEqual(scenarios[1].statuses, [500])
+        self.assertEqual(scenarios[1].response_json()["error_code"], "internal_error")
+        self.assertEqual(scenarios[1].response_json()["stage"], "internal")
+        self.assertEqual(
+            [handler.response_json()["error_code"] for handler in known_handlers],
+            ["material_upload_invalid", "quote_capability_unavailable"],
+        )
+
     def test_disabled_write_and_unready_catalog_are_explicit_503(self):
         for path, error_code in (
             ("/api/v3/edit/uploads", "feature_disabled"),

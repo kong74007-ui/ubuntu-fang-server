@@ -14,13 +14,171 @@ from .service import EditV3Service, ServiceError
 
 _PREFIX = "/api/v3/edit"
 _MAX_BODY_BYTES = 64 * 1024
-_SAFE_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 _UPLOAD_COMPLETE = re.compile(r"/api/v3/edit/uploads/([^/]+)/complete\Z")
 _JOB_DETAIL = re.compile(r"/api/v3/edit/jobs/([^/]+)\Z")
 _JOB_PLAN = re.compile(r"/api/v3/edit/jobs/([^/]+)/plan\Z")
 _JOB_RESULT = re.compile(r"/api/v3/edit/jobs/([^/]+)/result\Z")
 _JOB_RETRY = re.compile(r"/api/v3/edit/jobs/([^/]+)/retry\Z")
+
+
+_ERROR_DEFINITIONS: dict[str, tuple[int, str, str, bool]] = {}
+
+
+def _define_errors(
+    codes: tuple[str, ...],
+    status: int,
+    message: str,
+    stage: str,
+    retryable: bool = False,
+) -> None:
+    for code in codes:
+        _ERROR_DEFINITIONS[code] = (status, message, stage, retryable)
+
+
+_define_errors(("authentication_required",), 401, "请先登录后再操作", "authentication")
+_define_errors(("not_found", "quote_not_found", "template_not_found"), 404, "未找到对应资源", "request")
+_define_errors(("method_not_allowed",), 405, "当前接口不支持该请求方法", "request")
+_define_errors(("request_too_large",), 413, "请求内容超过大小限制", "request")
+_define_errors(
+    (
+        "invalid_json",
+        "request_invalid",
+        "request_type_invalid",
+        "request_unknown_field",
+        "request_authority_field_forbidden",
+        "job_query_invalid",
+        "idempotency_key_invalid",
+        "input_type_invalid",
+        "input_discriminator_conflict",
+        "creation_mode_invalid",
+        "creation_mode_conflict",
+        "ratio_invalid",
+        "style_prompt_invalid",
+        "tts_input_invalid",
+        "material_asset_ids_invalid",
+    ),
+    400,
+    "请求参数无效，请检查后重试",
+    "request",
+)
+_define_errors(
+    (
+        "input_audio_invalid",
+        "input_declared_mime_invalid",
+        "input_declared_size_invalid",
+        "input_duration_invalid",
+        "input_image_dimensions_invalid",
+        "input_image_size_exceeded",
+        "input_image_type_unsupported",
+        "input_media_kind_mismatch",
+        "input_object_metadata_invalid",
+        "input_probe_invalid",
+        "input_probe_metadata_mismatch",
+        "input_source_invalid",
+        "input_upload_total_exceeded",
+        "input_upload_type_invalid",
+        "input_video_invalid",
+        "material_source_invalid",
+        "object_key_invalid",
+    ),
+    400,
+    "输入素材不符合要求，请检查文件后重试",
+    "input",
+)
+_define_errors(
+    (
+        "upload_expired",
+        "upload_identity_conflict",
+        "upload_not_completable",
+        "quote_authority_mismatch",
+        "quote_conflict",
+        "quote_expired",
+        "quote_request_mismatch",
+        "quote_template_mismatch",
+        "idempotency_conflict",
+        "material_upload_invalid",
+        "retry_not_allowed",
+        "retry_source_invalid",
+        "billing_intent_conflict",
+        "billing_intent_missing",
+        "job_material_binding_conflict",
+        "retry_predecessor_not_found",
+        "quote_environment_mismatch",
+        "template_ambiguous",
+        "template_ratio_unsupported",
+        "template_unpublished",
+    ),
+    409,
+    "请求与已冻结的数据冲突，请刷新后重试",
+    "job",
+)
+_define_errors(
+    ("plan_not_ready", "result_not_ready"),
+    409,
+    "任务结果尚未准备完成",
+    "job",
+)
+_define_errors(
+    (
+        "feature_disabled",
+        "capability_unavailable",
+        "quote_capability_unavailable",
+        "upload_capability_unavailable",
+        "retry_capability_unavailable",
+    ),
+    503,
+    "当前功能暂不可用",
+    "capability",
+)
+_define_errors(
+    (
+        "platform_assets_unavailable",
+        "audio_assets_unavailable",
+        "voices_unavailable",
+        "templates_unavailable",
+        "pricing_unavailable",
+        "pricing_ambiguous",
+        "pricing_parameters_invalid",
+        "pricing_parts_invalid",
+        "pricing_part_invalid",
+        "pricing_rate_invalid",
+        "pricing_quantity_invalid",
+        "pricing_overflow",
+    ),
+    503,
+    "依赖能力暂不可用，请稍后重试",
+    "capability",
+    True,
+)
+_define_errors(
+    ("capacity_unavailable",),
+    503,
+    "当前处理容量不足，请稍后重试",
+    "capacity",
+    True,
+)
+_define_errors(
+    (
+        "identity_unavailable",
+        "input_inspection_unavailable",
+        "job_storage_failed",
+        "material_storage_failed",
+        "plan_storage_invalid",
+        "quote_storage_invalid",
+        "quote_identity_invalid",
+        "result_storage_invalid",
+        "service_unavailable",
+        "upload_presign_unavailable",
+        "upload_storage_failed",
+    ),
+    503,
+    "服务暂不可用，请稍后重试",
+    "storage",
+    True,
+)
+_define_errors(("internal_error",), 500, "服务处理失败，请稍后重试", "internal", True)
+del _define_errors
 
 
 def _header(handler: Any, name: str) -> str | None:
@@ -55,33 +213,27 @@ def _send(
     handler.wfile.write(body)
 
 
-def _error_payload(error_code: str, message: str, status: int) -> dict[str, Any]:
+def _error_payload(error_code: str, _message: str, _status: int) -> dict[str, Any]:
+    if error_code not in _ERROR_DEFINITIONS:
+        error_code = "internal_error"
+    _mapped_status, message, stage, retryable = _ERROR_DEFINITIONS[error_code]
     return {
         "error_code": error_code,
         "message": message,
-        "retryable": status >= 500,
+        "stage": stage,
+        "retryable": retryable,
     }
 
 
 def _safe_service_error(error: ServiceError) -> tuple[int, dict[str, Any], int | None]:
     code = error.error_code
-    if not isinstance(code, str) or _SAFE_ERROR_CODE.fullmatch(code) is None:
-        return 500, _error_payload("internal_error", "request failed safely", 500), None
-    message = error.message
-    if (
-        not isinstance(message, str)
-        or not message
-        or len(message) > 512
-        or any(ord(character) < 0x20 for character in message)
-        or "://" in message
-        or "\\" in message
-        or "?" in message
-    ):
-        message = "request failed safely"
-    status = error.status if isinstance(error.status, int) and 400 <= error.status <= 599 else 500
+    if not isinstance(code, str) or code not in _ERROR_DEFINITIONS:
+        code = "internal_error"
+    status, _message, _stage, retryable = _ERROR_DEFINITIONS[code]
     retry_after = error.retry_after
     if (
-        retry_after is not None
+        not retryable
+        or retry_after is not None
         and (
             isinstance(retry_after, bool)
             or not isinstance(retry_after, int)
@@ -89,10 +241,9 @@ def _safe_service_error(error: ServiceError) -> tuple[int, dict[str, Any], int |
         )
     ):
         retry_after = None
-    payload = _error_payload(code, message, status)
+    payload = _error_payload(code, "", status)
     if retry_after is not None:
         payload["retry_after"] = retry_after
-        payload["retryable"] = True
     return status, payload, retry_after
 
 
