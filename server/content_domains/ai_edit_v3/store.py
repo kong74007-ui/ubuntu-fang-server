@@ -2624,6 +2624,8 @@ def _transition_leased_tx(
     target_state: str,
     now_ms: int,
     lease_seconds: int,
+    *,
+    preserve_current_lease: bool = False,
 ) -> bool:
     claim = _require_claim(claim)
     states = _require_state_set("expected_states", expected_states)
@@ -2635,7 +2637,16 @@ def _transition_leased_tx(
             "state_transition_invalid",
             "requested transition is outside the frozen V3 state graph",
         )
-    now_ms, desired = _lease_expiry(lease_seconds, now_ms)
+    if type(preserve_current_lease) is not bool:
+        raise _configuration_error(
+            "lease_preservation_invalid",
+            "preserve_current_lease must be boolean",
+        )
+    if preserve_current_lease:
+        now_ms = _require_now_ms(now_ms)
+        desired = None
+    else:
+        now_ms, desired = _lease_expiry(lease_seconds, now_ms)
     placeholders = ",".join("?" for _ in states)
     running_guard = "" if states.isdisjoint(MEDIA_STATES) else (
         " AND NOT EXISTS(SELECT 1 FROM edit_v3_stage_attempts AS a"
@@ -2643,6 +2654,12 @@ def _transition_leased_tx(
     )
 
     if target_state == "repair_planning":
+        if preserve_current_lease:
+            raise _configuration_error(
+                "lease_preservation_invalid",
+                "repair planning cannot preserve the current lease",
+            )
+        assert desired is not None
         updated = connection.execute(
             f"""UPDATE edit_v3_jobs
                 SET state='repair_planning',repair_count=1,
@@ -2716,7 +2733,11 @@ def _transition_leased_tx(
     if clears_lease:
         lease_assignment = "worker_id=NULL,lease_until=NULL"
         lease_parameters: tuple[int, ...] = ()
+    elif preserve_current_lease:
+        lease_assignment = "lease_until=lease_until"
+        lease_parameters = ()
     else:
+        assert desired is not None
         lease_assignment = (
             "lease_until=CASE WHEN lease_until>? THEN lease_until ELSE ? END"
         )
@@ -3414,6 +3435,24 @@ def _billing_result(row: sqlite3.Row) -> dict[str, dict[str, Any]]:
     return {"intent": intent, "job": job}
 
 
+def _billing_recovery_context(row: Mapping[str, Any]) -> tuple[str, str]:
+    context = (row["reason"], row["resume_state"])
+    allowed = {
+        "pre_debit": {("prehold", "preholding")},
+        "refund_delta": {
+            ("settlement", "settling"),
+            ("refund", "refund_pending"),
+        },
+        "refund_full": {("refund", "refund_pending")},
+    }
+    if context not in allowed.get(row["operation"], set()):
+        raise StoreConflictError(
+            "billing_context_conflict",
+            "billing intent has an invalid durable recovery context",
+        )
+    return context
+
+
 class V3Store:
     """Only typed, parameterized operations may cross the V3 SQL boundary."""
 
@@ -4069,105 +4108,143 @@ class V3Store:
             if row["status"] not in {"pending", "retryable_absent"}:
                 return _billing_result(row)
             if row["operation"] == "pre_debit":
-                if row["job_state"] == "created_draft":
-                    created_at = row["job_created_at"]
-                    if (
-                        now_ms >= created_at
-                        and now_ms - created_at >= _PREHOLD_ADMISSION_TIMEOUT_MS
+                reason = "prehold"
+                resume_state = "preholding"
+                created_at = row["job_created_at"]
+                admission_expired = (
+                    now_ms >= created_at
+                    and now_ms - created_at >= _PREHOLD_ADMISSION_TIMEOUT_MS
+                )
+                if admission_expired:
+                    if row["job_state"] == "created_draft" and not _transition_leased_tx(
+                        connection,
+                        claim,
+                        {"created_draft"},
+                        "preholding",
+                        now_ms,
+                        1,
+                        preserve_current_lease=True,
                     ):
-                        admission_deadline_at = (
-                            created_at + _PREHOLD_ADMISSION_TIMEOUT_MS
+                        raise _lease_lost(claim)
+                    if row["job_state"] not in {"created_draft", "preholding"}:
+                        raise StoreConflictError(
+                            "billing_state_conflict",
+                            "expired pre-debit is outside its admission states",
                         )
-                        evidence_json = _json_text(
-                            {
-                                "admission_deadline_at": admission_deadline_at,
-                                "observed_at": now_ms,
-                                "transmission": "not_started",
-                            }
+                    if not _transition_leased_tx(
+                        connection,
+                        claim,
+                        {"preholding"},
+                        "billing_reconciling",
+                        now_ms,
+                        1,
+                        preserve_current_lease=True,
+                    ):
+                        raise _lease_lost(claim)
+                    context_update = connection.execute(
+                        """UPDATE edit_v3_jobs
+                           SET reconciliation_reason='prehold',
+                               resume_state='preholding',updated_at=?
+                           WHERE job_id=? AND worker_id=? AND fencing_token=?
+                             AND lease_until>? AND state='billing_reconciling'
+                             AND created_at=?""",
+                        (
+                            now_ms,
+                            claim.job_id,
+                            claim.worker_id,
+                            claim.fencing_token,
+                            now_ms,
+                            created_at,
+                        ),
+                    )
+                    if context_update.rowcount != 1:
+                        if not _lease_owned_tx(connection, claim, now_ms):
+                            raise _lease_lost(claim)
+                        raise StoreConflictError(
+                            "billing_state_conflict",
+                            "expired pre-debit context could not be frozen",
                         )
-                        intent_update = connection.execute(
-                            """UPDATE edit_v3_billing_intents
-                               SET status='reconciliation_pending',first_unknown_at=?,
-                                   last_checked_at=?,authority_evidence_json=?,
-                                   reason='prehold',resume_state='preholding',updated_at=?
-                               WHERE id=? AND operation='pre_debit'
-                                 AND status IN ('pending','retryable_absent')
-                                 AND EXISTS(
-                                     SELECT 1 FROM edit_v3_jobs AS j
-                                     WHERE j.job_id=edit_v3_billing_intents.job_id
-                                       AND j.job_id=? AND j.worker_id=?
-                                       AND j.fencing_token=? AND j.lease_until>?
-                                       AND j.state='created_draft'
-                                 )""",
-                            (
-                                created_at,
-                                now_ms,
-                                evidence_json,
-                                now_ms,
-                                intent_id,
-                                claim.job_id,
-                                claim.worker_id,
-                                claim.fencing_token,
-                                now_ms,
-                            ),
-                        )
-                        if intent_update.rowcount != 1:
-                            if not _lease_owned_tx(connection, claim, now_ms):
-                                raise _lease_lost(claim)
-                            raise StoreConflictError(
-                                "billing_intent_conflict",
-                                "expired pre-debit admission could not be frozen",
-                            )
-                        job_update = connection.execute(
-                            """UPDATE edit_v3_jobs
-                               SET state='failed_reconciliation_pending',
-                                   reconciliation_reason='prehold',
-                                   resume_state='preholding',worker_id=NULL,
-                                   lease_until=NULL,updated_at=?
-                               WHERE job_id=? AND worker_id=? AND fencing_token=?
-                                 AND lease_until>? AND state='created_draft'
-                                 AND created_at=?""",
-                            (
-                                now_ms,
-                                claim.job_id,
-                                claim.worker_id,
-                                claim.fencing_token,
-                                now_ms,
-                                created_at,
-                            ),
-                        )
-                        if job_update.rowcount != 1:
-                            if not _lease_owned_tx(connection, claim, now_ms):
-                                raise _lease_lost(claim)
-                            raise StoreConflictError(
-                                "billing_state_conflict",
-                                "expired pre-debit admission state changed",
-                            )
-                        return {
-                            "intent": dict(
-                                connection.execute(
-                                    "SELECT * FROM edit_v3_billing_intents WHERE id=?",
-                                    (intent_id,),
-                                ).fetchone()
-                            ),
-                            "job": {
-                                "job_id": claim.job_id,
-                                "state": "failed_reconciliation_pending",
-                                "reconciliation_reason": "prehold",
-                                "resume_state": "preholding",
-                                "confirmed_preheld_total": row[
-                                    "job_confirmed_preheld_total"
-                                ],
-                                "confirmed_refunded_total": row[
-                                    "job_confirmed_refunded_total"
-                                ],
-                                "queued_at": row["job_queued_at"],
-                                "processing_deadline_at": row[
-                                    "job_processing_deadline_at"
-                                ],
-                                "created_at": created_at,
-                            },
+                    admission_deadline_at = (
+                        created_at + _PREHOLD_ADMISSION_TIMEOUT_MS
+                    )
+                    evidence_json = _json_text(
+                        {
+                            "admission_deadline_at": admission_deadline_at,
+                            "observed_at": now_ms,
+                            "transmission": "not_started",
                         }
+                    )
+                    intent_update = connection.execute(
+                        """UPDATE edit_v3_billing_intents
+                           SET status='reconciliation_pending',first_unknown_at=?,
+                               last_checked_at=?,authority_evidence_json=?,
+                               reason='prehold',resume_state='preholding',updated_at=?
+                           WHERE id=? AND operation='pre_debit'
+                             AND status IN ('pending','retryable_absent')
+                             AND EXISTS(
+                                 SELECT 1 FROM edit_v3_jobs AS j
+                                 WHERE j.job_id=edit_v3_billing_intents.job_id
+                                   AND j.job_id=? AND j.worker_id=?
+                                   AND j.fencing_token=? AND j.lease_until>?
+                                   AND j.state='billing_reconciling'
+                                   AND j.created_at=?
+                             )""",
+                        (
+                            created_at,
+                            now_ms,
+                            evidence_json,
+                            now_ms,
+                            intent_id,
+                            claim.job_id,
+                            claim.worker_id,
+                            claim.fencing_token,
+                            now_ms,
+                            created_at,
+                        ),
+                    )
+                    if intent_update.rowcount != 1:
+                        if not _lease_owned_tx(connection, claim, now_ms):
+                            raise _lease_lost(claim)
+                        raise StoreConflictError(
+                            "billing_intent_conflict",
+                            "expired pre-debit admission could not be frozen",
+                        )
+                    if not _transition_leased_tx(
+                        connection,
+                        claim,
+                        {"billing_reconciling"},
+                        "failed_reconciliation_pending",
+                        now_ms,
+                        1,
+                        preserve_current_lease=True,
+                    ):
+                        raise _lease_lost(claim)
+                    return {
+                        "intent": dict(
+                            connection.execute(
+                                "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+                                (intent_id,),
+                            ).fetchone()
+                        ),
+                        "job": {
+                            "job_id": claim.job_id,
+                            "state": "failed_reconciliation_pending",
+                            "reconciliation_reason": "prehold",
+                            "resume_state": "preholding",
+                            "confirmed_preheld_total": row[
+                                "job_confirmed_preheld_total"
+                            ],
+                            "confirmed_refunded_total": row[
+                                "job_confirmed_refunded_total"
+                            ],
+                            "queued_at": row["job_queued_at"],
+                            "processing_deadline_at": row[
+                                "job_processing_deadline_at"
+                            ],
+                            "created_at": created_at,
+                        },
+                    }
+                if row["job_state"] == "created_draft":
                     if not _transition_leased_tx(
                         connection,
                         claim,
@@ -4183,17 +4260,8 @@ class V3Store:
                         "pre-debit can transmit only while preholding",
                     )
             else:
-                expected_state = (
-                    "settling"
-                    if row["operation"] == "refund_delta"
-                    else "refund_pending"
-                )
-                late_delta_retry = (
-                    row["operation"] == "refund_delta"
-                    and row["status"] == "retryable_absent"
-                    and row["job_state"] == "refund_pending"
-                )
-                if row["job_state"] != expected_state and not late_delta_retry:
+                reason, resume_state = _billing_recovery_context(row)
+                if row["job_state"] != resume_state:
                     raise StoreConflictError(
                         "billing_state_conflict",
                         "refund can transmit only from its frozen resume state",
@@ -4201,7 +4269,7 @@ class V3Store:
             updated = connection.execute(
                 """UPDATE edit_v3_billing_intents
                    SET status='unknown',first_unknown_at=?,last_checked_at=NULL,
-                       authority_evidence_json=NULL,updated_at=?
+                       authority_evidence_json=NULL,reason=?,resume_state=?,updated_at=?
                    WHERE id=? AND status IN ('pending','retryable_absent')
                      AND EXISTS(
                          SELECT 1 FROM edit_v3_jobs AS j
@@ -4211,6 +4279,8 @@ class V3Store:
                      )""",
                 (
                     now_ms,
+                    reason,
+                    resume_state,
                     now_ms,
                     intent_id,
                     claim.job_id,
@@ -4426,15 +4496,7 @@ class V3Store:
     ) -> dict[str, dict[str, Any]]:
         def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
-            if row["operation"] == "pre_debit":
-                reason = "prehold"
-                resume_state = "preholding"
-            elif row["operation"] == "refund_delta":
-                reason = "settlement"
-                resume_state = "settling"
-            else:
-                reason = "refund"
-                resume_state = "refund_pending"
+            reason, resume_state = _billing_recovery_context(row)
             if row["job_state"] == "failed_reconciliation_pending":
                 if (
                     row["job_reconciliation_reason"] != reason
@@ -4751,15 +4813,10 @@ class V3Store:
 
         def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
-            if row["operation"] == "pre_debit":
-                resume_state = "preholding"
-                terminal_absence = True
-            elif row["operation"] == "refund_delta":
-                resume_state = "settling"
-                terminal_absence = False
-            else:
-                resume_state = "refund_pending"
-                terminal_absence = False
+            reason, resume_state = _billing_recovery_context(row)
+            terminal_absence = row["operation"] == "pre_debit"
+            next_reason = reason
+            next_resume_state = resume_state
             if row["job_state"] == resume_state:
                 status = "retryable_absent"
                 completed_at = None
@@ -4775,6 +4832,9 @@ class V3Store:
                 completed_at = now_ms if terminal_absence else None
                 target_state = "prehold_absent" if terminal_absence else "refund_pending"
                 transition_source = "failed_reconciliation_pending"
+                if not terminal_absence:
+                    next_reason = "refund"
+                    next_resume_state = "refund_pending"
             else:
                 raise StoreConflictError(
                     "billing_state_conflict",
@@ -4783,7 +4843,8 @@ class V3Store:
             intent_update = connection.execute(
                 """UPDATE edit_v3_billing_intents
                    SET status=?,first_unknown_at=?,last_checked_at=?,
-                       authority_evidence_json=?,updated_at=?,completed_at=?
+                       authority_evidence_json=?,reason=?,resume_state=?,
+                       updated_at=?,completed_at=?
                    WHERE id=? AND status IN ('unknown','reconciliation_pending')
                      AND EXISTS(
                          SELECT 1 FROM edit_v3_jobs AS j
@@ -4796,6 +4857,8 @@ class V3Store:
                     row["first_unknown_at"] if target_state == "prehold_absent" else None,
                     now_ms,
                     evidence_json,
+                    next_reason,
+                    next_resume_state,
                     now_ms,
                     completed_at,
                     intent_id,
@@ -4878,6 +4941,15 @@ class V3Store:
                 raise StoreConflictError(
                     "billing_state_conflict",
                     "timeout requires billing reconciliation state",
+                )
+            reason, resume_state = _billing_recovery_context(row)
+            if (
+                row["job_reconciliation_reason"] != reason
+                or row["job_resume_state"] != resume_state
+            ):
+                raise StoreConflictError(
+                    "billing_context_conflict",
+                    "billing timeout context conflicts with its intent",
                 )
             intent_update = connection.execute(
                 """UPDATE edit_v3_billing_intents
