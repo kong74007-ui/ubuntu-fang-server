@@ -9,11 +9,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .billing import list_due_billing_intents, reconcile_unknown_intent
-from .contracts import ALLOWED_TRANSITIONS, MEDIA_STATES, RECONCILIATION_STATES, LeaseClaim
-from .delivery import list_due_publish_intents, reconcile_asset_decision
+from .billing import (
+    BillingError,
+    list_due_billing_intents,
+    process_pending_intent,
+    reconcile_unknown_intent,
+    request_delta_refund,
+    request_full_refund,
+)
+from .contracts import ALLOWED_TRANSITIONS, MEDIA_STATES, LeaseClaim
+from .delivery import (
+    advance_publish,
+    create_publish_intent,
+    list_due_publish_intents,
+    reconcile_asset_decision,
+)
 from .runtime import LeaseHeartbeat, RuntimeDependencies, StageContext, StageOutcome
-from .store import LeaseLost
+from .store import LeaseLost, StoreConflictError
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +40,25 @@ class _StageFailure(RuntimeError):
     def __init__(self, error_code: str):
         self.error_code = error_code
         super().__init__(error_code)
+
+
+def _billing_expected_states(operation: str, status: str) -> frozenset[str]:
+    if status in {"pending", "retryable_absent"}:
+        return {
+            "pre_debit": frozenset({"created_draft", "preholding"}),
+            "refund_delta": frozenset({"settling", "refund_pending"}),
+            "refund_full": frozenset({"refund_pending"}),
+        }[operation]
+    if status in {"unknown", "reconciliation_pending"}:
+        resume_states = {
+            "pre_debit": {"preholding"},
+            "refund_delta": {"settling", "refund_pending"},
+            "refund_full": {"refund_pending"},
+        }[operation]
+        return frozenset(
+            (*resume_states, "billing_reconciling", "failed_reconciliation_pending")
+        )
+    raise ValueError("billing_intent_status_invalid")
 
 
 def _now_ms(runtime: RuntimeDependencies) -> int:
@@ -67,6 +98,117 @@ def _checkpoint_next_state(row: Mapping[str, Any]) -> str:
     return payload["next_state"]
 
 
+def _checkpoint_stage_data(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = json.loads(row["output_json"])
+    checkpoint = payload.get("checkpoint") if isinstance(payload, dict) else None
+    if not isinstance(checkpoint, dict):
+        raise _StageFailure("pipeline_checkpoint_invalid")
+    return checkpoint
+
+
+def _staging_delivery_values(
+    checkpoint: Mapping[str, Any],
+    *,
+    confirmed_preheld_total: int,
+    environment: str,
+) -> tuple[int, str, str]:
+    actual_charge = checkpoint.get("actual_charge")
+    metadata_sha256 = checkpoint.get("metadata_sha256")
+    object_key = checkpoint.get("delivery_object_key")
+    if (
+        isinstance(actual_charge, bool)
+        or not isinstance(actual_charge, int)
+        or actual_charge < 0
+        or actual_charge > confirmed_preheld_total
+        or not isinstance(metadata_sha256, str)
+        or len(metadata_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in metadata_sha256)
+        or not isinstance(object_key, str)
+        or not object_key
+        or object_key != object_key.strip()
+        or len(object_key) > 1_024
+        or not object_key.startswith(f"{environment}/ai-edit-v3/")
+        or ".." in object_key
+        or "\\" in object_key
+        or "?" in object_key
+        or "#" in object_key
+        or "://" in object_key
+        or any(
+            ord(character) < 0x20
+            or 0x7F <= ord(character) <= 0x9F
+            or 0xD800 <= ord(character) <= 0xDFFF
+            for character in object_key
+        )
+    ):
+        raise _StageFailure("staging_delivery_checkpoint_invalid")
+    return actual_charge, metadata_sha256, object_key
+
+
+def _prepare_publication(
+    claim: LeaseClaim,
+    runtime: RuntimeDependencies,
+    values: tuple[int, str, str],
+    now_ms: int,
+) -> None:
+    _actual_charge, metadata_sha256, object_key = values
+    runtime.store.freeze_delivery_object_key(claim, object_key, now_ms)
+    create_publish_intent(
+        claim,
+        metadata_sha256=metadata_sha256,
+        now=now_ms,
+        store=runtime.store,
+    )
+
+
+def _request_settlement(
+    claim: LeaseClaim,
+    runtime: RuntimeDependencies,
+    values: tuple[int, str, str],
+    now_ms: int,
+    lease_seconds: int,
+) -> str:
+    actual_charge, _metadata_sha256, _object_key = values
+    outcome = request_delta_refund(
+        claim,
+        actual_charge=actual_charge,
+        now=now_ms,
+        store=runtime.store,
+    )
+    job = runtime.store.get_job_for_claim(claim, now_ms)
+    if job["state"] != outcome.next_state:
+        if outcome.next_state not in ALLOWED_TRANSITIONS[job["state"]]:
+            raise _StageFailure("settlement_state_transition_invalid")
+        if not runtime.store.transition_leased(
+            claim,
+            {job["state"]},
+            outcome.next_state,
+            now_ms,
+            lease_seconds=lease_seconds,
+        ):
+            raise LeaseLost("lease_lost", "fenced settlement transition was rejected")
+    return outcome.next_state
+
+
+def _settlement_safety_pending(
+    claim: LeaseClaim,
+    runtime: RuntimeDependencies,
+    now_ms: int,
+    error: Exception,
+) -> JobRunResult:
+    job = runtime.store.get_job_for_claim(claim, now_ms)
+    error_code = getattr(error, "error_code", None)
+    if not isinstance(error_code, str) or not error_code:
+        error_code = str(error) if isinstance(error, ValueError) else "settlement_failed"
+    if runtime.store.lease_owned(claim, now_ms):
+        runtime.store.release_lease(claim, now_ms)
+    return JobRunResult(
+        claim.job_id,
+        job["state"],
+        "safety_pending",
+        error_code,
+    )
+
+
 def run_job(
     claim: LeaseClaim,
     runtime: RuntimeDependencies,
@@ -101,8 +243,51 @@ def run_job(
             claim, {"failed"}, "refund_pending", now_ms, lease_seconds=lease_seconds
         ):
             raise LeaseLost("lease_lost", "fenced failed transition was rejected")
+        refund = request_full_refund(claim, now=now_ms, store=store)
+        result_state = refund.next_state
+        if result_state != "refund_pending":
+            if not store.transition_leased(
+                claim,
+                {"refund_pending"},
+                result_state,
+                now_ms,
+                lease_seconds=lease_seconds,
+            ):
+                raise LeaseLost(
+                    "lease_lost", "fenced zero-refund transition was rejected"
+                )
         store.release_lease(claim, now_ms)
-        return JobRunResult(claim.job_id, "refund_pending", "transitioned")
+        return JobRunResult(claim.job_id, result_state, "transitioned")
+    if state == "settling":
+        checkpoint = store.get_checkpoint_for_claim(
+            claim, "staging_delivery", job["request_sha256"], now_ms
+        )
+        if checkpoint is None:
+            store.release_lease(claim, now_ms)
+            return JobRunResult(
+                claim.job_id,
+                "settling",
+                "safety_pending",
+                "actual_charge_unavailable",
+            )
+        try:
+            values = _staging_delivery_values(
+                _checkpoint_stage_data(checkpoint),
+                confirmed_preheld_total=job["confirmed_preheld_total"],
+                environment=store.environment,
+            )
+            _prepare_publication(claim, runtime, values, now_ms)
+            result_state = _request_settlement(
+                claim, runtime, values, now_ms, lease_seconds
+            )
+        except LeaseLost:
+            raise
+        except Exception as exc:
+            return _settlement_safety_pending(claim, runtime, now_ms, exc)
+        store.release_lease(claim, now_ms)
+        return JobRunResult(
+            claim.job_id, result_state, "settlement_requested"
+        )
     if state not in MEDIA_STATES:
         store.release_lease(claim, now_ms)
         return JobRunResult(claim.job_id, state, "no_media_work")
@@ -138,6 +323,32 @@ def run_job(
             raise LeaseLost("lease_lost", "lease ownership was lost")
 
     input_sha256 = job["request_sha256"]
+    if job.get("processing_deadline_at") is None:
+        terminate_once()
+        current_ms = _now_ms(runtime)
+        if not store.lease_owned(claim, current_ms):
+            raise LeaseLost("lease_lost", "lease ownership was lost")
+        attempt = store.start_stage_attempt(
+            claim, state, input_sha256, current_ms
+        )
+        store.finish_stage_attempt(
+            claim,
+            attempt["id"],
+            "failed",
+            current_ms,
+            error_code="processing_deadline_missing",
+        )
+        if not store.transition_leased(
+            claim, {state}, "failed", current_ms, lease_seconds=lease_seconds
+        ):
+            raise LeaseLost("lease_lost", "fenced deadline failure was rejected")
+        store.release_lease(claim, current_ms)
+        return JobRunResult(
+            claim.job_id,
+            "failed",
+            "failed",
+            "processing_deadline_missing",
+        )
     try:
         assert_active()
     except LeaseLost:
@@ -173,10 +384,29 @@ def run_job(
     )
     if checkpoint is not None:
         next_state = _checkpoint_next_state(checkpoint)
+        delivery_values = None
+        if state == "staging_delivery":
+            delivery_values = _staging_delivery_values(
+                _checkpoint_stage_data(checkpoint),
+                confirmed_preheld_total=job["confirmed_preheld_total"],
+                environment=store.environment,
+            )
+            _prepare_publication(claim, runtime, delivery_values, now_ms)
         if not store.transition_leased(
             claim, {state}, next_state, now_ms, lease_seconds=lease_seconds
         ):
             raise LeaseLost("lease_lost", "fenced checkpoint replay was rejected")
+        if delivery_values is not None:
+            try:
+                next_state = _request_settlement(
+                    claim, runtime, delivery_values, now_ms, lease_seconds
+                )
+            except LeaseLost:
+                raise
+            except Exception as exc:
+                return _settlement_safety_pending(
+                    claim, runtime, _now_ms(runtime), exc
+                )
         store.release_lease(claim, now_ms)
         return JobRunResult(claim.job_id, next_state, "checkpoint_replayed")
 
@@ -216,6 +446,13 @@ def run_job(
             raise ValueError("pipeline_checkpoint_input_mismatch")
         if outcome.next_state not in ALLOWED_TRANSITIONS[state]:
             raise _StageFailure("invalid_stage_transition")
+        delivery_values = None
+        if state == "staging_delivery":
+            delivery_values = _staging_delivery_values(
+                outcome.checkpoint,
+                confirmed_preheld_total=job["confirmed_preheld_total"],
+                environment=store.environment,
+            )
         assert_active()
         store.save_checkpoint(
             claim,
@@ -224,6 +461,10 @@ def run_job(
             _checkpoint_payload(outcome),
             _now_ms(runtime),
         )
+        if delivery_values is not None:
+            _prepare_publication(
+                claim, runtime, delivery_values, _now_ms(runtime)
+            )
         status = "skipped" if outcome.checkpoint.get("skipped") is True else "completed"
         store.finish_stage_attempt(
             claim, attempt["id"], status, _now_ms(runtime)
@@ -237,8 +478,24 @@ def run_job(
             lease_seconds=lease_seconds,
         ):
             raise LeaseLost("lease_lost", "fenced stage transition was rejected")
+        result_state = outcome.next_state
+        if delivery_values is not None:
+            try:
+                result_state = _request_settlement(
+                    claim,
+                    runtime,
+                    delivery_values,
+                    _now_ms(runtime),
+                    lease_seconds,
+                )
+            except LeaseLost:
+                raise
+            except Exception as exc:
+                return _settlement_safety_pending(
+                    claim, runtime, _now_ms(runtime), exc
+                )
         store.release_lease(claim, _now_ms(runtime))
-        return JobRunResult(claim.job_id, outcome.next_state, status)
+        return JobRunResult(claim.job_id, result_state, status)
     except LeaseLost:
         heartbeat.close()
         terminate_once()
@@ -247,6 +504,18 @@ def run_job(
             store.close_running_attempts(claim, current_ms)
             store.release_lease(claim, current_ms)
         raise
+    except BillingError as exc:
+        heartbeat.close()
+        current_ms = _now_ms(runtime)
+        current_state = "settling" if attempt_finished else state
+        if store.lease_owned(claim, current_ms):
+            store.release_lease(claim, current_ms)
+        return JobRunResult(
+            claim.job_id,
+            current_state,
+            "safety_pending",
+            exc.error_code,
+        )
     except Exception as exc:
         heartbeat.close()
         terminate_once()
@@ -290,54 +559,173 @@ def run_reconciliation_pass(
             worker_id,
             lease_seconds,
             now_ms,
-            expected_states=RECONCILIATION_STATES,
+            expected_states=_billing_expected_states(
+                intent.operation, intent.status
+            ),
         )
         if claim is None:
             continue
-        job = runtime.store.get_job_for_claim(claim, now_ms)
-        outcome = reconcile_unknown_intent(
-            intent.intent_id,
-            claim=claim,
-            ledger=runtime.points,
-            now=now_ms,
-            store=runtime.store,
-        )
-        if runtime.store.transition_leased(
-            claim,
-            {job["state"]},
-            outcome.next_state,
-            now_ms,
-            lease_seconds=lease_seconds,
-        ):
+        try:
+            if intent.status in {"pending", "retryable_absent"}:
+                outcome = process_pending_intent(
+                    intent.intent_id,
+                    claim=claim,
+                    ledger=runtime.points,
+                    now=now_ms,
+                    store=runtime.store,
+                )
+            else:
+                outcome = reconcile_unknown_intent(
+                    intent.intent_id,
+                    claim=claim,
+                    ledger=runtime.points,
+                    now=now_ms,
+                    store=runtime.store,
+                )
+            job = runtime.store.get_job_for_claim(claim, now_ms)
+            if job["state"] != outcome.next_state:
+                if not runtime.store.transition_leased(
+                    claim,
+                    {job["state"]},
+                    outcome.next_state,
+                    now_ms,
+                    lease_seconds=lease_seconds,
+                ):
+                    raise LeaseLost(
+                        "lease_lost", "fenced billing transition was rejected"
+                    )
             counts["billing"] += 1
-        runtime.store.release_lease(claim, now_ms)
+        except (BillingError, LeaseLost, StoreConflictError):
+            pass
+        finally:
+            if runtime.store.lease_owned(claim, now_ms):
+                runtime.store.release_lease(claim, now_ms)
 
+    seen_publish_jobs: set[str] = set()
     for row in list_due_publish_intents(now=now_ms, store=runtime.store, limit=limit):
+        if row["job_id"] in seen_publish_jobs:
+            continue
+        seen_publish_jobs.add(row["job_id"])
         claim = runtime.store.claim_job(
             row["job_id"],
             worker_id,
             lease_seconds,
             now_ms,
-            expected_states=RECONCILIATION_STATES,
+            expected_states={
+                "publishing",
+                "asset_decision_reconciling",
+                "failed_asset_decision_pending",
+            },
         )
         if claim is None:
             continue
-        job = runtime.store.get_job_for_claim(claim, now_ms)
-        progress = reconcile_asset_decision(
-            claim,
-            now=now_ms,
-            store=runtime.store,
-            publisher=runtime.assets,
-        )
-        if runtime.store.transition_leased(
-            claim,
-            {job["state"]},
-            progress.next_state,
-            now_ms,
-            lease_seconds=lease_seconds,
-        ):
+        try:
+            job = runtime.store.get_job_for_claim(claim, now_ms)
+            if job["state"] == "publishing" and row["status"] == "pending":
+                progress = advance_publish(
+                    claim,
+                    metadata_sha256=row["metadata_sha256"],
+                    now=now_ms,
+                    store=runtime.store,
+                    publisher=runtime.assets,
+                )
+            else:
+                create_publish_intent(
+                    claim,
+                    metadata_sha256=row["metadata_sha256"],
+                    now=now_ms,
+                    store=runtime.store,
+                )
+                progress = reconcile_asset_decision(
+                    claim,
+                    now=now_ms,
+                    store=runtime.store,
+                    publisher=runtime.assets,
+                )
+            current = runtime.store.get_job_for_claim(claim, now_ms)
+            if current["state"] != progress.next_state:
+                if progress.next_state not in ALLOWED_TRANSITIONS[current["state"]]:
+                    raise ValueError("publication_state_transition_invalid")
+                if not runtime.store.transition_leased(
+                    claim,
+                    {current["state"]},
+                    progress.next_state,
+                    now_ms,
+                    lease_seconds=lease_seconds,
+                ):
+                    raise LeaseLost(
+                        "lease_lost", "fenced publication transition was rejected"
+                    )
             counts["assets"] += 1
-        runtime.store.release_lease(claim, now_ms)
+        except (LeaseLost, StoreConflictError, ValueError):
+            pass
+        finally:
+            if runtime.store.lease_owned(claim, now_ms):
+                runtime.store.release_lease(claim, now_ms)
+
+    for ready in runtime.store.list_publication_ready_jobs(now_ms, limit=limit):
+        if ready["job_id"] in seen_publish_jobs:
+            continue
+        seen_publish_jobs.add(ready["job_id"])
+        claim = runtime.store.claim_job(
+            ready["job_id"],
+            worker_id,
+            lease_seconds,
+            now_ms,
+            expected_states={ready["state"]},
+        )
+        if claim is None:
+            continue
+        try:
+            job = runtime.store.get_job_for_claim(claim, now_ms)
+            checkpoint = runtime.store.get_checkpoint_for_claim(
+                claim,
+                "staging_delivery",
+                job["request_sha256"],
+                now_ms,
+            )
+            if checkpoint is None:
+                raise ValueError("staging_delivery_checkpoint_missing")
+            values = _staging_delivery_values(
+                _checkpoint_stage_data(checkpoint),
+                confirmed_preheld_total=job["confirmed_preheld_total"],
+                environment=runtime.store.environment,
+            )
+            _prepare_publication(claim, runtime, values, now_ms)
+            current_state = job["state"]
+            if current_state == "settling":
+                current_state = _request_settlement(
+                    claim, runtime, values, now_ms, lease_seconds
+                )
+            if current_state == "publishing":
+                progress = advance_publish(
+                    claim,
+                    metadata_sha256=values[1],
+                    now=now_ms,
+                    store=runtime.store,
+                    publisher=runtime.assets,
+                )
+                current = runtime.store.get_job_for_claim(claim, now_ms)
+                if current["state"] != progress.next_state:
+                    if progress.next_state not in ALLOWED_TRANSITIONS[current["state"]]:
+                        raise ValueError("publication_state_transition_invalid")
+                    if not runtime.store.transition_leased(
+                        claim,
+                        {current["state"]},
+                        progress.next_state,
+                        now_ms,
+                        lease_seconds=lease_seconds,
+                    ):
+                        raise LeaseLost(
+                            "lease_lost",
+                            "fenced publication transition was rejected",
+                        )
+                counts["assets"] += 1
+        except (BillingError, LeaseLost, StoreConflictError, ValueError):
+            pass
+        finally:
+            if runtime.store.lease_owned(claim, now_ms):
+                runtime.store.release_lease(claim, now_ms)
     return counts
 
 

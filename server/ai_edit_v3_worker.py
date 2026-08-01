@@ -63,6 +63,16 @@ def _ready(config: FeatureConfig, runtime: Runtime) -> bool:
     )
 
 
+def _cleanup_failed_claim(claim, dependencies) -> None:
+    now_ms = int(dependencies.clock.now() * 1000)
+    try:
+        if dependencies.store.lease_owned(claim, now_ms):
+            dependencies.store.close_running_attempts(claim, now_ms)
+            dependencies.store.release_lease(claim, now_ms)
+    except (LeaseLost, StoreConflictError):
+        return
+
+
 def run_worker(stop_event, *, config=None, runtime=None) -> None:
     if config is None:
         config = worker_config()
@@ -116,8 +126,11 @@ def run_worker(stop_event, *, config=None, runtime=None) -> None:
                         )
                         for claim in claims
                     ]
-                    for future in futures:
-                        future.result()
+                    for claim, future in zip(claims, futures):
+                        try:
+                            future.result()
+                        except (LeaseLost, StoreConflictError):
+                            _cleanup_failed_claim(claim, dependencies)
         stop_event.wait(config.poll_interval_seconds)
 
 

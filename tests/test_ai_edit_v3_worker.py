@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from server.content_domains.ai_edit_v3.feature import FeatureConfig
 from server.content_domains.ai_edit_v3.runtime import Runtime, RuntimeDependencies
-from server.content_domains.ai_edit_v3.store import StoreConflictError
+from server.content_domains.ai_edit_v3.contracts import LeaseClaim
+from server.content_domains.ai_edit_v3.store import LeaseLost, StoreConflictError
 
 
 class FakeClock:
@@ -29,6 +30,9 @@ class FakeStore:
     def list_due_publish_intents(self, now, *, limit, cursor=None):
         self.asset_queries += 1
         self.events.append("assets")
+        return []
+
+    def list_publication_ready_jobs(self, now, *, limit):
         return []
 
     def claim_next_job(self, worker_id, lease_seconds, now_ms):
@@ -187,6 +191,99 @@ class V3WorkerTests(unittest.TestCase):
 
         self.assertEqual(reconcile.call_count, 2)
         self.assertEqual(store.claim_calls, 1)
+
+    def test_one_claim_lease_loss_does_not_block_peer_or_next_poll(self):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+
+        class StopAfterTwoLoops:
+            def __init__(self):
+                self.waits = 0
+
+            def is_set(self):
+                return self.waits >= 2
+
+            def wait(self, timeout):
+                self.waits += 1
+                return self.is_set()
+
+        class ClaimStore(FakeStore):
+            def __init__(self):
+                super().__init__()
+                self.cleaned = []
+                self.released = []
+                self.claims = [
+                    LeaseClaim("job-lost", "worker", 1, 200_000),
+                    LeaseClaim("job-peer", "worker", 1, 200_000),
+                    LeaseClaim("job-next-poll", "worker", 1, 200_000),
+                    None,
+                ]
+
+            def claim_next_job(self, worker_id, lease_seconds, now_ms):
+                self.claim_calls += 1
+                self.events.append("claim")
+                return self.claims.pop(0)
+
+            def lease_owned(self, claim, now_ms):
+                return claim.job_id == "job-lost"
+
+            def close_running_attempts(self, claim, now_ms):
+                self.cleaned.append(claim.job_id)
+                return 1
+
+            def release_lease(self, claim, now_ms):
+                self.released.append(claim.job_id)
+                return True
+
+        store = ClaimStore()
+        dependencies = RuntimeDependencies(
+            store=store,
+            clock=FakeClock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+        runtime = Runtime(
+            config=FeatureConfig(True, None, None, "test", None, 2, 2, 1),
+            dependencies=dependencies,
+        )
+        calls = []
+
+        def execute(claim, *args, **kwargs):
+            calls.append(claim.job_id)
+            if claim.job_id == "job-lost":
+                raise LeaseLost("lease_lost", "injected claim loss")
+            return SimpleNamespace(state="normalizing")
+
+        error = None
+        with patch(
+            "server.ai_edit_v3_worker.run_reconciliation_pass",
+            return_value={"billing": 0, "assets": 0},
+        ) as reconcile, patch(
+            "server.ai_edit_v3_worker.preflight",
+            return_value=SimpleNamespace(accepts_new_jobs=True),
+        ), patch("server.ai_edit_v3_worker.run_job", side_effect=execute):
+            try:
+                run_worker(
+                    StopAfterTwoLoops(), config=worker_config(), runtime=runtime
+                )
+            except Exception as exc:  # RED captures the escaped future error.
+                error = exc
+
+        self.assertIsNone(error)
+        self.assertCountEqual(
+            calls, ["job-lost", "job-peer", "job-next-poll"]
+        )
+        self.assertEqual(reconcile.call_count, 2)
+        self.assertEqual(store.cleaned, ["job-lost"])
+        self.assertEqual(store.released, ["job-lost"])
 
 
 if __name__ == "__main__":

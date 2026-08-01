@@ -2532,6 +2532,32 @@ def _require_publish_operation(operation: Any) -> str:
     return operation
 
 
+def _require_delivery_object_key(value: Any, environment: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 1_024
+        or not value.startswith(f"{environment}/ai-edit-v3/")
+        or ".." in value
+        or "\\" in value
+        or "?" in value
+        or "#" in value
+        or "://" in value
+        or any(
+            ord(character) < 0x20
+            or 0x7F <= ord(character) <= 0x9F
+            or 0xD800 <= ord(character) <= 0xDFFF
+            for character in value
+        )
+    ):
+        raise _configuration_error(
+            "delivery_object_key_invalid",
+            "delivery object key must be one bounded private object key",
+        )
+    return value
+
+
 def is_valid_publish_asset_id(value: Any) -> bool:
     """Return whether *value* is one frozen opaque publication identifier."""
 
@@ -3755,6 +3781,114 @@ class V3Store:
         return self._read(
             lambda connection: _get_job_for_claim_tx(
                 connection, claim, scoped_environment, now_ms
+            )
+        )
+
+    def freeze_delivery_object_key(
+        self,
+        claim: LeaseClaim,
+        object_key: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        object_key = _require_delivery_object_key(object_key, self.environment)
+        now_ms = _require_now_ms(now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                """SELECT * FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if row is None:
+                raise _lease_lost(claim)
+            if row["state"] not in {
+                "staging_delivery",
+                "settling",
+                "publishing",
+                "asset_decision_reconciling",
+                "failed_asset_decision_pending",
+            }:
+                raise StoreConflictError(
+                    "delivery_state_conflict",
+                    "delivery object key is invalid in the current job state",
+                )
+            if row["delivery_object_key"] is not None:
+                if row["delivery_object_key"] != object_key:
+                    raise StoreConflictError(
+                        "delivery_object_conflict",
+                        "delivery object key is immutable once frozen",
+                    )
+                return dict(row)
+            updated = connection.execute(
+                """UPDATE edit_v3_jobs SET delivery_object_key=?,updated_at=?
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>? AND delivery_object_key IS NULL""",
+                (
+                    object_key,
+                    now_ms,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "delivery_object_conflict",
+                    "delivery object key could not be frozen",
+                )
+            return dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_jobs WHERE job_id=?",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+
+        return self._write(write)
+
+    def list_publication_ready_jobs(
+        self,
+        now_ms: int,
+        *,
+        limit: int = 100,
+    ) -> tuple[dict[str, Any], ...]:
+        now_ms = _require_now_ms(now_ms)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise _configuration_error(
+                "publication_ready_limit_invalid",
+                "publication-ready limit must be an integer from 1 to 100",
+            )
+        return self._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT j.job_id,j.state,j.request_sha256,j.updated_at
+                       FROM edit_v3_jobs AS j
+                       WHERE j.environment=?
+                         AND j.state IN ('settling','publishing')
+                         AND (j.worker_id IS NULL OR j.lease_until<=?)
+                         AND EXISTS(
+                             SELECT 1 FROM edit_v3_checkpoints AS c
+                             WHERE c.job_id=j.job_id
+                               AND c.stage='staging_delivery'
+                               AND c.input_sha256=j.request_sha256
+                         )
+                       ORDER BY j.updated_at,j.job_id LIMIT ?""",
+                    (self.environment, now_ms, limit),
+                )
             )
         )
 

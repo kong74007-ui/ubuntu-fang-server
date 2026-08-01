@@ -5,6 +5,7 @@ import tempfile
 import time
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 from server.content_domains.ai_edit_v3 import contracts
 from server.content_domains.ai_edit_v3.runtime import (
@@ -13,6 +14,7 @@ from server.content_domains.ai_edit_v3.runtime import (
 )
 from server.content_domains.ai_edit_v3.store import (
     LeaseLost,
+    StoreConfigurationError,
     StoreConflictError,
     V3Store,
 )
@@ -98,6 +100,21 @@ class V3StateCASTests(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def seed_publish_job(self, job_id):
+        self.seed_job(job_id, "publishing")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs
+                   SET confirmed_preheld_total=1,
+                       delivery_object_key=?
+                   WHERE job_id=?""",
+                (
+                    f"test/ai-edit-v3/owner/{job_id}/delivery/final.mp4",
+                    job_id,
+                ),
+            )
+        )
 
     def test_every_graph_edge_uses_fenced_actual_state_cas(self):
         index = 0
@@ -623,7 +640,7 @@ class V3StateCASTests(unittest.TestCase):
             expected_states={"failed"},
         )
         refund = run_job(second, runtime, db_path=self.db)
-        self.assertEqual(refund.state, "refund_pending")
+        self.assertEqual(refund.state, "refunded")
 
     def test_invalid_handler_next_state_fails_without_checkpoint(self):
         from server.content_domains.ai_edit_v3.pipeline import run_job
@@ -689,6 +706,1081 @@ class V3StateCASTests(unittest.TestCase):
         self.assertEqual(attempt["status"], "failed")
         self.assertEqual(checkpoints, 0)
         self.assertEqual(supervisor.terminated, [claim.job_id])
+
+    def test_pending_predebit_pass_moves_real_job_from_created_draft_to_queued(self):
+        from server.content_domains.ai_edit_v3.billing import (
+            LedgerResult,
+            LedgerTransaction,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_reconciliation_pass,
+        )
+
+        created = self.store.create_job_with_predebit(
+            "alice",
+            "job-pending-predebit",
+            "quote-1",
+            "key-pending-predebit",
+            {},
+            now_ms=100,
+            intent_id="intent-pending-predebit",
+        )
+
+        class Clock:
+            def now(self):
+                return 0.102
+
+        class Ledger:
+            def __init__(self):
+                self.deduct_calls = []
+
+            def deduct(self, owner, amount, transaction_key, reason):
+                self.deduct_calls.append(
+                    (owner, amount, transaction_key, reason)
+                )
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key,
+                        "deduct",
+                        owner,
+                        amount,
+                        99,
+                        101,
+                    ),
+                    None,
+                )
+
+            def refund(self, owner, amount, transaction_key, reason):
+                raise AssertionError("pre-debit pass must not refund")
+
+            def query_transaction(self, owner, transaction_key):
+                raise AssertionError("pending intent must transmit before query")
+
+        ledger = Ledger()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=ledger,
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-predebit",
+            lease_seconds=30,
+            limit=10,
+        )
+
+        job = self.row(created["job"]["job_id"])
+        intent = self.store._read(
+            lambda connection: dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+                    (created["intent"]["id"],),
+                ).fetchone()
+            )
+        )
+        self.assertEqual(counts["billing"], 1)
+        self.assertEqual(job["state"], "queued")
+        self.assertIsNone(job["worker_id"])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(len(ledger.deduct_calls), 1)
+
+    def test_service_created_job_reaches_queue_through_real_predebit_outbox(self):
+        from server.content_domains.ai_edit_v3.billing import (
+            LedgerResult,
+            LedgerTransaction,
+        )
+        from server.content_domains.ai_edit_v3.feature import (
+            CapabilityItem,
+            CapabilityReport,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_reconciliation_pass,
+        )
+        from server.content_domains.ai_edit_v3.service import (
+            CapacityDecision,
+            EditV3Service,
+        )
+
+        service_store = V3Store(
+            self.db.parent / "service-ai-edit-v3.db",
+            v2_db_path=self.v2,
+            environment="test",
+        )
+        part_names = (
+            "base_task",
+            "duration_tier",
+            "tts_ceiling",
+            "qwen_ceiling",
+            "image_ceiling",
+            "bgm_sfx_ceiling",
+            "render_complexity",
+            "one_repair_reserve",
+        )
+        parts = {
+            name: {
+                "ceiling_quantity": 100 if name == "tts_ceiling" else 1,
+                "min_rate": 1,
+                "max_rate": 2,
+                **({"unit_size": 100} if name == "tts_ceiling" else {}),
+            }
+            for name in part_names
+        }
+        service_store.insert_pricing_version(
+            "service-price-v1",
+            {"parts": parts},
+            status="published",
+            created_at=1,
+            published_at=2,
+        )
+
+        class Ids:
+            def __init__(self):
+                self.value = 0
+
+            def __call__(self, prefix):
+                self.value += 1
+                return f"{prefix}-service-{self.value}"
+
+        class Catalog:
+            def resolve_voice(self, owner, voice_id):
+                return {
+                    "voice_id": voice_id,
+                    "status": "ready",
+                    "version": "voice-v1",
+                }
+
+        class Capacity:
+            def check(self, request):
+                return CapacityDecision(True, 1, 1_024, None)
+
+        report = CapabilityReport(
+            items={
+                "common": CapabilityItem(
+                    "configured_and_wired", "capability_ready", "ready"
+                )
+            },
+            runtime_versions={"python": "3.12"},
+            allows_existing_reads=True,
+            accepts_uploads=True,
+            accepts_new_jobs=True,
+        )
+        service = EditV3Service(
+            service_store,
+            owner_hmac_secret=b"task-ten-service-secret",
+            enabled=True,
+            id_factory=Ids(),
+            source_catalog=Catalog(),
+            capacity_gate=Capacity(),
+            capability_report=report,
+        )
+        request = {
+            "input_type": "script_to_audio_video",
+            "tts_input": {"text": "hello", "voice_id": "voice-1"},
+            "ratio": "16:9",
+            "creation_mode": "ai_auto",
+            "material_asset_ids": [],
+        }
+        quote = service.quote("alice", request, now=1_000)
+        created = service.create_job(
+            "alice",
+            request,
+            quote["quote_id"],
+            "service-job-key",
+            now=1_001,
+        )
+        self.assertEqual(created["state"], "created_draft")
+
+        class Clock:
+            def now(self):
+                return 1.003
+
+        class Ledger:
+            def __init__(self):
+                self.calls = []
+
+            def deduct(self, owner, amount, transaction_key, reason):
+                self.calls.append(transaction_key)
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key,
+                        "deduct",
+                        owner,
+                        amount,
+                        100,
+                        1_002,
+                    ),
+                    None,
+                )
+
+            def refund(self, *args):
+                raise AssertionError("pre-debit integration must not refund")
+
+            def query_transaction(self, *args):
+                raise AssertionError("pending pre-debit must transmit first")
+
+        ledger = Ledger()
+        runtime = RuntimeDependencies(
+            store=service_store,
+            clock=Clock(),
+            points=ledger,
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(runtime, limit=10)
+
+        queued = service_store.get_job_for_owner("alice", created["job_id"])
+        self.assertEqual(counts["billing"], 1)
+        self.assertEqual(queued["state"], "queued")
+        self.assertEqual(queued["queued_at"], 1_002)
+        self.assertEqual(len(ledger.calls), 1)
+
+    def test_missing_processing_deadline_fails_without_running_attempt(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        class Supervisor:
+            def __init__(self):
+                self.terminated = []
+
+            def terminate_job(self, job_id):
+                self.terminated.append(job_id)
+
+        self.seed_job("job-missing-deadline", "generating_voice", deadline=None)
+        claim = self.store.claim_job(
+            "job-missing-deadline",
+            "worker-missing-deadline",
+            30,
+            100_000,
+            expected_states={"generating_voice"},
+        )
+        supervisor = Supervisor()
+        handler_calls = []
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=supervisor,
+            stage_handlers={
+                "generating_voice": lambda job, context: handler_calls.append(job)
+            },
+        )
+        error = None
+        result = None
+        try:
+            result = run_job(claim, runtime, db_path=self.db)
+        except Exception as exc:  # RED captures the current leaked TypeError.
+            error = exc
+
+        connection = self.store._connect()
+        try:
+            running = connection.execute(
+                """SELECT COUNT(*) FROM edit_v3_stage_attempts
+                   WHERE job_id=? AND status='running'""",
+                (claim.job_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIsNone(error)
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, "processing_deadline_missing")
+        self.assertEqual(running, 0)
+        self.assertEqual(handler_calls, [])
+        self.assertEqual(supervisor.terminated, [claim.job_id])
+        self.assertEqual(self.row(claim.job_id)["state"], "failed")
+
+        refund_claim = self.store.claim_job(
+            claim.job_id,
+            "worker-missing-deadline-refund",
+            30,
+            100_101,
+            expected_states={"failed"},
+        )
+        refund = run_job(refund_claim, runtime, db_path=self.db)
+        self.assertEqual(refund.state, "refunded")
+
+    def test_media_failure_creates_and_processes_one_full_refund(self):
+        from server.content_domains.ai_edit_v3.billing import (
+            LedgerResult,
+            LedgerTransaction,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_job,
+            run_reconciliation_pass,
+        )
+
+        class Clock:
+            def __init__(self):
+                self.value = 100.1
+
+            def now(self):
+                return self.value
+
+        class Ledger:
+            def __init__(self):
+                self.refund_calls = []
+
+            def deduct(self, owner, amount, transaction_key, reason):
+                raise AssertionError("already-preheld job must not debit")
+
+            def refund(self, owner, amount, transaction_key, reason):
+                self.refund_calls.append(
+                    (owner, amount, transaction_key, reason)
+                )
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key,
+                        "refund",
+                        owner,
+                        amount,
+                        100,
+                        100_103,
+                    ),
+                    None,
+                )
+
+            def query_transaction(self, owner, transaction_key):
+                raise AssertionError("pending refund must transmit before query")
+
+        class Supervisor:
+            def __init__(self):
+                self.terminated = []
+
+            def terminate_job(self, job_id):
+                self.terminated.append(job_id)
+
+        self.seed_job("job-full-refund", "queued")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-full-refund'"""
+            )
+        )
+        first = self.store.claim_job(
+            "job-full-refund",
+            "worker-media-failure",
+            30,
+            100_000,
+            expected_states={"queued"},
+        )
+        clock = Clock()
+        ledger = Ledger()
+        supervisor = Supervisor()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=clock,
+            points=ledger,
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=supervisor,
+            stage_handlers={"queued": lambda job, context: 1 / 0},
+        )
+
+        failed = run_job(first, runtime, db_path=self.db)
+        self.assertEqual(failed.state, "failed")
+        clock.value = 100.102
+        refund_claim = self.store.claim_job(
+            first.job_id,
+            "worker-refund-request",
+            30,
+            100_101,
+            expected_states={"failed"},
+        )
+        requested = run_job(refund_claim, runtime, db_path=self.db)
+        self.assertEqual(requested.state, "refund_pending")
+        clock.value = 100.103
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-refund-outbox",
+            lease_seconds=30,
+            limit=10,
+        )
+
+        job = self.row(first.job_id)
+        intents = self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_full'""",
+                    (first.job_id,),
+                )
+            )
+        )
+        self.assertEqual(counts["billing"], 1)
+        self.assertEqual(job["state"], "refunded")
+        self.assertEqual(job["confirmed_refunded_total"], 1)
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0]["status"], "completed")
+        self.assertEqual(len(ledger.refund_calls), 1)
+        self.assertEqual(supervisor.terminated, [first.job_id])
+
+    def test_zero_prehold_full_refund_converges_without_outbox_poll(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        self.seed_job("job-zero-refund", "failed")
+        claim = self.store.claim_job(
+            "job-zero-refund",
+            "worker-zero-refund",
+            30,
+            100_000,
+            expected_states={"failed"},
+        )
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        result = run_job(claim, runtime, db_path=self.db)
+
+        intent = self.store._read(
+            lambda connection: dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_full'""",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+        )
+        self.assertEqual(result.state, "refunded")
+        self.assertEqual(self.row(claim.job_id)["state"], "refunded")
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["request_amount"], 0)
+
+    def test_settling_without_durable_actual_charge_stays_fail_closed(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        self.seed_job("job-settling-no-charge", "settling")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-settling-no-charge'"""
+            )
+        )
+        claim = self.store.claim_job(
+            "job-settling-no-charge",
+            "worker-settling",
+            30,
+            100_000,
+            expected_states={"settling"},
+        )
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        result = run_job(claim, runtime, db_path=self.db)
+
+        refund_count = self.store._read(
+            lambda connection: connection.execute(
+                """SELECT COUNT(*) FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation='refund_delta'""",
+                (claim.job_id,),
+            ).fetchone()[0]
+        )
+        self.assertEqual(result.state, "settling")
+        self.assertEqual(result.status, "safety_pending")
+        self.assertEqual(result.error_code, "actual_charge_unavailable")
+        self.assertEqual(refund_count, 0)
+        self.assertIsNone(self.row(claim.job_id)["worker_id"])
+
+    def test_pending_publication_is_advanced_before_asset_reconciliation(self):
+        from server.content_domains.ai_edit_v3.delivery import (
+            create_publish_intent,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_reconciliation_pass,
+        )
+        from server.content_domains.video_asset_publish import (
+            PublicationDecision,
+        )
+
+        class Clock:
+            def now(self):
+                return 100.01
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def register_generation(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("register_generation")
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(
+                self,
+                mode,
+                source_job_id,
+                owner,
+                object_key,
+                generation,
+                idempotency_key,
+            ):
+                self.calls.append("prepare_hidden")
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("commit_publish")
+                return PublicationDecision("publish_won", generation, "asset-42")
+
+            def cancel_publish(self, *args):
+                raise AssertionError("cancel must not run")
+
+            def query_decision(self, *args):
+                raise AssertionError("known pending work must advance before query")
+
+        self.seed_publish_job("job-publish-pending")
+        setup_claim = self.store.claim_job(
+            "job-publish-pending",
+            "worker-publish-setup",
+            30,
+            100_000,
+            expected_states={"publishing"},
+        )
+        create_publish_intent(
+            setup_claim,
+            metadata_sha256="7" * 64,
+            now=100_001,
+            store=self.store,
+        )
+        self.store.begin_publish_operation(
+            setup_claim, "register_generation", now_ms=100_002
+        )
+        self.store.record_publish_operation(
+            setup_claim,
+            "register_generation",
+            "pending",
+            {
+                "outcome": "definitive_not_accepted",
+                "reason_code": "definitive_not_accepted",
+            },
+            now_ms=100_003,
+        )
+        self.store.release_lease(setup_claim, 100_004)
+        publisher = Publisher()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-publish-pass",
+            lease_seconds=30,
+            limit=10,
+        )
+
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(self.row("job-publish-pending")["state"], "completed")
+        self.assertEqual(
+            self.row("job-publish-pending")["asset_id"], "asset-42"
+        )
+        self.assertEqual(
+            publisher.calls,
+            ["register_generation", "prepare_hidden", "commit_publish"],
+        )
+
+    def test_unknown_publication_uses_authoritative_decision_reconciliation(self):
+        from server.content_domains.ai_edit_v3.delivery import advance_publish
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_reconciliation_pass,
+        )
+        from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+        from server.content_domains.video_asset_publish import (
+            PublicationDecision,
+        )
+
+        class Clock:
+            def now(self):
+                return 100.02
+
+        class Publisher:
+            def __init__(self):
+                self.decision = None
+                self.calls = []
+
+            def register_generation(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("register_generation")
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(
+                self,
+                mode,
+                source_job_id,
+                owner,
+                object_key,
+                generation,
+                idempotency_key,
+            ):
+                self.calls.append("prepare_hidden")
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("commit_publish")
+                self.decision = PublicationDecision(
+                    "publish_won", generation, "asset-unknown-recovered"
+                )
+                raise SubmissionUnknown("response_lost")
+
+            def cancel_publish(self, *args):
+                raise AssertionError("cancel must not run")
+
+            def query_decision(self, mode, source_job_id, idempotency_key):
+                self.calls.append("query_decision")
+                return self.decision
+
+        self.seed_publish_job("job-publish-unknown")
+        setup_claim = self.store.claim_job(
+            "job-publish-unknown",
+            "worker-publish-unknown-setup",
+            30,
+            100_000,
+            expected_states={"publishing"},
+        )
+        publisher = Publisher()
+        progress = advance_publish(
+            setup_claim,
+            metadata_sha256="8" * 64,
+            now=100_001,
+            store=self.store,
+            publisher=publisher,
+        )
+        self.assertEqual(progress.next_state, "asset_decision_reconciling")
+        self.assertTrue(
+            self.store.transition_leased(
+                setup_claim,
+                {"publishing"},
+                progress.next_state,
+                100_002,
+                lease_seconds=30,
+            )
+        )
+        self.store.release_lease(setup_claim, 100_003)
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-publish-unknown-pass",
+            lease_seconds=30,
+            limit=10,
+        )
+
+        job = self.row("job-publish-unknown")
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["asset_id"], "asset-unknown-recovered")
+        self.assertEqual(publisher.calls.count("commit_publish"), 1)
+        self.assertEqual(publisher.calls.count("query_decision"), 1)
+
+    def test_staging_checkpoint_crash_replay_converges_through_settlement_and_publish(self):
+        from server.content_domains.ai_edit_v3.billing import (
+            LedgerResult,
+            LedgerTransaction,
+        )
+        from server.content_domains.ai_edit_v3.pipeline import (
+            run_job,
+            run_reconciliation_pass,
+        )
+        from server.content_domains.video_asset_publish import (
+            PublicationDecision,
+        )
+
+        class Clock:
+            def __init__(self):
+                self.value = 100.1
+
+            def now(self):
+                return self.value
+
+        class Ledger:
+            def __init__(self):
+                self.refund_calls = []
+
+            def deduct(self, *args):
+                raise AssertionError("settlement must not debit")
+
+            def refund(self, owner, amount, transaction_key, reason):
+                self.refund_calls.append(transaction_key)
+                return LedgerResult(
+                    True,
+                    LedgerTransaction(
+                        transaction_key,
+                        "refund",
+                        owner,
+                        amount,
+                        100,
+                        100_301,
+                    ),
+                    None,
+                )
+
+            def query_transaction(self, *args):
+                raise AssertionError("pending settlement refund transmits first")
+
+        class Publisher:
+            def __init__(self):
+                self.calls = []
+
+            def register_generation(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("register_generation")
+                return PublicationDecision("accepted", generation, None)
+
+            def prepare_hidden(
+                self,
+                mode,
+                source_job_id,
+                owner,
+                object_key,
+                generation,
+                idempotency_key,
+            ):
+                self.calls.append("prepare_hidden")
+                return PublicationDecision("accepted", generation, None)
+
+            def commit_publish(
+                self, mode, source_job_id, generation, idempotency_key
+            ):
+                self.calls.append("commit_publish")
+                return PublicationDecision(
+                    "publish_won", generation, "asset-staging-replay"
+                )
+
+            def cancel_publish(self, *args):
+                raise AssertionError("successful staging path must not cancel")
+
+            def query_decision(self, *args):
+                raise AssertionError("known publication must not query")
+
+        class Supervisor:
+            def __init__(self):
+                self.terminated = []
+
+            def terminate_job(self, job_id):
+                self.terminated.append(job_id)
+
+        self.seed_job("job-staging-replay", "staging_delivery")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-staging-replay'"""
+            )
+        )
+        first = self.store.claim_job(
+            "job-staging-replay",
+            "worker-staging-first",
+            30,
+            100_000,
+            expected_states={"staging_delivery"},
+        )
+        clock = Clock()
+        ledger = Ledger()
+        publisher = Publisher()
+        supervisor = Supervisor()
+        handler_calls = []
+        checkpoint = {
+            "actual_charge": 0,
+            "metadata_sha256": "9" * 64,
+            "delivery_object_key": (
+                "test/ai-edit-v3/owner/job-staging-replay/delivery/final.mp4"
+            ),
+        }
+
+        def staging_handler(job, context):
+            handler_calls.append(context.claim.fencing_token)
+            return StageOutcome("settling", checkpoint, "0" * 64)
+
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=clock,
+            points=ledger,
+            assets=publisher,
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=supervisor,
+            stage_handlers={"staging_delivery": staging_handler},
+        )
+        transition = self.store.transition_leased
+        interrupted = False
+
+        def fail_once(claim, expected, target, now_ms, *, lease_seconds):
+            nonlocal interrupted
+            if not interrupted and target == "settling":
+                interrupted = True
+                return False
+            return transition(
+                claim, expected, target, now_ms, lease_seconds=lease_seconds
+            )
+
+        self.store.transition_leased = fail_once
+        with self.assertRaises(LeaseLost):
+            run_job(first, runtime, db_path=self.db)
+        self.store.transition_leased = transition
+        clock.value = 100.3
+        second = self.store.claim_job(
+            first.job_id,
+            "worker-staging-replay",
+            30,
+            100_200,
+            expected_states={"staging_delivery"},
+        )
+
+        replay = run_job(second, runtime, db_path=self.db)
+        counts = run_reconciliation_pass(
+            runtime,
+            worker_id="worker-staging-converge",
+            lease_seconds=30,
+            limit=20,
+        )
+
+        job = self.row(first.job_id)
+        checkpoint_count, running_count, delta_count = self.store._read(
+            lambda connection: (
+                connection.execute(
+                    """SELECT COUNT(*) FROM edit_v3_checkpoints
+                       WHERE job_id=? AND stage='staging_delivery'""",
+                    (first.job_id,),
+                ).fetchone()[0],
+                connection.execute(
+                    """SELECT COUNT(*) FROM edit_v3_stage_attempts
+                       WHERE job_id=? AND status='running'""",
+                    (first.job_id,),
+                ).fetchone()[0],
+                connection.execute(
+                    """SELECT COUNT(*) FROM edit_v3_billing_intents
+                       WHERE job_id=? AND operation='refund_delta'""",
+                    (first.job_id,),
+                ).fetchone()[0],
+            )
+        )
+        self.assertIn(replay.state, {"settling", "publishing"})
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["asset_id"], "asset-staging-replay")
+        self.assertEqual(job["delivery_object_key"], checkpoint["delivery_object_key"])
+        self.assertEqual(handler_calls, [first.fencing_token])
+        self.assertEqual(checkpoint_count, 1)
+        self.assertEqual(running_count, 0)
+        self.assertEqual(delta_count, 1)
+        self.assertEqual(len(ledger.refund_calls), 1)
+        self.assertEqual(counts["billing"], 1)
+        self.assertEqual(counts["assets"], 1)
+        self.assertEqual(
+            publisher.calls,
+            ["register_generation", "prepare_hidden", "commit_publish"],
+        )
+
+    def test_post_transition_settlement_error_reports_real_safety_state(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        class Supervisor:
+            def __init__(self):
+                self.terminated = []
+
+            def terminate_job(self, job_id):
+                self.terminated.append(job_id)
+
+        self.seed_job("job-settlement-error", "staging_delivery")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id='job-settlement-error'"""
+            )
+        )
+        claim = self.store.claim_job(
+            "job-settlement-error",
+            "worker-settlement-error",
+            30,
+            100_000,
+            expected_states={"staging_delivery"},
+        )
+        supervisor = Supervisor()
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=supervisor,
+            stage_handlers={
+                "staging_delivery": lambda job, context: StageOutcome(
+                    "settling",
+                    {
+                        "actual_charge": 0,
+                        "metadata_sha256": "a" * 64,
+                        "delivery_object_key": (
+                            "test/ai-edit-v3/owner/job-settlement-error/"
+                            "delivery/final.mp4"
+                        ),
+                    },
+                    "0" * 64,
+                )
+            },
+        )
+
+        with patch(
+            "server.content_domains.ai_edit_v3.pipeline.request_delta_refund",
+            side_effect=RuntimeError("injected settlement failure"),
+        ):
+            result = run_job(claim, runtime, db_path=self.db)
+
+        attempt = self.store._read(
+            lambda connection: dict(
+                connection.execute(
+                    """SELECT * FROM edit_v3_stage_attempts
+                       WHERE job_id=? AND stage='staging_delivery'""",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+        )
+        self.assertEqual(result.state, "settling")
+        self.assertEqual(result.status, "safety_pending")
+        self.assertEqual(result.error_code, "settlement_failed")
+        self.assertEqual(self.row(claim.job_id)["state"], "settling")
+        self.assertEqual(attempt["status"], "completed")
+        self.assertEqual(supervisor.terminated, [])
+
+    def test_delivery_key_freeze_rejects_cross_scope_and_path_syntax(self):
+        invalid_keys = (
+            "production/ai-edit-v3/owner/job/delivery/final.mp4",
+            "test/ai-edit-v3/../other/final.mp4",
+            "test/ai-edit-v3/owner\\job\\final.mp4",
+            "test/ai-edit-v3/owner/job/final.mp4?token=opaque",
+            "test/ai-edit-v3/owner/job/final.mp4#fragment",
+        )
+        for index, object_key in enumerate(invalid_keys):
+            with self.subTest(object_key=object_key):
+                job_id = f"job-invalid-delivery-key-{index}"
+                self.seed_job(job_id, "staging_delivery")
+                claim = self.store.claim_job(
+                    job_id,
+                    f"worker-invalid-delivery-key-{index}",
+                    30,
+                    100_000,
+                    expected_states={"staging_delivery"},
+                )
+                with self.assertRaises(StoreConfigurationError):
+                    self.store.freeze_delivery_object_key(
+                        claim, object_key, 100_001
+                    )
+                self.assertIsNone(self.row(job_id)["delivery_object_key"])
 
 
 if __name__ == "__main__":
