@@ -3353,6 +3353,64 @@ def _bind_provider_result_tx(
     )
 
 
+def _billing_row_for_claim_tx(
+    connection: sqlite3.Connection,
+    intent_id: str,
+    claim: LeaseClaim,
+    now_ms: int,
+) -> sqlite3.Row:
+    claim = _require_claim(claim)
+    intent_id = _require_nonblank("intent_id", intent_id)
+    now_ms = _require_now_ms(now_ms)
+    row = connection.execute(
+        """SELECT b.*,
+                  j.state AS job_state,
+                  j.reconciliation_reason AS job_reconciliation_reason,
+                  j.resume_state AS job_resume_state,
+                  j.confirmed_preheld_total AS job_confirmed_preheld_total,
+                  j.confirmed_refunded_total AS job_confirmed_refunded_total,
+                  j.queued_at AS job_queued_at,
+                  j.processing_deadline_at AS job_processing_deadline_at
+           FROM edit_v3_billing_intents AS b
+           JOIN edit_v3_jobs AS j ON j.job_id=b.job_id
+           WHERE b.id=? AND j.job_id=? AND j.worker_id=?
+             AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            intent_id,
+            claim.job_id,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if row is not None:
+        return row
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    raise StoreConflictError(
+        "billing_intent_not_found",
+        "billing intent does not belong to the claimed job",
+    )
+
+
+def _billing_result(row: sqlite3.Row) -> dict[str, dict[str, Any]]:
+    intent = {
+        name: row[name]
+        for name in _SCHEMA_TABLE_COLUMNS["edit_v3_billing_intents"]
+    }
+    job = {
+        "job_id": row["job_id"],
+        "state": row["job_state"],
+        "reconciliation_reason": row["job_reconciliation_reason"],
+        "resume_state": row["job_resume_state"],
+        "confirmed_preheld_total": row["job_confirmed_preheld_total"],
+        "confirmed_refunded_total": row["job_confirmed_refunded_total"],
+        "queued_at": row["job_queued_at"],
+        "processing_deadline_at": row["job_processing_deadline_at"],
+    }
+    return {"intent": intent, "job": job}
+
+
 class V3Store:
     """Only typed, parameterized operations may cross the V3 SQL boundary."""
 
@@ -3696,6 +3754,30 @@ class V3Store:
             )
         )
 
+    def list_published_pricing_versions(self) -> list[dict[str, Any]]:
+        return self._read(
+            lambda connection: [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_pricing_versions
+                       WHERE status=? ORDER BY published_at DESC,version DESC""",
+                    ("published",),
+                )
+            ]
+        )
+
+    def list_template_versions(self, template_id: str) -> list[dict[str, Any]]:
+        return self._read(
+            lambda connection: [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_template_versions
+                       WHERE template_id=? ORDER BY published_at DESC,version DESC""",
+                    (template_id,),
+                )
+            ]
+        )
+
     def insert_quote(
         self,
         owner_id: str,
@@ -3797,6 +3879,942 @@ class V3Store:
                     (environment, owner_id, quote_id),
                 ).fetchone()
             )
+        )
+
+    def create_job_with_predebit(
+        self,
+        owner_id: str,
+        job_id: str,
+        quote_id: str,
+        idempotency_key: str,
+        normalized_request: Mapping[str, Any],
+        *,
+        now_ms: int,
+        intent_id: str,
+        fail_after_job: Exception | None = None,
+        environment: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        _require_integer("now_ms", now_ms)
+        environment = self._environment(environment)
+        normalized_json = _json_text(normalized_request)
+        request_sha256 = request_fingerprint(normalized_request)
+
+        def conflict(code: str, message: str) -> StoreConflictError:
+            return StoreConflictError(code, message)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            existing_job = connection.execute(
+                """SELECT * FROM edit_v3_jobs
+                   WHERE environment=? AND owner_id=? AND idempotency_key=?""",
+                (environment, owner_id, idempotency_key),
+            ).fetchone()
+            if existing_job is not None:
+                if (
+                    existing_job["request_sha256"] != request_sha256
+                    or existing_job["normalized_request_json"] != normalized_json
+                    or existing_job["quote_id"] != quote_id
+                ):
+                    raise conflict(
+                        "idempotency_conflict",
+                        "idempotency key was reused with a divergent request or quote",
+                    )
+                existing_intent = connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE environment=? AND owner_id=? AND job_id=?
+                         AND operation='pre_debit'""",
+                    (environment, owner_id, existing_job["job_id"]),
+                ).fetchone()
+                if existing_intent is None:
+                    raise conflict(
+                        "billing_intent_missing",
+                        "replayed job is missing its atomic pre-debit intent",
+                    )
+                expected_key = f"ai-edit-v3:{existing_job['job_id']}:pre_debit"
+                replay_quote = connection.execute(
+                    """SELECT max_points FROM edit_v3_quotes
+                       WHERE environment=? AND owner_id=? AND quote_id=?""",
+                    (environment, owner_id, quote_id),
+                ).fetchone()
+                if (
+                    replay_quote is None
+                    or existing_intent["external_idempotency_key"] != expected_key
+                    or existing_intent["request_sha256"] != request_sha256
+                    or existing_intent["refund_target_total"] != 0
+                    or existing_intent["request_amount"] != replay_quote["max_points"]
+                ):
+                    raise conflict(
+                        "billing_intent_conflict",
+                        "replayed pre-debit intent violates immutable fields",
+                    )
+                return {"job": dict(existing_job), "intent": dict(existing_intent)}
+
+            quote_row = connection.execute(
+                """SELECT * FROM edit_v3_quotes
+                   WHERE environment=? AND owner_id=? AND quote_id=?""",
+                (environment, owner_id, quote_id),
+            ).fetchone()
+            if quote_row is None:
+                raise conflict("quote_not_found", "quote does not belong to this owner")
+            if now_ms >= quote_row["expires_at"]:
+                raise conflict("quote_expired", "quote has expired")
+            if (
+                quote_row["request_sha256"] != request_sha256
+                or quote_row["normalized_request_json"] != normalized_json
+            ):
+                raise conflict("quote_request_mismatch", "request does not match frozen quote")
+            pricing_row = connection.execute(
+                "SELECT 1 FROM edit_v3_pricing_versions WHERE version=?",
+                (quote_row["pricing_version"],),
+            ).fetchone()
+            if pricing_row is None:
+                raise conflict("quote_pricing_missing", "frozen pricing version is absent")
+            if quote_row["template_id"] is not None:
+                template_row = connection.execute(
+                    """SELECT status FROM edit_v3_template_versions
+                       WHERE template_id=? AND version=?""",
+                    (quote_row["template_id"], quote_row["template_version"]),
+                ).fetchone()
+                if template_row is None or template_row["status"] != "published":
+                    raise conflict(
+                        "quote_template_unpublished",
+                        "frozen template version is absent or unpublished",
+                    )
+
+            external_key = f"ai-edit-v3:{job_id}:pre_debit"
+            try:
+                connection.execute(
+                    """INSERT INTO edit_v3_jobs(
+                           job_id,environment,owner_id,state,normalized_request_json,
+                           request_sha256,quote_id,idempotency_key,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        job_id,
+                        environment,
+                        owner_id,
+                        "created_draft",
+                        normalized_json,
+                        request_sha256,
+                        quote_id,
+                        idempotency_key,
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+                if fail_after_job is not None:
+                    raise fail_after_job
+                connection.execute(
+                    """INSERT INTO edit_v3_billing_intents(
+                           id,environment,owner_id,job_id,operation,
+                           external_idempotency_key,request_sha256,
+                           refund_target_total,request_amount,status,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        intent_id,
+                        environment,
+                        owner_id,
+                        job_id,
+                        "pre_debit",
+                        external_key,
+                        request_sha256,
+                        0,
+                        quote_row["max_points"],
+                        "pending",
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise conflict(
+                    "billing_create_invalid",
+                    "job and pre-debit intent violate frozen constraints",
+                ) from exc
+            return {
+                "job": dict(
+                    connection.execute(
+                        "SELECT * FROM edit_v3_jobs WHERE job_id=?", (job_id,)
+                    ).fetchone()
+                ),
+                "intent": dict(
+                    connection.execute(
+                        "SELECT * FROM edit_v3_billing_intents WHERE id=?", (intent_id,)
+                    ).fetchone()
+                ),
+            }
+
+        return self._write(write)
+
+    def get_billing_for_claim(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        return self._read(
+            lambda connection: _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+        )
+
+    def begin_billing_transmission(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["status"] not in {"pending", "retryable_absent"}:
+                return _billing_result(row)
+            if row["operation"] == "pre_debit":
+                if row["job_state"] == "created_draft":
+                    if not _transition_leased_tx(
+                        connection,
+                        claim,
+                        {"created_draft"},
+                        "preholding",
+                        now_ms,
+                        1,
+                    ):
+                        raise _lease_lost(claim)
+                elif row["job_state"] != "preholding":
+                    raise StoreConflictError(
+                        "billing_state_conflict",
+                        "pre-debit can transmit only while preholding",
+                    )
+            else:
+                expected_state = (
+                    "settling"
+                    if row["operation"] == "refund_delta"
+                    else "refund_pending"
+                )
+                if row["job_state"] != expected_state:
+                    raise StoreConflictError(
+                        "billing_state_conflict",
+                        "refund can transmit only from its frozen resume state",
+                    )
+            updated = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET status='unknown',first_unknown_at=?,last_checked_at=NULL,
+                       authority_evidence_json=NULL,updated_at=?
+                   WHERE id=? AND status IN ('pending','retryable_absent')
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    now_ms,
+                    now_ms,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "billing intent could not enter its transmission window",
+                )
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def create_refund_intent(
+        self,
+        claim: LeaseClaim,
+        operation: str,
+        refund_target_total: int,
+        *,
+        intent_id: str,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        claim = _require_claim(claim)
+        if operation not in {"refund_delta", "refund_full"}:
+            raise _configuration_error(
+                "billing_operation_invalid", "refund operation is invalid"
+            )
+        _require_integer("refund_target_total", refund_target_total)
+        _require_integer("now_ms", now_ms)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            job = connection.execute(
+                """SELECT * FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if job is None:
+                raise _lease_lost(claim)
+            expected_state = "settling" if operation == "refund_delta" else "refund_pending"
+            existing = connection.execute(
+                """SELECT * FROM edit_v3_billing_intents
+                   WHERE environment=? AND owner_id=? AND job_id=? AND operation=?""",
+                (job["environment"], job["owner_id"], claim.job_id, operation),
+            ).fetchone()
+            if existing is not None:
+                if existing["refund_target_total"] != refund_target_total:
+                    raise StoreConflictError(
+                        "billing_intent_conflict",
+                        "refund operation was reused with a divergent cumulative target",
+                    )
+                return {
+                    "intent": dict(existing),
+                    "job": {
+                        "job_id": job["job_id"],
+                        "state": job["state"],
+                        "reconciliation_reason": job["reconciliation_reason"],
+                        "resume_state": job["resume_state"],
+                        "confirmed_preheld_total": job["confirmed_preheld_total"],
+                        "confirmed_refunded_total": job["confirmed_refunded_total"],
+                        "queued_at": job["queued_at"],
+                        "processing_deadline_at": job["processing_deadline_at"],
+                    },
+                }
+            unresolved = connection.execute(
+                """SELECT 1 FROM edit_v3_billing_intents
+                   WHERE job_id=? AND operation IN ('refund_delta','refund_full')
+                     AND status IN ('pending','retryable_absent','unknown','reconciliation_pending')
+                   LIMIT 1""",
+                (claim.job_id,),
+            ).fetchone()
+            if unresolved is not None:
+                raise StoreConflictError(
+                    "overlapping_refund_intent",
+                    "another cumulative refund remains unresolved",
+                )
+            if job["state"] != expected_state:
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "refund intent is invalid in the current job state",
+                )
+            preheld = job["confirmed_preheld_total"]
+            refunded = job["confirmed_refunded_total"]
+            if not refunded <= refund_target_total <= preheld:
+                raise StoreConflictError(
+                    "refund_target_invalid",
+                    "refund target must stay within confirmed cumulative totals",
+                )
+            request_amount = refund_target_total - refunded
+            external_key = f"ai-edit-v3:{claim.job_id}:{operation}"
+            status = "completed" if request_amount == 0 else "pending"
+            completed_at = now_ms if request_amount == 0 else None
+            evidence_json = _json_text({"zero_amount": True}) if request_amount == 0 else None
+            reason = "settlement" if operation == "refund_delta" else "refund"
+            resume_state = expected_state
+            inserted = connection.execute(
+                """INSERT INTO edit_v3_billing_intents(
+                       id,environment,owner_id,job_id,operation,
+                       external_idempotency_key,request_sha256,
+                       refund_target_total,request_amount,status,
+                       authority_evidence_json,reason,resume_state,
+                       created_at,updated_at,completed_at
+                   )
+                   SELECT ?,j.environment,j.owner_id,j.job_id,?,?,?,?,?,?,?,?,?,?,?,?
+                   FROM edit_v3_jobs AS j
+                   WHERE j.job_id=? AND j.worker_id=? AND j.fencing_token=?
+                     AND j.lease_until>? AND j.state=?
+                     AND j.confirmed_refunded_total<=?
+                     AND ?<=j.confirmed_preheld_total""",
+                (
+                    intent_id,
+                    operation,
+                    external_key,
+                    job["request_sha256"],
+                    refund_target_total,
+                    request_amount,
+                    status,
+                    evidence_json,
+                    reason,
+                    resume_state,
+                    now_ms,
+                    now_ms,
+                    completed_at,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                    expected_state,
+                    refund_target_total,
+                    refund_target_total,
+                ),
+            )
+            if inserted.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "refund_target_invalid",
+                    "refund target changed before intent creation",
+                )
+            intent = dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_billing_intents WHERE id=?", (intent_id,)
+                ).fetchone()
+            )
+            return {
+                "intent": intent,
+                "job": {
+                    "job_id": job["job_id"],
+                    "state": job["state"],
+                    "reconciliation_reason": job["reconciliation_reason"],
+                    "resume_state": job["resume_state"],
+                    "confirmed_preheld_total": preheld,
+                    "confirmed_refunded_total": refunded,
+                    "queued_at": job["queued_at"],
+                    "processing_deadline_at": job["processing_deadline_at"],
+                },
+            }
+
+        try:
+            return self._write(write)
+        except sqlite3.IntegrityError as exc:
+            raise StoreConflictError(
+                "billing_intent_conflict",
+                "refund intent violates frozen uniqueness or cumulative constraints",
+            ) from exc
+
+    def get_job_billing_for_claim(
+        self,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        claim = _require_claim(claim)
+        now_ms = _require_now_ms(now_ms)
+
+        def read(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                """SELECT job_id,state,confirmed_preheld_total,
+                          confirmed_refunded_total,request_sha256
+                   FROM edit_v3_jobs
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>?""",
+                (
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            ).fetchone()
+            if row is None:
+                raise _lease_lost(claim)
+            return dict(row)
+
+        return self._read(read)
+
+    def mark_billing_reconciling(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["operation"] == "pre_debit":
+                reason = "prehold"
+                resume_state = "preholding"
+            elif row["operation"] == "refund_delta":
+                reason = "settlement"
+                resume_state = "settling"
+            else:
+                reason = "refund"
+                resume_state = "refund_pending"
+            if row["job_state"] != "billing_reconciling":
+                if row["job_state"] != resume_state:
+                    raise StoreConflictError(
+                        "billing_state_conflict",
+                        "job is outside the intent reconciliation source state",
+                    )
+                if not _transition_leased_tx(
+                    connection,
+                    claim,
+                    {resume_state},
+                    "billing_reconciling",
+                    now_ms,
+                    1,
+                ):
+                    raise _lease_lost(claim)
+            elif (
+                row["job_reconciliation_reason"] not in {None, reason}
+                or row["job_resume_state"] not in {None, resume_state}
+            ):
+                raise StoreConflictError(
+                    "billing_context_conflict",
+                    "job reconciliation context conflicts with its intent",
+                )
+            updated = connection.execute(
+                """UPDATE edit_v3_jobs
+                   SET reconciliation_reason=?,resume_state=?,updated_at=?
+                   WHERE job_id=? AND worker_id=? AND fencing_token=?
+                     AND lease_until>? AND state='billing_reconciling'""",
+                (
+                    reason,
+                    resume_state,
+                    now_ms,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise _lease_lost(claim)
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def confirm_predebit(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        *,
+        authority_created_at: int,
+        processing_deadline_at: int,
+        authority_evidence: Mapping[str, Any],
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        _require_integer("authority_created_at", authority_created_at)
+        _require_integer("processing_deadline_at", processing_deadline_at)
+        evidence_json = _json_text(authority_evidence)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["operation"] != "pre_debit":
+                raise StoreConflictError(
+                    "billing_operation_conflict",
+                    "pre-debit confirmation requires a pre-debit intent",
+                )
+            amount = row["request_amount"]
+            if row["status"] == "completed":
+                if row["authority_evidence_json"] != evidence_json:
+                    raise StoreConflictError(
+                        "billing_authority_conflict",
+                        "completed pre-debit authority is immutable",
+                    )
+                return _billing_result(row)
+            source_state = row["job_state"]
+            if source_state in {"preholding", "billing_reconciling"}:
+                target_state = "queued"
+            elif source_state == "failed_reconciliation_pending":
+                target_state = "refund_pending"
+            else:
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "pre-debit confirmation is invalid in the current job state",
+                )
+            if not _transition_leased_tx(
+                connection,
+                claim,
+                {source_state},
+                target_state,
+                now_ms,
+                1,
+            ):
+                raise _lease_lost(claim)
+            job_update = connection.execute(
+                """UPDATE edit_v3_jobs
+                   SET confirmed_preheld_total=?,queued_at=COALESCE(queued_at,?),
+                       processing_deadline_at=COALESCE(processing_deadline_at,?),
+                       reconciliation_reason=NULL,resume_state=NULL,updated_at=?
+                   WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                     AND confirmed_preheld_total IN (0,?)
+                     AND (queued_at IS NULL OR queued_at=?)
+                     AND (processing_deadline_at IS NULL OR processing_deadline_at=?)""",
+                (
+                    amount,
+                    authority_created_at,
+                    processing_deadline_at,
+                    now_ms,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                    amount,
+                    authority_created_at,
+                    processing_deadline_at,
+                ),
+            )
+            if job_update.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "predebit_total_conflict",
+                    "confirmed pre-debit totals or deadline conflict",
+                )
+            intent_update = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET status='completed',last_checked_at=?,
+                       authority_evidence_json=?,updated_at=?,completed_at=?
+                   WHERE id=? AND status!='completed'
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    now_ms,
+                    evidence_json,
+                    now_ms,
+                    now_ms,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if intent_update.rowcount != 1:
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "pre-debit intent could not be confirmed",
+                )
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def confirm_refund(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        *,
+        authority_evidence: Mapping[str, Any],
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        evidence_json = _json_text(authority_evidence)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["operation"] not in {"refund_delta", "refund_full"}:
+                raise StoreConflictError(
+                    "billing_operation_conflict",
+                    "refund confirmation requires a refund intent",
+                )
+            if row["status"] == "completed":
+                if row["authority_evidence_json"] != evidence_json:
+                    raise StoreConflictError(
+                        "billing_authority_conflict",
+                        "completed refund authority is immutable",
+                    )
+                return _billing_result(row)
+            refunded = row["job_confirmed_refunded_total"]
+            target = row["refund_target_total"]
+            amount = row["request_amount"]
+            preheld = row["job_confirmed_preheld_total"]
+            if refunded + amount != target or not 0 <= target <= preheld:
+                raise StoreConflictError(
+                    "refund_total_conflict",
+                    "refund response would violate the cumulative target",
+                )
+            job_update = connection.execute(
+                """UPDATE edit_v3_jobs
+                   SET confirmed_refunded_total=?,updated_at=?
+                   WHERE job_id=? AND worker_id=? AND fencing_token=? AND lease_until>?
+                     AND confirmed_refunded_total=?
+                     AND confirmed_preheld_total>=?""",
+                (
+                    target,
+                    now_ms,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                    refunded,
+                    target,
+                ),
+            )
+            if job_update.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "refund_total_conflict",
+                    "cumulative refunded total changed before confirmation",
+                )
+            intent_update = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET status='completed',last_checked_at=?,
+                       authority_evidence_json=?,updated_at=?,completed_at=?
+                   WHERE id=? AND status!='completed'
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    now_ms,
+                    evidence_json,
+                    now_ms,
+                    now_ms,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if intent_update.rowcount != 1:
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "refund intent could not be confirmed",
+                )
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def record_billing_unknown(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        *,
+        authority_evidence: Mapping[str, Any],
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        evidence_json = _json_text(authority_evidence)
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            updated = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET last_checked_at=?,authority_evidence_json=?,updated_at=?
+                   WHERE id=? AND status IN ('unknown','reconciliation_pending')
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    now_ms,
+                    evidence_json,
+                    now_ms,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if updated.rowcount != 1:
+                if not _lease_owned_tx(connection, claim, now_ms):
+                    raise _lease_lost(claim)
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "billing intent is not in an unknown state",
+                )
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def mark_billing_authority_absent(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        *,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        evidence_json = _json_text({"authoritative": True, "transaction": None})
+
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["operation"] == "pre_debit":
+                resume_state = "preholding"
+                terminal_absence = True
+            elif row["operation"] == "refund_delta":
+                resume_state = "settling"
+                terminal_absence = False
+            else:
+                resume_state = "refund_pending"
+                terminal_absence = False
+            if row["job_state"] == resume_state:
+                status = "retryable_absent"
+                completed_at = None
+                target_state = None
+            elif row["job_state"] == "billing_reconciling":
+                status = "absent" if terminal_absence else "retryable_absent"
+                completed_at = now_ms if terminal_absence else None
+                target_state = "prehold_absent" if terminal_absence else resume_state
+            else:
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "billing absence is invalid in the current job state",
+                )
+            intent_update = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET status=?,first_unknown_at=?,last_checked_at=?,
+                       authority_evidence_json=?,updated_at=?,completed_at=?
+                   WHERE id=? AND status IN ('unknown','reconciliation_pending')
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    status,
+                    row["first_unknown_at"] if target_state == "prehold_absent" else None,
+                    now_ms,
+                    evidence_json,
+                    now_ms,
+                    completed_at,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if intent_update.rowcount != 1:
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "pre-debit absence could not be recorded",
+                )
+            if target_state is not None and not _transition_leased_tx(
+                connection,
+                claim,
+                {"billing_reconciling"},
+                target_state,
+                now_ms,
+                1,
+            ):
+                raise _lease_lost(claim)
+            if target_state == "prehold_absent":
+                return {
+                    "intent": dict(
+                        connection.execute(
+                            "SELECT * FROM edit_v3_billing_intents WHERE id=?",
+                            (intent_id,),
+                        ).fetchone()
+                    ),
+                    "job": {
+                        "job_id": claim.job_id,
+                        "state": target_state,
+                        "reconciliation_reason": None,
+                        "resume_state": None,
+                        "confirmed_preheld_total": 0,
+                        "confirmed_refunded_total": 0,
+                        "queued_at": None,
+                        "processing_deadline_at": None,
+                    },
+                }
+            return _billing_result(
+                _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            )
+
+        return self._write(write)
+
+    def timeout_billing_reconciliation(
+        self,
+        intent_id: str,
+        claim: LeaseClaim,
+        now_ms: int,
+    ) -> dict[str, dict[str, Any]]:
+        def write(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            row = _billing_row_for_claim_tx(connection, intent_id, claim, now_ms)
+            if row["job_state"] != "billing_reconciling":
+                raise StoreConflictError(
+                    "billing_state_conflict",
+                    "timeout requires billing reconciliation state",
+                )
+            intent_update = connection.execute(
+                """UPDATE edit_v3_billing_intents
+                   SET status='reconciliation_pending',last_checked_at=?,updated_at=?
+                   WHERE id=? AND status IN ('unknown','reconciliation_pending')
+                     AND EXISTS(
+                         SELECT 1 FROM edit_v3_jobs AS j
+                         WHERE j.job_id=edit_v3_billing_intents.job_id
+                           AND j.job_id=? AND j.worker_id=?
+                           AND j.fencing_token=? AND j.lease_until>?
+                     )""",
+                (
+                    now_ms,
+                    now_ms,
+                    intent_id,
+                    claim.job_id,
+                    claim.worker_id,
+                    claim.fencing_token,
+                    now_ms,
+                ),
+            )
+            if intent_update.rowcount != 1:
+                raise StoreConflictError(
+                    "billing_intent_conflict",
+                    "billing timeout intent update failed",
+                )
+            if not _transition_leased_tx(
+                connection,
+                claim,
+                {"billing_reconciling"},
+                "failed_reconciliation_pending",
+                now_ms,
+                1,
+            ):
+                raise _lease_lost(claim)
+            intent = dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_billing_intents WHERE id=?", (intent_id,)
+                ).fetchone()
+            )
+            return {
+                "intent": intent,
+                "job": {
+                    "job_id": claim.job_id,
+                    "state": "failed_reconciliation_pending",
+                    "reconciliation_reason": row["job_reconciliation_reason"],
+                    "resume_state": row["job_resume_state"],
+                    "confirmed_preheld_total": row["job_confirmed_preheld_total"],
+                    "confirmed_refunded_total": row["job_confirmed_refunded_total"],
+                    "queued_at": row["job_queued_at"],
+                    "processing_deadline_at": row["job_processing_deadline_at"],
+                },
+            }
+
+        return self._write(write)
+
+    def list_due_billing_intents(
+        self,
+        now_ms: int,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        _require_integer("now_ms", now_ms)
+        _require_integer("limit", limit)
+        if limit < 1:
+            raise _configuration_error(
+                "billing_limit_invalid", "billing intent limit must be positive"
+            )
+        return self._read(
+            lambda connection: [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT * FROM edit_v3_billing_intents
+                       WHERE environment=?
+                         AND status IN ('pending','retryable_absent','unknown','reconciliation_pending')
+                         AND created_at<=?
+                       ORDER BY CASE WHEN first_unknown_at IS NULL THEN created_at
+                                     ELSE first_unknown_at END,id
+                       LIMIT ?""",
+                    (self.environment, now_ms, limit),
+                )
+            ]
         )
 
     def insert_upload(
