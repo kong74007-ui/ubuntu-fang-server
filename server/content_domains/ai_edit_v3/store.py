@@ -92,6 +92,7 @@ _SQLITE_REQUIRED_PROVIDER_SYMBOLS = (
     "sqlite3_close_v2",
     "sqlite3_errcode",
     "sqlite3_errmsg",
+    "sqlite3_extended_errcode",
     "sqlite3_db_filename",
     "sqlite3_file_control",
     "sqlite3_libversion_number",
