@@ -6,7 +6,8 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 from .director import ValidatedPlan, extract_single_json
-from .providers.base import ProviderResult
+from .providers.base import ProviderResult, SubmissionUnknown
+from .contracts import request_fingerprint
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -274,3 +275,175 @@ def analyze_current_images(
                 raise MaterialError("material_analysis_identity_invalid")
         descriptors.extend(normalized)
     return tuple(sorted(descriptors, key=lambda item: material_ids.index(item.material_id)))
+
+
+def _result_field(result: Any, field: str) -> Any:
+    if hasattr(result, field):
+        return getattr(result, field)
+    payload = getattr(result, "payload", None)
+    if isinstance(payload, Mapping):
+        return payload.get(field)
+    if isinstance(result, Mapping):
+        return result.get(field)
+    return None
+
+
+def _safe_generation_semantic(value: Any, purpose: str) -> tuple[str, ...]:
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    if any(not isinstance(item, str) or not item.strip() for item in values):
+        raise MaterialError("generated_image_semantic_invalid")
+    normalized = tuple(item.strip() for item in values)
+    lowered = " ".join(normalized).casefold()
+    forbidden = (
+        "http://",
+        "https://",
+        "file://",
+        "ignore previous",
+        "system prompt",
+        "api key",
+        "password",
+        "真实客户",
+        "销售业绩",
+        "产品功效",
+        "证明",
+    )
+    if any(token in lowered for token in forbidden):
+        raise MaterialError("generated_image_semantic_unsafe")
+    if purpose == "product" or any(token in lowered for token in ("brand", "品牌", "包装", "product package")):
+        raise MaterialError("generated_product_fidelity_forbidden")
+    return normalized
+
+
+def _generation_result(
+    result: Any,
+    *,
+    job_id: str,
+    slot_id: str,
+    environment: str,
+) -> tuple[str, str, str]:
+    request_id = _result_field(result, "request_id")
+    asset_id = _result_field(result, "asset_id")
+    cos_key = _result_field(result, "cos_key")
+    decoded = _result_field(result, "decoded")
+    width = _result_field(result, "width")
+    height = _result_field(result, "height")
+    prefix = f"{environment}/ai-edit-v3/jobs/{job_id}/generated/"
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(asset_id, str)
+        or not asset_id
+        or not isinstance(cos_key, str)
+        or not cos_key.startswith(prefix)
+        or not cos_key.endswith((".webp", ".png", ".jpg", ".jpeg"))
+        or any(token in cos_key for token in ("?", "#", "://", "..", "\\"))
+        or decoded is not True
+        or isinstance(width, bool)
+        or not isinstance(width, int)
+        or width < 256
+        or width > 4096
+        or isinstance(height, bool)
+        or not isinstance(height, int)
+        or height < 256
+        or height > 4096
+    ):
+        raise MaterialError("generated_image_scope_invalid")
+    return request_id, asset_id, cos_key
+
+
+def generate_required_materials(
+    job: Mapping[str, Any],
+    plan: ValidatedPlan | Any,
+    draft: ResolutionDraft,
+    provider: Any,
+    context: Any,
+) -> dict[str, ResolvedMaterial]:
+    job_id = job.get("id", job.get("job_id"))
+    if not isinstance(job_id, str) or not job_id:
+        raise MaterialError("material_job_invalid")
+    environment = getattr(context, "environment", "test")
+    if environment not in {"test", "production"}:
+        raise MaterialError("material_environment_invalid")
+    plan_slots = {slot["id"]: slot for slot in plan.material_slots}
+    if set(draft.slots) - set(plan_slots):
+        raise MaterialError("material_slot_unknown")
+    theme_value = getattr(plan, "value", {}).get("theme", {})
+    if not isinstance(theme_value, Mapping):
+        raise MaterialError("material_theme_invalid")
+    theme = {
+        key: value
+        for key, value in theme_value.items()
+        if key in {"palette_id", "typography_id", "density", "motion_energy", "image_fit"}
+        and isinstance(value, str)
+    }
+    resolved = dict(draft.slots)
+    for slot_id, current in draft.slots.items():
+        if current.status != "generation_required":
+            continue
+        slot = plan_slots[slot_id]
+        purpose = slot.get("purpose", "context")
+        ratio = slot.get("ratio", "auto")
+        if not isinstance(purpose, str) or not isinstance(ratio, str):
+            raise MaterialError("generated_image_slot_invalid")
+        semantic = _safe_generation_semantic(slot.get("semantic"), purpose)
+        request = {
+            "slot_id": slot_id,
+            "semantic": list(semantic),
+            "purpose": purpose,
+            "ratio": ratio,
+            "theme": theme,
+            "fact_boundary": "generic_visual_only_no_real_customer_product_proof_or_branded_packaging",
+        }
+        operation_key = f"ai-edit-v3:{job_id}:image:{slot_id}"
+        provider_tasks = getattr(context, "provider_tasks", None)
+        existing = None
+        if provider_tasks is not None:
+            existing = provider_tasks.record_intent(
+                operation_key=operation_key,
+                request_sha256=request_fingerprint(request),
+                provider="site_image_generation",
+                capability="image_generation",
+                context=context,
+            )
+        external_id = existing.get("external_id") if isinstance(existing, Mapping) else None
+        if isinstance(external_id, str) and external_id:
+            result = provider.query(external_id, deadline_at=context.deadline_at)
+        else:
+            try:
+                result = provider.submit(
+                    request,
+                    idempotency_key=operation_key,
+                    deadline_at=context.deadline_at,
+                )
+            except SubmissionUnknown as exc:
+                if provider_tasks is not None and callable(getattr(provider_tasks, "mark_unknown", None)):
+                    provider_tasks.mark_unknown(operation_key, reason_code=exc.reason_code, context=context)
+                raise
+        request_id, asset_id, cos_key = _generation_result(
+            result,
+            job_id=job_id,
+            slot_id=slot_id,
+            environment=environment,
+        )
+        if provider_tasks is not None and not external_id:
+            provider_tasks.bind_result(
+                operation_key=operation_key,
+                external_id=request_id,
+                result={
+                    "request_id": request_id,
+                    "asset_id": asset_id,
+                    "cos_key": cos_key,
+                    "status": "completed",
+                },
+                context=context,
+            )
+        resolved[slot_id] = ResolvedMaterial(
+            slot_id=slot_id,
+            source="generated",
+            material_id=asset_id,
+            cos_key=cos_key,
+            match_score=None,
+            reason="required_slot_generated",
+            status="resolved",
+        )
+    return resolved
