@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangquechuanmei.com/schemas/ai-edit-v3/quality-verdict-v1.schema.json",
+  "title": "AI Edit V3 quality verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "schema_sha256", "model_request_id", "checks"],
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "schema_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "model_request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checkId": {
+      "enum": [
+        "media_decode_codec_dimensions",
+        "av_duration_sync",
+        "black_frames",
+        "abnormal_freeze",
+        "audio_integrity",
+        "caption_fact_accuracy",
+        "safe_area_and_text_visibility",
+        "face_product_obstruction",
+        "material_provenance",
+        "material_semantic_identity",
+        "generated_evidence_claim",
+        "opening_hook_visual_consistency"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_sha256", "timestamp_ms"],
+      "properties": {
+        "frame_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "timestamp_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      }
+    },
+    "passCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "result",
+        "confidence",
+        "blocking",
+        "repairable",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/checkId"
+        },
+        "result": {
+          "const": "pass"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "repairable": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "nonPassCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "result",
+        "confidence",
+        "blocking",
+        "repairable",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/checkId"
+        },
+        "result": {
+          "enum": ["fail", "unknown"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "repairable": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "check": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/passCheck"
+        },
+        {
+          "$ref": "#/$defs/nonPassCheck"
+        }
+      ]
+    }
+  }
+}

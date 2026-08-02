@@ -1,0 +1,574 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangquechuanmei.com/schemas/ai-edit-v3/edit-plan-2.0.schema.json",
+  "title": "AI Edit V3 edit-plan 2.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "duration_ms",
+    "ratio",
+    "creative_concept",
+    "theme",
+    "narrative_arc",
+    "captions",
+    "source_segments",
+    "scenes",
+    "materials",
+    "audio_cues"
+  ],
+  "properties": {
+    "version": {
+      "const": "2.0"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 3000,
+      "maximum": 600000
+    },
+    "ratio": {
+      "enum": ["16:9", "9:16"]
+    },
+    "creative_concept": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "theme": {
+      "$ref": "#/$defs/theme"
+    },
+    "narrative_arc": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "$ref": "#/$defs/narrativeArc"
+      }
+    },
+    "captions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2000,
+      "items": {
+        "$ref": "#/$defs/caption"
+      }
+    },
+    "source_segments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 240,
+      "items": {
+        "$ref": "#/$defs/sourceSegment"
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 120,
+      "items": {
+        "$ref": "#/$defs/scene"
+      }
+    },
+    "materials": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "$ref": "#/$defs/materialRequest"
+      }
+    },
+    "audio_cues": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/audioCue"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "palette_id",
+        "typography_id",
+        "density",
+        "motion_energy",
+        "image_fit"
+      ],
+      "properties": {
+        "palette_id": {
+          "const": "midnight_gold"
+        },
+        "typography_id": {
+          "const": "editorial_sans"
+        },
+        "density": {
+          "enum": ["airy", "balanced", "dense"]
+        },
+        "motion_energy": {
+          "enum": ["low", "medium", "high"]
+        },
+        "image_fit": {
+          "enum": ["contain", "cover", "smart_crop"]
+        }
+      }
+    },
+    "narrativeArc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "start_ms", "end_ms", "summary"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": ["hook", "problem", "evidence", "method", "offer", "cta"]
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "caption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_ms", "end_ms", "text", "emphasis"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "emphasis": {
+          "enum": ["none", "primary", "secondary"]
+        }
+      }
+    },
+    "sourceSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_start_ms",
+        "source_end_ms",
+        "output_start_ms",
+        "output_end_ms",
+        "caption_ids",
+        "keep_reason"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "source_end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "output_start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "output_end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "caption_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "keep_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "visibleTextVerbatim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "text_kind", "source_caption_ids"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "text_kind": {
+          "const": "verbatim"
+        },
+        "source_caption_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "visibleTextCompressed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "text_kind", "source_caption_ids"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "text_kind": {
+          "const": "compressed"
+        },
+        "source_caption_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "visibleTextUiLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text_kind", "ui_label_id"],
+      "properties": {
+        "text_kind": {
+          "const": "ui_label"
+        },
+        "ui_label_id": {
+          "enum": [
+            "chapter",
+            "step",
+            "category",
+            "evidence_marker",
+            "cta_prompt"
+          ]
+        }
+      }
+    },
+    "visibleText": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/visibleTextVerbatim"
+        },
+        {
+          "$ref": "#/$defs/visibleTextCompressed"
+        },
+        {
+          "$ref": "#/$defs/visibleTextUiLabel"
+        }
+      ]
+    },
+    "materialSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "semantic",
+        "purpose",
+        "priority",
+        "ratio",
+        "start_ms",
+        "end_ms"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "semantic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "purpose": {
+          "enum": ["evidence", "product", "context", "decoration"]
+        },
+        "priority": {
+          "enum": ["required", "optional"]
+        },
+        "ratio": {
+          "enum": ["16:9", "9:16", "1:1", "auto"]
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        }
+      }
+    },
+    "animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "preset",
+        "direction",
+        "duration_ms",
+        "delay_ms"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "preset": {
+          "enum": [
+            "fade",
+            "slide",
+            "scale",
+            "rotate",
+            "wipe",
+            "stagger",
+            "count_up",
+            "image_pan_zoom",
+            "card_reveal",
+            "stamp",
+            "light_sweep",
+            "highlight_draw",
+            "split_screen",
+            "subtitle_pop"
+          ]
+        },
+        "direction": {
+          "enum": ["none", "left", "right", "up", "down"]
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 3000
+        },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "start_ms",
+        "end_ms",
+        "intent",
+        "layout_id",
+        "layout_variant",
+        "visual_type",
+        "headline",
+        "highlight",
+        "overlay_ids",
+        "material_slots",
+        "animations",
+        "transition"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 500,
+          "maximum": 600000
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "layout_id": {
+          "$ref": "#/$defs/id"
+        },
+        "layout_variant": {
+          "const": "balanced_a"
+        },
+        "visual_type": {
+          "$ref": "#/$defs/id"
+        },
+        "headline": {
+          "$ref": "#/$defs/visibleText"
+        },
+        "highlight": {
+          "$ref": "#/$defs/visibleText"
+        },
+        "overlay_ids": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "material_slots": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/materialSlot"
+          }
+        },
+        "animations": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/animation"
+          }
+        },
+        "transition": {
+          "enum": [
+            "hard_cut",
+            "soft_wipe",
+            "directional_slide",
+            "light_flash",
+            "card_match_cut"
+          ]
+        }
+      }
+    },
+    "timeRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "end_ms"],
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        }
+      }
+    },
+    "materialRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "semantic",
+        "purpose",
+        "priority",
+        "ratio",
+        "time_range"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/id"
+        },
+        "semantic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "purpose": {
+          "enum": ["evidence", "product", "context", "decoration"]
+        },
+        "priority": {
+          "enum": ["required", "optional"]
+        },
+        "ratio": {
+          "enum": ["16:9", "9:16", "1:1", "auto"]
+        },
+        "time_range": {
+          "$ref": "#/$defs/timeRange"
+        }
+      }
+    },
+    "audioCue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "priority",
+        "start_ms",
+        "end_ms",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "enum": ["bgm", "sfx", "volume_fade"]
+        },
+        "priority": {
+          "enum": ["required", "optional"]
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    }
+  }
+}

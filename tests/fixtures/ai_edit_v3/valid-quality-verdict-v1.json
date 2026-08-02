@@ -1,0 +1,115 @@
+{
+  "version": "1.0",
+  "schema_sha256": "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e",
+  "model_request_id": "quality_request_01",
+  "checks": [
+    {
+      "check_id": "media_decode_codec_dimensions",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "decoded media matches the frozen output contract",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "av_duration_sync",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "audio and video duration are synchronized",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "black_frames",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "no undeclared black frame interval was found",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "abnormal_freeze",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "no abnormal visual freeze was found",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "audio_integrity",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "audio integrity checks passed",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "caption_fact_accuracy",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "captions match the accurate text",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "safe_area_and_text_visibility",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "text remains visible inside the safe area",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "face_product_obstruction",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "faces and products are not obstructed",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "material_provenance",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "material provenance is valid",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "material_semantic_identity",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "material identity and semantics are consistent",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "generated_evidence_claim",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": true,
+      "repairable": false,
+      "reason": "generated media is not presented as real evidence",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    },
+    {
+      "check_id": "opening_hook_visual_consistency",
+      "result": "pass",
+      "confidence": 0.99,
+      "blocking": false,
+      "repairable": false,
+      "reason": "opening hook and visual system are consistent",
+      "evidence": [{"frame_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "timestamp_ms": 1000}]
+    }
+  ]
+}

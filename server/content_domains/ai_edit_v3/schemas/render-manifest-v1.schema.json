@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangquechuanmei.com/schemas/ai-edit-v3/render-manifest-v1.schema.json",
+  "title": "AI Edit V3 render manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "schema_sha256",
+    "renderer_environment",
+    "output_spec",
+    "duration_ms",
+    "edit_plan_sha256",
+    "registry_sha256",
+    "theme",
+    "seed",
+    "source_video",
+    "source_segments",
+    "master_audio",
+    "assets",
+    "compositions",
+    "captions"
+  ],
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "schema_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "renderer_environment": {
+      "$ref": "#/$defs/rendererEnvironment"
+    },
+    "output_spec": {
+      "$ref": "#/$defs/outputSpec"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 3000,
+      "maximum": 600000
+    },
+    "edit_plan_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "registry_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "theme": {
+      "$ref": "#/$defs/theme"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "source_video": {
+      "$ref": "#/$defs/sourceVideo"
+    },
+    "source_segments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 240,
+      "items": {
+        "$ref": "#/$defs/sourceSegment"
+      }
+    },
+    "master_audio": {
+      "$ref": "#/$defs/masterAudio"
+    },
+    "assets": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "compositions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 120,
+      "items": {
+        "$ref": "#/$defs/composition"
+      }
+    },
+    "captions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2000,
+      "items": {
+        "$ref": "#/$defs/caption"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativeMediaPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "palette_id",
+        "typography_id",
+        "density",
+        "motion_energy",
+        "image_fit"
+      ],
+      "properties": {
+        "palette_id": {
+          "const": "midnight_gold"
+        },
+        "typography_id": {
+          "const": "editorial_sans"
+        },
+        "density": {
+          "enum": ["airy", "balanced", "dense"]
+        },
+        "motion_energy": {
+          "enum": ["low", "medium", "high"]
+        },
+        "image_fit": {
+          "enum": ["contain", "cover", "smart_crop"]
+        }
+      }
+    },
+    "rendererEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "renderer_build_id",
+        "code_sha256",
+        "package_lock_sha256",
+        "release_sha256",
+        "node_version",
+        "chromium_version",
+        "ffmpeg_version",
+        "ffprobe_version",
+        "locale",
+        "timezone"
+      ],
+      "properties": {
+        "renderer_build_id": {
+          "$ref": "#/$defs/id"
+        },
+        "code_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "package_lock_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "release_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "node_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "chromium_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "ffmpeg_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "ffprobe_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "locale": {
+          "enum": ["C.UTF-8"]
+        },
+        "timezone": {
+          "enum": ["UTC"]
+        }
+      }
+    },
+    "outputSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ratio",
+        "width",
+        "height",
+        "fps_num",
+        "fps_den",
+        "video_codec",
+        "pixel_format",
+        "audio_codec",
+        "sample_rate",
+        "channels"
+      ],
+      "properties": {
+        "ratio": {
+          "enum": ["16:9", "9:16"]
+        },
+        "width": {
+          "type": "integer",
+          "enum": [1080, 1920]
+        },
+        "height": {
+          "type": "integer",
+          "enum": [1080, 1920]
+        },
+        "fps_num": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "fps_den": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1001
+        },
+        "video_codec": {
+          "const": "h264"
+        },
+        "pixel_format": {
+          "const": "yuv420p"
+        },
+        "audio_codec": {
+          "const": "aac"
+        },
+        "sample_rate": {
+          "const": 48000
+        },
+        "channels": {
+          "const": 2
+        }
+      }
+    },
+    "sourceVideo": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "silent",
+        "duration_ms",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativeMediaPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "silent": {
+          "const": true
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 3000,
+          "maximum": 600000
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "sourceSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_path",
+        "sha256",
+        "source_start_ms",
+        "source_end_ms",
+        "output_start_ms",
+        "output_end_ms"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_path": {
+          "$ref": "#/$defs/relativeMediaPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "source_end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "output_start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "output_end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        }
+      }
+    },
+    "masterAudio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes",
+        "duration_ms",
+        "sample_rate",
+        "channels"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativeMediaPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 3000,
+          "maximum": 600000
+        },
+        "sample_rate": {
+          "const": 48000
+        },
+        "channels": {
+          "const": 2
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "sha256", "size_bytes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": ["image", "video", "audio", "font"]
+        },
+        "path": {
+          "$ref": "#/$defs/relativeMediaPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        }
+      }
+    },
+    "animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "preset",
+        "direction",
+        "duration_ms",
+        "delay_ms"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "preset": {
+          "enum": [
+            "fade",
+            "slide",
+            "scale",
+            "rotate",
+            "wipe",
+            "stagger",
+            "count_up",
+            "image_pan_zoom",
+            "card_reveal",
+            "stamp",
+            "light_sweep",
+            "highlight_draw",
+            "split_screen",
+            "subtitle_pop"
+          ]
+        },
+        "direction": {
+          "enum": ["none", "left", "right", "up", "down"]
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 3000
+        },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        }
+      }
+    },
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scene_id",
+        "start_ms",
+        "end_ms",
+        "layout_id",
+        "layout_variant",
+        "overlay_ids",
+        "animations",
+        "transition",
+        "asset_ids"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "scene_id": {
+          "$ref": "#/$defs/id"
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "layout_id": {
+          "$ref": "#/$defs/id"
+        },
+        "layout_variant": {
+          "const": "balanced_a"
+        },
+        "overlay_ids": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "animations": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/animation"
+          }
+        },
+        "transition": {
+          "enum": [
+            "hard_cut",
+            "soft_wipe",
+            "directional_slide",
+            "light_flash",
+            "card_match_cut"
+          ]
+        },
+        "asset_ids": {
+          "type": "array",
+          "maxItems": 40,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "caption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_ms", "end_ms", "text"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      }
+    }
+  }
+}

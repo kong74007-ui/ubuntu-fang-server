@@ -1360,6 +1360,23 @@ def _transaction_key(value):
     return value.strip()
 
 
+def get_points_transaction(username, transaction_key):
+    transaction_key = _transaction_key(transaction_key)
+    if not username or not transaction_key:
+        return None
+    c = db()
+    try:
+        row = c.execute(
+            """SELECT transaction_key,operation,username,amount,points_after,created_at
+               FROM points_transactions
+               WHERE transaction_key=? AND username=?""",
+            (transaction_key, username),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        c.close()
+
+
 def deduct_points(username, amount, reason="", transaction_key=None, require_active_membership=False):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
@@ -2884,6 +2901,27 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"code": "SUCCESS"})
             except Exception:
                 return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推
+        if p == "/api/auth/points/transaction":
+            if not self._require_internal():
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            username = (d.get("username") or "").strip()
+            if not username:
+                return self._send(400, {"detail": "missing username"})
+            try:
+                transaction = get_points_transaction(
+                    username, d.get("transaction_key")
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            if transaction is None:
+                return self._send(200, {"found": False})
+            return self._send(200, {
+                "found": True,
+                "transaction": transaction,
+            })
         if p in {"/api/auth/points/deduct", "/api/auth/points/refund"}:
             if not self._require_internal():
                 return
