@@ -95,6 +95,7 @@ _SQLITE_REQUIRED_PROVIDER_SYMBOLS = (
     "sqlite3_db_filename",
     "sqlite3_file_control",
     "sqlite3_libversion_number",
+    "sqlite3_threadsafe",
 )
 _SQLITE_INT64_MAX = (1 << 63) - 1
 _PREHOLD_ADMISSION_TIMEOUT_MS = 300_000
@@ -2035,6 +2036,24 @@ def _linux_sqlite_native_library() -> Any:
         ) from exc
 
 
+def _serialized_sqlite_thread_safety_available() -> bool:
+    if sqlite3.threadsafety == 3:
+        return True
+    if not (
+        sys.platform.startswith("linux")
+        and sys.implementation.name == "cpython"
+        and sys.version_info[:2] == (3, 10)
+    ):
+        return False
+
+    import ctypes
+
+    library = _linux_sqlite_native_library()
+    library.sqlite3_threadsafe.argtypes = ()
+    library.sqlite3_threadsafe.restype = ctypes.c_int
+    return library.sqlite3_threadsafe() == 1
+
+
 def _linux_sqlite_main_descriptor(
     connection: sqlite3.Connection,
     main_path: Path,
@@ -2449,7 +2468,7 @@ def _open_store_ordered(
 ) -> tuple[Path, _GuardedConnection]:
     """Native-pin V2 before the first authoritative V3 filesystem access."""
 
-    if sqlite3.threadsafety != 3:
+    if not _serialized_sqlite_thread_safety_available():
         raise _configuration_error(
             "v3_sqlite_thread_safety_unavailable",
             "verified V3 connections require serialized SQLite thread safety",

@@ -2148,6 +2148,51 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         preflight.assert_called_once_with(native_library)
         open_parent.assert_not_called()
 
+    def test_python310_linux_proves_serialized_mode_with_verified_provider(self):
+        native_threadsafe = mock.Mock(return_value=1)
+        native_library = SimpleNamespace(sqlite3_threadsafe=native_threadsafe)
+        with mock.patch.object(store_module.sqlite3, "threadsafety", 1):
+            with mock.patch.object(store_module.sys, "platform", "linux"):
+                with mock.patch.object(
+                    store_module.sys,
+                    "version_info",
+                    (3, 10, 20, "final", 0),
+                ):
+                    with mock.patch.object(
+                        store_module,
+                        "_linux_sqlite_native_library",
+                        return_value=native_library,
+                    ) as load_library:
+                        self.assertTrue(
+                            store_module._serialized_sqlite_thread_safety_available()
+                        )
+
+        load_library.assert_called_once_with()
+        native_threadsafe.assert_called_once_with()
+        self.assertEqual(native_threadsafe.argtypes, ())
+
+    def test_python310_linux_rejects_nonserialized_native_provider(self):
+        for native_mode in (0, 2):
+            with self.subTest(native_mode=native_mode):
+                native_library = SimpleNamespace(
+                    sqlite3_threadsafe=mock.Mock(return_value=native_mode)
+                )
+                with mock.patch.object(store_module.sqlite3, "threadsafety", 1):
+                    with mock.patch.object(store_module.sys, "platform", "linux"):
+                        with mock.patch.object(
+                            store_module.sys,
+                            "version_info",
+                            (3, 10, 20, "final", 0),
+                        ):
+                            with mock.patch.object(
+                                store_module,
+                                "_linux_sqlite_native_library",
+                                return_value=native_library,
+                            ):
+                                self.assertFalse(
+                                    store_module._serialized_sqlite_thread_safety_available()
+                                )
+
     def test_linux_ldd_provider_parser_requires_one_absolute_sqlite_dependency(self):
         provider = store_module._parse_linux_ldd_sqlite_provider(
             "\tlibsqlite3.so.0 => /usr/lib/libsqlite3.so.0 (0x1234)\n"
