@@ -1121,6 +1121,15 @@ def validate_edit_plan(
                 f"source_segments[{index}]",
                 "source and output segments must be monotonic and continuous",
             )
+        if (
+            segment["source_end_ms"] - segment["source_start_ms"]
+            != segment["output_end_ms"] - segment["output_start_ms"]
+        ):
+            _raise(
+                "source_segment_duration_mismatch",
+                f"source_segments[{index}]",
+                "source and output segment durations must match",
+            )
         if any(
             caption_id not in caption_index
             for caption_id in segment["caption_ids"]
@@ -1528,6 +1537,15 @@ def validate_render_manifest(
                     "render_source_video_binding_invalid",
                     f"source_segments[{index}]",
                     "source segment must bind to the declared source video",
+                )
+            if (
+                segment["source_end_ms"] - segment["source_start_ms"]
+                != segment["output_end_ms"] - segment["output_start_ms"]
+            ):
+                _raise(
+                    "render_source_duration_mismatch",
+                    f"source_segments[{index}]",
+                    "video source and output segment durations must match",
                 )
         else:
             if (

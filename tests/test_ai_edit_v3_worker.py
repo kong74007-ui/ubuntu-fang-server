@@ -808,6 +808,144 @@ class V3WorkerTests(unittest.TestCase):
         self.assertEqual(reconcile.call_count, 2)
         self.assertEqual(store.claim_calls, 1)
 
+    def test_due_intent_typed_errors_emit_redacted_v3_logs_through_worker(self):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+        from server.content_domains.ai_edit_v3.billing import BillingError
+
+        class DueStore(FakeStore):
+            def __init__(self):
+                super().__init__()
+                self.released = []
+
+            def list_due_billing_intents(self, now, *, limit):
+                return (
+                    {
+                        "id": "intent-billing-private-123456",
+                        "environment": "test",
+                        "owner_id": "alice",
+                        "job_id": "job-billing-private-123456",
+                        "operation": "pre_debit",
+                        "external_idempotency_key": "private-billing-key-123456",
+                        "request_sha256": "0" * 64,
+                        "refund_target_total": 0,
+                        "request_amount": 1,
+                        "status": "pending",
+                        "first_unknown_at": None,
+                        "last_checked_at": None,
+                        "created_at": 1,
+                        "updated_at": 1,
+                        "completed_at": None,
+                    },
+                )
+
+            def list_due_publish_intents(self, now, *, limit, cursor=None):
+                return (
+                    {
+                        "id": "intent-publish-private-123456",
+                        "job_id": "job-publish-private-123456",
+                        "operation": "commit_publish",
+                        "publish_generation": 1,
+                        "metadata_sha256": "1" * 64,
+                        "status": "pending",
+                    },
+                )
+
+            def list_publication_ready_jobs(self, now, *, limit):
+                return (
+                    {
+                        "job_id": "job-ready-private-123456",
+                        "state": "settling",
+                    },
+                )
+
+            def claim_job(
+                self, job_id, worker_id, lease_seconds, now_ms, *, expected_states
+            ):
+                return LeaseClaim(job_id, worker_id, 1, now_ms + 30_000)
+
+            def get_job_for_claim(self, claim, now_ms):
+                return {
+                    "state": "settling"
+                    if claim.job_id.startswith("job-ready")
+                    else "publishing",
+                    "request_sha256": "0" * 64,
+                    "repair_count": 0,
+                    "repair_budget_granted_at": None,
+                    "confirmed_preheld_total": 0,
+                }
+
+            def get_checkpoint_for_claim(self, claim, stage, input_sha256, now_ms):
+                raise LeaseLost(
+                    "lease_lost",
+                    "https://private.example/token?secret=ready",
+                )
+
+            def lease_owned(self, claim, now_ms):
+                return True
+
+            def release_lease(self, claim, now_ms):
+                self.released.append(claim.job_id)
+                return True
+
+        store = DueStore()
+        dependencies = RuntimeDependencies(
+            store=store,
+            clock=FakeClock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=object(),
+            stage_handlers={},
+        )
+        runtime = Runtime(
+            config=FeatureConfig(True, None, None, "test", None, 1, 1, 1),
+            dependencies=dependencies,
+        )
+        with patch(
+            "server.ai_edit_v3_worker.preflight",
+            return_value=SimpleNamespace(accepts_new_jobs=True),
+        ), patch(
+            "server.content_domains.ai_edit_v3.pipeline.process_pending_intent",
+            side_effect=BillingError(
+                "ledger_unavailable",
+                "https://private.example/token?secret=billing",
+            ),
+        ), patch(
+            "server.content_domains.ai_edit_v3.pipeline.advance_publish",
+            side_effect=StoreConflictError(
+                "publish_conflict",
+                "https://private.example/token?secret=publish",
+            ),
+        ), self.assertLogs("ai-edit-v3", level="ERROR") as captured:
+            run_worker(
+                StopAfterOneLoop(), config=worker_config(), runtime=runtime
+            )
+
+        self.assertEqual(len(captured.output), 3)
+        for operation, error_type in (
+            ("pre_debit", "BillingError"),
+            ("commit_publish", "StoreConflictError"),
+            ("publication_ready", "LeaseLost"),
+        ):
+            self.assertTrue(
+                any(
+                    f"operation={operation}" in line
+                    and f"error_type={error_type}" in line
+                    and "identifier=" in line
+                    for line in captured.output
+                ),
+                captured.output,
+            )
+        joined = "\n".join(captured.output)
+        self.assertNotIn("private.example", joined)
+        self.assertNotIn("private-123456", joined)
+
     def test_one_claim_lease_loss_does_not_block_peer_or_next_poll(self):
         from server.ai_edit_v3_worker import run_worker, worker_config
 

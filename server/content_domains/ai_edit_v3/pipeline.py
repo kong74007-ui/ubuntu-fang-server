@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,7 +18,12 @@ from .billing import (
     reconcile_unknown_intent,
     request_delta_refund,
 )
-from .contracts import ALLOWED_TRANSITIONS, MEDIA_STATES, LeaseClaim
+from .contracts import (
+    ALLOWED_TRANSITIONS,
+    MEDIA_STATES,
+    LeaseClaim,
+    request_fingerprint,
+)
 from .delivery import (
     advance_publish,
     create_publish_intent,
@@ -26,6 +33,9 @@ from .delivery import (
 from .providers import SubmissionUnknown
 from .runtime import LeaseHeartbeat, RuntimeDependencies, StageContext, StageOutcome
 from .store import LeaseLost, StoreConfigurationError, StoreConflictError
+
+
+LOG = logging.getLogger("ai-edit-v3")
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +124,38 @@ def _now_ms(runtime: RuntimeDependencies) -> int:
     ):
         raise ValueError("pipeline_clock_invalid")
     return int(value * 1000)
+
+
+def _stage_input_sha256(job: Mapping[str, Any], stage: str) -> str:
+    request_sha256 = job["request_sha256"]
+    repair_generation = job["repair_count"]
+    if repair_generation == 0:
+        return request_sha256
+    return request_fingerprint(
+        {
+            "contract": "ai-edit-v3-stage-input-v1",
+            "request_sha256": request_sha256,
+            "stage": stage,
+            "repair_generation": repair_generation,
+            "repair_budget_granted_at": job["repair_budget_granted_at"],
+        }
+    )
+
+
+def _safe_identifier(value: object) -> str:
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+
+def _log_reconciliation_error(
+    operation: str, identifier: object, exc: Exception
+) -> None:
+    LOG.error(
+        "[ai-edit-v3] reconciliation intent deferred "
+        "operation=%s identifier=%s error_type=%s",
+        operation,
+        _safe_identifier(identifier),
+        type(exc).__name__,
+    )
 
 
 def _checkpoint_payload(outcome: StageOutcome) -> dict[str, Any]:
@@ -289,7 +331,10 @@ def run_job(
         return JobRunResult(claim.job_id, result_state, "transitioned")
     if state == "settling":
         checkpoint = store.get_checkpoint_for_claim(
-            claim, "staging_delivery", job["request_sha256"], now_ms
+            claim,
+            "staging_delivery",
+            _stage_input_sha256(job, "staging_delivery"),
+            now_ms,
         )
         if checkpoint is None:
             store.release_lease(claim, now_ms)
@@ -351,7 +396,7 @@ def run_job(
         if not store.lease_owned(claim, current_ms):
             raise LeaseLost("lease_lost", "lease ownership was lost")
 
-    input_sha256 = job["request_sha256"]
+    input_sha256 = _stage_input_sha256(job, state)
     if job.get("processing_deadline_at") is None:
         terminate_once()
         current_ms = _now_ms(runtime)
@@ -468,7 +513,9 @@ def run_job(
     heartbeat.start()
     attempt_finished = False
     try:
-        outcome = handler(job, context)
+        stage_job = dict(job)
+        stage_job["stage_input_sha256"] = input_sha256
+        outcome = handler(stage_job, context)
         if not isinstance(outcome, StageOutcome):
             raise ValueError("pipeline_stage_outcome_invalid")
         if outcome.checkpoint_input_sha256 != input_sha256:
@@ -632,8 +679,10 @@ def run_reconciliation_pass(
                         "lease_lost", "fenced billing transition was rejected"
                     )
             counts["billing"] += 1
-        except (BillingError, LeaseLost, StoreConflictError):
-            pass
+        except (BillingError, LeaseLost, StoreConflictError) as exc:
+            _log_reconciliation_error(
+                intent.operation, intent.intent_id, exc
+            )
         finally:
             if runtime.store.lease_owned(claim, now_ms):
                 runtime.store.release_lease(claim, now_ms)
@@ -710,8 +759,10 @@ def run_reconciliation_pass(
             StoreConfigurationError,
             StoreConflictError,
             ValueError,
-        ):
-            pass
+        ) as exc:
+            _log_reconciliation_error(
+                row["operation"], row.get("id", row["job_id"]), exc
+            )
         finally:
             if runtime.store.lease_owned(claim, now_ms):
                 runtime.store.release_lease(claim, now_ms)
@@ -739,7 +790,7 @@ def run_reconciliation_pass(
             checkpoint = runtime.store.get_checkpoint_for_claim(
                 claim,
                 "staging_delivery",
-                job["request_sha256"],
+                _stage_input_sha256(job, "staging_delivery"),
                 now_ms,
             )
             if checkpoint is None:
@@ -779,8 +830,10 @@ def run_reconciliation_pass(
                             "fenced publication transition was rejected",
                         )
                 counts["assets"] += 1
-        except (BillingError, LeaseLost, StoreConflictError, ValueError):
-            pass
+        except (BillingError, LeaseLost, StoreConflictError, ValueError) as exc:
+            _log_reconciliation_error(
+                "publication_ready", ready["job_id"], exc
+            )
         finally:
             if runtime.store.lease_owned(claim, now_ms):
                 runtime.store.release_lease(claim, now_ms)

@@ -1,5 +1,7 @@
 import copy
+import tempfile
 import unittest
+from pathlib import Path
 
 from server.content_domains.ai_edit_v3.contracts import (
     ALLOWED_TRANSITIONS,
@@ -10,6 +12,8 @@ from server.content_domains.ai_edit_v3.contracts import (
     canonical_json,
     normalize_job_request,
     request_fingerprint,
+    validate_edit_plan,
+    validate_render_manifest,
 )
 
 INPUT_CASES = {
@@ -372,6 +376,49 @@ class CanonicalRequestTests(unittest.TestCase):
                     "unicode_scalar_invalid",
                 ):
                     function(value)
+
+
+class SegmentDurationContractTests(unittest.TestCase):
+    def test_edit_plan_rejects_video_segment_duration_remap(self):
+        from tests.test_ai_edit_v3_schemas import load_fixture, valid_timeline
+
+        plan = load_fixture("valid-edit-plan-2.0.json")
+        plan["source_segments"][0]["source_end_ms"] = 4099
+
+        with self.assertRaisesRegex(
+            ContractError,
+            "source_segment_duration_mismatch",
+        ):
+            validate_edit_plan(plan, timeline=valid_timeline())
+
+    def test_render_manifest_rejects_video_segment_duration_remap_but_keeps_audio_identity(self):
+        from tests.test_ai_edit_v3_schemas import load_fixture
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sandbox = Path(temporary)
+            (sandbox / "media").mkdir()
+            (sandbox / "media" / "source.mp4").write_bytes(b"video")
+            (sandbox / "media" / "master.wav").write_bytes(b"audio")
+            (sandbox / "media" / "image.png").write_bytes(b"image")
+            audio_only = load_fixture("valid-render-manifest-v1.json")
+            audio_only["source_video"] = None
+            audio_segment = audio_only["source_segments"][0]
+            audio_segment["source_path"] = audio_only["master_audio"]["path"]
+            audio_segment["sha256"] = audio_only["master_audio"]["sha256"]
+            audio_segment["source_start_ms"] = audio_segment["output_start_ms"]
+            audio_segment["source_end_ms"] = audio_segment["output_end_ms"]
+            self.assertEqual(
+                validate_render_manifest(audio_only, sandbox_root=sandbox),
+                audio_only,
+            )
+
+            video = load_fixture("valid-render-manifest-v1.json")
+            video["source_segments"][0]["source_end_ms"] = 4099
+            with self.assertRaisesRegex(
+                ContractError,
+                "render_source_duration_mismatch",
+            ):
+                validate_render_manifest(video, sandbox_root=sandbox)
 
 
 class StateContractTests(unittest.TestCase):

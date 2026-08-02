@@ -330,6 +330,118 @@ class V3StateCASTests(unittest.TestCase):
         self.assertIsNone(row["processing_deadline_at"])
         self.assertEqual(row["repair_count"], 0)
 
+    def test_repair_generation_executes_compile_render_and_quality_twice(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 101.0
+
+        class Supervisor:
+            def terminate_job(self, job_id):
+                raise AssertionError(f"repair flow must not terminate {job_id}")
+
+        calls = {
+            "compiling": 0,
+            "rendering": 0,
+            "quality_checking": 0,
+            "repair_planning": 0,
+        }
+
+        def handler(job, context):
+            context.assert_active()
+            state = job["state"]
+            calls[state] += 1
+            generation = job["repair_count"]
+            next_state = {
+                "compiling": "rendering",
+                "rendering": "quality_checking",
+                "repair_planning": "compiling",
+                "quality_checking": (
+                    "repair_planning" if generation == 0 else "staging_delivery"
+                ),
+            }[state]
+            return StageOutcome(
+                next_state,
+                {"stage": state, "repair_generation": generation},
+                job.get("stage_input_sha256", job["request_sha256"]),
+            )
+
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=Supervisor(),
+            stage_handlers={state: handler for state in calls},
+        )
+        self.seed_job("job-one-repair", "compiling")
+        error = None
+        for index in range(8):
+            state = self.row("job-one-repair")["state"]
+            if state == "staging_delivery":
+                break
+            claim = self.store.claim_job(
+                "job-one-repair",
+                f"worker-repair-{index}",
+                30,
+                101_000,
+                expected_states={state},
+            )
+            try:
+                run_job(claim, runtime, db_path=self.db)
+            except LeaseLost as exc:
+                error = exc
+                break
+
+        self.assertEqual(
+            calls,
+            {
+                "compiling": 2,
+                "rendering": 2,
+                "quality_checking": 2,
+                "repair_planning": 1,
+            },
+            f"repair replay escaped with {type(error).__name__ if error else None}",
+        )
+        self.assertIsNone(error)
+        self.assertEqual(self.row("job-one-repair")["state"], "staging_delivery")
+        rows = self.store._read(
+            lambda connection: tuple(
+                connection.execute(
+                    """SELECT a.stage,a.input_sha256,c.input_sha256
+                       FROM edit_v3_stage_attempts AS a
+                       JOIN edit_v3_checkpoints AS c
+                         ON c.stage_attempt_id=a.id
+                       WHERE a.job_id=?
+                       ORDER BY a.stage,a.attempt""",
+                    ("job-one-repair",),
+                )
+            )
+        )
+        for stage in ("compiling", "rendering", "quality_checking"):
+            inputs = [
+                (attempt_input, checkpoint_input)
+                for row_stage, attempt_input, checkpoint_input in rows
+                if row_stage == stage
+            ]
+            self.assertEqual(len(inputs), 2)
+            self.assertTrue(
+                all(
+                    attempt_input == checkpoint_input
+                    for attempt_input, checkpoint_input in inputs
+                )
+            )
+            self.assertNotEqual(inputs[0][0], inputs[1][0])
+        self.assertEqual(self.row("job-one-repair")["repair_count"], 1)
+
     def test_no_work_stage_records_skipped_before_transition(self):
         try:
             from server.content_domains.ai_edit_v3.pipeline import run_job
