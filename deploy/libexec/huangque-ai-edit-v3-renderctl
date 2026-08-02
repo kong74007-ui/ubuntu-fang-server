@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Root-owned, fixed-command controller for isolated AI Edit V3 renders."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from typing import Callable
+
+
+_INSTANCE_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,63})\Z")
+_MAX_INPUT_BYTES = 8 * 1024 * 1024 * 1024
+_MAX_JSON_BYTES = 64 * 1024
+_SYSTEMCTL = "/usr/bin/systemctl"
+
+
+def validate_instance_id(value: str) -> str:
+    if not isinstance(value, str) or _INSTANCE_ID.fullmatch(value) is None:
+        raise ValueError("render_instance_id_invalid")
+    return value
+
+
+def _default_systemctl(argv: list[str]) -> tuple[int, str, str]:
+    completed = subprocess.run(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+        text=True,
+        env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": "/usr/bin:/bin"},
+    )
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _plain_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and not path.is_symlink()
+
+
+class RenderController:
+    def __init__(
+        self,
+        *,
+        spool_root: Path = Path("/var/spool/huangque-ai-edit-v3"),
+        state_root: Path = Path("/var/lib/huangque-ai-edit-v3-render"),
+        systemctl: Callable[[list[str]], tuple[int, str, str]] = _default_systemctl,
+    ) -> None:
+        self.spool_root = Path(spool_root)
+        self.state_root = Path(state_root)
+        self.incoming_root = self.spool_root / "incoming"
+        self.results_root = self.spool_root / "results"
+        self._systemctl = systemctl
+
+    @staticmethod
+    def _unit(instance_id: str) -> str:
+        return f"huangque-ai-edit-v3-render@{validate_instance_id(instance_id)}.service"
+
+    def _validate_incoming(self, root: Path) -> None:
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("render_input_invalid")
+        total = 0
+        for path in root.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("render_input_symlink_forbidden")
+            metadata = path.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError("render_input_file_invalid")
+            total += metadata.st_size
+            if total > _MAX_INPUT_BYTES:
+                raise ValueError("render_input_too_large")
+        if not _plain_file(root / "request.json"):
+            raise ValueError("render_request_missing")
+        if not _plain_file(root / "assets" / "render-manifest.json"):
+            raise ValueError("render_manifest_missing")
+
+    def start(self, instance_id: str) -> dict[str, object]:
+        instance = validate_instance_id(instance_id)
+        incoming = self.incoming_root / instance
+        self._validate_incoming(incoming)
+        state = self.state_root / instance
+        if state.exists():
+            raise ValueError("render_instance_exists")
+        state.mkdir(parents=True, mode=0o700)
+        os.replace(incoming, state / "input")
+        (state / "output").mkdir(mode=0o700)
+        code, _stdout, _stderr = self._systemctl([_SYSTEMCTL, "start", self._unit(instance)])
+        if code != 0:
+            raise RuntimeError("render_start_failed")
+        return {"state": "running", "result_ready": False, "exit_status": None, "error_code": None}
+
+    def _publish_result(self, instance: str) -> bool:
+        output = self.state_root / instance / "output"
+        report_path = output / "silent.report.json"
+        video_path = output / "silent.mp4"
+        snapshots = output / "snapshots"
+        if not (_plain_file(report_path) and _plain_file(video_path) and snapshots.is_dir()):
+            return False
+        try:
+            report_bytes = report_path.read_bytes()
+            if len(report_bytes) > _MAX_JSON_BYTES:
+                return False
+            report = json.loads(report_bytes)
+            declared = report["output"]
+            if report.get("status") != "done" or declared.get("silent") is not True:
+                return False
+            if declared.get("path") != "silent.mp4" or declared.get("size_bytes") != video_path.stat().st_size:
+                return False
+            if declared.get("sha256") != _sha256(video_path):
+                return False
+            for entry in report.get("snapshots", []):
+                relative = entry.get("path")
+                if not isinstance(relative, str) or Path(relative).name != relative:
+                    return False
+                snapshot = snapshots / relative
+                if not _plain_file(snapshot) or entry.get("size_bytes") != snapshot.stat().st_size or entry.get("sha256") != _sha256(snapshot):
+                    return False
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        self.results_root.mkdir(parents=True, exist_ok=True)
+        destination = self.results_root / instance
+        if destination.exists():
+            return _plain_file(destination / "silent.mp4")
+        staging = self.results_root / f".{instance}.ready"
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(output, staging, symlinks=False)
+        try:
+            import grp
+            worker_gid = grp.getgrnam("huangque-ai-edit-v3").gr_gid
+        except (ImportError, KeyError):
+            worker_gid = -1
+        for path in (staging, *staging.rglob("*")):
+            if path.is_symlink():
+                shutil.rmtree(staging, ignore_errors=True)
+                return False
+            os.chown(path, 0, worker_gid)
+            path.chmod(0o750 if path.is_dir() else 0o640)
+        os.replace(staging, destination)
+        return True
+
+    def query(self, instance_id: str) -> dict[str, object]:
+        instance = validate_instance_id(instance_id)
+        argv = [
+            _SYSTEMCTL, "show", self._unit(instance),
+            "--property=ActiveState", "--property=SubState", "--property=Result",
+            "--property=ExecMainStatus", "--value",
+        ]
+        code, stdout, _stderr = self._systemctl(argv)
+        if code != 0 or len(stdout.encode("utf-8", errors="replace")) > _MAX_JSON_BYTES:
+            return {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_status_failed"}
+        values = stdout.splitlines()
+        active, sub, result, raw_status = (values + ["", "", "", ""])[:4]
+        try:
+            exit_status = int(raw_status)
+        except ValueError:
+            exit_status = None
+        if active in {"activating", "reloading"}:
+            state = "queued"
+        elif active == "active" or sub in {"start", "running"}:
+            state = "running"
+        elif active == "inactive" and result in {"success", ""} and exit_status in {0, None}:
+            state = "succeeded" if self._publish_result(instance) else "failed"
+        elif active == "failed" or result not in {"success", ""} or (exit_status not in {0, None}):
+            state = "failed"
+        else:
+            state = "stopped"
+        return {
+            "state": state,
+            "result_ready": state == "succeeded",
+            "exit_status": exit_status,
+            "error_code": None if state in {"queued", "running", "succeeded"} else "render_process_failed",
+        }
+
+    def stop(self, instance_id: str) -> dict[str, object]:
+        instance = validate_instance_id(instance_id)
+        code, _stdout, _stderr = self._systemctl([_SYSTEMCTL, "stop", self._unit(instance)])
+        if code != 0:
+            raise RuntimeError("render_stop_failed")
+        return {"state": "stopped", "result_ready": False, "exit_status": None, "error_code": None}
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3 or argv[1] not in {"start", "query", "stop"}:
+        result = {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_command_invalid"}
+        print(json.dumps(result, separators=(",", ":")))
+        return 2
+    try:
+        controller = RenderController()
+        result = getattr(controller, argv[1])(argv[2])
+        encoded = json.dumps(result, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > _MAX_JSON_BYTES:
+            raise RuntimeError("render_response_too_large")
+        print(encoded)
+        return 0
+    except Exception as exc:
+        error = str(exc) if str(exc).startswith("render_") else "render_control_failed"
+        print(json.dumps({"state": "failed", "result_ready": False, "exit_status": None, "error_code": error}, separators=(",", ":")))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

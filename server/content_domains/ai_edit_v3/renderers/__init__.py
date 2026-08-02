@@ -17,7 +17,9 @@ _EXACT_VERSION = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){1,3}\Z")
 _CHROMIUM_BUILD_ID = re.compile(
     r"chromium-(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){3}\Z"
 )
-_RENDERER_BUILD_ID = re.compile(r"renderer-[0-9]{8}-[0-9a-f]{12}\Z")
+_RENDERER_BUILD_ID = re.compile(
+    r"(?:renderer-[0-9]{8}-[0-9a-f]{12}|sha256:[0-9a-f]{64})\Z"
+)
 _CODE_COMMIT_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _RENDER_EVIDENCE_CONTRACTS: Mapping[
     str, frozenset[str] | re.Pattern[str]

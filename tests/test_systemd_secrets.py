@@ -80,7 +80,7 @@ class SystemdSecretGuardTests(unittest.TestCase):
     def test_repo_systemd_files_are_clean(self):
         from pathlib import PurePosixPath
         tracked = [PurePosixPath(p) for p in subprocess.run(
-            ["git", "ls-files", "deploy/systemd"], cwd=ROOT, capture_output=True, text=True, check=True
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "deploy/systemd"], cwd=ROOT, capture_output=True, text=True, check=True
         ).stdout.split()]
         self.assertTrue(tracked, "deploy/systemd 下应有被跟踪的文件")
         self.assertEqual(ci_validate.check_systemd_secrets(tracked), [])
