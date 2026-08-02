@@ -44,4 +44,3 @@ InaccessiblePaths=/var/spool/huangque-ai-edit-v3
 InaccessiblePaths=/var/lib/huangque-ai-edit-v3
 InaccessiblePaths=/var/lib/huangque-ai-edit-v3-render
 ExecStart=/usr/bin/node /work/release/src/render.mjs --request /work/input/request.json --input-root /work/input/assets --output-root /work/output
-

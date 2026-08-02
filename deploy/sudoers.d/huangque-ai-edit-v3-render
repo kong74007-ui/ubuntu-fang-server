@@ -1,4 +1,3 @@
 huangque-ai-edit-v3 ALL=(root) NOPASSWD: /usr/local/libexec/huangque-ai-edit-v3-renderctl start *
 huangque-ai-edit-v3 ALL=(root) NOPASSWD: /usr/local/libexec/huangque-ai-edit-v3-renderctl query *
 huangque-ai-edit-v3 ALL=(root) NOPASSWD: /usr/local/libexec/huangque-ai-edit-v3-renderctl stop *
-
