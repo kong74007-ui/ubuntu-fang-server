@@ -212,6 +212,37 @@ class StageOutcome:
         object.__setattr__(self, "checkpoint", _freeze(self.checkpoint))
 
 
+_PHASE_B_STAGE_NAMES = (
+    "generating_voice",
+    "normalizing",
+    "transcribing",
+    "aligning",
+    "planning",
+    "resolving_materials",
+    "generating_images",
+)
+
+
+def build_phase_b_stage_handlers(coordinator: Any) -> Mapping[str, StageHandler]:
+    """Bind the seven Phase B stages without granting transition authority."""
+
+    if coordinator is None or not callable(getattr(coordinator, "run_stage", None)):
+        raise ValueError("phase_b_coordinator_invalid")
+
+    def handler(name: str) -> StageHandler:
+        def run(job: Mapping[str, Any], context: StageContext) -> StageOutcome:
+            context.assert_active()
+            outcome = coordinator.run_stage(name, job, context)
+            if not isinstance(outcome, StageOutcome):
+                raise ValueError("phase_b_stage_outcome_invalid")
+            context.assert_active()
+            return outcome
+
+        return run
+
+    return MappingProxyType({name: handler(name) for name in _PHASE_B_STAGE_NAMES})
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeDependencies:
     store: V3Store
@@ -669,5 +700,6 @@ __all__ = (
     "StageOutcome",
     "assert_ready_for_request",
     "build_runtime",
+    "build_phase_b_stage_handlers",
     "preflight",
 )

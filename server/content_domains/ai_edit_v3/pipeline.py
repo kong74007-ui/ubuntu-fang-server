@@ -46,6 +46,37 @@ class JobRunResult:
     error_code: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StageResult:
+    next_stage: str
+
+
+_PHASE_B_STAGES = (
+    "generating_voice",
+    "normalizing",
+    "transcribing",
+    "aligning",
+    "planning",
+    "resolving_materials",
+    "generating_images",
+)
+
+
+def run_source_and_director_stages(
+    claim: Any,
+    runtime: Any,
+    *,
+    db_path: Path,
+) -> StageResult:
+    """Deterministic administrative runner; production transitions stay in run_job."""
+
+    if not isinstance(db_path, Path):
+        raise TypeError("phase_b_db_path_invalid")
+    for stage_name in _PHASE_B_STAGES:
+        runtime.run_phase_b_stage(stage_name, claim, db_path)
+    return StageResult(next_stage="generating_audio")
+
+
 class _StageFailure(RuntimeError):
     def __init__(self, error_code: str):
         self.error_code = error_code
