@@ -7,6 +7,7 @@ import inspect
 import os
 import sqlite3
 import stat
+import sys
 import tempfile
 import threading
 import unittest
@@ -439,7 +440,19 @@ class V3StorePathTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "stop after isolation"):
                     init_db(v3)
         open_v3.assert_called_once()
-        self.assertEqual(Path(open_v3.call_args.args[0]), v3)
+        connect_target = open_v3.call_args.args[0]
+        if sys.platform.startswith("linux"):
+            prefix = "file:/proc/self/fd/"
+            suffix = f"/{v3.name}?mode=rw&cache=private"
+            self.assertIsInstance(connect_target, str)
+            self.assertTrue(connect_target.startswith(prefix), connect_target)
+            self.assertTrue(connect_target.endswith(suffix), connect_target)
+            descriptor = connect_target[len(prefix) : -len(suffix)]
+            self.assertTrue(descriptor.isdecimal(), connect_target)
+            self.assertIs(open_v3.call_args.kwargs.get("uri"), True)
+        else:
+            self.assertEqual(Path(connect_target), v3)
+            self.assertNotIn("uri", open_v3.call_args.kwargs)
         self.assertEqual(v2.read_bytes(), b"not a sqlite database and must stay unopened")
 
 
@@ -1975,6 +1988,106 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         self.assertEqual(invalid_default.ancestor_fds, [])
         close_descriptor.assert_not_called()
 
+    def test_linux_main_descriptor_scan_survives_reused_enumerator_number_and_excludes_guards(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp).resolve() / "requested.db"
+            v2_path = Path(temp).resolve() / "v2.db"
+            connection = sqlite3.connect(
+                ":memory:",
+                isolation_level=None,
+                factory=store_module._GuardedConnection,
+                check_same_thread=False,
+            )
+            v3_guard = SimpleNamespace(
+                parent_fd=11,
+                leaf_fd=12,
+                ancestor_fds=[11],
+                leaf_identity=(101, 202),
+                release=mock.Mock(),
+            )
+            v2_guard = SimpleNamespace(
+                parent_fd=13,
+                leaf_fd=14,
+                ancestor_fds=[13],
+                leaf_identity=(303, 404),
+            )
+            reused_enumerator = {"observations": 0}
+            fstat_calls = []
+
+            def descriptor_metadata(descriptor):
+                fstat_calls.append(descriptor)
+                values = {
+                    11: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=11),
+                    12: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=101, st_ino=202),
+                    13: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=13),
+                    14: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=303, st_ino=404),
+                    20: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=101, st_ino=202),
+                }
+                if descriptor == 21:
+                    reused_enumerator["observations"] += 1
+                    if reused_enumerator["observations"] == 1:
+                        raise OSError(errno.EBADF, "enumerator descriptor already closed")
+                    return SimpleNamespace(
+                        st_mode=stat.S_IFREG | 0o600,
+                        st_dev=101,
+                        st_ino=202,
+                    )
+                return values[descriptor]
+
+            with mock.patch.object(store_module.os, "name", "posix"):
+                with mock.patch.object(store_module.sys, "platform", "linux"):
+                    with mock.patch.object(
+                        store_module,
+                        "_open_linux_guard",
+                        return_value=v3_guard,
+                    ):
+                        with mock.patch.object(sqlite3, "connect", return_value=connection):
+                            with mock.patch.object(
+                                store_module,
+                                "_main_database_path",
+                                return_value=target,
+                            ):
+                                with mock.patch.object(
+                                    store_module.os,
+                                    "listdir",
+                                    return_value=["11", "12", "13", "14", "20", "21"],
+                                ):
+                                    with mock.patch.object(
+                                        store_module.os,
+                                        "fstat",
+                                        side_effect=descriptor_metadata,
+                                    ):
+                                        verified = store_module._connect_with_verified_identity_under_lock(
+                                            target,
+                                            v2_path,
+                                            v2_guard,
+                                        )
+
+            self.assertIs(verified, connection)
+            self.assertEqual(fstat_calls, [20, 21, 20, 21])
+            connection.close()
+            v3_guard.release.assert_called_once_with()
+
+    def test_linux_descriptor_scan_fails_closed_on_nontransient_fstat_error(self):
+        with mock.patch.object(store_module.os, "listdir", return_value=["20"]):
+            with mock.patch.object(
+                store_module.os,
+                "fstat",
+                side_effect=OSError(errno.EIO, "injected descriptor I/O failure"),
+            ):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    store_module._linux_regular_fd_identities(
+                        excluded_descriptors=set(),
+                    )
+
+        self.assertEqual(
+            caught.exception.error_code,
+            "v3_db_identity_unprovable",
+        )
+        self.assertIsInstance(caught.exception.__cause__, OSError)
+        self.assertEqual(caught.exception.__cause__.errno, errno.EIO)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows handle cleanup probe")
     def test_windows_main_identity_error_owns_failed_temporary_handle_for_retry(self):
         with tempfile.TemporaryDirectory() as temp:
             target = Path(temp).resolve() / "requested.db"

@@ -1825,14 +1825,55 @@ def _main_database_path(connection: sqlite3.Connection) -> Path:
     )
 
 
-def _linux_fd_snapshot() -> set[int]:
+def _linux_guard_descriptors(guard: _GuardBundle) -> set[int]:
+    descriptors: set[int] = set()
+    for attribute in ("parent_fd", "leaf_fd"):
+        descriptor = getattr(guard, attribute, -1)
+        if isinstance(descriptor, int) and descriptor >= 0:
+            descriptors.add(descriptor)
+    for descriptor in getattr(guard, "ancestor_fds", ()):
+        if isinstance(descriptor, int) and descriptor >= 0:
+            descriptors.add(descriptor)
+    return descriptors
+
+
+def _linux_regular_fd_identities(
+    *,
+    excluded_descriptors: set[int],
+) -> dict[int, tuple[int, int]]:
     try:
-        return {int(value) for value in os.listdir("/proc/self/fd")}
-    except (OSError, ValueError) as exc:
+        values = os.listdir("/proc/self/fd")
+    except OSError as exc:
         raise _configuration_error(
             "v3_db_identity_unprovable",
             "Linux SQLite descriptor identity cannot be inspected",
         ) from exc
+    identities: dict[int, tuple[int, int]] = {}
+    for value in values:
+        try:
+            descriptor = int(value)
+        except ValueError as exc:
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "Linux SQLite descriptor identity cannot be inspected",
+            ) from exc
+        if descriptor in excluded_descriptors:
+            continue
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError as exc:
+            # /proc/self/fd enumeration owns a transient descriptor that is
+            # normally closed before this inspection. Only descriptors that
+            # remain live can contribute identity evidence.
+            if exc.errno == errno.EBADF:
+                continue
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "Linux SQLite descriptor identity cannot be inspected",
+            ) from exc
+        if stat.S_ISREG(metadata.st_mode):
+            identities[descriptor] = metadata.st_dev, metadata.st_ino
+    return identities
 
 
 def _configuration_error_preserving_cleanup(
@@ -1893,7 +1934,8 @@ def _connect_with_verified_identity_under_lock(
             )
             connect_target: str | Path = path
             connect_kwargs: dict[str, Any] = {}
-            before_descriptors: set[int] | None = None
+            before_descriptor_identities: dict[int, tuple[int, int]] | None = None
+            excluded_descriptors: set[int] | None = None
         elif sys.platform.startswith("linux"):
             linux_guard = _open_linux_guard(
                 path,
@@ -1906,7 +1948,11 @@ def _connect_with_verified_identity_under_lock(
                 "?mode=rw&cache=private"
             )
             connect_kwargs = {"uri": True}
-            before_descriptors = _linux_fd_snapshot()
+            excluded_descriptors = _linux_guard_descriptors(v2_guard)
+            excluded_descriptors.update(_linux_guard_descriptors(linux_guard))
+            before_descriptor_identities = _linux_regular_fd_identities(
+                excluded_descriptors=excluded_descriptors,
+            )
         else:
             raise _configuration_error(
                 "v3_db_identity_unprovable",
@@ -1985,19 +2031,17 @@ def _connect_with_verified_identity_under_lock(
                     _retain_cleanup_owner(cleanup_error, owner)
                     raise
             else:
-                assert before_descriptors is not None
-                after_descriptors = _linux_fd_snapshot()
-                matches: list[int] = []
-                for descriptor in after_descriptors - before_descriptors:
-                    try:
-                        metadata = os.fstat(descriptor)
-                    except OSError:
-                        continue
-                    if stat.S_ISREG(metadata.st_mode) and (
-                        metadata.st_dev,
-                        metadata.st_ino,
-                    ) == connection_guard.leaf_identity:
-                        matches.append(descriptor)
+                assert before_descriptor_identities is not None
+                assert excluded_descriptors is not None
+                after_descriptor_identities = _linux_regular_fd_identities(
+                    excluded_descriptors=excluded_descriptors,
+                )
+                matches = [
+                    descriptor
+                    for descriptor, identity in after_descriptor_identities.items()
+                    if identity == connection_guard.leaf_identity
+                    and before_descriptor_identities.get(descriptor) != identity
+                ]
                 if len(matches) != 1:
                     raise _configuration_error(
                         "v3_db_main_handle_mismatch",
