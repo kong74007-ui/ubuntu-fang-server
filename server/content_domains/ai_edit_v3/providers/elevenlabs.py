@@ -36,6 +36,8 @@ class SfxGenerationRequest:
     duration_ms: int
     cue_id: str
     required: bool
+    start_ms: int = 0
+    end_ms: int = 0
 
 
 @runtime_checkable

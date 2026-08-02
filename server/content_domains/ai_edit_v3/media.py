@@ -141,6 +141,33 @@ def _run_process(command: Sequence[str], *, timeout_seconds: float) -> subproces
     return subprocess.CompletedProcess(list(command), process.returncode, stdout, stderr)
 
 
+def run_media_process(
+    command: Sequence[str],
+    *,
+    timeout_seconds: float,
+    max_output_bytes: int = 4 * 1024 * 1024,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a local media command through the shared process-group supervisor boundary."""
+
+    if (
+        not isinstance(command, Sequence)
+        or isinstance(command, (str, bytes))
+        or not command
+        or any(not isinstance(item, str) or not item or "\x00" in item for item in command)
+    ):
+        raise MediaValidationError("media_command_invalid")
+    if (
+        isinstance(max_output_bytes, bool)
+        or not isinstance(max_output_bytes, int)
+        or not 1 <= max_output_bytes <= 16 * 1024 * 1024
+    ):
+        raise MediaValidationError("media_output_limit_invalid")
+    result = _run_process(command, timeout_seconds=timeout_seconds)
+    if len(result.stdout) > max_output_bytes or len(result.stderr) > max_output_bytes:
+        raise MediaProcessError("media_process_output_exceeded")
+    return result
+
+
 def _local_path(path: Path) -> Path:
     raw = os.fspath(path)
     if not raw or "\x00" in raw or "://" in raw or "?" in raw or "#" in raw:

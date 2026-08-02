@@ -567,8 +567,55 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 240
+        },
+        "role": {
+          "enum": ["reversal", "number", "method", "transition", "cta"]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^(bgm|[a-z0-9_]+)$"
+        },
+        "from_db": {
+          "type": "number",
+          "minimum": -60,
+          "maximum": 0
+        },
+        "to_db": {
+          "type": "number",
+          "minimum": -60,
+          "maximum": 0
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"id": true, "type": {"const": "sfx"}, "priority": true, "start_ms": true, "end_ms": true, "description": true, "role": true, "target": true, "from_db": true, "to_db": true},
+            "required": ["type"]
+          },
+          "then": {"required": ["role"]},
+          "else": {"not": {"required": ["role"]}}
+        },
+        {
+          "if": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"id": true, "type": {"const": "volume_fade"}, "priority": true, "start_ms": true, "end_ms": true, "description": true, "role": true, "target": true, "from_db": true, "to_db": true},
+            "required": ["type"]
+          },
+          "then": {"required": ["target", "from_db", "to_db"]},
+          "else": {
+            "allOf": [
+              {"not": {"required": ["target"]}},
+              {"not": {"required": ["from_db"]}},
+              {"not": {"required": ["to_db"]}}
+            ]
+          }
+        }
+      ]
     }
   }
 }
