@@ -61,7 +61,7 @@ function assetElement({asset, index, prefix, duration}) {
   if (typeof relativePath !== "string" || !/^(?!\/)(?![A-Za-z]:)(?!.*\\)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/u.test(relativePath)) {
     throw new Error("layout_asset_path_invalid");
   }
-  const src = escapeAttribute(`../${relativePath}`);
+  const src = escapeAttribute(relativePath);
   const id = `${prefix}_asset_${assetId}`;
   if (asset.kind === "video") return `<video id="${id}" class="hf-asset hf-asset-${index} clip" muted playsinline preload="metadata" src="${src}" data-start="0" data-duration="${duration}" data-track-index="${index + 3}"></video>`;
   return `<img id="${id}" class="hf-asset hf-asset-${index} clip" alt="" src="${src}" data-start="0" data-duration="${duration}" data-track-index="${index + 3}">`;

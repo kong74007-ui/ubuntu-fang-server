@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {validateManifest} from "../src/validate-manifest.mjs";
+import {readFile} from "node:fs/promises";
 
 
 test("executable and provider fields are rejected recursively", () => {
@@ -15,4 +16,13 @@ test("executable and provider fields are rejected recursively", () => {
     const value = structuredClone(base); value.compositions[0][key] = "bad";
     assert.throws(() => validateManifest(value, {rendererBuildId: "build", registrySha256: "registry", schemaSha256: "schema"}), /manifest_executable_field_forbidden/);
   }
+});
+
+test("production renderer has fixed request input and output paths with no provider authority", async () => {
+  const source = await readFile(new URL("../src/render.mjs", import.meta.url), "utf8");
+  assert.match(source, /--request/);
+  assert.match(source, /--input-root/);
+  assert.match(source, /--output-root/);
+  assert.doesNotMatch(source, /ELEVENLABS_API_KEY|DASHSCOPE_API_KEY|Authorization|xi-api-key/);
+  assert.doesNotMatch(source, /eval\(|new Function|shell:\s*true/);
 });

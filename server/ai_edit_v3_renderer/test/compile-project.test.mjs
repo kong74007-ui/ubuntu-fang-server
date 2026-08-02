@@ -60,6 +60,23 @@ test("compiler rejects registry drift and unknown capability tokens", async () =
   await assert.rejects(compileProject({manifest: unknown, outputRoot: path.join(root, "b")}), /overlay_unknown/);
 });
 
+test("compiler places only muted source-video clips and never emits audio elements", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-source-")), "project");
+  const manifest = fixtureManifest("主体口播");
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{
+    id: "segment_01", source_path: "media/source.mp4", source_start_ms: 750, source_end_ms: 4750,
+    output_start_ms: 0, output_end_ms: 4000,
+  }];
+  await compileProject({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /<video[^>]+class="hf-source-video clip"[^>]+muted[^>]+playsinline/);
+  assert.match(scene, /data-playback-start="0\.75"/);
+  assert.match(scene, /src="media\/source\.mp4"/);
+  assert.doesNotMatch(scene, /<audio\b/);
+  assert.doesNotMatch(scene, /data-has-audio/);
+});
+
 function fixtureManifest(text) {
   return {
     registry_sha256: getRegistrySha256(),
