@@ -1,0 +1,13 @@
+Noto Sans CJK is licensed under the SIL Open Font License, Version 1.1.
+
+Copyright 2014-2026 Adobe (http://www.adobe.com/), with Reserved Font Name
+"Source". Noto Sans CJK is a derivative of Source Han Sans and is distributed
+under the SIL Open Font License, Version 1.1.
+
+The full license text is available at:
+https://openfontlicense.org/open-font-license-official-text/
+
+This font software may be used, studied, modified and redistributed under the
+terms of the SIL Open Font License, Version 1.1. It may not be sold by itself.
+Modified versions may not use Reserved Font Names without permission. The font
+software is provided as-is, without warranty of any kind.

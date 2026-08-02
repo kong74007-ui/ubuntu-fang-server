@@ -487,6 +487,91 @@ def request_fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+@dataclass(frozen=True)
+class FrozenRenderManifest:
+    path: Path
+    sha256: str
+    document: Mapping[str, Any]
+
+
+def freeze_render_manifest(
+    document: Mapping[str, Any],
+    destination: Path,
+    *,
+    sandbox_root: Path,
+) -> FrozenRenderManifest:
+    root = sandbox_root.resolve(strict=True)
+    target = destination.resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        _raise(
+            "render_manifest_destination_invalid",
+            "destination",
+            "manifest destination escapes sandbox",
+        )
+    if target.parent != root and root not in target.parents:
+        _raise(
+            "render_manifest_destination_invalid",
+            "destination",
+            "manifest destination escapes sandbox",
+        )
+    if target.exists():
+        _raise("render_manifest_exists", "destination", "manifest already exists")
+    normalized = validate_render_manifest(document, sandbox_root=root)
+    encoded = canonical_json(normalized)
+    temporary = target.parent / f".{target.name}.{os.getpid()}.tmp"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = None
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            _raise("render_manifest_exists", "destination", "manifest already exists")
+        temporary.unlink()
+        try:
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+        except OSError:
+            directory_fd = None
+        if directory_fd is not None:
+            try:
+                try:
+                    os.fsync(directory_fd)
+                except OSError:
+                    if os.name != "nt":
+                        raise
+            finally:
+                os.close(directory_fd)
+    except ContractError:
+        raise
+    except OSError as exc:
+        raise ContractError(
+            "render_manifest_write_failed",
+            "destination",
+            "manifest could not be frozen",
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    raw = target.read_bytes()
+    if raw != encoded:
+        _raise("render_manifest_hash_mismatch", "destination", "manifest read-back differs")
+    return FrozenRenderManifest(
+        target,
+        hashlib.sha256(raw).hexdigest(),
+        MappingProxyType(copy.deepcopy(normalized)),
+    )
+
+
 def parse_strict_json(
     raw: str | bytes,
     *,
