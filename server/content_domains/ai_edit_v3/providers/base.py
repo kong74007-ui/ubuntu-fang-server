@@ -100,3 +100,18 @@ class DefinitiveNotAccepted(_SubmissionOutcome):
 
 class SubmissionUnknown(_SubmissionOutcome):
     """Submission authority is unknown; absence and retry are not implied."""
+
+
+@dataclass(frozen=True, repr=False)
+class SecretValue:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str) or not self.value:
+            raise ValueError("secret_missing")
+
+    def __repr__(self) -> str:
+        return "SecretValue([REDACTED])"
+
+    def __str__(self) -> str:
+        return "[REDACTED]"
