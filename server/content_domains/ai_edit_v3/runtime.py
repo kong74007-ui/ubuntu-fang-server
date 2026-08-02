@@ -25,6 +25,7 @@ from .feature import (
     load_config,
 )
 from .providers.base import ProviderResult
+from .providers.elevenlabs import ElevenLabsAudioGenerator
 from .renderers import Renderer
 from .store import LeaseLost, V3Store, assert_isolated_db
 
@@ -639,6 +640,18 @@ def preflight(
         )
         items["stage_handlers"] = _probe_stage_handlers(
             dependencies.stage_handlers, environment, items
+        )
+
+    if dependencies is None:
+        items["elevenlabs_audio"] = _implemented(
+            "ElevenLabs music and sound-effect adapter is installed"
+        )
+    elif isinstance(dependencies.audio_generator, ElevenLabsAudioGenerator):
+        items["elevenlabs_audio"] = items["audio_generator"]
+    else:
+        items["elevenlabs_audio"] = _missing(
+            "elevenlabs_not_wired",
+            "ElevenLabs adapter is not the injected audio generator",
         )
 
     items["content_safety"] = _missing(
