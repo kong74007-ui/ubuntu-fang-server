@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {"id":"input-platform","outcome":"all_input_types","input_type":"platform_talking_head","creation_mode":"ai_open"},
+    {"id":"input-upload-video","outcome":"all_input_types","input_type":"uploaded_video","creation_mode":"ai_open"},
+    {"id":"input-existing-audio","outcome":"all_input_types","input_type":"existing_audio","creation_mode":"ai_open"},
+    {"id":"input-upload-audio","outcome":"all_input_types","input_type":"uploaded_audio","creation_mode":"ai_open"},
+    {"id":"input-script-tts","outcome":"all_input_types","input_type":"script_to_audio_video","creation_mode":"ai_open"},
+    {"id":"mode-template","outcome":"all_creation_modes","input_type":"platform_talking_head","creation_mode":"platform_template"},
+    {"id":"mode-prompt","outcome":"all_creation_modes","input_type":"uploaded_video","creation_mode":"style_prompt"},
+    {"id":"mode-ai","outcome":"all_creation_modes","input_type":"uploaded_audio","creation_mode":"ai_open"},
+    {"id":"text-authoritative","outcome":"authoritative_text","input_type":"platform_talking_head","creation_mode":"ai_open"},
+    {"id":"text-punctuation","outcome":"punctuation_only","input_type":"uploaded_video","creation_mode":"ai_open"},
+    {"id":"material-current","outcome":"material_matching","input_type":"platform_talking_head","creation_mode":"ai_open"},
+    {"id":"material-required-failure","outcome":"required_material_failure","input_type":"platform_talking_head","creation_mode":"ai_open"},
+    {"id":"prompt-injection","outcome":"injection_rejected","input_type":"uploaded_audio","creation_mode":"style_prompt"},
+    {"id":"model-frozen","outcome":"invalid_model_rejected","input_type":"script_to_audio_video","creation_mode":"platform_template"}
+  ]
+}
