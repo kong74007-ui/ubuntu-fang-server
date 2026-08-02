@@ -18,6 +18,7 @@ import unicodedata
 import uuid
 import weakref
 from collections.abc import Callable, Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, NamedTuple, TypeVar
 from urllib.parse import quote
@@ -84,6 +85,17 @@ _REMOTE_FILESYSTEMS = frozenset(
 _WINDOWS_DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:[^\\/]")
 _MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
 _SQLITE_OPEN_LOCK = threading.RLock()
+_SQLITE_REQUIRED_PROVIDER_SYMBOLS = (
+    "sqlite3_open_v2",
+    "sqlite3_busy_timeout",
+    "sqlite3_close",
+    "sqlite3_close_v2",
+    "sqlite3_errcode",
+    "sqlite3_errmsg",
+    "sqlite3_db_filename",
+    "sqlite3_file_control",
+    "sqlite3_libversion_number",
+)
 _SQLITE_INT64_MAX = (1 << 63) - 1
 _PREHOLD_ADMISSION_TIMEOUT_MS = 300_000
 _PROCESSING_DEADLINE_MS = 2_700_000
@@ -1765,6 +1777,8 @@ def _open_linux_guard(
     *,
     v2_identity: tuple[int, int] | None = None,
 ) -> _LinuxGuardBundle:
+    if sys.platform.startswith("linux"):
+        _linux_sqlite_runtime_preflight(_linux_sqlite_native_library())
     parent_fd = _open_linux_parent(path)
     leaf_fd = -1
     try:
@@ -1837,43 +1851,303 @@ def _linux_guard_descriptors(guard: _GuardBundle) -> set[int]:
     return descriptors
 
 
-def _linux_regular_fd_identities(
-    *,
-    excluded_descriptors: set[int],
-) -> dict[int, tuple[int, int]]:
-    try:
-        values = os.listdir("/proc/self/fd")
-    except OSError as exc:
+def _parse_linux_ldd_sqlite_provider(output: str) -> Path:
+    providers: list[Path] = []
+    for line in output.splitlines():
+        dependency, separator, resolution = line.partition("=>")
+        if not separator or not re.fullmatch(
+            r"libsqlite3\.so(?:\.\d+)*",
+            dependency.strip(),
+        ):
+            continue
+        resolved = resolution.strip().split(maxsplit=1)[0]
+        candidate = Path(resolved)
+        if resolved == "not" or not resolved.startswith("/"):
+            raise _configuration_error(
+                "v3_db_identity_unprovable",
+                "CPython SQLite provider dependency cannot be resolved",
+            )
+        providers.append(candidate)
+    if len(providers) != 1:
         raise _configuration_error(
             "v3_db_identity_unprovable",
-            "Linux SQLite descriptor identity cannot be inspected",
-        ) from exc
-    identities: dict[int, tuple[int, int]] = {}
-    for value in values:
-        try:
-            descriptor = int(value)
-        except ValueError as exc:
-            raise _configuration_error(
-                "v3_db_identity_unprovable",
-                "Linux SQLite descriptor identity cannot be inspected",
-            ) from exc
-        if descriptor in excluded_descriptors:
-            continue
-        try:
-            metadata = os.fstat(descriptor)
-        except OSError as exc:
-            # /proc/self/fd enumeration owns a transient descriptor that is
-            # normally closed before this inspection. Only descriptors that
-            # remain live can contribute identity evidence.
-            if exc.errno == errno.EBADF:
+            "CPython SQLite provider dependency is not unique",
+        )
+    return providers[0]
+
+
+def _parse_linux_readelf_sqlite_imports(output: str) -> tuple[str, ...]:
+    imports: set[str] = set()
+    pattern = re.compile(
+        r"\bUND\b.*?\b(sqlite3_[A-Za-z0-9_]+)"
+        r"(?:@[^\s]+)?(?:\s+\(\d+\))?\s*$"
+    )
+    for line in output.splitlines():
+        match = pattern.search(line)
+        if match:
+            imports.add(match.group(1))
+    if not imports:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "CPython SQLite dynamic imports cannot be proven",
+        )
+    return tuple(sorted(imports))
+
+
+def _linux_sqlite_runtime_preflight(library: Any) -> None:
+    try:
+        import ctypes
+
+        symbols = getattr(library, "_v3_sqlite_provider_symbols", None)
+        if not isinstance(symbols, tuple) or not symbols:
+            raise RuntimeError("SQLite provider symbol inventory is unavailable")
+        default_process = ctypes.CDLL(None)
+        for symbol in symbols:
+            selected = getattr(library, symbol)
+            selected_address = ctypes.cast(selected, ctypes.c_void_p).value
+            if not selected_address:
+                raise RuntimeError(f"{symbol} address is unavailable")
+            try:
+                process_symbol = getattr(default_process, symbol)
+            except AttributeError:
                 continue
-            raise _configuration_error(
-                "v3_db_identity_unprovable",
-                "Linux SQLite descriptor identity cannot be inspected",
-            ) from exc
-        if stat.S_ISREG(metadata.st_mode):
-            identities[descriptor] = metadata.st_dev, metadata.st_ino
-    return identities
+            process_address = ctypes.cast(process_symbol, ctypes.c_void_p).value
+            if process_address != selected_address:
+                raise RuntimeError(f"{symbol} is interposed")
+    except StoreConfigurationError:
+        raise
+    except Exception as exc:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "CPython SQLite runtime symbol binding cannot be proven",
+        ) from exc
+
+
+@lru_cache(maxsize=1)
+def _linux_sqlite_native_library() -> Any:
+    try:
+        import _sqlite3
+        import ctypes
+        import ctypes.util
+        import shutil
+        import subprocess
+
+        if os.environ.get("LD_PRELOAD") or os.environ.get("LD_AUDIT"):
+            raise RuntimeError("dynamic-loader interposition is not supported")
+        module_value = getattr(_sqlite3, "__file__", None)
+        if not module_value:
+            raise RuntimeError("CPython SQLite extension path is unavailable")
+        module_path = Path(module_value).resolve(strict=True)
+        ldd_path = shutil.which("ldd")
+        if not ldd_path:
+            raise RuntimeError("ldd is unavailable")
+        completed = subprocess.run(
+            [ldd_path, os.fspath(module_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("CPython SQLite dependency inspection failed")
+        provider_path = _parse_linux_ldd_sqlite_provider(completed.stdout).resolve(
+            strict=True
+        )
+
+        readelf_path = shutil.which("readelf")
+        if not readelf_path:
+            raise RuntimeError("readelf is unavailable")
+        imports_completed = subprocess.run(
+            [readelf_path, "--dyn-syms", "--wide", os.fspath(module_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        if imports_completed.returncode != 0:
+            raise RuntimeError("CPython SQLite dynamic import inspection failed")
+        imported_symbols = _parse_linux_readelf_sqlite_imports(
+            imports_completed.stdout
+        )
+        provider_symbols = tuple(
+            sorted(set(_SQLITE_REQUIRED_PROVIDER_SYMBOLS) | set(imported_symbols))
+        )
+
+        library = ctypes.CDLL(os.fspath(module_path))
+        library._v3_sqlite_provider_symbols = provider_symbols
+        functions = tuple(getattr(library, symbol) for symbol in provider_symbols)
+
+        class _DlInfo(ctypes.Structure):
+            _fields_ = (
+                ("dli_fname", ctypes.c_char_p),
+                ("dli_fbase", ctypes.c_void_p),
+                ("dli_sname", ctypes.c_char_p),
+                ("dli_saddr", ctypes.c_void_p),
+            )
+
+        dl_name = ctypes.util.find_library("dl")
+        dynamic_loader = ctypes.CDLL(dl_name) if dl_name else ctypes.CDLL(None)
+        dynamic_loader.dladdr.argtypes = (ctypes.c_void_p, ctypes.POINTER(_DlInfo))
+        dynamic_loader.dladdr.restype = ctypes.c_int
+        for function in functions:
+            address = ctypes.cast(function, ctypes.c_void_p).value
+            if not address:
+                raise RuntimeError("SQLite native function address is unavailable")
+            info = _DlInfo()
+            if dynamic_loader.dladdr(ctypes.c_void_p(address), ctypes.byref(info)) != 1:
+                raise RuntimeError("SQLite native function provenance is unavailable")
+            if not info.dli_fname:
+                raise RuntimeError("SQLite native function provider is unavailable")
+            function_provider = Path(os.fsdecode(info.dli_fname)).resolve(strict=True)
+            if function_provider != provider_path:
+                raise RuntimeError("SQLite native functions have mixed providers")
+
+        mapped_sqlite_providers: set[Path] = set()
+        for line in Path("/proc/self/maps").read_text(
+            encoding="utf-8",
+            errors="strict",
+        ).splitlines():
+            fields = line.split(maxsplit=5)
+            if len(fields) != 6 or "libsqlite3" not in Path(fields[5]).name:
+                continue
+            mapped = fields[5].removesuffix(" (deleted)")
+            mapped_sqlite_providers.add(Path(mapped).resolve(strict=True))
+        if mapped_sqlite_providers != {provider_path}:
+            raise RuntimeError("SQLite mapped provider is not unique")
+
+        library.sqlite3_libversion_number.argtypes = ()
+        library.sqlite3_libversion_number.restype = ctypes.c_int
+        expected_version = (
+            sqlite3.sqlite_version_info[0] * 1_000_000
+            + sqlite3.sqlite_version_info[1] * 1_000
+            + sqlite3.sqlite_version_info[2]
+        )
+        if library.sqlite3_libversion_number() != expected_version:
+            raise RuntimeError("SQLite native provider version does not match CPython")
+        _linux_sqlite_runtime_preflight(library)
+        return library
+    except StoreConfigurationError:
+        raise
+    except Exception as exc:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "CPython SQLite native provider cannot be proven",
+        ) from exc
+
+
+def _linux_sqlite_main_descriptor(
+    connection: sqlite3.Connection,
+    main_path: Path,
+) -> int:
+    """Return the Unix VFS descriptor owned by this exact CPython connection."""
+
+    try:
+        if sys.implementation.name != "cpython":
+            raise RuntimeError("CPython SQLite connection layout is required")
+        import ctypes
+        import sysconfig
+
+        supported_basicsizes = {
+            (3, 10): 240,
+            (3, 12): 224,
+        }
+        version = sys.version_info[:2]
+        if version not in supported_basicsizes:
+            raise RuntimeError("CPython SQLite ABI version is unsupported")
+        if sysconfig.get_config_var("Py_TRACE_REFS"):
+            raise RuntimeError("trace-ref CPython layout is not supported")
+        if sysconfig.get_config_var("Py_DEBUG"):
+            raise RuntimeError("debug CPython layout is not supported")
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            raise RuntimeError("only the verified 64-bit CPython ABI is supported")
+
+        class _CPythonConnectionPrefix(ctypes.Structure):
+            _fields_ = (
+                ("ob_refcnt", ctypes.c_ssize_t),
+                ("ob_type", ctypes.c_void_p),
+                ("db", ctypes.c_void_p),
+            )
+
+        class _SQLiteVfsPrefix(ctypes.Structure):
+            _fields_ = (
+                ("iVersion", ctypes.c_int),
+                ("szOsFile", ctypes.c_int),
+                ("mxPathname", ctypes.c_int),
+                ("pNext", ctypes.c_void_p),
+                ("zName", ctypes.c_char_p),
+            )
+
+        class _SQLiteUnixFilePrefix(ctypes.Structure):
+            _fields_ = (
+                ("pMethods", ctypes.c_void_p),
+                ("pVfs", ctypes.c_void_p),
+                ("pInode", ctypes.c_void_p),
+                ("descriptor", ctypes.c_int),
+            )
+
+        if not isinstance(connection, _GuardedConnection):
+            raise RuntimeError("guarded CPython SQLite connection is required")
+        if sqlite3.Connection.__basicsize__ != supported_basicsizes[version]:
+            raise RuntimeError("CPython SQLite connection size is unsupported")
+        if type(connection).__basicsize__ < sqlite3.Connection.__basicsize__:
+            raise RuntimeError("guarded CPython SQLite connection size is invalid")
+        if ctypes.sizeof(_CPythonConnectionPrefix) > sqlite3.Connection.__basicsize__:
+            raise RuntimeError("CPython SQLite connection prefix is invalid")
+
+        library = _linux_sqlite_native_library()
+        db_pointer = _CPythonConnectionPrefix.from_address(id(connection)).db
+        if not db_pointer:
+            raise RuntimeError("CPython SQLite database pointer is unavailable")
+
+        library.sqlite3_db_filename.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
+        library.sqlite3_db_filename.restype = ctypes.c_char_p
+        library.sqlite3_file_control.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        )
+        library.sqlite3_file_control.restype = ctypes.c_int
+
+        native_filename = library.sqlite3_db_filename(db_pointer, b"main")
+        if not native_filename or Path(os.fsdecode(native_filename)) != main_path:
+            raise RuntimeError("native SQLite connection pointer did not match main")
+
+        vfs_pointer = ctypes.c_void_p()
+        if library.sqlite3_file_control(
+            db_pointer,
+            b"main",
+            27,  # SQLITE_FCNTL_VFS_POINTER
+            ctypes.byref(vfs_pointer),
+        ) != 0 or not vfs_pointer.value:
+            raise RuntimeError("SQLite VFS pointer is unavailable")
+        vfs = _SQLiteVfsPrefix.from_address(vfs_pointer.value)
+        if vfs.zName != b"unix":
+            raise RuntimeError("SQLite main file is not using the unix VFS")
+        if vfs.szOsFile < ctypes.sizeof(_SQLiteUnixFilePrefix):
+            raise RuntimeError("SQLite unix file allocation is smaller than its prefix")
+
+        file_pointer = ctypes.c_void_p()
+        if library.sqlite3_file_control(
+            db_pointer,
+            b"main",
+            7,  # SQLITE_FCNTL_FILE_POINTER
+            ctypes.byref(file_pointer),
+        ) != 0 or not file_pointer.value:
+            raise RuntimeError("SQLite main file pointer is unavailable")
+        unix_file = _SQLiteUnixFilePrefix.from_address(file_pointer.value)
+        if not unix_file.pMethods or unix_file.pVfs != vfs_pointer.value:
+            raise RuntimeError("SQLite unix file layout cannot be verified")
+        if unix_file.descriptor < 0:
+            raise RuntimeError("SQLite unix file descriptor is unavailable")
+        return unix_file.descriptor
+    except StoreConfigurationError:
+        raise
+    except Exception as exc:
+        raise _configuration_error(
+            "v3_db_identity_unprovable",
+            "Linux SQLite native main-file identity cannot be inspected",
+        ) from exc
 
 
 def _configuration_error_preserving_cleanup(
@@ -1934,7 +2208,6 @@ def _connect_with_verified_identity_under_lock(
             )
             connect_target: str | Path = path
             connect_kwargs: dict[str, Any] = {}
-            before_descriptor_identities: dict[int, tuple[int, int]] | None = None
             excluded_descriptors: set[int] | None = None
         elif sys.platform.startswith("linux"):
             linux_guard = _open_linux_guard(
@@ -1945,14 +2218,11 @@ def _connect_with_verified_identity_under_lock(
             guard = linux_guard
             connect_target = (
                 f"file:/proc/self/fd/{linux_guard.parent_fd}/{quote(path.name, safe='')}"
-                "?mode=rw&cache=private"
+                "?mode=rw&cache=private&vfs=unix"
             )
             connect_kwargs = {"uri": True}
             excluded_descriptors = _linux_guard_descriptors(v2_guard)
             excluded_descriptors.update(_linux_guard_descriptors(linux_guard))
-            before_descriptor_identities = _linux_regular_fd_identities(
-                excluded_descriptors=excluded_descriptors,
-            )
         else:
             raise _configuration_error(
                 "v3_db_identity_unprovable",
@@ -2031,31 +2301,35 @@ def _connect_with_verified_identity_under_lock(
                     _retain_cleanup_owner(cleanup_error, owner)
                     raise
             else:
-                assert before_descriptor_identities is not None
                 assert excluded_descriptors is not None
-                after_descriptor_identities = _linux_regular_fd_identities(
-                    excluded_descriptors=excluded_descriptors,
-                )
-                matches = [
-                    descriptor
-                    for descriptor, identity in after_descriptor_identities.items()
-                    if identity == connection_guard.leaf_identity
-                    and before_descriptor_identities.get(descriptor) != identity
-                ]
-                if len(matches) != 1:
-                    before_target_count = sum(
-                        identity == connection_guard.leaf_identity
-                        for identity in before_descriptor_identities.values()
-                    )
-                    after_target_count = sum(
-                        identity == connection_guard.leaf_identity
-                        for identity in after_descriptor_identities.values()
-                    )
+                main_descriptor = _linux_sqlite_main_descriptor(connection, main_path)
+                if main_descriptor in excluded_descriptors:
                     raise _configuration_error(
                         "v3_db_main_handle_mismatch",
-                        "SQLite main descriptor does not uniquely match the guarded V3 leaf "
-                        f"(before_target={before_target_count}, "
-                        f"after_target={after_target_count}, candidates={len(matches)})",
+                        "SQLite main descriptor aliases an identity guard",
+                    )
+                try:
+                    main_metadata = os.fstat(main_descriptor)
+                except OSError as exc:
+                    raise _configuration_error(
+                        "v3_db_identity_unprovable",
+                        "Linux SQLite native main descriptor cannot be inspected",
+                    ) from exc
+                if not stat.S_ISREG(main_metadata.st_mode):
+                    raise _configuration_error(
+                        "v3_db_main_handle_mismatch",
+                        "SQLite main descriptor is not a regular file",
+                    )
+                main_identity = main_metadata.st_dev, main_metadata.st_ino
+                if main_identity != connection_guard.leaf_identity:
+                    raise _configuration_error(
+                        "v3_db_main_handle_mismatch",
+                        "SQLite main descriptor does not match the guarded V3 leaf",
+                    )
+                if main_identity == v2_guard.leaf_identity:
+                    raise _configuration_error(
+                        "v2_v3_db_same_file",
+                        "SQLite main descriptor is the guarded V2 database",
                     )
             verified_connection = connection
             connection = None

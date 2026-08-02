@@ -73,3 +73,33 @@ jobs:
       - name: 构建设计系统
         working-directory: design-system
         run: npm run build
+
+  sqlite-native-identity:
+    name: SQLite native identity (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install AI Edit V3 dependencies
+        run: python -m pip install --disable-pip-version-check --no-input --no-deps --requirement deploy/requirements-ai-edit-v3.txt
+
+      - name: Verify real Unix VFS identity and migration concurrency
+        run: >-
+          python -m unittest -v
+          tests.test_ai_edit_v3_store.V3StoreNativeGuardReleaseTests.test_linux_real_native_probe_isolated_in_subprocess
+          tests.test_ai_edit_v3_store.V3StoreNativeGuardReleaseTests.test_linux_sqlite_symbol_interposition_fails_before_sqlite_connect
+          tests.test_ai_edit_v3_store.V3StoreMigrationRaceTests.test_fresh_database_8_threads_50_rounds
+          tests.test_ai_edit_v3_store.V3StoreMigrationRaceTests.test_native_delete_v0_database_8_threads_50_rounds
+          tests.test_ai_edit_v3_store.V3StoreMigrationRaceTests.test_existing_wal_v0_database_8_threads_50_rounds

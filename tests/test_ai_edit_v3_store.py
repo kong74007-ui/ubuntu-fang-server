@@ -4,11 +4,15 @@ import base64
 import errno
 import gc
 import inspect
+import json
 import os
+import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import unittest
 import weakref
@@ -443,7 +447,7 @@ class V3StorePathTests(unittest.TestCase):
         connect_target = open_v3.call_args.args[0]
         if sys.platform.startswith("linux"):
             prefix = "file:/proc/self/fd/"
-            suffix = f"/{v3.name}?mode=rw&cache=private"
+            suffix = f"/{v3.name}?mode=rw&cache=private&vfs=unix"
             self.assertIsInstance(connect_target, str)
             self.assertTrue(connect_target.startswith(prefix), connect_target)
             self.assertTrue(connect_target.endswith(suffix), connect_target)
@@ -1988,7 +1992,7 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         self.assertEqual(invalid_default.ancestor_fds, [])
         close_descriptor.assert_not_called()
 
-    def test_linux_main_descriptor_scan_survives_reused_enumerator_number_and_excludes_guards(self):
+    def test_linux_main_descriptor_uses_connection_native_handle_when_sqlite_reuses_fd(self):
         with tempfile.TemporaryDirectory() as temp:
             target = Path(temp).resolve() / "requested.db"
             v2_path = Path(temp).resolve() / "v2.db"
@@ -2011,29 +2015,6 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                 ancestor_fds=[13],
                 leaf_identity=(303, 404),
             )
-            reused_enumerator = {"observations": 0}
-            fstat_calls = []
-
-            def descriptor_metadata(descriptor):
-                fstat_calls.append(descriptor)
-                values = {
-                    11: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=11),
-                    12: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=101, st_ino=202),
-                    13: SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_dev=1, st_ino=13),
-                    14: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=303, st_ino=404),
-                    20: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_dev=101, st_ino=202),
-                }
-                if descriptor == 21:
-                    reused_enumerator["observations"] += 1
-                    if reused_enumerator["observations"] == 1:
-                        raise OSError(errno.EBADF, "enumerator descriptor already closed")
-                    return SimpleNamespace(
-                        st_mode=stat.S_IFREG | 0o600,
-                        st_dev=101,
-                        st_ino=202,
-                    )
-                return values[descriptor]
-
             with mock.patch.object(store_module.os, "name", "posix"):
                 with mock.patch.object(store_module.sys, "platform", "linux"):
                     with mock.patch.object(
@@ -2049,14 +2030,18 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                             ):
                                 with mock.patch.object(
                                     store_module.os,
-                                    "listdir",
-                                    return_value=["11", "12", "13", "14", "20", "21"],
+                                    "fstat",
+                                    return_value=SimpleNamespace(
+                                        st_mode=stat.S_IFREG | 0o600,
+                                        st_dev=101,
+                                        st_ino=202,
+                                    ),
                                 ):
                                     with mock.patch.object(
-                                        store_module.os,
-                                        "fstat",
-                                        side_effect=descriptor_metadata,
-                                    ):
+                                        store_module,
+                                        "_linux_sqlite_main_descriptor",
+                                        return_value=20,
+                                    ) as native_descriptor:
                                         verified = store_module._connect_with_verified_identity_under_lock(
                                             target,
                                             v2_path,
@@ -2064,21 +2049,383 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
                                         )
 
             self.assertIs(verified, connection)
-            self.assertEqual(fstat_calls, [20, 21, 20, 21])
+            native_descriptor.assert_called_once_with(connection, target)
             connection.close()
             v3_guard.release.assert_called_once_with()
 
-    def test_linux_descriptor_scan_fails_closed_on_nontransient_fstat_error(self):
-        with mock.patch.object(store_module.os, "listdir", return_value=["20"]):
+    def test_linux_native_main_descriptor_cannot_alias_a_guard_descriptor(self):
+        connection = sqlite3.connect(
+            ":memory:",
+            isolation_level=None,
+            factory=store_module._GuardedConnection,
+            check_same_thread=False,
+        )
+        v3_guard = SimpleNamespace(
+            parent_fd=11,
+            leaf_fd=12,
+            ancestor_fds=[11],
+            leaf_identity=(101, 202),
+            release=mock.Mock(),
+        )
+        v2_guard = SimpleNamespace(
+            parent_fd=13,
+            leaf_fd=14,
+            ancestor_fds=[13],
+            leaf_identity=(303, 404),
+        )
+        with mock.patch.object(store_module.os, "name", "posix"):
+            with mock.patch.object(store_module.sys, "platform", "linux"):
+                with mock.patch.object(
+                    store_module,
+                    "_open_linux_guard",
+                    return_value=v3_guard,
+                ):
+                    with mock.patch.object(sqlite3, "connect", return_value=connection):
+                        with mock.patch.object(
+                            store_module,
+                            "_main_database_path",
+                            return_value=Path("/tmp/v3.db"),
+                        ):
+                            with mock.patch.object(
+                                store_module,
+                                "_linux_sqlite_main_descriptor",
+                                return_value=12,
+                            ):
+                                with self.assertRaises(StoreConfigurationError) as caught:
+                                    store_module._connect_with_verified_identity_under_lock(
+                                        Path("/tmp/v3.db"),
+                                        Path("/tmp/v2.db"),
+                                        v2_guard,
+                                    )
+
+        self.assertEqual(caught.exception.error_code, "v3_db_main_handle_mismatch")
+        v3_guard.release.assert_called_once_with()
+
+    def test_linux_native_probe_fails_closed_outside_supported_cpython_layout(self):
+        with mock.patch.object(
+            store_module.sys,
+            "implementation",
+            SimpleNamespace(name="pypy"),
+        ):
+            with self.assertRaises(StoreConfigurationError) as caught:
+                store_module._linux_sqlite_main_descriptor(
+                    object(),
+                    Path("/tmp/v3.db"),
+                )
+
+        self.assertEqual(caught.exception.error_code, "v3_db_identity_unprovable")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+
+    def test_linux_provider_preflight_precedes_v3_guard_side_effects(self):
+        native_library = object()
+        rejected = StoreConfigurationError(
+            "v3_db_identity_unprovable",
+            "injected sqlite3_open_v2 interposition",
+        )
+        with mock.patch.object(store_module.sys, "platform", "linux"):
             with mock.patch.object(
-                store_module.os,
-                "fstat",
-                side_effect=OSError(errno.EIO, "injected descriptor I/O failure"),
+                store_module,
+                "_linux_sqlite_native_library",
+                return_value=native_library,
             ):
+                with mock.patch.object(
+                    store_module,
+                    "_linux_sqlite_runtime_preflight",
+                    side_effect=rejected,
+                ) as preflight:
+                    with mock.patch.object(
+                        store_module,
+                        "_open_linux_parent",
+                    ) as open_parent:
+                        with self.assertRaises(StoreConfigurationError) as caught:
+                            store_module._open_linux_guard(
+                                Path("/tmp/v3.db"),
+                                Path("/tmp/v2.db"),
+                                v2_identity=(1, 2),
+                            )
+
+        self.assertIs(caught.exception, rejected)
+        preflight.assert_called_once_with(native_library)
+        open_parent.assert_not_called()
+
+    def test_linux_ldd_provider_parser_requires_one_absolute_sqlite_dependency(self):
+        provider = store_module._parse_linux_ldd_sqlite_provider(
+            "\tlibsqlite3.so.0 => /usr/lib/libsqlite3.so.0 (0x1234)\n"
+        )
+        self.assertEqual(provider, Path("/usr/lib/libsqlite3.so.0"))
+
+        for output in (
+            "\tlibc.so.6 => /usr/lib/libc.so.6 (0x1234)\n",
+            "\tlibsqlite3.so.0 => not found\n",
+            "\tlibsqlite3.so.0 => /a/libsqlite3.so.0 (0x1)\n"
+            "\tlibsqlite3.so.1 => /b/libsqlite3.so.1 (0x2)\n",
+        ):
+            with self.subTest(output=output):
                 with self.assertRaises(StoreConfigurationError) as caught:
-                    store_module._linux_regular_fd_identities(
-                        excluded_descriptors=set(),
+                    store_module._parse_linux_ldd_sqlite_provider(output)
+                self.assertEqual(
+                    caught.exception.error_code,
+                    "v3_db_identity_unprovable",
+                )
+
+    def test_linux_readelf_parser_captures_every_undefined_sqlite_symbol(self):
+        output = textwrap.dedent(
+            """
+            Symbol table '.dynsym' contains 5 entries:
+               Num:    Value          Size Type    Bind   Vis      Ndx Name
+                 1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND sqlite3_open_v2
+                 2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND sqlite3_extended_errcode
+                 3: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND sqlite3_prepare_v2@SQLITE_3.0
+                 4: 0000000000000010     0 FUNC    GLOBAL DEFAULT   12 sqlite3_local_helper
+                 5: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND PyErr_SetString
+            """
+        )
+
+        self.assertEqual(
+            store_module._parse_linux_readelf_sqlite_imports(output),
+            (
+                "sqlite3_extended_errcode",
+                "sqlite3_open_v2",
+                "sqlite3_prepare_v2",
+            ),
+        )
+
+        for invalid in ("", "1: 0 0 FUNC GLOBAL DEFAULT UND PyErr_SetString\n"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(StoreConfigurationError) as caught:
+                    store_module._parse_linux_readelf_sqlite_imports(invalid)
+                self.assertEqual(
+                    caught.exception.error_code,
+                    "v3_db_identity_unprovable",
+                )
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "real Unix VFS probe runs only on Linux",
+    )
+    def test_linux_real_native_probe_isolated_in_subprocess(self):
+        source = textwrap.dedent(
+            """
+            import json
+            import os
+            import sqlite3
+            import stat
+            import sys
+            import tempfile
+            from pathlib import Path
+
+            sys.path.insert(0, os.getcwd())
+            from server.content_domains.ai_edit_v3 import store
+
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                v2 = root / "ai_edit_v2.db"
+                sqlite3.connect(v2).close()
+                connection = store.open_store(
+                    root / "ai_edit_v3.db",
+                    v2_db_path=v2,
+                )
+                try:
+                    native_library = store._linux_sqlite_native_library()
+                    provider_symbols = native_library._v3_sqlite_provider_symbols
+                    assert "sqlite3_open_v2" in provider_symbols
+                    assert "sqlite3_extended_errcode" in provider_symbols
+                    main_path = store._main_database_path(connection)
+                    descriptor = store._linux_sqlite_main_descriptor(
+                        connection,
+                        main_path,
                     )
+                    metadata = os.fstat(descriptor)
+                    guard = connection._identity_guard
+                    assert stat.S_ISREG(metadata.st_mode)
+                    assert (metadata.st_dev, metadata.st_ino) == guard.leaf_identity
+                    print(json.dumps({"descriptor": descriptor, "ok": True}))
+                finally:
+                    connection.close()
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", source],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertTrue(json.loads(result.stdout)["ok"])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "SQLite interposition probe runs only on Linux",
+    )
+    def test_linux_sqlite_symbol_interposition_fails_before_sqlite_connect(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("C compiler unavailable for interposition probe")
+        shim_sources = {
+            "sqlite3_open_v2": """
+                typedef int (*target_fn)(const char *, sqlite3 **, int, const char *);
+                int sqlite3_open_v2(const char *filename, sqlite3 **database, int flags, const char *vfs) {
+                    target_fn real_target = (target_fn)dlsym(RTLD_NEXT, "sqlite3_open_v2");
+                    return real_target(filename, database, flags, vfs);
+                }
+            """,
+            "sqlite3_extended_errcode": """
+                typedef int (*target_fn)(sqlite3 *);
+                int sqlite3_extended_errcode(sqlite3 *database) {
+                    target_fn real_target = (target_fn)dlsym(RTLD_NEXT, "sqlite3_extended_errcode");
+                    return real_target(database);
+                }
+            """,
+        }
+        for symbol, implementation in shim_sources.items():
+            with self.subTest(symbol=symbol), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                source_path = root / "sqlite_shim.c"
+                shim_path = root / "sqlite_shim.so"
+                source_path.write_text(
+                    textwrap.dedent(
+                        f"""
+                        #define _GNU_SOURCE
+                        #include <dlfcn.h>
+                        typedef struct sqlite3 sqlite3;
+                        {implementation}
+                        """
+                    ),
+                    encoding="utf-8",
+                )
+                compile_result = subprocess.run(
+                    [
+                        compiler,
+                        "-shared",
+                        "-fPIC",
+                        "-o",
+                        os.fspath(shim_path),
+                        os.fspath(source_path),
+                        "-ldl",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    compile_result.returncode,
+                    0,
+                    compile_result.stderr or compile_result.stdout,
+                )
+                v2 = root / "ai_edit_v2.db"
+                sqlite3.connect(v2).close()
+                child_source = textwrap.dedent(
+                    """
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+
+                    root = Path(sys.argv[1])
+                    symbol = sys.argv[2]
+                    os.environ.pop("LD_PRELOAD", None)
+                    sys.path.insert(0, os.getcwd())
+                    from server.content_domains.ai_edit_v3 import store
+
+                    connect_called = False
+                    def forbidden_connect(*args, **kwargs):
+                        global connect_called
+                        connect_called = True
+                        raise AssertionError("sqlite3.connect ran before provider rejection")
+
+                    store.sqlite3.connect = forbidden_connect
+                    try:
+                        store.open_store(
+                            root / "ai_edit_v3.db",
+                            v2_db_path=root / "ai_edit_v2.db",
+                        )
+                    except store.StoreConfigurationError as exc:
+                        print(json.dumps({
+                            "code": exc.error_code,
+                            "connect_called": connect_called,
+                            "preload_present": "LD_PRELOAD" in os.environ,
+                        }))
+                    else:
+                        raise AssertionError(f"interposed {symbol} was accepted")
+                    """
+                )
+                environment = os.environ.copy()
+                environment["LD_PRELOAD"] = os.fspath(shim_path)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        child_source,
+                        os.fspath(root),
+                        symbol,
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["code"], "v3_db_identity_unprovable")
+                self.assertFalse(payload["connect_called"])
+                self.assertFalse(payload["preload_present"])
+
+    def test_linux_native_main_descriptor_fstat_error_fails_closed(self):
+        connection = sqlite3.connect(
+            ":memory:",
+            isolation_level=None,
+            factory=store_module._GuardedConnection,
+            check_same_thread=False,
+        )
+        v3_guard = SimpleNamespace(
+            parent_fd=11,
+            leaf_fd=12,
+            ancestor_fds=[11],
+            leaf_identity=(101, 202),
+            release=mock.Mock(),
+        )
+        v2_guard = SimpleNamespace(
+            parent_fd=13,
+            leaf_fd=14,
+            ancestor_fds=[13],
+            leaf_identity=(303, 404),
+        )
+        with mock.patch.object(store_module.os, "name", "posix"):
+            with mock.patch.object(store_module.sys, "platform", "linux"):
+                with mock.patch.object(
+                    store_module,
+                    "_open_linux_guard",
+                    return_value=v3_guard,
+                ):
+                    with mock.patch.object(sqlite3, "connect", return_value=connection):
+                        with mock.patch.object(
+                            store_module,
+                            "_main_database_path",
+                            return_value=Path("/tmp/v3.db"),
+                        ):
+                            with mock.patch.object(
+                                store_module,
+                                "_linux_sqlite_main_descriptor",
+                                return_value=20,
+                            ):
+                                with mock.patch.object(
+                                    store_module.os,
+                                    "fstat",
+                                    side_effect=OSError(
+                                        errno.EIO,
+                                        "injected descriptor I/O failure",
+                                    ),
+                                ):
+                                    with self.assertRaises(StoreConfigurationError) as caught:
+                                        store_module._connect_with_verified_identity_under_lock(
+                                            Path("/tmp/v3.db"),
+                                            Path("/tmp/v2.db"),
+                                            v2_guard,
+                                        )
 
         self.assertEqual(
             caught.exception.error_code,
@@ -2086,6 +2433,7 @@ class V3StoreNativeGuardReleaseTests(unittest.TestCase):
         )
         self.assertIsInstance(caught.exception.__cause__, OSError)
         self.assertEqual(caught.exception.__cause__.errno, errno.EIO)
+        v3_guard.release.assert_called_once_with()
 
     @unittest.skipUnless(os.name == "nt", "native Windows handle cleanup probe")
     def test_windows_main_identity_error_owns_failed_temporary_handle_for_retry(self):
