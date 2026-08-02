@@ -10,12 +10,14 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .contracts import ALL_STATES, LeaseClaim
 from .providers import DefinitiveNotAccepted, SubmissionUnknown
 from .store import LeaseLost, V3Store, is_valid_publish_asset_id
+from .media import FinalMux
 
 
 _MODE = "ai_edit_v3"
@@ -32,6 +34,108 @@ _OBJECT_KEY_FILENAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 
 class ObjectKeyError(ValueError):
     """Stable validation failure for a private V3 object key."""
+
+
+@dataclass(frozen=True, slots=True)
+class StagedDelivery:
+    object_key: str
+    sha256: str
+    size_bytes: int
+    etag: str
+    range_status: Literal[206]
+    content_range: str
+
+
+@runtime_checkable
+class PrivateCos(Protocol):
+    environment: str
+
+    def put_file(
+        self,
+        path: Path,
+        key: str,
+        content_type: str,
+        *,
+        private: bool,
+        if_none_match: str,
+    ) -> Mapping[str, Any]: ...
+
+    def presign_get(self, key: str, *, expires: int) -> str: ...
+
+    def range_get(
+        self, url: str, *, range_header: str
+    ) -> Mapping[str, Any]: ...
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage_private_delivery(
+    owner: str,
+    owner_hmac: str,
+    job_id: str,
+    render_attempt: int,
+    final_mux: FinalMux,
+    *,
+    environment: Literal["test", "production"],
+    cos: PrivateCos,
+    source_path: Path,
+) -> StagedDelivery:
+    """Upload one immutable private result and verify a signed one-byte read."""
+
+    if environment not in _OBJECT_KEY_ENVIRONMENTS or getattr(cos, "environment", None) != environment:
+        raise ValueError("delivery_environment_invalid")
+    if not isinstance(owner, str) or not owner or owner != owner.strip():
+        raise ValueError("delivery_owner_invalid")
+    if not isinstance(owner_hmac, str) or re.fullmatch(r"[0-9a-f]{24}", owner_hmac) is None:
+        raise ValueError("delivery_owner_hmac_invalid")
+    if not isinstance(job_id, str) or _OBJECT_KEY_ID.fullmatch(job_id) is None or ".." in job_id:
+        raise ValueError("delivery_job_id_invalid")
+    if isinstance(render_attempt, bool) or not isinstance(render_attempt, int) or not 1 <= render_attempt <= 100:
+        raise ValueError("delivery_render_attempt_invalid")
+    if not isinstance(final_mux, FinalMux):
+        raise ValueError("delivery_mux_invalid")
+    local = Path(source_path)
+    if not local.is_file() or local.is_symlink():
+        raise ValueError("delivery_source_invalid")
+    digest = _file_sha256(local)
+    if digest != final_mux.sha256:
+        raise ValueError("delivery_content_hash_mismatch")
+    size_bytes = local.stat().st_size
+    object_key = (
+        f"{environment}/ai-edit-v3/{owner_hmac}/{job_id}/delivery/"
+        f"{render_attempt}-{digest}.mp4"
+    )
+    try:
+        upload = cos.put_file(
+            local, object_key, "video/mp4", private=True, if_none_match="*"
+        )
+    except Exception as exc:
+        raise RuntimeError("delivery_upload_failed") from exc
+    etag = upload.get("etag") if isinstance(upload, Mapping) else None
+    if not isinstance(etag, str) or not etag or len(etag) > 256:
+        raise RuntimeError("delivery_upload_result_invalid")
+    try:
+        signed_url = cos.presign_get(object_key, expires=300)
+        response = cos.range_get(signed_url, range_header="bytes=0-0")
+    except Exception as exc:
+        raise RuntimeError("delivery_range_verification_failed") from exc
+    finally:
+        signed_url = None
+    if not isinstance(response, Mapping):
+        raise RuntimeError("delivery_range_verification_failed")
+    headers = response.get("headers")
+    body = response.get("body")
+    content_range = headers.get("Content-Range") if isinstance(headers, Mapping) else None
+    expected_range = f"bytes 0-0/{size_bytes}"
+    if response.get("status") != 206 or body is None or len(body) != 1 or content_range != expected_range:
+        raise RuntimeError("delivery_range_verification_failed")
+    return StagedDelivery(object_key, digest, size_bytes, etag, 206, content_range)
 
 
 def _object_key_has_unsafe_character(value: str) -> bool:

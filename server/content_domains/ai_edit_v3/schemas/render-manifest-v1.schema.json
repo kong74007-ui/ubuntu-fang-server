@@ -102,6 +102,10 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "buildId": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "relativeMediaPath": {
       "type": "string",
       "minLength": 1,
@@ -153,7 +157,7 @@
       ],
       "properties": {
         "renderer_build_id": {
-          "$ref": "#/$defs/id"
+          "$ref": "#/$defs/buildId"
         },
         "code_sha256": {
           "$ref": "#/$defs/sha256"

@@ -39,7 +39,7 @@ _SCHEMA_HASHES = MappingProxyType(
             "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c"
         ),
         "render-manifest-v1.schema.json": (
-            "a61ab87058918ee2cdaa778b690a09f3f5796c01ee343a699bf5fbe83435c54d"
+            "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0"
         ),
         "quality-verdict-v1.schema.json": (
             "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e"

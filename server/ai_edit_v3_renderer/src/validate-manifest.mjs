@@ -26,7 +26,7 @@ export function validateManifest(document, expected) {
   if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error("manifest_invalid");
   inspect(document);
   if (document.renderer_environment?.renderer_build_id !== expected.rendererBuildId) throw new Error("manifest_renderer_build_mismatch");
-  if (document.registry_sha256 !== expected.registrySha256) throw new Error("manifest_registry_mismatch");
+  if (`sha256:${document.registry_sha256}` !== expected.registrySha256) throw new Error("manifest_registry_mismatch");
   if (document.schema_sha256 !== expected.schemaSha256) throw new Error("manifest_schema_mismatch");
   const output = document.output_spec;
   if (!output || output.fps_num !== 30 || output.fps_den !== 1) throw new Error("manifest_output_invalid");
