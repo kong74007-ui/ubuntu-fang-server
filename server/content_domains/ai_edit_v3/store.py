@@ -4691,6 +4691,98 @@ class V3Store:
             ]
         )
 
+    def seed_template_versions(
+        self,
+        templates: Sequence[Any],
+        *,
+        now_ms: int,
+    ) -> None:
+        """Idempotently seed immutable published V3 template versions."""
+
+        if not isinstance(now_ms, int) or isinstance(now_ms, bool) or now_ms < 0:
+            raise StoreConflictError(
+                "template_seed_time_invalid",
+                "template seed time must be a non-negative integer",
+            )
+        normalized: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for template in templates:
+            identity = (template.template_id, template.version)
+            if identity in seen:
+                raise StoreConflictError(
+                    "template_seed_duplicate",
+                    "template catalog repeats an immutable identity",
+                )
+            seen.add(identity)
+            if (
+                template.status != "published"
+                or template.ratio not in {"16:9", "9:16"}
+                or tuple(template.supported_ratios) != (template.ratio,)
+            ):
+                raise StoreConflictError(
+                    "template_seed_not_publishable",
+                    "only ratio-consistent published templates may be active",
+                )
+            capability_contract = {
+                "title": template.title,
+                "category": template.category,
+                "creative_direction": template.creative_direction,
+                "ratio": template.ratio,
+                "allowed_layouts": list(template.allowed_layouts),
+                "capabilities": dict(template.capabilities),
+                "preview_sha256": template.preview_sha256,
+            }
+            normalized.append(
+                {
+                    "template_id": template.template_id,
+                    "version": template.version,
+                    "status": template.status,
+                    "preview_cos_key": template.preview_cos_key,
+                    "supported_ratios_json": _json_text(
+                        list(template.supported_ratios)
+                    ),
+                    "capability_contract_json": _json_text(
+                        capability_contract
+                    ),
+                    "sha256": template.sha256,
+                }
+            )
+
+        def operation(connection: sqlite3.Connection) -> None:
+            for expected in normalized:
+                existing = connection.execute(
+                    """SELECT * FROM edit_v3_template_versions
+                       WHERE template_id=? AND version=?""",
+                    (expected["template_id"], expected["version"]),
+                ).fetchone()
+                if existing is not None:
+                    if not self._same_values(existing, expected):
+                        raise StoreConflictError(
+                            "template_version_immutable",
+                            "an existing template version differs from the catalog",
+                        )
+                    continue
+                connection.execute(
+                    """INSERT INTO edit_v3_template_versions(
+                           template_id,version,status,preview_cos_key,
+                           supported_ratios_json,capability_contract_json,
+                           sha256,created_at,published_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        expected["template_id"],
+                        expected["version"],
+                        expected["status"],
+                        expected["preview_cos_key"],
+                        expected["supported_ratios_json"],
+                        expected["capability_contract_json"],
+                        expected["sha256"],
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+
+        self._write(operation)
+
     def insert_quote(
         self,
         owner_id: str,

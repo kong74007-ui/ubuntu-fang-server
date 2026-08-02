@@ -1,38 +1,14 @@
 import {createHash} from "node:crypto";
 
-import {compilePrimitiveLayout} from "./layout-primitives.mjs";
+import {ANIMATION_CONTRACTS} from "./animations.mjs";
+import {compileLayout, LAYOUT_CONTRACTS} from "./layouts.mjs";
 import {getOverlayContract, OVERLAY_CONTRACTS} from "./overlays.mjs";
 import {resolveTheme as resolveBoundedTheme, THEME_CONTRACT} from "./themes.mjs";
+import {TRANSITION_CONTRACTS} from "./transitions.mjs";
 
 export const REGISTRY_VERSION = "ai-edit-v3-registry-v1";
 const RATIOS = Object.freeze(["16:9", "9:16"]);
 const VARIANTS = Object.freeze(["balanced_a", "emphasis_b"]);
-const LAYOUT_IDS = [
-  "comparison_split", "cta_offer", "editorial_collage", "material_fullscreen_speaker_pip",
-  "method_timeline", "number_proof", "product_hero", "quote_reversal", "speaker_fullscreen",
-  "speaker_left_info_right", "speaker_right_evidence_left", "steps_stack",
-];
-const ANIMATION_IDS = [
-  "card_reveal", "count_up", "fade", "highlight_draw", "image_pan_zoom", "light_sweep", "rotate",
-  "scale", "slide", "split_screen", "stagger", "stamp", "subtitle_pop", "wipe",
-];
-const TRANSITION_IDS = ["card_match_cut", "directional_slide", "hard_cut", "light_flash", "soft_wipe"];
-
-const layoutContracts = LAYOUT_IDS.map((id) => Object.freeze({
-  id,
-  version: "1.0.0",
-  supportedRatios: RATIOS,
-  variants: VARIANTS,
-  requiredSlots: Object.freeze(id.startsWith("speaker_") ? ["speaker"] : ["primary"]),
-  optionalSlots: Object.freeze(["image", "evidence", "product"]),
-  fallbackVariant: "balanced_a",
-  allowedOverlays: Object.freeze(OVERLAY_CONTRACTS.map(({id: overlayId}) => overlayId)),
-  allowedAnimations: Object.freeze(ANIMATION_IDS),
-  safeAreas: Object.freeze({"16:9": "landscape_title_caption_safe", "9:16": "portrait_title_caption_safe"}),
-}));
-const animationContracts = ANIMATION_IDS.map((id) => Object.freeze({id, version: "1.0.0"}));
-const transitionContracts = TRANSITION_IDS.map((id) => Object.freeze({id, version: "1.0.0"}));
-
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) deepFreeze(child);
@@ -70,13 +46,13 @@ export function createRegistryContract({layouts, overlays, animations, transitio
 }
 
 const CONTRACT = createRegistryContract({
-  layouts: layoutContracts,
+  layouts: LAYOUT_CONTRACTS,
   overlays: OVERLAY_CONTRACTS,
-  animations: animationContracts,
-  transitions: transitionContracts,
+  animations: ANIMATION_CONTRACTS,
+  transitions: TRANSITION_CONTRACTS,
 });
 const SHA256 = `sha256:${createHash("sha256").update(JSON.stringify(CONTRACT)).digest("hex")}`;
-const LAYOUT_BY_ID = new Map(layoutContracts.map((contract) => [contract.id, contract]));
+const LAYOUT_BY_ID = new Map(LAYOUT_CONTRACTS.map((contract) => [contract.id, contract]));
 
 export function getRegistryContract() {
   return CONTRACT;
@@ -95,7 +71,7 @@ export function resolveLayout(layoutId, variantId, ratio) {
     contract,
     variantId,
     ratio,
-    compile: (input) => compilePrimitiveLayout(input),
+    compile: (input) => compileLayout({layoutId, variantId, ratio, ...input}),
   });
 }
 

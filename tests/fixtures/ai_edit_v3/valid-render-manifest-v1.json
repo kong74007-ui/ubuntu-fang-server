@@ -81,7 +81,7 @@
       "end_ms": 4000,
       "layout_id": "speaker_right_evidence_left",
       "layout_variant": "balanced_a",
-      "overlay_ids": ["headline_block", "evidence_label"],
+      "overlay_ids": ["headline_block", "info_card"],
       "animations": [
         {
           "target": "headline_block",

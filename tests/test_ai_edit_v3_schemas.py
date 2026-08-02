@@ -128,7 +128,7 @@ def valid_timeline():
             "speaker_fullscreen",
             "speaker_right_evidence_left",
         ],
-        "overlay_capabilities": ["headline_block", "evidence_label"],
+        "overlay_capabilities": ["headline_block", "info_card"],
         "animation_capabilities": ["fade", "slide"],
         "transition_capabilities": ["hard_cut", "soft_wipe"],
         "theme_capabilities": {

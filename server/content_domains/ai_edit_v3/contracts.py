@@ -176,10 +176,9 @@ _OVERLAY_IDS = frozenset(
         "bullet_list",
         "info_card",
         "quote_card",
-        "product_label",
+        "product_tag",
         "step_indicator",
-        "cta_block",
-        "evidence_label",
+        "cta_hold",
     }
 )
 _ANIMATION_IDS = frozenset(

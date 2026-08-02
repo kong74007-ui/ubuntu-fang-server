@@ -1,10 +1,12 @@
-import {copyFile, mkdir, writeFile} from "node:fs/promises";
+﻿import {copyFile, mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
-import {assertSafeId, assertSafeText, seconds} from "./registry/layout-primitives.mjs";
-import {compileOverlay} from "./registry/overlays.mjs";
+import {applyAnimation, compileAnimationScript} from "./registry/animations.mjs";
+import {assertSafeId, assertSafeText, escapeAttribute, seconds} from "./registry/layout-primitives.mjs";
+import {compileOverlay, getOverlayContract} from "./registry/overlays.mjs";
 import {getRegistrySha256, resolveLayout, resolveOverlay, resolveTheme} from "./registry/index.mjs";
+import {applyTransition, compileTransitionScript} from "./registry/transitions.mjs";
 
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,9 +55,9 @@ function compileIndex({manifest, compositionIds}) {
   const hosts = manifest.compositions.map((composition, index) => {
     const start = seconds(composition.start_ms);
     const sceneDuration = seconds(composition.end_ms - composition.start_ms);
-    return `<div data-composition-id="${composition.id}" data-composition-src="compositions/${composition.id}.html" data-start="${start}" data-duration="${sceneDuration}" data-track-index="${index}"></div>`;
+    return `<div id="${composition.id}_host" data-composition-id="${composition.id}" data-composition-src="compositions/${composition.id}.html" data-start="${start}" data-duration="${sceneDuration}" data-track-index="0"></div>`;
   }).join("");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>@font-face{font-family:"Noto Sans SC";src:url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2");font-weight:400}@font-face{font-family:"Noto Sans SC";src:url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2");font-weight:700}html,body{margin:0;background:transparent;overflow:hidden}#main{position:relative;overflow:hidden}</style></head><body><div id="main" data-composition-id="main" data-width="${width}" data-height="${height}" data-duration="${duration}">${hosts}</div><script src="vendor/gsap.min.js"></script><script>window.__timelines=window.__timelines||{};const tl=gsap.timeline({paused:true});window.__timelines["main"]=tl;Object.freeze(${JSON.stringify(compositionIds)});</script></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>@font-face{font-family:"Noto Sans SC";src:url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2");font-weight:400}@font-face{font-family:"Noto Sans SC";src:url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2");font-weight:700}html,body{margin:0;background:transparent;overflow:hidden}#main{position:relative;overflow:hidden}</style></head><body><div id="main" data-composition-id="main" data-width="${width}" data-height="${height}" data-start="0" data-duration="${duration}">${hosts}</div><script src="vendor/gsap.min.js"></script><script>window.__timelines=window.__timelines||{};const tl=gsap.timeline({paused:true});window.__timelines["main"]=tl;Object.freeze(${JSON.stringify(compositionIds)});</script></body></html>`;
 }
 
 function compileScene({manifest, composition, theme}) {
@@ -67,22 +69,54 @@ function compileScene({manifest, composition, theme}) {
   const captions = manifest.captions
     .filter((caption) => caption.start_ms < composition.end_ms && caption.end_ms > composition.start_ms)
     .map((caption) => assertSafeText(caption.text, {maxChars: 240, maxLines: 3}));
-  const overlayText = captions.join(" ");
   const overlays = composition.overlay_ids.map((overlayId, index) => {
     resolveOverlay(overlayId);
+    const overlayContract = getOverlayContract(overlayId);
+    const overlayText = [...captions.join(" ")].slice(0, overlayContract.maxChars).join("");
     return compileOverlay({
       overlayId,
       idPrefix: prefix,
       text: overlayText,
       durationMs,
-      trackIndex: index + 2,
+      trackIndex: index + 21,
     });
   }).join("");
-  const body = layout.compile({idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays});
+  const assetById = new Map((manifest.assets ?? []).map((asset) => [asset.id, asset]));
+  const assets = (composition.asset_ids ?? []).map((assetId) => {
+    const asset = assetById.get(assetId);
+    if (!asset) throw new Error("composition_asset_unknown");
+    return {id: asset.id, kind: asset.kind, relativePath: asset.path};
+  });
+  const body = layout.compile({
+    idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays,
+    scene: composition, assets,
+  });
   const variables = Object.entries(theme).sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}:${value}`).join(";");
+    .map(([key, value]) => `${key}:${escapeAttribute(value)}`).join(";");
   const rootId = `${prefix}_root`;
-  return `<template id="${prefix}_template"><div id="${rootId}" data-composition-id="${prefix}" data-width="${width}" data-height="${height}" data-duration="${duration}" style="${variables}">${body}</div><style>[data-composition-id="${prefix}"]{position:relative;overflow:hidden;color:var(--hf-text);font-family:var(--hf-font)}[data-composition-id="${prefix}"] .hf-background{position:absolute;inset:0;background:linear-gradient(145deg,var(--hf-bg),var(--hf-surface))}[data-composition-id="${prefix}"] .hf-media{position:absolute;inset:var(--hf-pad);display:grid;place-items:center;border:1px solid var(--hf-border);border-radius:var(--hf-radius);background:var(--hf-surface-strong);box-shadow:var(--hf-shadow);overflow:hidden}[data-composition-id="${prefix}"] .hf-media span{color:var(--hf-muted);font-size:34px}[data-composition-id="${prefix}"] .hf-safe-area{position:absolute;inset:8% 7%;display:flex;flex-direction:column;justify-content:flex-end;gap:var(--hf-gap);pointer-events:none}[data-composition-id="${prefix}"] .hf-overlay{max-width:88%;padding:18px 28px;border:1px solid var(--hf-border);border-radius:20px;background:rgba(7,17,31,.82);font-size:40px;font-weight:700;line-height:1.28;box-shadow:var(--hf-shadow)}[data-composition-id="${prefix}"] .hf-overlay-standard_caption{align-self:center;text-align:center;font-size:34px}</style><script>(()=>{const root=document.querySelector('[data-composition-id="${prefix}"]');for(const node of root.querySelectorAll('[data-safe-text]'))node.querySelector('span').textContent=node.dataset.safeText;const tl=gsap.timeline({paused:true});tl.set(root,{autoAlpha:1},0);window.__timelines=window.__timelines||{};window.__timelines["${prefix}"] = tl;})();</script></template>`;
+  const timeline = timelineRecorder();
+  const animationScript = (composition.animations ?? []).map((animation) => {
+    if (!composition.overlay_ids.includes(animation.target)) throw new Error("animation_target_unknown");
+    const target = `#${prefix}_${animation.target}`;
+    const audit = applyAnimation({
+      timeline, preset: animation.preset, target,
+      params: {durationMs: animation.duration_ms, delayMs: animation.delay_ms},
+      sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
+    });
+    return compileAnimationScript({...audit, target});
+  }).join("");
+  const transitionAudit = applyTransition({
+    timeline, transition: composition.transition, outgoing: `#${prefix}_background`, incoming: `#${rootId}`,
+    boundaryMs: 0, sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
+  });
+  const transitionScript = compileTransitionScript({...transitionAudit, outgoing: `#${prefix}_background`, incoming: `#${rootId}`});
+  return `<template id="${prefix}_template"><div id="${rootId}" data-composition-id="${prefix}" data-width="${width}" data-height="${height}" data-start="0" data-duration="${duration}" style="${variables}">${body}</div><style>#${rootId}{position:relative;overflow:hidden;color:var(--hf-text);font-family:var(--hf-font)}#${rootId} .hf-background{position:absolute;inset:0;background:linear-gradient(145deg,var(--hf-bg),var(--hf-surface))}#${rootId} .hf-layout-frame{position:absolute;inset:5%;display:grid;gap:var(--hf-gap)}#${rootId} .hf-speaker-zone,#${rootId} .hf-materials{display:grid;place-items:center;position:relative;overflow:hidden;border:1px solid var(--hf-border);border-radius:var(--hf-radius);background:var(--hf-surface-strong);box-shadow:var(--hf-shadow)}#${rootId} .hf-speaker-zone span,#${rootId} .hf-fallback span{color:var(--hf-muted);font-size:34px}#${rootId} .hf-materials{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px}#${rootId} .hf-asset{width:100%;height:100%;min-height:0;object-fit:var(--hf-image-fit);border-radius:18px}#${rootId} .hf-fallback{display:grid;place-items:center;width:100%;height:100%}#${rootId} .hf-layout-speaker_fullscreen{grid-template-columns:1fr}#${rootId} .hf-layout-speaker_fullscreen .hf-materials{display:none}#${rootId} .hf-layout-speaker_left_info_right{grid-template-columns:1.15fr .85fr}#${rootId} .hf-layout-speaker_right_evidence_left{grid-template-columns:.85fr 1.15fr}#${rootId} .hf-layout-speaker_right_evidence_left .hf-speaker-zone{order:2}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-materials,#${rootId} .hf-layout-product_hero .hf-materials{position:absolute;inset:0}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-speaker-zone{position:absolute;right:3%;bottom:4%;width:28%;height:34%;z-index:2}#${rootId} .hf-layout-product_hero .hf-speaker-zone{display:none}#${rootId} .hf-layout-editorial_collage{grid-template-columns:.75fr 1.25fr}#${rootId} .hf-layout-editorial_collage .hf-materials{grid-template-columns:repeat(2,1fr)}#${rootId} .hf-layout-comparison_split{grid-template-columns:1fr 1fr}#${rootId} .hf-layout-steps_stack,#${rootId} .hf-layout-method_timeline{grid-template-rows:.55fr 1.45fr}#${rootId} .hf-layout-number_proof .hf-speaker-zone{display:none}#${rootId} .hf-layout-number_proof .hf-materials{font-size:96px}#${rootId} .hf-layout-quote_reversal{transform:rotate(-1deg);inset:9% 7%}#${rootId} .hf-layout-cta_offer{inset:12%;transform:scale(.94)}#${rootId} .hf-variant-emphasis_b .hf-speaker-zone{border-width:3px}#${rootId} .hf-safe-area{position:absolute;inset:8% 7%;display:flex;flex-direction:column;justify-content:flex-end;gap:var(--hf-gap)}#${rootId} .hf-overlay{max-width:88%;padding:18px 28px;border:1px solid var(--hf-border);border-radius:20px;background:rgba(7,17,31,.82);font-size:40px;font-weight:700;line-height:1.28;box-shadow:var(--hf-shadow)}#${rootId} .hf-overlay-standard_caption{align-self:center;text-align:center;font-size:34px}</style><script>(()=>{const root=document.querySelector('#${rootId}');for(const node of root.querySelectorAll('[data-safe-text]'))node.querySelector('span').textContent=node.dataset.safeText;const tl=gsap.timeline({paused:true});tl.set(root,{autoAlpha:1},0);${transitionScript}${animationScript}window.__timelines=window.__timelines||{};window.__timelines["${prefix}"] = tl;})();</script></template>`;
+}
+
+function timelineRecorder() {
+  const timeline = {};
+  for (const method of ["fromTo", "to", "set"]) timeline[method] = () => timeline;
+  return timeline;
 }
 
 async function copyRuntime(projectRoot) {

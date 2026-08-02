@@ -1,0 +1,65 @@
+{
+  "version": "1",
+  "templates": [
+    {
+      "template_id": "commercial-diagnostic-landscape-v1",
+      "version": "1",
+      "status": "published",
+      "title": "商业诊断·横屏",
+      "category": "商业诊断",
+      "creative_direction": "commercial_diagnostic",
+      "ratio": "16:9",
+      "supported_ratios": ["16:9"],
+      "allowed_layouts": ["speaker_fullscreen", "speaker_right_evidence_left", "number_proof", "cta_offer"],
+      "preview_file": "commercial-diagnostic-landscape-v1.png",
+      "preview_sha256": "d16bf33b2620b4057b54a0d9bcd8c04dfb313f290e29f170cbf71c24084b1576",
+      "preview_cos_key": "ai-edit-v3/templates/commercial-diagnostic-landscape-v1/1/preview.png",
+      "capabilities": {"captions": true, "evidence_cards": true, "product_materials": true, "motion_energy": "medium"}
+    },
+    {
+      "template_id": "commercial-diagnostic-portrait-v1",
+      "version": "1",
+      "status": "published",
+      "title": "商业诊断·竖屏",
+      "category": "商业诊断",
+      "creative_direction": "commercial_diagnostic",
+      "ratio": "9:16",
+      "supported_ratios": ["9:16"],
+      "allowed_layouts": ["speaker_fullscreen", "speaker_left_info_right", "number_proof", "cta_offer"],
+      "preview_file": "commercial-diagnostic-portrait-v1.png",
+      "preview_sha256": "ca4d736d1a2dd8be8f3bb78d16f992b8952eaf130f29a3d26d71ba8c13879b5a",
+      "preview_cos_key": "ai-edit-v3/templates/commercial-diagnostic-portrait-v1/1/preview.png",
+      "capabilities": {"captions": true, "evidence_cards": true, "product_materials": true, "motion_energy": "medium"}
+    },
+    {
+      "template_id": "editorial-explainer-landscape-v1",
+      "version": "1",
+      "status": "published",
+      "title": "编辑解说·横屏",
+      "category": "知识解说",
+      "creative_direction": "editorial_explainer",
+      "ratio": "16:9",
+      "supported_ratios": ["16:9"],
+      "allowed_layouts": ["editorial_collage", "comparison_split", "steps_stack", "method_timeline"],
+      "preview_file": "editorial-explainer-landscape-v1.png",
+      "preview_sha256": "79847ca7f6628e5dac6d72d732c2100beb047d6fd20e74bd82782226a852cc91",
+      "preview_cos_key": "ai-edit-v3/templates/editorial-explainer-landscape-v1/1/preview.png",
+      "capabilities": {"captions": true, "structured_explanation": true, "editorial_collage": true, "motion_energy": "medium"}
+    },
+    {
+      "template_id": "editorial-explainer-portrait-v1",
+      "version": "1",
+      "status": "published",
+      "title": "编辑解说·竖屏",
+      "category": "知识解说",
+      "creative_direction": "editorial_explainer",
+      "ratio": "9:16",
+      "supported_ratios": ["9:16"],
+      "allowed_layouts": ["editorial_collage", "quote_reversal", "steps_stack", "method_timeline"],
+      "preview_file": "editorial-explainer-portrait-v1.png",
+      "preview_sha256": "7655691787b8e2a6683a8795194b1e4e09c10e8c16cfdc27ae07c529ae0a84fd",
+      "preview_cos_key": "ai-edit-v3/templates/editorial-explainer-portrait-v1/1/preview.png",
+      "capabilities": {"captions": true, "structured_explanation": true, "editorial_collage": true, "motion_energy": "medium"}
+    }
+  ]
+}

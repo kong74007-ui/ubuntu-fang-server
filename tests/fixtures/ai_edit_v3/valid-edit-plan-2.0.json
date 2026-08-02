@@ -64,7 +64,7 @@
         "text_kind": "ui_label",
         "ui_label_id": "evidence_marker"
       },
-      "overlay_ids": ["headline_block", "evidence_label"],
+      "overlay_ids": ["headline_block", "info_card"],
       "material_slots": [
         {
           "id": "slot_01",

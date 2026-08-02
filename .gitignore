@@ -76,3 +76,4 @@ server/content.env
 
 # AI Edit V3 renderer dependencies are restored from the pinned lockfile.
 server/ai_edit_v3_renderer/node_modules/
+server/ai_edit_v3_renderer/test/fixtures/
