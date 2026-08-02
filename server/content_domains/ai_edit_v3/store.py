@@ -2043,9 +2043,19 @@ def _connect_with_verified_identity_under_lock(
                     and before_descriptor_identities.get(descriptor) != identity
                 ]
                 if len(matches) != 1:
+                    before_target_count = sum(
+                        identity == connection_guard.leaf_identity
+                        for identity in before_descriptor_identities.values()
+                    )
+                    after_target_count = sum(
+                        identity == connection_guard.leaf_identity
+                        for identity in after_descriptor_identities.values()
+                    )
                     raise _configuration_error(
                         "v3_db_main_handle_mismatch",
-                        "SQLite main descriptor does not uniquely match the guarded V3 leaf",
+                        "SQLite main descriptor does not uniquely match the guarded V3 leaf "
+                        f"(before_target={before_target_count}, "
+                        f"after_target={after_target_count}, candidates={len(matches)})",
                     )
             verified_connection = connection
             connection = None

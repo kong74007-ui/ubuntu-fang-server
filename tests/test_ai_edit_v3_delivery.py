@@ -950,7 +950,7 @@ class V3PublicationRecoveryTests(unittest.TestCase):
                     )
                 self.store._write(
                     lambda connection: connection.execute(
-                        """UPDATE edit_v3_jobs SET lease_until=1_000
+                        """UPDATE edit_v3_jobs SET lease_until=1000
                            WHERE job_id='job-publish'"""
                     )
                 )
@@ -1054,7 +1054,7 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         self.store._write(
             lambda connection: connection.execute(
                 """UPDATE edit_v3_jobs
-                   SET state='asset_decision_reconciling',lease_until=1_010
+                   SET state='asset_decision_reconciling',lease_until=1010
                    WHERE job_id='job-publish'"""
             )
         )
@@ -1328,7 +1328,7 @@ class V3PublicationRecoveryTests(unittest.TestCase):
                 ),
                 connection.execute(
                     """UPDATE edit_v3_billing_intents
-                       SET status='completed',completed_at=1_005
+                       SET status='completed',completed_at=1005
                        WHERE operation='refund_full'"""
                 ),
             )
@@ -1389,7 +1389,7 @@ class V3PublicationRecoveryTests(unittest.TestCase):
                 )
                 self.store._write(
                     lambda connection: connection.execute(
-                        """UPDATE edit_v3_jobs SET lease_until=1_000
+                        """UPDATE edit_v3_jobs SET lease_until=1000
                            WHERE job_id='job-publish'"""
                     )
                 )
