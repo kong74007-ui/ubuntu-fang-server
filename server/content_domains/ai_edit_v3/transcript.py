@@ -38,6 +38,8 @@ class SourceSegment:
     end_ms: int
     protected: bool
     text: str
+    output_start_ms: int | None = None
+    output_end_ms: int | None = None
 
 
 @dataclass(frozen=True)
