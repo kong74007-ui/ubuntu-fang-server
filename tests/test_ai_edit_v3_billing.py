@@ -694,6 +694,34 @@ class V3BillingRecoveryTests(BillingTestCase):
         self.assertEqual(len(ledger.deduct_calls), 1)
         self.assertEqual(len(ledger.query_calls), 1)
 
+    def test_crash_after_external_predebit_effect_queries_once_and_never_rededucts(self):
+        claim = self.claim()
+        ledger = FakeLedger(self.billing)
+        with self.assertRaises(self.billing.InjectedCommitFailure):
+            self.billing.process_pending_intent(
+                self.created.intent.intent_id,
+                claim=claim,
+                ledger=ledger,
+                now=3_000,
+                store=self.store,
+                failpoint="after_external_effect_before_local_confirmation",
+            )
+
+        recovered = self.billing.process_pending_intent(
+            self.created.intent.intent_id,
+            claim=claim,
+            ledger=ledger,
+            now=3_500,
+            store=self.store,
+        )
+
+        job, intent = self.rows()
+        self.assertEqual(recovered.next_state, "queued")
+        self.assertEqual(len(ledger.deduct_calls), 1)
+        self.assertEqual(len(ledger.query_calls), 1)
+        self.assertEqual(job["confirmed_preheld_total"], self.quote.max_points)
+        self.assertEqual(intent["status"], "completed")
+
     def test_crash_after_intent_commit_queries_absence_then_reuses_same_key(self):
         claim = self.claim()
         ledger = FakeLedger(self.billing)
@@ -2031,6 +2059,69 @@ class V3RefundTests(BillingTestCase):
         self.assertEqual(completed.next_state, "publishing")
         self.assertEqual(len(ledger.refund_calls), 1)
         self.assertEqual(ledger.refund_calls[0][2], delta.intent.external_idempotency_key)
+
+    def test_every_refund_operation_crash_boundary_converges_once(self):
+        for operation in ("refund_delta", "refund_full"):
+            for failpoint in (
+                "after_intent_commit_before_ledger",
+                "after_external_effect_before_local_confirmation",
+            ):
+                with self.subTest(operation=operation, failpoint=failpoint):
+                    self.setUp()
+                    if operation == "refund_delta":
+                        requested = self.billing.request_delta_refund(
+                            self.claim, actual_charge=25, now=4_000, store=self.store
+                        )
+                        expected_state = "publishing"
+                    else:
+                        self.set_state("refund_pending")
+                        requested = self.billing.request_full_refund(
+                            self.claim, now=4_000, store=self.store
+                        )
+                        expected_state = "refunded"
+                    ledger = FakeLedger(self.billing)
+                    with self.assertRaises(self.billing.InjectedCommitFailure):
+                        self.billing.process_pending_intent(
+                            requested.intent.intent_id,
+                            claim=self.claim,
+                            ledger=ledger,
+                            now=4_100,
+                            store=self.store,
+                            failpoint=failpoint,
+                        )
+
+                    if failpoint == "after_intent_commit_before_ledger":
+                        self.assertEqual(ledger.refund_calls, [])
+                        ledger.query_behavior = "absent"
+                        absent = self.billing.reconcile_unknown_intent(
+                            requested.intent.intent_id,
+                            claim=self.claim,
+                            ledger=ledger,
+                            now=4_200,
+                            store=self.store,
+                        )
+                        self.assertEqual(absent.intent.status, "retryable_absent")
+                        ledger.query_behavior = "stored"
+
+                    recovered = self.billing.process_pending_intent(
+                        requested.intent.intent_id,
+                        claim=self.claim,
+                        ledger=ledger,
+                        now=4_300,
+                        store=self.store,
+                    )
+
+                    self.assertEqual(recovered.next_state, expected_state)
+                    self.assertEqual(len(ledger.refund_calls), 1)
+                    self.assertEqual(
+                        ledger.refund_calls[0][2],
+                        requested.intent.external_idempotency_key,
+                    )
+                    job = self.job()
+                    self.assertLessEqual(
+                        job["confirmed_refunded_total"],
+                        job["confirmed_preheld_total"],
+                    )
 
     def test_late_delta_authority_after_timeout_routes_to_full_refund_path(self):
         delta = self.billing.request_delta_refund(

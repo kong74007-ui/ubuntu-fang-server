@@ -5504,6 +5504,28 @@ class V3LeaseTests(unittest.TestCase):
             )
         )
         self.assertEqual(self.protected_snapshot("job-1"), after_transition)
+        attempt_counts = self.store._read(
+            lambda connection: tuple(
+                connection.execute(
+                    """SELECT count(*),
+                              sum(CASE WHEN status='running' THEN 1 ELSE 0 END)
+                       FROM edit_v3_stage_attempts WHERE job_id='job-1'"""
+                ).fetchone()
+            )
+        )
+        checkpoint_count = self.store._read(
+            lambda connection: connection.execute(
+                "SELECT count(*) FROM edit_v3_checkpoints WHERE job_id='job-1'"
+            ).fetchone()[0]
+        )
+        provider_count = self.store._read(
+            lambda connection: connection.execute(
+                "SELECT count(*) FROM edit_v3_provider_tasks WHERE job_id='job-1'"
+            ).fetchone()[0]
+        )
+        self.assertEqual(attempt_counts, (1, 0))
+        self.assertEqual(checkpoint_count, 1)
+        self.assertEqual(provider_count, 1)
 
 
 if __name__ == "__main__":

@@ -1018,12 +1018,21 @@ class V3PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(unknown.next_state, "asset_decision_reconciling")
         self.assertEqual(recovered.next_state, "completed")
         expected_query = f"ai-edit-v3:{claim.job_id}:publish:query:{claim.fencing_token}"
+        expected_commit = f"ai-edit-v3:{claim.job_id}:publish:commit:{claim.fencing_token}"
         self.assertEqual(second_process.calls["query_decision"], [expected_query])
         with closing(connect()) as connection:
             self.assertEqual(
                 connection.execute(
                     """SELECT count(*) FROM video_assets
                        WHERE source_job_id='job-publish'"""
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    """SELECT count(*) FROM video_asset_publication_ops
+                       WHERE idempotency_key=?""",
+                    (expected_commit,),
                 ).fetchone()[0],
                 1,
             )

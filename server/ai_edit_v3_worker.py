@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from server.content_domains.ai_edit_v3.feature import FeatureConfig
 from server.content_domains.ai_edit_v3.pipeline import run_job, run_reconciliation_pass
 from server.content_domains.ai_edit_v3.runtime import Runtime, preflight
 from server.content_domains.ai_edit_v3.store import LeaseLost, StoreConflictError
+
+
+LOG = logging.getLogger("ai-edit-v3")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +100,11 @@ def run_worker(stop_event, *, config=None, runtime=None) -> None:
                 limit=config.reconciliation_limit,
                 allow_new_work=allow_new_work,
             )
-        except (LeaseLost, StoreConflictError):
+        except (LeaseLost, StoreConflictError) as exc:
+            LOG.error(
+                "[ai-edit-v3] reconciliation pass deferred error_type=%s",
+                type(exc).__name__,
+            )
             stop_event.wait(config.poll_interval_seconds)
             continue
         if allow_new_work:

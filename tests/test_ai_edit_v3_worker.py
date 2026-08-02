@@ -149,14 +149,14 @@ class V3WorkerTests(unittest.TestCase):
             )
         )
 
-    def runtime_for_gate(self, store, *, enabled, ledger, publisher):
+    def runtime_for_gate(self, store, *, enabled, ledger, publisher, clock=None):
         class Clock:
             def now(self):
                 return 0.2
 
         dependencies = RuntimeDependencies(
             store=store,
-            clock=Clock(),
+            clock=clock or Clock(),
             points=ledger,
             assets=publisher,
             cos=None,
@@ -577,6 +577,98 @@ class V3WorkerTests(unittest.TestCase):
             self.real_job(store, created["job"]["job_id"])["state"],
             "billing_reconciling",
         )
+
+    def test_billing_authority_pending_beyond_300_seconds_converges_without_media(self):
+        from server.ai_edit_v3_worker import run_worker, worker_config
+        from server.content_domains.ai_edit_v3.billing import process_pending_intent
+
+        class MutableClock:
+            def __init__(self):
+                self.value = 300.102
+
+            def now(self):
+                return self.value
+
+        class RecoveringLedger:
+            def __init__(self):
+                self.available = False
+                self.deduct_calls = 0
+                self.query_calls = 0
+
+            def deduct(self, *args):
+                self.deduct_calls += 1
+                raise RuntimeError("ledger unavailable")
+
+            def refund(self, *args):
+                raise AssertionError("absent pre-debit must never refund")
+
+            def query_transaction(self, *args):
+                self.query_calls += 1
+                if not self.available:
+                    raise RuntimeError("ledger unavailable")
+                return None
+
+        store = self.real_store()
+        created = store.create_job_with_predebit(
+            "alice",
+            "job-pending-convergence",
+            "quote-1",
+            "key-pending-convergence",
+            {},
+            now_ms=100,
+            intent_id="intent-pending-convergence",
+        )
+        initial_claim = store.claim_job(
+            created["job"]["job_id"],
+            "pending-setup",
+            30,
+            101,
+            expected_states={"created_draft"},
+        )
+        ledger = RecoveringLedger()
+        unknown = process_pending_intent(
+            created["intent"]["id"],
+            claim=initial_claim,
+            ledger=ledger,
+            now=102,
+            store=store,
+        )
+        self.assertEqual(unknown.next_state, "billing_reconciling")
+        self.assertTrue(store.release_lease(initial_claim, 103))
+        media_claims = []
+        original_claim_next = store.claim_next_job
+
+        def count_media_claim(*args, **kwargs):
+            media_claims.append(args)
+            return original_claim_next(*args, **kwargs)
+
+        store.claim_next_job = count_media_claim
+        clock = MutableClock()
+        runtime = self.runtime_for_gate(
+            store,
+            enabled=False,
+            ledger=ledger,
+            publisher=object(),
+            clock=clock,
+        )
+
+        run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        pending = self.real_job(store, created["job"]["job_id"])
+        self.assertEqual(pending["state"], "failed_reconciliation_pending")
+        self.assertEqual(media_claims, [])
+        self.assertEqual(ledger.deduct_calls, 1)
+        self.assertEqual(ledger.query_calls, 1)
+
+        ledger.available = True
+        clock.value = 300.103
+        run_worker(StopAfterOneLoop(), config=worker_config(), runtime=runtime)
+
+        converged = self.real_job(store, created["job"]["job_id"])
+        self.assertEqual(converged["state"], "prehold_absent")
+        self.assertEqual(media_claims, [])
+        self.assertEqual(ledger.deduct_calls, 1)
+        self.assertEqual(ledger.query_calls, 2)
 
     def test_worker_config_rejects_boolean_and_non_numeric_bounds(self):
         from server.ai_edit_v3_worker import WorkerConfig
