@@ -86,6 +86,14 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _provider_payload_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _provider_payload_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_provider_payload_json(item) for item in value]
+    return value
+
+
 def _request(job: Mapping[str, Any]) -> dict[str, Any]:
     value = job.get("normalized_request_json")
     if isinstance(value, str):
@@ -507,7 +515,7 @@ class ProductionStageCoordinator:
             object_key = f"{self.store.environment}/ai-edit-v3/{owner_hmac}/{job_id}/working/source{suffix}"
             self.cos.put_file(media_path, object_key, "video/mp4" if suffix == ".mp4" else "audio/flac", private=True, if_absent=True)
             result = self.asr.transcribe(self.cos.presign_get(object_key, expires=300), job_id, deadline_at=context.deadline_at)
-            payload = dict(result.payload)
+            payload = _provider_payload_json(result.payload)
             digest = _write_json(root / "asr.json", payload)
             return StageOutcome(_NEXT[name], {"asr_sha256": digest, "provider_task_id": payload.get("provider_task_id")}, input_sha, result)
         if name == "aligning":
