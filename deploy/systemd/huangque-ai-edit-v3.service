@@ -12,6 +12,7 @@ EnvironmentFile=-/home/ubuntu/content-api/content.env
 EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=/etc/huangque/ai-edit-v3.env
 Environment=CONTENT_ASSET_DB=/var/lib/huangque-ai-edit-v3/shared-assets.db
+Environment=AI_EDIT_V2_ASSET_DB=/var/lib/huangque-ai-edit-v3/shared-assets.db
 UMask=0007
 RuntimeDirectory=huangque-ai-edit-v3
 RuntimeDirectoryMode=0700

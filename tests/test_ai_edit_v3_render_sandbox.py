@@ -78,6 +78,8 @@ class RenderSandboxStaticTests(unittest.TestCase):
         host_v2_db = "/home/ubuntu/content-api/ai_edit_v2.db"
         worker_v2_db = "/run/huangque-ai-edit-v3/ai_edit_v2.db"
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", worker)
+        self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", worker)
+        self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", api_unit)
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", content)
         self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", v2_assets)
         self.assertNotIn("Environment=AI_EDIT_V2_DB=", worker)
