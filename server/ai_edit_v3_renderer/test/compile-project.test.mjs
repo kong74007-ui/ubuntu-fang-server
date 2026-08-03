@@ -77,6 +77,47 @@ test("compiler places only muted source-video clips and never emits audio elemen
   assert.doesNotMatch(scene, /data-has-audio/);
 });
 
+test("compiler renders one material as one column and captions on their own time ranges", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-timed-captions-")), "project");
+  const manifest = fixtureManifest("First caption");
+  manifest.assets = [{id: "material_01", kind: "image", path: "media/material-01.png"}];
+  manifest.compositions[0].layout_id = "editorial_collage";
+  manifest.compositions[0].asset_ids = ["material_01"];
+  manifest.captions = [
+    {id: "caption_01", start_ms: 0, end_ms: 2000, text: "First caption"},
+    {id: "caption_02", start_ms: 2000, end_ms: 4000, text: "Second caption"},
+  ];
+
+  await compileProject({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+
+  assert.match(scene, /class="hf-materials hf-material-count-1" style="grid-template-columns:1fr"/);
+  assert.match(scene, /data-safe-text="First caption"[^>]+data-start="0"[^>]+data-duration="2"/);
+  assert.match(scene, /data-safe-text="Second caption"[^>]+data-start="2"[^>]+data-duration="2"/);
+  assert.doesNotMatch(scene, /data-safe-text="First caption Second caption"/);
+});
+
+test("compiler raises source video above fullscreen material for speaker pip", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-speaker-pip-")), "project");
+  const manifest = fixtureManifest("Speaker remains visible");
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{
+    id: "segment_01", source_path: "media/source.mp4", source_start_ms: 0, source_end_ms: 4000,
+    output_start_ms: 0, output_end_ms: 4000,
+  }];
+  manifest.assets = [{id: "material_01", kind: "image", path: "media/material-01.png"}];
+  manifest.compositions[0].layout_id = "material_fullscreen_speaker_pip";
+  manifest.compositions[0].asset_ids = ["material_01"];
+
+  await compileProject({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+
+  assert.match(
+    scene,
+    /class="hf-source-video hf-source-video-pip clip"[^>]+style="inset:auto 7\.85% 8\.8% auto;width:26\.6%;height:30\.6%;z-index:3;border-radius:var\(--hf-radius\)"/,
+  );
+});
+
 function fixtureManifest(text) {
   return {
     registry_sha256: getRegistrySha256(),

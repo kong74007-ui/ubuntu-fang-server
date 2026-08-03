@@ -68,11 +68,25 @@ function compileScene({manifest, composition, theme}) {
   const layout = resolveLayout(composition.layout_id, composition.layout_variant, ratio);
   const captions = manifest.captions
     .filter((caption) => caption.start_ms < composition.end_ms && caption.end_ms > composition.start_ms)
-    .map((caption) => assertSafeText(caption.text, {maxChars: 240, maxLines: 3}));
+    .map((caption) => ({
+      text: assertSafeText(caption.text, {maxChars: 240, maxLines: 3}),
+      startMs: Math.max(caption.start_ms, composition.start_ms) - composition.start_ms,
+      endMs: Math.min(caption.end_ms, composition.end_ms) - composition.start_ms,
+    }));
   const overlays = composition.overlay_ids.map((overlayId, index) => {
     resolveOverlay(overlayId);
     const overlayContract = getOverlayContract(overlayId);
-    const overlayText = [...captions.join(" ")].slice(0, overlayContract.maxChars).join("");
+    if (overlayId === "standard_caption") {
+      return captions.map((caption, captionIndex) => compileOverlay({
+        overlayId,
+        idPrefix: `${prefix}_caption_${captionIndex + 1}`,
+        text: caption.text,
+        startMs: caption.startMs,
+        durationMs: caption.endMs - caption.startMs,
+        trackIndex: index + 21 + captionIndex,
+      })).join("");
+    }
+    const overlayText = [...captions.map((caption) => caption.text).join(" ")].slice(0, overlayContract.maxChars).join("");
     return compileOverlay({
       overlayId,
       idPrefix: prefix,
@@ -98,7 +112,9 @@ function compileScene({manifest, composition, theme}) {
   const timeline = timelineRecorder();
   const animationScript = (composition.animations ?? []).map((animation) => {
     if (!composition.overlay_ids.includes(animation.target)) throw new Error("animation_target_unknown");
-    const target = `#${prefix}_${animation.target}`;
+    const target = animation.target === "standard_caption"
+      ? `#${prefix}_root .hf-overlay-standard_caption`
+      : `#${prefix}_${animation.target}`;
     const audit = applyAnimation({
       timeline, preset: animation.preset, target,
       params: {durationMs: animation.duration_ms, delayMs: animation.delay_ms},
@@ -111,7 +127,7 @@ function compileScene({manifest, composition, theme}) {
     boundaryMs: 0, sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
   });
   const transitionScript = compileTransitionScript({...transitionAudit, outgoing: `#${prefix}_background`, incoming: `#${rootId}`});
-  return `<template id="${prefix}_template"><div id="${rootId}" data-composition-id="${prefix}" data-width="${width}" data-height="${height}" data-start="0" data-duration="${duration}" style="${variables}">${body}${sourceVideo}</div><style>#${rootId}{position:relative;overflow:hidden;color:var(--hf-text);font-family:var(--hf-font)}#${rootId} .hf-background{position:absolute;inset:0;z-index:0;background:linear-gradient(145deg,var(--hf-bg),var(--hf-surface))}#${rootId} .hf-source-video{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--hf-image-fit);z-index:1}#${rootId} .hf-layout-frame{position:absolute;inset:5%;z-index:2;display:grid;gap:var(--hf-gap)}#${rootId} .hf-speaker-zone,#${rootId} .hf-materials{display:grid;place-items:center;position:relative;overflow:hidden;border:1px solid var(--hf-border);border-radius:var(--hf-radius);background:rgba(23,42,66,.14);box-shadow:var(--hf-shadow)}#${rootId} .hf-materials{background:var(--hf-surface-strong)}#${rootId} .hf-speaker-zone span{display:${manifest.source_video ? "none" : "block"}}#${rootId} .hf-speaker-zone span,#${rootId} .hf-fallback span{color:var(--hf-muted);font-size:34px}#${rootId} .hf-materials{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px}#${rootId} .hf-asset{width:100%;height:100%;min-height:0;object-fit:var(--hf-image-fit);border-radius:18px}#${rootId} .hf-fallback{display:grid;place-items:center;width:100%;height:100%}#${rootId} .hf-layout-speaker_fullscreen{grid-template-columns:1fr}#${rootId} .hf-layout-speaker_fullscreen .hf-materials{display:none}#${rootId} .hf-layout-speaker_left_info_right{grid-template-columns:1.15fr .85fr}#${rootId} .hf-layout-speaker_right_evidence_left{grid-template-columns:.85fr 1.15fr}#${rootId} .hf-layout-speaker_right_evidence_left .hf-speaker-zone{order:2}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-materials,#${rootId} .hf-layout-product_hero .hf-materials{position:absolute;inset:0}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-speaker-zone{position:absolute;right:3%;bottom:4%;width:28%;height:34%;z-index:2}#${rootId} .hf-layout-product_hero .hf-speaker-zone{display:none}#${rootId} .hf-layout-editorial_collage{grid-template-columns:.75fr 1.25fr}#${rootId} .hf-layout-editorial_collage .hf-materials{grid-template-columns:repeat(2,1fr)}#${rootId} .hf-layout-comparison_split{grid-template-columns:1fr 1fr}#${rootId} .hf-layout-steps_stack,#${rootId} .hf-layout-method_timeline{grid-template-rows:.55fr 1.45fr}#${rootId} .hf-layout-number_proof .hf-speaker-zone{display:none}#${rootId} .hf-layout-number_proof .hf-materials{font-size:96px}#${rootId} .hf-layout-quote_reversal{transform:rotate(-1deg);inset:9% 7%}#${rootId} .hf-layout-cta_offer{inset:12%;transform:scale(.94)}#${rootId} .hf-variant-emphasis_b .hf-speaker-zone{border-width:3px}#${rootId} .hf-safe-area{position:absolute;inset:8% 7%;z-index:20;display:flex;flex-direction:column;justify-content:flex-end;gap:var(--hf-gap)}#${rootId} .hf-overlay{max-width:88%;padding:18px 28px;border:1px solid var(--hf-border);border-radius:20px;background:rgba(7,17,31,.82);font-size:40px;font-weight:700;line-height:1.28;box-shadow:var(--hf-shadow)}#${rootId} .hf-overlay-standard_caption{align-self:center;text-align:center;font-size:34px}</style><script>(()=>{const root=document.querySelector('#${rootId}');for(const node of root.querySelectorAll('[data-safe-text]'))node.querySelector('span').textContent=node.dataset.safeText;const tl=gsap.timeline({paused:true});tl.set(root,{autoAlpha:1},0);${transitionScript}${animationScript}window.__timelines=window.__timelines||{};window.__timelines["${prefix}"] = tl;})();</script></template>`;
+  return `<template id="${prefix}_template"><div id="${rootId}" data-composition-id="${prefix}" data-width="${width}" data-height="${height}" data-start="0" data-duration="${duration}" style="${variables}">${body}${sourceVideo}</div><style>#${rootId}{position:relative;overflow:hidden;color:var(--hf-text);font-family:var(--hf-font)}#${rootId} .hf-background{position:absolute;inset:0;z-index:0;background:linear-gradient(145deg,var(--hf-bg),var(--hf-surface))}#${rootId} .hf-source-video{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--hf-image-fit);z-index:1}#${rootId} .hf-layout-frame{position:absolute;inset:5%;z-index:2;display:grid;gap:var(--hf-gap)}#${rootId} .hf-speaker-zone,#${rootId} .hf-materials{display:grid;place-items:center;position:relative;overflow:hidden;border:1px solid var(--hf-border);border-radius:var(--hf-radius);background:rgba(23,42,66,.14);box-shadow:var(--hf-shadow)}#${rootId} .hf-materials{background:var(--hf-surface-strong)}#${rootId} .hf-speaker-zone span{display:${manifest.source_video ? "none" : "block"}}#${rootId} .hf-speaker-zone span,#${rootId} .hf-fallback span{color:var(--hf-muted);font-size:34px}#${rootId} .hf-materials{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px}#${rootId} .hf-material-count-1{grid-template-columns:1fr}#${rootId} .hf-asset{width:100%;height:100%;min-height:0;object-fit:var(--hf-image-fit);border-radius:18px}#${rootId} .hf-fallback{display:grid;place-items:center;width:100%;height:100%}#${rootId} .hf-layout-speaker_fullscreen{grid-template-columns:1fr}#${rootId} .hf-layout-speaker_fullscreen .hf-materials{display:none}#${rootId} .hf-layout-speaker_left_info_right{grid-template-columns:1.15fr .85fr}#${rootId} .hf-layout-speaker_right_evidence_left{grid-template-columns:.85fr 1.15fr}#${rootId} .hf-layout-speaker_right_evidence_left .hf-speaker-zone{order:2}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-materials,#${rootId} .hf-layout-product_hero .hf-materials{position:absolute;inset:0}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-speaker-zone{position:absolute;right:3%;bottom:4%;width:28%;height:34%;z-index:2}#${rootId} .hf-layout-product_hero .hf-speaker-zone{display:none}#${rootId} .hf-layout-editorial_collage{grid-template-columns:.75fr 1.25fr}#${rootId} .hf-layout-editorial_collage .hf-materials{grid-template-columns:repeat(2,1fr)}#${rootId} .hf-layout-comparison_split{grid-template-columns:1fr 1fr}#${rootId} .hf-layout-steps_stack,#${rootId} .hf-layout-method_timeline{grid-template-rows:.55fr 1.45fr}#${rootId} .hf-layout-number_proof .hf-speaker-zone{display:none}#${rootId} .hf-layout-number_proof .hf-materials{font-size:96px}#${rootId} .hf-layout-quote_reversal{transform:rotate(-1deg);inset:9% 7%}#${rootId} .hf-layout-cta_offer{inset:12%;transform:scale(.94)}#${rootId} .hf-variant-emphasis_b .hf-speaker-zone{border-width:3px}#${rootId} .hf-safe-area{position:absolute;inset:8% 7%;z-index:20;display:flex;flex-direction:column;justify-content:flex-end;gap:var(--hf-gap)}#${rootId} .hf-overlay{max-width:88%;padding:18px 28px;border:1px solid var(--hf-border);border-radius:20px;background:rgba(7,17,31,.82);font-size:40px;font-weight:700;line-height:1.28;box-shadow:var(--hf-shadow)}#${rootId} .hf-overlay-standard_caption{align-self:center;text-align:center;font-size:34px}</style><script>(()=>{const root=document.querySelector('#${rootId}');for(const node of root.querySelectorAll('[data-safe-text]'))node.querySelector('span').textContent=node.dataset.safeText;const tl=gsap.timeline({paused:true});tl.set(root,{autoAlpha:1},0);${transitionScript}${animationScript}window.__timelines=window.__timelines||{};window.__timelines["${prefix}"] = tl;})();</script></template>`;
 }
 
 function compileSourceVideo({manifest, composition, prefix}) {
@@ -122,6 +138,11 @@ function compileSourceVideo({manifest, composition, prefix}) {
     throw new Error("source_video_path_invalid");
   }
   const segments = Array.isArray(manifest.source_segments) ? manifest.source_segments : [];
+  const speakerPip = composition.layout_id === "material_fullscreen_speaker_pip";
+  const sourceClass = speakerPip ? "hf-source-video hf-source-video-pip clip" : "hf-source-video clip";
+  const pipStyle = speakerPip
+    ? ` style="inset:auto 7.85% 8.8% auto;width:26.6%;height:30.6%;z-index:3;border-radius:var(--hf-radius)"`
+    : "";
   return segments.flatMap((segment, index) => {
     const start = Math.max(segment.output_start_ms, composition.start_ms);
     const end = Math.min(segment.output_end_ms, composition.end_ms);
@@ -130,7 +151,7 @@ function compileSourceVideo({manifest, composition, prefix}) {
     const localStart = start - composition.start_ms;
     const mediaStart = segment.source_start_ms + (start - segment.output_start_ms);
     const durationMs = end - start;
-    return [`<video id="${prefix}_source_${index}" class="hf-source-video clip" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(localStart)}" data-duration="${seconds(durationMs)}" data-playback-start="${seconds(mediaStart)}" data-volume="0" data-track-index="10"></video>`];
+    return [`<video id="${prefix}_source_${index}" class="${sourceClass}" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(localStart)}" data-duration="${seconds(durationMs)}" data-playback-start="${seconds(mediaStart)}" data-volume="0" data-track-index="10"${pipStyle}></video>`];
   }).join("");
 }
 

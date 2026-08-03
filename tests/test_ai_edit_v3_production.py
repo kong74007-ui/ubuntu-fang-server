@@ -170,8 +170,252 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertEqual("product_hero", plan["scenes"][0]["layout_id"])
         self.assertEqual("context", plan["materials"][0]["purpose"])
 
+    def test_talking_head_captions_compile_to_multiple_speaker_safe_scenes(self):
+        provider = QwenCompiledDirector(_Qwen())
+        capabilities = {
+            "layout_capabilities": [
+                "speaker_fullscreen",
+                "speaker_left_info_right",
+                "speaker_right_evidence_left",
+                "material_fullscreen_speaker_pip",
+                "product_hero",
+            ],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium", "high"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+            for index, (start, end, text) in enumerate(
+                (
+                    (0, 4200, "Introduce the platform"),
+                    (4200, 8200, "Explain image generation"),
+                    (8200, 12400, "Explain digital presenters"),
+                    (12400, 16600, "Explain voice generation"),
+                    (16600, 21200, "Explain poster workflows"),
+                    (21200, 26178, "Conclude with delivery efficiency"),
+                ),
+                start=1,
+            )
+        ]
+        request = {
+            "timeline": {"duration_ms": 26178, "captions": captions, "source_segments": []},
+            "source": {"input_type": "platform_talking_head"},
+            "current_materials": [],
+            "generate_missing_material": True,
+            "capabilities": capabilities,
+            "ratio": "9:16",
+            "user_direction": "ai_auto",
+        }
+
+        plan = json.loads(provider.generate_plan(
+            request, purpose="initial", idempotency_key="x", deadline_at=9999999999
+        ).payload["content"])
+
+        timeline = SimpleNamespace(
+            duration_ms=26178,
+            captions=tuple(
+                Caption(item["id"], item["text"], item["start_ms"], item["end_ms"])
+                for item in captions
+            ),
+        )
+
+        self.assertEqual(plan, validate_edit_plan(plan, timeline=timeline, capabilities=capabilities))
+        self.assertGreaterEqual(len(plan["scenes"]), 4)
+        self.assertEqual(0, plan["scenes"][0]["start_ms"])
+        self.assertEqual(26178, plan["scenes"][-1]["end_ms"])
+        self.assertEqual(
+            [scene["end_ms"] for scene in plan["scenes"][:-1]],
+            [scene["start_ms"] for scene in plan["scenes"][1:]],
+        )
+        layouts = [scene["layout_id"] for scene in plan["scenes"]]
+        self.assertEqual("speaker_fullscreen", layouts[0])
+        self.assertNotIn("product_hero", layouts)
+        self.assertGreater(len(set(layouts)), 1)
+        self.assertGreaterEqual(len(plan["materials"]), 2)
+
+    def test_invalid_optional_layout_sequence_keeps_multi_scene_fallback(self):
+        class InvalidSequenceQwen(_Qwen):
+            def generate_edit_plan(self, system_prompt, user_prompt):
+                result = super().generate_edit_plan(system_prompt, user_prompt)
+                result.payload["content"] = json.dumps({
+                    "creative_concept": "Safe fallback",
+                    "layout_sequence": ["unknown_layout"],
+                    "motion_energy": "high",
+                })
+                return result
+
+        provider = QwenCompiledDirector(InvalidSequenceQwen())
+        capabilities = {
+            "layout_capabilities": ["speaker_fullscreen", "speaker_left_info_right"],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium", "high"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+            for index, (start, end, text) in enumerate(
+                ((0, 3000, "One"), (3000, 6000, "Two"), (6000, 9000, "Three")),
+                start=1,
+            )
+        ]
+
+        plan = json.loads(provider.generate_plan({
+            "timeline": {"duration_ms": 9000, "captions": captions, "source_segments": []},
+            "source": {"input_type": "platform_talking_head"},
+            "current_materials": [],
+            "generate_missing_material": False,
+            "capabilities": capabilities,
+            "ratio": "9:16",
+        }, purpose="initial", idempotency_key="x", deadline_at=9999999999).payload["content"])
+
+        self.assertEqual(3, len(plan["scenes"]))
+        self.assertTrue(all(scene["layout_id"] in capabilities["layout_capabilities"] for scene in plan["scenes"]))
+
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_visual_inspector_blocks_single_card_talking_head_failure_pattern(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 26178,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [{
+                "id": "composition_001", "start_ms": 0, "end_ms": 26178,
+                "layout_id": "product_hero", "asset_ids": ["material_01"],
+            }],
+            "captions": [
+                {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+                for index, (start, end, text) in enumerate(
+                    (
+                        (0, 6045, "Platform introduction"),
+                        (6045, 10205, "Image and presenter tools"),
+                        (10205, 16460, "Marketing content"),
+                        (16460, 18938, "One workbench"),
+                        (18938, 25090, "Deliver final videos"),
+                        (25090, 26178, "More efficient"),
+                    ),
+                    start=1,
+                )
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+        self.assertEqual("fail", checks["face_product_obstruction"]["result"])
+        self.assertEqual("fail", checks["material_semantic_identity"]["result"])
+        self.assertEqual("fail", checks["opening_hook_visual_consistency"]["result"])
+
+    def test_visual_inspector_accepts_varied_scene_bound_talking_head_manifest(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        boundaries = [0, 4000, 8000, 12000, 16000, 21000, 26000]
+        material_ids = ["material_01", "material_02", "material_03"]
+        compositions = []
+        for index in range(6):
+            material_id = material_ids[index // 2] if index % 2 else None
+            compositions.append({
+                "id": f"composition_{index + 1:03d}",
+                "start_ms": boundaries[index],
+                "end_ms": boundaries[index + 1],
+                "layout_id": "speaker_left_info_right" if material_id else "speaker_fullscreen",
+                "asset_ids": [material_id] if material_id else [],
+            })
+        manifest = {
+            "duration_ms": 26000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": material_id, "kind": "image"} for material_id in material_ids],
+            "compositions": compositions,
+            "captions": [
+                {
+                    "id": f"caption_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "text": f"Caption {index + 1}",
+                }
+                for index in range(6)
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        for check_id in (
+            "caption_fact_accuracy",
+            "safe_area_and_text_visibility",
+            "face_product_obstruction",
+            "material_semantic_identity",
+            "opening_hook_visual_consistency",
+        ):
+            self.assertEqual("pass", checks[check_id]["result"], check_id)
+
+    def test_visual_inspector_blocks_repetitive_long_form_layouts(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        boundaries = [0, 4000, 8000, 12000, 16000, 20000, 24000]
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": f"composition_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "layout_id": "speaker_fullscreen",
+                    "asset_ids": [],
+                }
+                for index in range(6)
+            ],
+            "captions": [
+                {
+                    "id": f"caption_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "text": f"Caption {index + 1}",
+                }
+                for index in range(6)
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+        self.assertTrue(checks["safe_area_and_text_visibility"]["blocking"])
+
+    def test_render_compositions_bind_only_scene_requested_materials(self):
+        from server.content_domains.ai_edit_v3.production import _scene_asset_ids
+
+        known = ["material_01", "material_02"]
+        scenes = [
+            {"id": "scene_01", "material_slots": [{"id": "material_01"}]},
+            {"id": "scene_02", "material_slots": []},
+            {"id": "scene_03", "material_slots": [{"id": "material_02"}]},
+        ]
+
+        self.assertEqual(
+            [["material_01"], [], ["material_02"]],
+            [_scene_asset_ids(scene, known) for scene in scenes],
+        )
+
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector

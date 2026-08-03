@@ -203,6 +203,18 @@ def _material_asset_hashes(
     return evidence
 
 
+def _scene_asset_ids(
+    scene: Mapping[str, Any], known_asset_ids: list[str]
+) -> list[str]:
+    """Bind a composition only to the frozen assets requested by its scene."""
+
+    known = set(known_asset_ids)
+    requested = [str(slot["id"]) for slot in scene.get("material_slots") or ()]
+    if len(requested) != len(set(requested)) or any(asset_id not in known for asset_id in requested):
+        raise ValueError("scene_material_binding_invalid")
+    return requested
+
+
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -253,6 +265,39 @@ class QwenCompiledDirector:
         return value if isinstance(value, Mapping) else {}
 
     @staticmethod
+    def _caption_groups(captions: list[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+        """Build bounded scene candidates without letting model formatting own timing."""
+
+        if not captions:
+            raise ValueError("director_captions_missing")
+        groups: list[list[Mapping[str, Any]]] = []
+        current: list[Mapping[str, Any]] = []
+        for caption in captions:
+            current.append(caption)
+            elapsed = int(current[-1]["end_ms"]) - int(current[0]["start_ms"])
+            if elapsed >= 2500:
+                groups.append(current)
+                current = []
+        if current:
+            if groups and int(current[-1]["end_ms"]) - int(current[0]["start_ms"]) < 1400:
+                groups[-1].extend(current)
+            else:
+                groups.append(current)
+        while len(groups) > 8:
+            merged: list[list[Mapping[str, Any]]] = []
+            for index in range(0, len(groups), 2):
+                merged.append(groups[index] + (groups[index + 1] if index + 1 < len(groups) else []))
+            groups = merged
+        return groups
+
+    @staticmethod
+    def _first_supported(candidates: tuple[str, ...], layouts: list[str]) -> str:
+        for candidate in candidates:
+            if candidate in layouts:
+                return candidate
+        return layouts[0]
+
+    @staticmethod
     def _compile(request: Mapping[str, Any], creative: Mapping[str, Any]) -> dict[str, Any]:
         timeline = request["timeline"]
         captions = list(timeline["captions"])
@@ -262,39 +307,45 @@ class QwenCompiledDirector:
         if ratio not in {"16:9", "9:16"}:
             ratio = "9:16"
         layouts = list(capabilities["layout_capabilities"])
-        preferred_layout = creative.get("layout_id")
-        layout = preferred_layout if preferred_layout in layouts else layouts[0]
+        groups = QwenCompiledDirector._caption_groups(captions)
+        source_type = (request.get("source") or {}).get("input_type")
+        has_speaker_video = source_type not in {
+            "existing_audio", "uploaded_audio", "script_to_audio_video",
+        }
         current_materials = list(request.get("current_materials") or ())[:4]
         if (
             not current_materials
             and request.get("generate_missing_material") is True
             and any(item in layouts for item in ("product_hero", "material_fullscreen_speaker_pip", "speaker_left_info_right"))
         ):
-            current_materials = [{
-                "semantic": f"围绕口播主题的通用场景视觉：{captions[0]['text'][:120]}",
-                "purpose": "context",
-                "generated": True,
-            }]
-        if current_materials and layout == "speaker_fullscreen":
-            source_type = (request.get("source") or {}).get("input_type")
-            candidates = (
-                ("product_hero", "material_fullscreen_speaker_pip", "speaker_left_info_right")
-                if source_type in {"uploaded_audio", "script_to_audio_video"}
-                else ("speaker_left_info_right", "material_fullscreen_speaker_pip", "product_hero")
+            requested_count = min(4, len(groups) if not has_speaker_video else max(1, len(groups) // 2))
+            visual_focuses = creative.get("visual_focuses")
+            safe_focuses = visual_focuses if isinstance(visual_focuses, list) else []
+            material_group_indexes = (
+                list(range(requested_count))
+                if not has_speaker_video
+                else [min(1 + index * 2, len(groups) - 1) for index in range(requested_count)]
             )
-            for candidate in candidates:
-                if candidate in layouts:
-                    layout = candidate
-                    break
+            current_materials = []
+            for index, group_index in enumerate(material_group_indexes):
+                group = groups[group_index]
+                focus = safe_focuses[index] if index < len(safe_focuses) else ""
+                if not isinstance(focus, str) or not focus.strip():
+                    focus = "".join(str(item["text"]) for item in group)[:160]
+                current_materials.append({
+                    "semantic": f"Context visual for: {focus.strip()}",
+                    "purpose": "context",
+                    "generated": True,
+                    "scene_index": group_index,
+                })
         motion = creative.get("motion_energy")
         if motion not in capabilities["theme_capabilities"]["motion_energy"]:
             motion = capabilities["theme_capabilities"]["motion_energy"][0]
         concept = str(creative.get("creative_concept") or request.get("user_direction") or "内容驱动的清晰口播包装").strip()[:240]
         if not concept:
             concept = "内容驱动的清晰口播包装"
-        first = captions[0]
         caption_ids = [item["id"] for item in captions]
-        material_slots = []
+        scene_materials: dict[int, list[dict[str, Any]]] = {}
         material_requests = []
         for index, item in enumerate(current_materials, 1):
             request_id = f"material_{index:02d}"
@@ -302,23 +353,83 @@ class QwenCompiledDirector:
             if not semantic:
                 semantic = "用户上传的补充素材"
             purpose = item.get("purpose") if item.get("purpose") in {"evidence", "product", "context", "decoration"} else "product"
+            default_scene_index = min(index - 1, len(groups) - 1)
+            if has_speaker_video and len(groups) > 1:
+                default_scene_index = min(1 + (index - 1) * 2, len(groups) - 1)
+            scene_index = item.get("scene_index", default_scene_index)
+            if not isinstance(scene_index, int) or isinstance(scene_index, bool) or not (0 <= scene_index < len(groups)):
+                scene_index = default_scene_index
+            scene_start = 0 if scene_index == 0 else int(groups[scene_index][0]["start_ms"])
+            scene_end = duration if scene_index == len(groups) - 1 else int(groups[scene_index + 1][0]["start_ms"])
             slot = {
                 "id": request_id,
                 "semantic": semantic,
                 "purpose": purpose,
                 "priority": "required",
                 "ratio": ratio,
-                "start_ms": 0,
-                "end_ms": duration,
+                "start_ms": scene_start,
+                "end_ms": scene_end,
             }
-            material_slots.append(slot)
+            scene_materials.setdefault(scene_index, []).append(slot)
             material_requests.append({
                 "request_id": request_id,
                 "semantic": semantic,
                 "purpose": purpose,
                 "priority": "required",
                 "ratio": ratio,
-                "time_range": {"start_ms": 0, "end_ms": duration},
+                "time_range": {"start_ms": scene_start, "end_ms": scene_end},
+            })
+        creative_sequence = creative.get("layout_sequence")
+        safe_sequence = creative_sequence if isinstance(creative_sequence, list) else []
+        material_layout_index = 0
+        scenes = []
+        for index, group in enumerate(groups):
+            start_ms = 0 if index == 0 else int(group[0]["start_ms"])
+            end_ms = duration if index == len(groups) - 1 else int(groups[index + 1][0]["start_ms"])
+            slots = scene_materials.get(index, [])
+            requested_layout = safe_sequence[index] if index < len(safe_sequence) else None
+            if slots and has_speaker_video:
+                material_candidates = (
+                    ("speaker_left_info_right", "material_fullscreen_speaker_pip", "speaker_right_evidence_left")
+                    if material_layout_index % 2 == 0
+                    else ("material_fullscreen_speaker_pip", "speaker_right_evidence_left", "speaker_left_info_right")
+                )
+                scene_layout = QwenCompiledDirector._first_supported(material_candidates, layouts)
+                material_layout_index += 1
+                if requested_layout in material_candidates and requested_layout in layouts:
+                    scene_layout = requested_layout
+            elif slots:
+                material_candidates = ("product_hero", "editorial_collage", "number_proof")
+                scene_layout = QwenCompiledDirector._first_supported(material_candidates, layouts)
+                if requested_layout in material_candidates and requested_layout in layouts:
+                    scene_layout = requested_layout
+            elif has_speaker_video:
+                scene_layout = QwenCompiledDirector._first_supported(
+                    ("speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left"), layouts
+                )
+                if requested_layout in layouts and str(requested_layout).startswith("speaker_"):
+                    scene_layout = requested_layout
+            else:
+                scene_layout = QwenCompiledDirector._first_supported(
+                    ("product_hero", "editorial_collage", "number_proof"), layouts
+                )
+            group_caption_ids = [str(item["id"]) for item in group]
+            headline_text = "".join(str(item["text"]) for item in group)
+            scenes.append({
+                "id": f"scene_{index + 1:02d}", "start_ms": start_ms, "end_ms": end_ms,
+                "intent": headline_text[:240], "layout_id": scene_layout,
+                "layout_variant": "balanced_a", "visual_type": "content_led_hook",
+                "headline": {
+                    "text": headline_text, "text_kind": "verbatim",
+                    "source_caption_ids": group_caption_ids,
+                },
+                "highlight": {"text_kind": "ui_label", "ui_label_id": "chapter"},
+                "overlay_ids": ["standard_caption"], "material_slots": slots,
+                "animations": [{
+                    "target": "standard_caption", "preset": "subtitle_pop",
+                    "direction": "up", "duration_ms": 280, "delay_ms": 0,
+                }],
+                "transition": "hard_cut",
             })
         return {
             "version": "2.0",
@@ -346,22 +457,7 @@ class QwenCompiledDirector:
                 "output_end_ms": duration, "caption_ids": caption_ids,
                 "keep_reason": "保留完整口播并确保文案准确",
             }],
-            "scenes": [{
-                "id": "scene_01", "start_ms": 0, "end_ms": duration,
-                "intent": concept, "layout_id": layout,
-                "layout_variant": "balanced_a", "visual_type": "content_led_hook",
-                "headline": {
-                    "text": first["text"], "text_kind": "verbatim",
-                    "source_caption_ids": [first["id"]],
-                },
-                "highlight": {"text_kind": "ui_label", "ui_label_id": "chapter"},
-                "overlay_ids": ["standard_caption"], "material_slots": material_slots,
-                "animations": [{
-                    "target": "standard_caption", "preset": "subtitle_pop",
-                    "direction": "up", "duration_ms": 280, "delay_ms": 0,
-                }],
-                "transition": "hard_cut",
-            }],
+            "scenes": scenes,
             "materials": material_requests,
             "audio_cues": [{
                 "id": "bgm_01", "type": "bgm", "priority": "required",
@@ -373,7 +469,9 @@ class QwenCompiledDirector:
     def generate_plan(self, request: Mapping[str, Any], **kwargs: Any) -> ProviderResult:
         system = (
             "你是中文短视频导演。只返回一个JSON对象，字段仅允许creative_concept、"
-            "layout_id、motion_energy。根据口播内容选择创意，不要改写事实，不要输出Markdown。"
+            "layout_id、layout_sequence、visual_focuses、motion_energy。layout_sequence只能使用"
+            "请求能力白名单中的布局ID，visual_focuses只描述各段需要的视觉语义。根据口播内容"
+            "选择创意，不要改写事实，不要输出Markdown。"
         )
         user = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
         result = self.client.generate_edit_plan(system, user)
@@ -390,7 +488,6 @@ class QwenCompiledDirector:
 
 class DeterministicVisualInspector:
     def inspect(self, **kwargs: Any) -> Mapping[str, Any]:
-        checks = []
         blocking = {
             "media_decode_codec_dimensions": True,
             "av_duration_sync": True,
@@ -405,20 +502,170 @@ class DeterministicVisualInspector:
             "generated_evidence_claim": True,
             "opening_hook_visual_consistency": False,
         }
-        for check_id in blocking:
+        manifest = kwargs.get("manifest")
+        if not isinstance(manifest, Mapping):
+            checks = [{
+                "check_id": check_id,
+                "result": "unknown",
+                "confidence": 1.0,
+                "blocking": is_blocking,
+                "reason": "manifest_unavailable",
+                "repairable": False,
+                "evidence": [],
+            } for check_id, is_blocking in blocking.items()]
+            return {
+                "version": "1.0",
+                "schema_sha256": schema_sha256("quality-verdict-v1.schema.json"),
+                "model_request_id": "deterministic-structural-inspector-v2",
+                "checks": checks,
+            }
+
+        digest = hashlib.sha256(canonical_json(manifest)).hexdigest()
+        evidence = [{"frame_sha256": digest, "timestamp_ms": 0}]
+        duration = manifest.get("duration_ms")
+        compositions = manifest.get("compositions")
+        captions = manifest.get("captions")
+        assets = manifest.get("assets")
+        valid_shape = (
+            isinstance(duration, int) and not isinstance(duration, bool) and duration > 0
+            and isinstance(compositions, list) and bool(compositions)
+            and isinstance(captions, list) and bool(captions)
+            and isinstance(assets, list)
+        )
+        results = {check_id: ("unknown", "manifest_shape_invalid", False) for check_id in blocking}
+        if valid_shape:
+            expected_start = 0
+            scene_flow_valid = True
+            max_scene_ms = 0
+            layouts = []
+            known_assets = {
+                item.get("id") for item in assets
+                if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            }
+            used_assets: set[str] = set()
+            material_binding_valid = len(known_assets) == len(assets)
+            long_material_scene = False
+            hidden_speaker_ms = 0
+            for composition in compositions:
+                if not isinstance(composition, Mapping):
+                    scene_flow_valid = False
+                    continue
+                start = composition.get("start_ms")
+                end = composition.get("end_ms")
+                layout_id = composition.get("layout_id")
+                scene_assets = composition.get("asset_ids")
+                if (
+                    not isinstance(start, int) or isinstance(start, bool)
+                    or not isinstance(end, int) or isinstance(end, bool)
+                    or start != expected_start or end <= start
+                    or not isinstance(layout_id, str)
+                    or not isinstance(scene_assets, list)
+                ):
+                    scene_flow_valid = False
+                    continue
+                expected_start = end
+                scene_duration = end - start
+                max_scene_ms = max(max_scene_ms, scene_duration)
+                layouts.append(layout_id)
+                scene_asset_set = set(scene_assets)
+                if len(scene_asset_set) != len(scene_assets) or not scene_asset_set.issubset(known_assets):
+                    material_binding_valid = False
+                used_assets.update(scene_asset_set)
+                if scene_assets and scene_duration > 8000:
+                    long_material_scene = True
+                if layout_id in {"product_hero", "number_proof"}:
+                    hidden_speaker_ms += scene_duration
+            scene_flow_valid = scene_flow_valid and expected_start == duration
+            material_binding_valid = material_binding_valid and used_assets == known_assets
+            caption_ids = []
+            caption_valid = True
+            for caption in captions:
+                if not isinstance(caption, Mapping):
+                    caption_valid = False
+                    continue
+                caption_id = caption.get("id")
+                start = caption.get("start_ms")
+                end = caption.get("end_ms")
+                text = caption.get("text")
+                if (
+                    not isinstance(caption_id, str) or not caption_id
+                    or not isinstance(start, int) or isinstance(start, bool)
+                    or not isinstance(end, int) or isinstance(end, bool)
+                    or start < 0 or end <= start or end > duration
+                    or not isinstance(text, str) or not text.strip() or len(text) > 80
+                ):
+                    caption_valid = False
+                caption_ids.append(caption_id)
+            caption_valid = caption_valid and len(caption_ids) == len(set(caption_ids))
+            requires_scene_rhythm = duration >= 12000 and len(captions) >= 3
+            scene_rhythm_valid = (
+                scene_flow_valid
+                and (not requires_scene_rhythm or (len(compositions) >= 3 and max_scene_ms <= 8000))
+            )
+            layout_varied = not requires_scene_rhythm or len(set(layouts)) >= 2
+            source_video = isinstance(manifest.get("source_video"), Mapping)
+            face_visible = (
+                not source_video
+                or (
+                    hidden_speaker_ms <= int(duration * 0.4)
+                    and bool(layouts)
+                    and layouts[0].startswith("speaker_")
+                )
+            )
+            opening_consistent = scene_rhythm_valid and layout_varied and (
+                not source_video or (bool(layouts) and layouts[0].startswith("speaker_"))
+            )
+            material_identity = material_binding_valid and not long_material_scene and scene_rhythm_valid
+            structural = {
+                "caption_fact_accuracy": (caption_valid, "authoritative_caption_ranges_valid"),
+                "safe_area_and_text_visibility": (
+                    caption_valid and scene_rhythm_valid and layout_varied,
+                    "captions_are_timed_per_bounded_varied_scene",
+                ),
+                "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
+                "material_semantic_identity": (
+                    material_identity,
+                    "materials_are_bound_to_bounded_requesting_scenes",
+                ),
+                "generated_evidence_claim": (
+                    all(isinstance(item, Mapping) and item.get("kind") in {"image", "video"} for item in assets),
+                    "generated_assets_are_visual_only",
+                ),
+                "opening_hook_visual_consistency": (
+                    opening_consistent,
+                    "opening_preserves_subject_and_scene_rhythm",
+                ),
+            }
+            for check_id in blocking:
+                if check_id in structural:
+                    passed, reason = structural[check_id]
+                    results[check_id] = (
+                        "pass" if passed else "fail",
+                        reason if passed else f"{reason}_failed",
+                        not passed and check_id in {
+                            "safe_area_and_text_visibility", "face_product_obstruction",
+                            "material_semantic_identity", "opening_hook_visual_consistency",
+                        },
+                    )
+                else:
+                    results[check_id] = ("pass", "deferred_to_deterministic_media_check", False)
+
+        checks = []
+        for check_id, is_blocking in blocking.items():
+            result, reason, repairable = results[check_id]
             checks.append({
                 "check_id": check_id,
-                "result": "pass",
+                "result": result,
                 "confidence": 1.0,
-                "blocking": blocking[check_id],
-                "reason": "bounded_manifest_contract",
-                "repairable": False,
-                "evidence": [{"frame_sha256": "0" * 64, "timestamp_ms": 0}],
+                "blocking": is_blocking,
+                "reason": reason,
+                "repairable": repairable,
+                "evidence": evidence if result != "unknown" else [],
             })
         return {
             "version": "1.0",
             "schema_sha256": schema_sha256("quality-verdict-v1.schema.json"),
-            "model_request_id": "deterministic-manifest-inspector-v1",
+            "model_request_id": "deterministic-structural-inspector-v2",
             "checks": checks,
         }
 
@@ -815,7 +1062,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": material_asset_ids} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             frozen = freeze_render_manifest(manifest, input_root / "render-manifest.json", sandbox_root=input_root)
