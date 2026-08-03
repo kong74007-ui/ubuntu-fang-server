@@ -1,5 +1,5 @@
 [Unit]
-Description=Huangque AI Edit V3 worker
+Description=Huangque AI Edit V3 isolated API
 After=network-online.target
 Wants=network-online.target
 
@@ -11,21 +11,22 @@ SupplementaryGroups=ubuntu
 EnvironmentFile=-/home/ubuntu/content-api/content.env
 EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=/etc/huangque/ai-edit-v3.env
+EnvironmentFile=/etc/huangque/ai-edit-v3-api.env
 Environment=CONTENT_ASSET_DB=/var/lib/huangque-ai-edit-v3/shared-assets.db
 UMask=0007
-RuntimeDirectory=huangque-ai-edit-v3
+RuntimeDirectory=huangque-ai-edit-v3-api
 RuntimeDirectoryMode=0700
 WorkingDirectory=/home/ubuntu/content-api
-ExecStart=/home/ubuntu/content-api/venv/bin/python /home/ubuntu/content-api/ai_edit_v3_worker.py
+ExecStart=/home/ubuntu/content-api/venv/bin/python /home/ubuntu/content-api/ai_edit_v3_api.py
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=60
+TimeoutStopSec=30
 KillSignal=SIGTERM
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-BindReadOnlyPaths=/home/ubuntu/content-api/ai_edit_v2.db:/run/huangque-ai-edit-v3/ai_edit_v2.db
+BindReadOnlyPaths=/home/ubuntu/content-api/ai_edit_v2.db:/run/huangque-ai-edit-v3-api/ai_edit_v2.db
 ReadWritePaths=/var/lib/huangque-ai-edit-v3-private /var/lib/huangque-ai-edit-v3 /var/spool/huangque-ai-edit-v3
 
 [Install]

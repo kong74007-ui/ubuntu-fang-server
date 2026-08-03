@@ -44,7 +44,7 @@ class V3EnvironmentManifestTests(unittest.TestCase):
     EXPECTED_V3_ENV = {
         "AI_EDIT_V3_ENABLED": "0",
         "AI_EDIT_V3_ENVIRONMENT": "test",
-        "AI_EDIT_V3_DB_PATH": "/var/lib/huangque-ai-edit-v3/ai_edit_v3.db",
+        "AI_EDIT_V3_DB_PATH": "/var/lib/huangque-ai-edit-v3-private/ai_edit_v3.db",
         "AI_EDIT_V3_OWNER_HMAC_SECRET_FILE": (
             "/etc/huangque/ai-edit-v3-owner-hmac.secret"
         ),
