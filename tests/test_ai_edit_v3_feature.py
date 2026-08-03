@@ -104,7 +104,7 @@ class V3EnvironmentManifestTests(unittest.TestCase):
     def test_manifest_preserves_one_existing_v2_database_definition(self):
         self.assertEqual(
             [value for name, value in self.entries if name == "AI_EDIT_V2_DB"],
-            ["/home/ubuntu/content-api/ai_edit_v2.db"],
+            ["/var/lib/huangque-ai-edit-v3/ai_edit_v2.db"],
         )
 
     def test_manifest_is_accepted_without_creating_configured_files(self):
