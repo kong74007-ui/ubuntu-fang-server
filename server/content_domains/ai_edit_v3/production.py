@@ -203,6 +203,18 @@ def _material_asset_hashes(
     return evidence
 
 
+def _scene_asset_ids(
+    scene: Mapping[str, Any], known_asset_ids: list[str]
+) -> list[str]:
+    """Bind a composition only to the frozen assets requested by its scene."""
+
+    known = set(known_asset_ids)
+    requested = [str(slot["id"]) for slot in scene.get("material_slots") or ()]
+    if len(requested) != len(set(requested)) or any(asset_id not in known for asset_id in requested):
+        raise ValueError("scene_material_binding_invalid")
+    return requested
+
+
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -904,7 +916,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": material_asset_ids} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             frozen = freeze_render_manifest(manifest, input_root / "render-manifest.json", sandbox_root=input_root)

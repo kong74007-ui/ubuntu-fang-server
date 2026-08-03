@@ -288,6 +288,21 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_render_compositions_bind_only_scene_requested_materials(self):
+        from server.content_domains.ai_edit_v3.production import _scene_asset_ids
+
+        known = ["material_01", "material_02"]
+        scenes = [
+            {"id": "scene_01", "material_slots": [{"id": "material_01"}]},
+            {"id": "scene_02", "material_slots": []},
+            {"id": "scene_03", "material_slots": [{"id": "material_02"}]},
+        ]
+
+        self.assertEqual(
+            [["material_01"], [], ["material_02"]],
+            [_scene_asset_ids(scene, known) for scene in scenes],
+        )
+
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
