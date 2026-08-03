@@ -184,6 +184,74 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual("generating_voice", outcome.next_state)
         self.assertTrue(outcome.checkpoint["admitted"])
 
+    def test_transcribing_persists_deeply_frozen_provider_payload_as_json(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+        from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+        class Cos:
+            def put_file(self, *args, **kwargs):
+                return None
+
+            def presign_get(self, key, *, expires):
+                return "https://example.invalid/source.mp4"
+
+        class Asr:
+            def transcribe(self, signed_url, reference, *, deadline_at):
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="asr",
+                    request_id="request-1",
+                    payload={
+                        "status": "succeeded",
+                        "provider_task_id": "task-1",
+                        "duration_ms": 1000,
+                        "words": [
+                            {"text": "测试", "start_ms": 0, "end_ms": 1000}
+                        ],
+                        "sentences": [
+                            {"text": "测试", "start_ms": 0, "end_ms": 1000}
+                        ],
+                    },
+                    usage={},
+                    elapsed_ms=10,
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.store = type("Store", (), {"environment": "test"})()
+            coordinator.work_root = Path(directory)
+            coordinator.owner_hmac_secret = b"0123456789abcdef"
+            coordinator.cos = Cos()
+            coordinator.asr = Asr()
+            root = coordinator._root("job-transcribe")
+            (root / "media").mkdir()
+            (root / "media/source.mp4").write_bytes(b"source")
+            (root / "normalized.json").write_text(
+                json.dumps(
+                    {
+                        "relative_path": "media/source.mp4",
+                        "media_type": "video",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            outcome = coordinator._stage(
+                "transcribing",
+                {
+                    "job_id": "job-transcribe",
+                    "owner_id": "alice",
+                    "stage_input_sha256": "0" * 64,
+                    "normalized_request_json": '{"input_type":"uploaded_video"}',
+                },
+                SimpleNamespace(deadline_at=9999999999),
+            )
+            persisted = json.loads((root / "asr.json").read_text(encoding="utf-8"))
+
+        self.assertEqual("aligning", outcome.next_state)
+        self.assertEqual("task-1", outcome.checkpoint["provider_task_id"])
+        self.assertEqual("测试", persisted["words"][0]["text"])
+
     def test_resolving_materials_freezes_only_job_bound_uploads(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
