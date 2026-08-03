@@ -59,9 +59,11 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", content)
         shared_db = "/var/lib/huangque-ai-edit-v3/shared-assets.db"
+        shared_v2_db = "/var/lib/huangque-ai-edit-v3/ai_edit_v2.db"
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", worker)
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", content)
         self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", v2_assets)
+        self.assertIn(f"Environment=AI_EDIT_V2_DB={shared_v2_db}", v2_assets)
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", v2_assets)
         self.assertIn("UMask=0007", worker)
         self.assertIn("UMask=0007", content)
