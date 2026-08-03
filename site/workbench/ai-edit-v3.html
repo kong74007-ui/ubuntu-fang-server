@@ -22,7 +22,7 @@
 <section class="card"><h2>4. 画面比例</h2><div class="hint">视频自动跟随原比例；音频默认横屏。成片时长由 AI 根据内容自适应。</div><div class="ratios"><label class="ratio"><input type="radio" name="ratio" value="16:9" checked><span>横屏 16:9</span></label><label class="ratio"><input type="radio" name="ratio" value="9:16"><span>竖屏 9:16</span></label></div></section>
 </main><aside><section class="card side"><h2>任务预览与状态</h2><div class="preview" id="preview"><div class="hint">请先选择主体视频或音频</div></div><div class="summary"><div class="row"><span>主体内容</span><b id="subject">未选择</b></div><div class="row"><span>剪辑方式</span><b id="modeLabel">AI 根据内容剪辑</b></div><div class="row"><span>补充素材</span><b id="materialSummary">0 个</b></div><div class="row"><span>输出规格</span><b id="ratioSummary">1080P · 自动</b></div></div><div class="price"><span id="price">--</span> <small>点</small></div><button class="secondary" id="quote" disabled>获取价格</button><button class="primary" id="start" disabled>确认并开始创作</button><div class="message" id="message"></div><div id="jobPanel" hidden><div class="steps" id="steps"></div><video class="result" id="result" controls hidden></video><div class="links" id="links" hidden><a id="download" download>下载 MP4</a><a href="assets.html?cat=video">进入视频资产库</a></div></div><div class="history" id="history"></div></section></aside></div>
 </div></div></div>
-<script src="cloud-shell.js?v=32129379"></script>
+<script src="cloud-shell.js?v=83d7c4c8"></script>
 <script>
 (function(){'use strict';
 var S={assets:[],selected:null,preview:{},main:null,mode:'ai_auto',template:null,templates:[],materials:[],quote:null,job:null,poll:null,ready:false,busy:false};var $=function(id){return document.getElementById(id)};
