@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RENDER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3-render@.service"
 WORKER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3.service"
 CONTENT_DROPIN = ROOT / "deploy/systemd/huangque-content.service.d/ai-edit-v3.conf"
+V2_ASSET_DROPIN = ROOT / "deploy/systemd/huangque-ai-edit-v2.service.d/ai-edit-v3-assets.conf"
 HELPER = ROOT / "deploy/libexec/huangque-ai-edit-v3-renderctl"
 SUDOERS = ROOT / "deploy/sudoers.d/huangque-ai-edit-v3-render"
 TMPFILES = ROOT / "deploy/tmpfiles.d/huangque-ai-edit-v3.conf"
@@ -48,13 +49,23 @@ class RenderSandboxStaticTests(unittest.TestCase):
     def test_worker_sudoers_and_tmpfiles_are_narrow(self):
         worker = WORKER_UNIT.read_text(encoding="utf-8")
         content = CONTENT_DROPIN.read_text(encoding="utf-8")
+        v2_assets = V2_ASSET_DROPIN.read_text(encoding="utf-8")
         sudoers = SUDOERS.read_text(encoding="utf-8")
         tmpfiles = TMPFILES.read_text(encoding="utf-8")
         self.assertIn("User=huangque-ai-edit-v3", worker)
         self.assertIn("SupplementaryGroups=ubuntu", worker)
+        self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", content)
+        shared_db = "/var/lib/huangque-ai-edit-v3/shared-assets.db"
+        self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", worker)
+        self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", content)
+        self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", v2_assets)
+        self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", v2_assets)
+        self.assertIn("UMask=0007", worker)
+        self.assertIn("UMask=0007", content)
+        self.assertIn("UMask=0007", v2_assets)
         self.assertIn("/usr/local/libexec/huangque-ai-edit-v3-renderctl start *", sudoers)
         self.assertIn("query *", sudoers)
         self.assertIn("stop *", sudoers)
