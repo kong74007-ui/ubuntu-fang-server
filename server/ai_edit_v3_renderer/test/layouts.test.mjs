@@ -35,7 +35,9 @@ test("all 48 layout variant ratio combinations have safe bounded geometry", () =
 test("layout compiler distinguishes no, one and multiple optional media slots", () => {
   const base = {layoutId: "editorial_collage", variantId: "emphasis_b", ratio: "9:16", idPrefix: "collage", durationMs: 3000, scene: {}, overlays: "", hasVideo: false};
   assert.match(compileLayout({...base, assets: []}), /data-fallback="no_optional_media"/);
-  assert.equal((compileLayout({...base, assets: [{id: "one", kind: "image", relativePath: "media/one.png"}]}).match(/class="hf-asset/g) ?? []).length, 1);
+  const one = compileLayout({...base, assets: [{id: "one", kind: "image", relativePath: "media/one.png"}]});
+  assert.equal((one.match(/class="hf-asset/g) ?? []).length, 1);
+  assert.match(one, /class="hf-materials hf-material-count-1"/);
   assert.equal((compileLayout({...base, assets: [
     {id: "one", kind: "image", relativePath: "media/one.png"},
     {id: "two", kind: "image", relativePath: "media/two.png"},

@@ -77,6 +77,26 @@ test("compiler places only muted source-video clips and never emits audio elemen
   assert.doesNotMatch(scene, /data-has-audio/);
 });
 
+test("compiler renders one material as one column and captions on their own time ranges", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-timed-captions-")), "project");
+  const manifest = fixtureManifest("First caption");
+  manifest.assets = [{id: "material_01", kind: "image", path: "media/material-01.png"}];
+  manifest.compositions[0].layout_id = "speaker_left_info_right";
+  manifest.compositions[0].asset_ids = ["material_01"];
+  manifest.captions = [
+    {id: "caption_01", start_ms: 0, end_ms: 2000, text: "First caption"},
+    {id: "caption_02", start_ms: 2000, end_ms: 4000, text: "Second caption"},
+  ];
+
+  await compileProject({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+
+  assert.match(scene, /\.hf-material-count-1\{grid-template-columns:1fr\}/);
+  assert.match(scene, /data-safe-text="First caption"[^>]+data-start="0"[^>]+data-duration="2"/);
+  assert.match(scene, /data-safe-text="Second caption"[^>]+data-start="2"[^>]+data-duration="2"/);
+  assert.doesNotMatch(scene, /data-safe-text="First caption Second caption"/);
+});
+
 function fixtureManifest(text) {
   return {
     registry_sha256: getRegistrySha256(),

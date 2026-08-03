@@ -33,11 +33,11 @@ export function getOverlayContract(id) {
   return contract;
 }
 
-export function compileOverlay({overlayId, idPrefix, text, durationMs, trackIndex = 2}) {
+export function compileOverlay({overlayId, idPrefix, text, durationMs, startMs = 0, trackIndex = 2}) {
   const contract = getOverlayContract(overlayId);
   const prefix = assertSafeId(idPrefix, "id_prefix");
   const normalized = assertSafeText(text ?? "", contract);
   if (!normalized && contract.optional) return "";
   const safeText = escapeAttribute(normalized || " ");
-  return `<div id="${prefix}_${contract.id}" class="hf-overlay hf-overlay-${contract.id} clip" data-overlay-id="${contract.id}" data-safe-text="${safeText}" data-start="0" data-duration="${seconds(durationMs)}" data-track-index="${trackIndex}"><span></span></div>`;
+  return `<div id="${prefix}_${contract.id}" class="hf-overlay hf-overlay-${contract.id} clip" data-overlay-id="${contract.id}" data-safe-text="${safeText}" data-start="${seconds(startMs)}" data-duration="${seconds(durationMs)}" data-track-index="${trackIndex}"><span></span></div>`;
 }
