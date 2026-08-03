@@ -60,6 +60,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
         tmpfiles = TMPFILES.read_text(encoding="utf-8")
         self.assertIn("User=huangque-ai-edit-v3", worker)
         self.assertIn("WantedBy=multi-user.target", worker)
+        self.assertIn("NoNewPrivileges=no", worker)
         self.assertIn("SupplementaryGroups=ubuntu", worker)
         self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", worker)
