@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -19,9 +20,10 @@ from server.content_domains.ai_edit_v3.transcript import Caption
 
 
 class _Qwen:
-    def generate_edit_plan(self, system_prompt, user_prompt):
+    def generate_edit_plan(self, system_prompt, user_prompt, *, timeout_seconds=None):
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
+        self.timeout_seconds = timeout_seconds
         return V2Result(
             provider="dashscope",
             capability="director",
@@ -38,9 +40,81 @@ class _Qwen:
 
 class ProductionDirectorTests(unittest.TestCase):
     def test_default_client_uses_v3_compatible_qwen_transport(self):
-        provider = QwenCompiledDirector()
+        with patch.dict(os.environ, {}, clear=True):
+            provider = QwenCompiledDirector()
 
         self.assertIsInstance(provider.client, DashScopeCompatibleQwenClient)
+        self.assertEqual(provider.client._timeout_seconds, 120)
+
+    def test_director_timeout_honors_bounded_environment_value(self):
+        with patch.dict(
+            os.environ,
+            {"AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS": "180"},
+            clear=False,
+        ):
+            provider = QwenCompiledDirector()
+
+        self.assertEqual(provider.client._timeout_seconds, 180)
+
+    def test_director_timeout_rejects_invalid_or_unsafe_values(self):
+        for raw in ("not-a-number", "29", "601", "+30", "030", " 30", "30 "):
+            with self.subTest(raw=raw), patch.dict(
+                os.environ,
+                {"AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS": raw},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(ValueError, "director_timeout_invalid"):
+                    QwenCompiledDirector()
+
+    def test_director_call_timeout_is_clipped_to_the_absolute_job_deadline(self):
+        client = _Qwen()
+        provider = QwenCompiledDirector(client, timeout_seconds=120)
+
+        with patch(
+            "server.content_domains.ai_edit_v3.production.time.time",
+            return_value=1_000.2,
+        ):
+            provider.generate_plan(
+                {
+                    "timeline": {
+                        "duration_ms": 1_000,
+                        "captions": [
+                            {"id": "caption_001", "start_ms": 0, "end_ms": 1_000, "text": "测试"}
+                        ],
+                        "source_segments": [],
+                    },
+                    "capabilities": {
+                        "layout_capabilities": ["speaker_fullscreen"],
+                        "overlay_capabilities": ["standard_caption"],
+                        "animation_capabilities": ["subtitle_pop"],
+                        "transition_capabilities": ["hard_cut"],
+                        "theme_capabilities": {
+                            "palette_id": ["midnight_gold"],
+                            "typography_id": ["editorial_sans"],
+                            "density": ["balanced"],
+                            "motion_energy": ["medium", "high"],
+                            "image_fit": ["cover"],
+                        },
+                    },
+                    "ratio": "9:16",
+                },
+                deadline_at=1_038.9,
+            )
+
+        self.assertEqual(client.timeout_seconds, 38)
+
+    def test_director_does_not_call_provider_after_absolute_deadline(self):
+        class NeverCalled(_Qwen):
+            def generate_edit_plan(self, *args, **kwargs):
+                raise AssertionError("provider must not be called")
+
+        provider = QwenCompiledDirector(NeverCalled(), timeout_seconds=120)
+        with patch(
+            "server.content_domains.ai_edit_v3.production.time.time",
+            return_value=1_000.0,
+        ):
+            with self.assertRaisesRegex(TimeoutError, "director_deadline_exceeded"):
+                provider.generate_plan({}, deadline_at=1_000.9)
 
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()
@@ -243,8 +317,12 @@ class ProductionDirectorTests(unittest.TestCase):
 
     def test_invalid_optional_layout_sequence_keeps_multi_scene_fallback(self):
         class InvalidSequenceQwen(_Qwen):
-            def generate_edit_plan(self, system_prompt, user_prompt):
-                result = super().generate_edit_plan(system_prompt, user_prompt)
+            def generate_edit_plan(self, system_prompt, user_prompt, *, timeout_seconds=None):
+                result = super().generate_edit_plan(
+                    system_prompt,
+                    user_prompt,
+                    timeout_seconds=timeout_seconds,
+                )
                 result.payload["content"] = json.dumps({
                     "creative_concept": "Safe fallback",
                     "layout_sequence": ["unknown_layout"],

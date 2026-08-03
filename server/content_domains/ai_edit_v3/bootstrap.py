@@ -373,7 +373,9 @@ def _build():
         api_key=SecretValue(image_key) if image_key else None
     )
     asr = DashScopeAsr()
-    director = QwenCompiledDirector()
+    director = QwenCompiledDirector(
+        timeout_seconds=config.director_timeout_seconds
+    )
     work_root = Path(
         os.environ.get("AI_EDIT_V3_WORK_ROOT", "/var/lib/huangque-ai-edit-v3/work")
     ).resolve()

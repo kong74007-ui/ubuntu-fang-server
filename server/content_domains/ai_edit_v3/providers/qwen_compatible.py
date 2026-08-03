@@ -36,7 +36,13 @@ class DashScopeCompatibleQwenClient:
         self._timeout_seconds = int(timeout_seconds)
         self._clock_ms = clock_ms or (lambda: round(time.monotonic() * 1000))
 
-    def generate_edit_plan(self, system_prompt: str, user_prompt: str) -> ProviderResult:
+    def generate_edit_plan(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> ProviderResult:
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ProviderError("dashscope_director_prompt_invalid")
         if not isinstance(user_prompt, str) or not user_prompt.strip():
@@ -56,6 +62,15 @@ class DashScopeCompatibleQwenClient:
             },
             ensure_ascii=False,
         ).encode("utf-8")
+        request_timeout = self._timeout_seconds
+        if timeout_seconds is not None:
+            if (
+                isinstance(timeout_seconds, bool)
+                or not isinstance(timeout_seconds, int)
+                or timeout_seconds < 1
+            ):
+                raise ValueError("dashscope_timeout_invalid")
+            request_timeout = min(request_timeout, timeout_seconds)
         try:
             response = self._http_request(
                 "POST",
@@ -65,7 +80,7 @@ class DashScopeCompatibleQwenClient:
                     "Content-Type": "application/json",
                 },
                 body,
-                self._timeout_seconds,
+                request_timeout,
             )
         except (TimeoutError, socket.timeout) as exc:
             raise RetryableProviderError("dashscope_director_unavailable") from exc

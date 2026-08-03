@@ -23,6 +23,7 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_WORKER_CONCURRENCY",
         "AI_EDIT_V3_QUEUE_CAPACITY",
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
+        "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS",
     }
 )
 _SECURITY_COMPOUND_MARKERS = frozenset(
@@ -94,6 +95,7 @@ class FeatureConfig:
     worker_concurrency: int | None
     queue_capacity: int | None
     temp_bytes_limit: int | None
+    director_timeout_seconds: int = 120
 
 
 CapabilityStatus = Literal[
@@ -238,6 +240,7 @@ def _integer(
     value: str | None,
     field_name: str,
     *,
+    minimum: int = 1,
     maximum: int,
 ) -> int | None:
     if value is None:
@@ -245,7 +248,7 @@ def _integer(
     if not isinstance(value, str) or _POSITIVE_DECIMAL.fullmatch(value) is None:
         raise _error("config_integer_invalid", field_name)
     parsed = int(value)
-    if parsed > maximum:
+    if parsed < minimum or parsed > maximum:
         raise _error("config_integer_invalid", field_name)
     return parsed
 
@@ -315,6 +318,13 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
         maximum=_INT64_MAX,
     )
+    director_timeout_seconds = _integer(
+        source.get("AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS", "120"),
+        "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS",
+        minimum=30,
+        maximum=600,
+    )
+    assert director_timeout_seconds is not None
 
     for value, name in (
         (db_path, "AI_EDIT_V3_DB_PATH"),
@@ -352,4 +362,5 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         worker_concurrency=worker_concurrency,
         queue_capacity=queue_capacity,
         temp_bytes_limit=temp_bytes_limit,
+        director_timeout_seconds=director_timeout_seconds,
     )
