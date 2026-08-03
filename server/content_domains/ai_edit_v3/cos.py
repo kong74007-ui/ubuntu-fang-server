@@ -17,6 +17,14 @@ _KEY = re.compile(
 _MIME = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class V3Cos:
     def __init__(self, *, environment: str) -> None:
         if environment not in {"test", "production"}:
@@ -125,6 +133,24 @@ class V3Cos:
         )
         return os.fspath(target)
 
+    def _verified_immutable_object(
+        self,
+        path: Path,
+        key: str,
+        content_type: str,
+    ) -> Mapping[str, Any] | None:
+        try:
+            existing = self.head_object(key)
+        except Exception:
+            return None
+        if (
+            existing.get("content_length") != path.stat().st_size
+            or existing.get("content_type") != content_type
+            or self.sha256(key) != _sha256_file(path)
+        ):
+            raise RuntimeError("cos_immutable_object_conflict")
+        return existing
+
     def put_file(
         self,
         source: str | Path,
@@ -141,10 +167,7 @@ class V3Cos:
         mime = self._content_type(content_type)
         immutable = if_absent or if_none_match == "*"
         if immutable:
-            try:
-                existing = self.head_object(key)
-            except Exception:
-                existing = None
+            existing = self._verified_immutable_object(path, key, mime)
             if existing is not None:
                 return existing
         with path.open("rb") as stream:
@@ -157,7 +180,17 @@ class V3Cos:
             }
             if immutable:
                 arguments["IfNoneMatch"] = "*"
-            response = self._client().put_object(**arguments)
+            try:
+                response = self._client().put_object(**arguments)
+            except Exception as exc:
+                if immutable:
+                    try:
+                        existing = self._verified_immutable_object(path, key, mime)
+                    except RuntimeError as conflict:
+                        raise conflict from exc
+                    if existing is not None:
+                        return existing
+                raise
         etag = str(response.get("ETag", response.get("etag", ""))).strip('"')
         return {
             "etag": etag,
@@ -191,7 +224,7 @@ class V3Cos:
         with tempfile.TemporaryDirectory(prefix="ai-edit-v3-cos-") as directory:
             target = Path(directory) / "object"
             self.download_file(key, target)
-            return hashlib.sha256(target.read_bytes()).hexdigest()
+            return _sha256_file(target)
 
 
 __all__ = ("V3Cos",)
