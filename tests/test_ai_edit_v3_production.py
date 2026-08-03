@@ -172,6 +172,33 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_full_source_audio_timeline_compiles_output_mapping(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _timeline_with_full_source_map,
+        )
+        from server.content_domains.ai_edit_v3.transcript import SourceSegment, TextTimeline
+
+        timeline = TextTimeline(
+            duration_ms=4200,
+            captions=(Caption("caption_001", "完整口播", 0, 4000),),
+            source_segments=(
+                SourceSegment("segment_001", 0, 1800, False, "完整", None, None),
+                SourceSegment("segment_002", 1800, 4000, True, "口播", None, None),
+            ),
+            authoritative_text_sha256=None,
+            alignment_coverage=1.0,
+        )
+
+        compiled = _timeline_with_full_source_map(timeline)
+
+        self.assertEqual(
+            [(0, 1800), (1800, 4000)],
+            [
+                (item.output_start_ms, item.output_end_ms)
+                for item in compiled.source_segments
+            ],
+        )
+
     def test_generating_images_probes_with_a_bounded_timeout(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
