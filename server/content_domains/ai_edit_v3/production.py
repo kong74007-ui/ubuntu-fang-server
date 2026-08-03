@@ -307,8 +307,6 @@ class QwenCompiledDirector:
         if ratio not in {"16:9", "9:16"}:
             ratio = "9:16"
         layouts = list(capabilities["layout_capabilities"])
-        preferred_layout = creative.get("layout_id")
-        layout = preferred_layout if preferred_layout in layouts else layouts[0]
         groups = QwenCompiledDirector._caption_groups(captions)
         source_type = (request.get("source") or {}).get("input_type")
         has_speaker_video = source_type not in {
@@ -346,7 +344,6 @@ class QwenCompiledDirector:
         concept = str(creative.get("creative_concept") or request.get("user_direction") or "内容驱动的清晰口播包装").strip()[:240]
         if not concept:
             concept = "内容驱动的清晰口播包装"
-        first = captions[0]
         caption_ids = [item["id"] for item in captions]
         scene_materials: dict[int, list[dict[str, Any]]] = {}
         material_requests = []
