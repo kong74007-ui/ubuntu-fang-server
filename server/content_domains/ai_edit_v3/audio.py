@@ -525,10 +525,11 @@ def build_master_audio(
         label = f"voice_{index}"
         filters.append(f"[0:a]atrim=start={segment.start_ms / 1000:.3f}:end={segment.end_ms / 1000:.3f},asetpts=PTS-STARTPTS[{label}]")
         voice_labels.append(f"[{label}]")
-    filters.append(f"{''.join(voice_labels)}concat=n={len(voice_labels)}:v=0:a=1,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={seconds:.3f}[voice]")
+    filters.append(f"{''.join(voice_labels)}concat=n={len(voice_labels)}:v=0:a=1,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={seconds:.3f}[voice_base]")
+    filters.append("[voice_base]asplit=2[voice_mix][voice_sidechain]")
     filters.append(f"[1:a]aloop=loop=-1:size=2147483647,atrim=duration={seconds:.3f},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.12[bgm_base]")
-    filters.append("[bgm_base][voice]sidechaincompress=threshold=0.015:ratio=12:attack=10:release=250[bgm_ducked]")
-    mix_labels = ["[voice]", "[bgm_ducked]"]
+    filters.append("[bgm_base][voice_sidechain]sidechaincompress=threshold=0.015:ratio=12:attack=10:release=250[bgm_ducked]")
+    mix_labels = ["[voice_mix]", "[bgm_ducked]"]
     for offset, asset in enumerate(ordered_sfx, start=2):
         request = expected_sfx[asset.cue_id]
         start_ms = request.start_ms
