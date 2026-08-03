@@ -491,7 +491,6 @@ class QwenCompiledDirector:
 
 class DeterministicVisualInspector:
     def inspect(self, **kwargs: Any) -> Mapping[str, Any]:
-        checks = []
         blocking = {
             "media_decode_codec_dimensions": True,
             "av_duration_sync": True,
@@ -506,20 +505,170 @@ class DeterministicVisualInspector:
             "generated_evidence_claim": True,
             "opening_hook_visual_consistency": False,
         }
-        for check_id in blocking:
+        manifest = kwargs.get("manifest")
+        if not isinstance(manifest, Mapping):
+            checks = [{
+                "check_id": check_id,
+                "result": "unknown",
+                "confidence": 1.0,
+                "blocking": is_blocking,
+                "reason": "manifest_unavailable",
+                "repairable": False,
+                "evidence": [],
+            } for check_id, is_blocking in blocking.items()]
+            return {
+                "version": "1.0",
+                "schema_sha256": schema_sha256("quality-verdict-v1.schema.json"),
+                "model_request_id": "deterministic-structural-inspector-v2",
+                "checks": checks,
+            }
+
+        digest = hashlib.sha256(canonical_json(manifest)).hexdigest()
+        evidence = [{"frame_sha256": digest, "timestamp_ms": 0}]
+        duration = manifest.get("duration_ms")
+        compositions = manifest.get("compositions")
+        captions = manifest.get("captions")
+        assets = manifest.get("assets")
+        valid_shape = (
+            isinstance(duration, int) and not isinstance(duration, bool) and duration > 0
+            and isinstance(compositions, list) and bool(compositions)
+            and isinstance(captions, list) and bool(captions)
+            and isinstance(assets, list)
+        )
+        results = {check_id: ("unknown", "manifest_shape_invalid", False) for check_id in blocking}
+        if valid_shape:
+            expected_start = 0
+            scene_flow_valid = True
+            max_scene_ms = 0
+            layouts = []
+            known_assets = {
+                item.get("id") for item in assets
+                if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            }
+            used_assets: set[str] = set()
+            material_binding_valid = len(known_assets) == len(assets)
+            long_material_scene = False
+            hidden_speaker_ms = 0
+            for composition in compositions:
+                if not isinstance(composition, Mapping):
+                    scene_flow_valid = False
+                    continue
+                start = composition.get("start_ms")
+                end = composition.get("end_ms")
+                layout_id = composition.get("layout_id")
+                scene_assets = composition.get("asset_ids")
+                if (
+                    not isinstance(start, int) or isinstance(start, bool)
+                    or not isinstance(end, int) or isinstance(end, bool)
+                    or start != expected_start or end <= start
+                    or not isinstance(layout_id, str)
+                    or not isinstance(scene_assets, list)
+                ):
+                    scene_flow_valid = False
+                    continue
+                expected_start = end
+                scene_duration = end - start
+                max_scene_ms = max(max_scene_ms, scene_duration)
+                layouts.append(layout_id)
+                scene_asset_set = set(scene_assets)
+                if len(scene_asset_set) != len(scene_assets) or not scene_asset_set.issubset(known_assets):
+                    material_binding_valid = False
+                used_assets.update(scene_asset_set)
+                if scene_assets and scene_duration > 8000:
+                    long_material_scene = True
+                if layout_id in {"product_hero", "number_proof"}:
+                    hidden_speaker_ms += scene_duration
+            scene_flow_valid = scene_flow_valid and expected_start == duration
+            material_binding_valid = material_binding_valid and used_assets == known_assets
+            caption_ids = []
+            caption_valid = True
+            for caption in captions:
+                if not isinstance(caption, Mapping):
+                    caption_valid = False
+                    continue
+                caption_id = caption.get("id")
+                start = caption.get("start_ms")
+                end = caption.get("end_ms")
+                text = caption.get("text")
+                if (
+                    not isinstance(caption_id, str) or not caption_id
+                    or not isinstance(start, int) or isinstance(start, bool)
+                    or not isinstance(end, int) or isinstance(end, bool)
+                    or start < 0 or end <= start or end > duration
+                    or not isinstance(text, str) or not text.strip() or len(text) > 80
+                ):
+                    caption_valid = False
+                caption_ids.append(caption_id)
+            caption_valid = caption_valid and len(caption_ids) == len(set(caption_ids))
+            requires_scene_rhythm = duration >= 12000 and len(captions) >= 3
+            scene_rhythm_valid = (
+                scene_flow_valid
+                and (not requires_scene_rhythm or (len(compositions) >= 3 and max_scene_ms <= 8000))
+            )
+            layout_varied = not requires_scene_rhythm or len(set(layouts)) >= 2
+            source_video = isinstance(manifest.get("source_video"), Mapping)
+            face_visible = (
+                not source_video
+                or (
+                    hidden_speaker_ms <= int(duration * 0.4)
+                    and bool(layouts)
+                    and layouts[0].startswith("speaker_")
+                )
+            )
+            opening_consistent = scene_rhythm_valid and layout_varied and (
+                not source_video or (bool(layouts) and layouts[0].startswith("speaker_"))
+            )
+            material_identity = material_binding_valid and not long_material_scene and scene_rhythm_valid
+            structural = {
+                "caption_fact_accuracy": (caption_valid, "authoritative_caption_ranges_valid"),
+                "safe_area_and_text_visibility": (
+                    caption_valid and scene_rhythm_valid,
+                    "captions_are_timed_per_bounded_scene",
+                ),
+                "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
+                "material_semantic_identity": (
+                    material_identity,
+                    "materials_are_bound_to_bounded_requesting_scenes",
+                ),
+                "generated_evidence_claim": (
+                    all(isinstance(item, Mapping) and item.get("kind") in {"image", "video"} for item in assets),
+                    "generated_assets_are_visual_only",
+                ),
+                "opening_hook_visual_consistency": (
+                    opening_consistent,
+                    "opening_preserves_subject_and_scene_rhythm",
+                ),
+            }
+            for check_id in blocking:
+                if check_id in structural:
+                    passed, reason = structural[check_id]
+                    results[check_id] = (
+                        "pass" if passed else "fail",
+                        reason if passed else f"{reason}_failed",
+                        not passed and check_id in {
+                            "safe_area_and_text_visibility", "face_product_obstruction",
+                            "material_semantic_identity", "opening_hook_visual_consistency",
+                        },
+                    )
+                else:
+                    results[check_id] = ("pass", "deferred_to_deterministic_media_check", False)
+
+        checks = []
+        for check_id, is_blocking in blocking.items():
+            result, reason, repairable = results[check_id]
             checks.append({
                 "check_id": check_id,
-                "result": "pass",
+                "result": result,
                 "confidence": 1.0,
-                "blocking": blocking[check_id],
-                "reason": "bounded_manifest_contract",
-                "repairable": False,
-                "evidence": [{"frame_sha256": "0" * 64, "timestamp_ms": 0}],
+                "blocking": is_blocking,
+                "reason": reason,
+                "repairable": repairable,
+                "evidence": evidence if result != "unknown" else [],
             })
         return {
             "version": "1.0",
             "schema_sha256": schema_sha256("quality-verdict-v1.schema.json"),
-            "model_request_id": "deterministic-manifest-inspector-v1",
+            "model_request_id": "deterministic-structural-inspector-v2",
             "checks": checks,
         }
 

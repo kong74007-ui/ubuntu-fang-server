@@ -288,6 +288,84 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_visual_inspector_blocks_single_card_talking_head_failure_pattern(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 26178,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [{
+                "id": "composition_001", "start_ms": 0, "end_ms": 26178,
+                "layout_id": "product_hero", "asset_ids": ["material_01"],
+            }],
+            "captions": [
+                {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+                for index, (start, end, text) in enumerate(
+                    (
+                        (0, 6045, "Platform introduction"),
+                        (6045, 10205, "Image and presenter tools"),
+                        (10205, 16460, "Marketing content"),
+                        (16460, 18938, "One workbench"),
+                        (18938, 25090, "Deliver final videos"),
+                        (25090, 26178, "More efficient"),
+                    ),
+                    start=1,
+                )
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+        self.assertEqual("fail", checks["face_product_obstruction"]["result"])
+        self.assertEqual("fail", checks["material_semantic_identity"]["result"])
+        self.assertEqual("fail", checks["opening_hook_visual_consistency"]["result"])
+
+    def test_visual_inspector_accepts_varied_scene_bound_talking_head_manifest(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        boundaries = [0, 4000, 8000, 12000, 16000, 21000, 26000]
+        material_ids = ["material_01", "material_02", "material_03"]
+        compositions = []
+        for index in range(6):
+            material_id = material_ids[index // 2] if index % 2 else None
+            compositions.append({
+                "id": f"composition_{index + 1:03d}",
+                "start_ms": boundaries[index],
+                "end_ms": boundaries[index + 1],
+                "layout_id": "speaker_left_info_right" if material_id else "speaker_fullscreen",
+                "asset_ids": [material_id] if material_id else [],
+            })
+        manifest = {
+            "duration_ms": 26000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": material_id, "kind": "image"} for material_id in material_ids],
+            "compositions": compositions,
+            "captions": [
+                {
+                    "id": f"caption_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "text": f"Caption {index + 1}",
+                }
+                for index in range(6)
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        for check_id in (
+            "caption_fact_accuracy",
+            "safe_area_and_text_visibility",
+            "face_product_obstruction",
+            "material_semantic_identity",
+            "opening_hook_visual_consistency",
+        ):
+            self.assertEqual("pass", checks[check_id]["result"], check_id)
+
     def test_render_compositions_bind_only_scene_requested_materials(self):
         from server.content_domains.ai_edit_v3.production import _scene_asset_ids
 
