@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RENDER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3-render@.service"
 WORKER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3.service"
 CONTENT_DROPIN = ROOT / "deploy/systemd/huangque-content.service.d/ai-edit-v3.conf"
+CONTENT_ROLE_ENV = ROOT / "deploy/ai-edit-v3-content.env.example"
 V2_ASSET_DROPIN = ROOT / "deploy/systemd/huangque-ai-edit-v2.service.d/ai-edit-v3-assets.conf"
 HELPER = ROOT / "deploy/libexec/huangque-ai-edit-v3-renderctl"
 SUDOERS = ROOT / "deploy/sudoers.d/huangque-ai-edit-v3-render"
@@ -49,6 +50,8 @@ class RenderSandboxStaticTests(unittest.TestCase):
     def test_worker_sudoers_and_tmpfiles_are_narrow(self):
         worker = WORKER_UNIT.read_text(encoding="utf-8")
         content = CONTENT_DROPIN.read_text(encoding="utf-8")
+        self.assertTrue(CONTENT_ROLE_ENV.is_file())
+        content_role = CONTENT_ROLE_ENV.read_text(encoding="utf-8")
         v2_assets = V2_ASSET_DROPIN.read_text(encoding="utf-8")
         sudoers = SUDOERS.read_text(encoding="utf-8")
         tmpfiles = TMPFILES.read_text(encoding="utf-8")
@@ -57,6 +60,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
+        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3-content.env", content)
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", content)
         shared_db = "/var/lib/huangque-ai-edit-v3/shared-assets.db"
         host_v2_db = "/home/ubuntu/content-api/ai_edit_v2.db"
@@ -64,8 +68,9 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", worker)
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", content)
         self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", v2_assets)
-        self.assertIn(f"Environment=AI_EDIT_V2_DB={worker_v2_db}", worker)
-        self.assertIn(f"Environment=AI_EDIT_V2_DB={host_v2_db}", content)
+        self.assertIn(f"AI_EDIT_V2_DB={host_v2_db}", content_role)
+        self.assertNotIn("Environment=AI_EDIT_V2_DB=", worker)
+        self.assertNotIn("Environment=AI_EDIT_V2_DB=", content)
         self.assertIn("RuntimeDirectory=huangque-ai-edit-v3", worker)
         self.assertIn("RuntimeDirectoryMode=0700", worker)
         self.assertIn(
