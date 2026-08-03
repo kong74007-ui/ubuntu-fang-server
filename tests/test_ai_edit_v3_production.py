@@ -172,6 +172,32 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_quality_owner_evidence_uses_frozen_material_hashes(self):
+        from server.content_domains.ai_edit_v3.production import _material_asset_hashes
+
+        digest = hashlib.sha256(b"verified-generated-image").hexdigest()
+        manifest = {
+            "assets": [{
+                "id": "material_01",
+                "kind": "image",
+                "path": "media/material-01.png",
+                "sha256": digest,
+                "size_bytes": 24,
+            }]
+        }
+        materials = {
+            "items": [{
+                "material_id": "generated_01",
+                "relative_path": "materials/generated-01.png",
+                "sha256": digest,
+            }]
+        }
+
+        self.assertEqual(
+            {"material_01": digest},
+            _material_asset_hashes(manifest, materials),
+        )
+
     def test_render_captions_strip_director_only_emphasis_metadata(self):
         from server.content_domains.ai_edit_v3.production import _render_captions
 
