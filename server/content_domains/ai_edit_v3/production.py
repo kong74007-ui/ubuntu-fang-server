@@ -37,6 +37,7 @@ from .director import build_director_request, generate_edit_plan
 from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_media, probe_media
 from .providers.asr import normalize_asr_result
 from .providers.base import ProviderResult
+from .providers.qwen_compatible import DashScopeCompatibleQwenClient
 from .quality import run_blocking_quality
 from .renderers import RenderRequest
 from .runtime import StageOutcome
@@ -170,8 +171,8 @@ class DashScopeAsr:
 class QwenCompiledDirector:
     """Use Qwen for creative choices, then compile a schema-safe plan."""
 
-    def __init__(self, client: DashScopeClient | None = None) -> None:
-        self.client = client or DashScopeClient(timeout_seconds=45)
+    def __init__(self, client: Any | None = None) -> None:
+        self.client = client or DashScopeCompatibleQwenClient(timeout_seconds=45)
 
     def probe_capability(self, capability: str, *, environment: str | None):
         ready = capability == "director" and bool(os.environ.get("DASHSCOPE_API_KEY"))

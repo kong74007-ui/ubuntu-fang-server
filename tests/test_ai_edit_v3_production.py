@@ -10,6 +10,9 @@ from types import SimpleNamespace
 from server.content_domains.ai_edit_v2_providers.base import ProviderResult as V2Result
 from server.content_domains.ai_edit_v3.director import validate_edit_plan
 from server.content_domains.ai_edit_v3.production import QwenCompiledDirector
+from server.content_domains.ai_edit_v3.providers.qwen_compatible import (
+    DashScopeCompatibleQwenClient,
+)
 from server.content_domains.ai_edit_v3.transcript import Caption
 
 
@@ -32,6 +35,11 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_default_client_uses_v3_compatible_qwen_transport(self):
+        provider = QwenCompiledDirector()
+
+        self.assertIsInstance(provider.client, DashScopeCompatibleQwenClient)
+
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()
         provider = QwenCompiledDirector(client)
