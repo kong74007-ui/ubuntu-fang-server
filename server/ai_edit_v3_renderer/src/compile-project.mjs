@@ -138,6 +138,11 @@ function compileSourceVideo({manifest, composition, prefix}) {
     throw new Error("source_video_path_invalid");
   }
   const segments = Array.isArray(manifest.source_segments) ? manifest.source_segments : [];
+  const speakerPip = composition.layout_id === "material_fullscreen_speaker_pip";
+  const sourceClass = speakerPip ? "hf-source-video hf-source-video-pip clip" : "hf-source-video clip";
+  const pipStyle = speakerPip
+    ? ` style="inset:auto 7.85% 8.8% auto;width:26.6%;height:30.6%;z-index:3;border-radius:var(--hf-radius)"`
+    : "";
   return segments.flatMap((segment, index) => {
     const start = Math.max(segment.output_start_ms, composition.start_ms);
     const end = Math.min(segment.output_end_ms, composition.end_ms);
@@ -146,7 +151,7 @@ function compileSourceVideo({manifest, composition, prefix}) {
     const localStart = start - composition.start_ms;
     const mediaStart = segment.source_start_ms + (start - segment.output_start_ms);
     const durationMs = end - start;
-    return [`<video id="${prefix}_source_${index}" class="hf-source-video clip" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(localStart)}" data-duration="${seconds(durationMs)}" data-playback-start="${seconds(mediaStart)}" data-volume="0" data-track-index="10"></video>`];
+    return [`<video id="${prefix}_source_${index}" class="${sourceClass}" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(localStart)}" data-duration="${seconds(durationMs)}" data-playback-start="${seconds(mediaStart)}" data-volume="0" data-track-index="10"${pipStyle}></video>`];
   }).join("");
 }
 

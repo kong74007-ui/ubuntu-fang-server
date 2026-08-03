@@ -366,6 +366,41 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         ):
             self.assertEqual("pass", checks[check_id]["result"], check_id)
 
+    def test_visual_inspector_blocks_repetitive_long_form_layouts(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        boundaries = [0, 4000, 8000, 12000, 16000, 20000, 24000]
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": f"composition_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "layout_id": "speaker_fullscreen",
+                    "asset_ids": [],
+                }
+                for index in range(6)
+            ],
+            "captions": [
+                {
+                    "id": f"caption_{index + 1:03d}",
+                    "start_ms": boundaries[index],
+                    "end_ms": boundaries[index + 1],
+                    "text": f"Caption {index + 1}",
+                }
+                for index in range(6)
+            ],
+        }
+
+        verdict = DeterministicVisualInspector().inspect(manifest=manifest, render_report={})
+        checks = {item["check_id"]: item for item in verdict["checks"]}
+
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+        self.assertTrue(checks["safe_area_and_text_visibility"]["blocking"])
+
     def test_render_compositions_bind_only_scene_requested_materials(self):
         from server.content_domains.ai_edit_v3.production import _scene_asset_ids
 

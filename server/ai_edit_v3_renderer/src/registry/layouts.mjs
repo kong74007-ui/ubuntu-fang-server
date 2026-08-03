@@ -51,7 +51,8 @@ export function compileLayout({layoutId, variantId, ratio, scene, assets, idPref
     : "";
   const speaker = `<div id="${prefix}_speaker" class="hf-speaker-zone clip" data-start="0" data-duration="${duration}" data-track-index="2"><span>${hasVideo ? "主体视频" : "旁白主线"}</span></div>`;
   const materialCount = optionalAssets.length;
-  const frame = `<div id="${prefix}_frame" class="hf-layout-frame hf-layout-${layoutId} hf-variant-${variantId} clip" data-layout-id="${layoutId}" data-layout-variant="${variantId}" data-start="0" data-duration="${duration}" data-track-index="1">${speaker}<div id="${prefix}_materials" class="hf-materials hf-material-count-${materialCount}">${media}${fallback}</div></div>`;
+  const materialStyle = materialCount === 1 ? ` style="grid-template-columns:1fr"` : "";
+  const frame = `<div id="${prefix}_frame" class="hf-layout-frame hf-layout-${layoutId} hf-variant-${variantId} clip" data-layout-id="${layoutId}" data-layout-variant="${variantId}" data-start="0" data-duration="${duration}" data-track-index="1">${speaker}<div id="${prefix}_materials" class="hf-materials hf-material-count-${materialCount}"${materialStyle}>${media}${fallback}</div></div>`;
   return `<div id="${prefix}_background" class="hf-background clip" data-start="0" data-duration="${duration}" data-track-index="0"></div>${frame}<div id="${prefix}_safe" class="hf-safe-area clip" data-start="0" data-duration="${duration}" data-track-index="20">${overlays ?? ""}</div>`;
 }
 

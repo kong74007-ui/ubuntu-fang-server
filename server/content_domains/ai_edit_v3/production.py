@@ -619,8 +619,8 @@ class DeterministicVisualInspector:
             structural = {
                 "caption_fact_accuracy": (caption_valid, "authoritative_caption_ranges_valid"),
                 "safe_area_and_text_visibility": (
-                    caption_valid and scene_rhythm_valid,
-                    "captions_are_timed_per_bounded_scene",
+                    caption_valid and scene_rhythm_valid and layout_varied,
+                    "captions_are_timed_per_bounded_varied_scene",
                 ),
                 "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
                 "material_semantic_identity": (
