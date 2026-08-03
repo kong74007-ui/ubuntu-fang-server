@@ -42,6 +42,7 @@ from .quality import run_blocking_quality
 from .renderers import RenderRequest
 from .runtime import StageOutcome
 from .source import PreparedSource
+from .source_map import compile_keep_decisions
 from .transcript import Caption, SourceSegment, TextTimeline, build_text_timeline
 
 
@@ -139,6 +140,22 @@ def _timeline_from_json(value: Mapping[str, Any]) -> TextTimeline:
         source_segments=tuple(SourceSegment(**item) for item in value["source_segments"]),
         authoritative_text_sha256=value.get("authoritative_text_sha256"),
         alignment_coverage=float(value["alignment_coverage"]),
+    )
+
+
+def _timeline_with_full_source_map(value: TextTimeline) -> TextTimeline:
+    """Compile the stable first release's full-source keep decision."""
+
+    mapped = compile_keep_decisions(
+        value,
+        [segment.id for segment in value.source_segments],
+    )
+    return TextTimeline(
+        duration_ms=value.duration_ms,
+        captions=value.captions,
+        source_segments=mapped,
+        authoritative_text_sha256=value.authoritative_text_sha256,
+        alignment_coverage=value.alignment_coverage,
     )
 
 
@@ -651,7 +668,9 @@ class ProductionStageCoordinator:
             )
         if name == "generating_audio":
             plan = _json(root / "plan.json")
-            timeline = _timeline_from_json(_json(root / "timeline.json"))
+            timeline = _timeline_with_full_source_map(
+                _timeline_from_json(_json(root / "timeline.json"))
+            )
             audio_plan = compile_audio_plan(plan, timeline)
             generated = generate_task_audio(job_id, audio_plan, self.audio_generator, self.cos, root, context)
             values = [
@@ -668,7 +687,9 @@ class ProductionStageCoordinator:
         if name == "mixing_audio":
             normalized, _ = self._normalized(job_id)
             plan = _json(root / "plan.json")
-            timeline = _timeline_from_json(_json(root / "timeline.json"))
+            timeline = _timeline_with_full_source_map(
+                _timeline_from_json(_json(root / "timeline.json"))
+            )
             audio_plan = compile_audio_plan(plan, timeline)
             # The stable first release preserves the full source; align the master to it.
             mapped = (SourceSegment("segment_01", 0, int(plan["duration_ms"]), False, "full source", 0, int(plan["duration_ms"])),)
