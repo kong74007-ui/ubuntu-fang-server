@@ -103,8 +103,19 @@ class RenderController:
         if state.exists():
             raise ValueError("render_instance_exists")
         state.mkdir(parents=True, mode=0o700)
-        os.replace(incoming, state / "input")
-        (state / "output").mkdir(mode=0o700)
+        staging = state / ".input.staging"
+        try:
+            # Worker and renderer state are separate systemd bind mounts.  Copy
+            # without following links, validate the root-owned copy, then use an
+            # atomic rename only inside the renderer-state mount.
+            shutil.copytree(incoming, staging, symlinks=True)
+            self._validate_incoming(staging)
+            os.replace(staging, state / "input")
+            (state / "output").mkdir(mode=0o700)
+            shutil.rmtree(incoming)
+        except Exception:
+            shutil.rmtree(state, ignore_errors=True)
+            raise
         code, _stdout, _stderr = self._systemctl([_SYSTEMCTL, "start", self._unit(instance)])
         if code != 0:
             raise RuntimeError("render_start_failed")

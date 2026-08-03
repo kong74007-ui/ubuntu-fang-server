@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import importlib.machinery
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +171,34 @@ class RenderCtlTests(unittest.TestCase):
         self.assertEqual("running", result["state"])
         self.assertFalse(result["result_ready"])
         self.assertIsNone(result["error_code"])
+
+    def test_start_handoff_does_not_rename_across_mount_boundaries(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as folder:
+            controller = helper.RenderController(
+                spool_root=Path(folder) / "spool",
+                state_root=Path(folder) / "state",
+                systemctl=lambda _argv: (0, "", ""),
+            )
+            incoming = controller.incoming_root / "job_1"
+            (incoming / "assets").mkdir(parents=True)
+            (incoming / "request.json").write_text("{}", encoding="utf-8")
+            (incoming / "assets/render-manifest.json").write_text("{}", encoding="utf-8")
+            destination = controller.state_root / "job_1" / "input"
+            original_replace = helper.os.replace
+
+            def reject_cross_mount(source, target):
+                if Path(source) == incoming and Path(target) == destination:
+                    raise OSError(errno.EXDEV, "cross-device link")
+                return original_replace(source, target)
+
+            with patch.object(helper.os, "replace", side_effect=reject_cross_mount):
+                result = controller.start("job_1")
+
+            self.assertEqual("running", result["state"])
+            self.assertFalse(incoming.exists())
+            self.assertTrue((destination / "request.json").is_file())
+            self.assertTrue((destination / "assets/render-manifest.json").is_file())
 
 
 if __name__ == "__main__":
