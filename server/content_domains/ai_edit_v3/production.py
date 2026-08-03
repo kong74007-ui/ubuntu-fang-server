@@ -392,9 +392,15 @@ class DeterministicVisualInspector:
     def inspect(self, **kwargs: Any) -> Mapping[str, Any]:
         checks = []
         blocking = {
+            "media_decode_codec_dimensions": True,
+            "av_duration_sync": True,
+            "black_frames": True,
+            "abnormal_freeze": True,
+            "audio_integrity": True,
             "caption_fact_accuracy": True,
             "safe_area_and_text_visibility": True,
             "face_product_obstruction": True,
+            "material_provenance": True,
             "material_semantic_identity": True,
             "generated_evidence_claim": True,
             "opening_hook_visual_consistency": False,

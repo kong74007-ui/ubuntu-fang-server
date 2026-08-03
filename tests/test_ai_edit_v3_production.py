@@ -172,6 +172,15 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
+        from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        verdict = DeterministicVisualInspector().inspect()
+
+        self.assertEqual(verdict, validate_quality_verdict(verdict))
+        self.assertEqual(12, len(verdict["checks"]))
+
     def test_quality_owner_evidence_uses_frozen_material_hashes(self):
         from server.content_domains.ai_edit_v3.production import _material_asset_hashes
 
