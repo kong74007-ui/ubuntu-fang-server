@@ -35,6 +35,7 @@ test("render command is fixed, silent, strict and does not inherit provider secr
   assert.ok(render.argv.includes("--strict-all"));
   assert.ok(render.argv.includes("--no-best-effort"));
   assert.equal(render.environment.PUPPETEER_EXECUTABLE_PATH, path.resolve("/opt/chromium/chrome"));
+  assert.equal(render.environment.HYPERFRAMES_BROWSER_PATH, path.resolve("/opt/chromium/chrome"));
   assert.equal(render.environment.ELEVENLABS_API_KEY, undefined);
   assert.equal(render.environment.DASHCOPE_API_KEY, undefined);
   assert.equal(execution.outputSha256.length, 64);

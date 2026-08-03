@@ -72,7 +72,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertNotIn("systemctl", sudoers)
         self.assertIn("/var/spool/huangque-ai-edit-v3/incoming", tmpfiles)
         self.assertIn("/var/spool/huangque-ai-edit-v3/results", tmpfiles)
-        self.assertIn("d /var/lib/huangque-ai-edit-v3 0770", tmpfiles)
+        self.assertIn("d /var/lib/huangque-ai-edit-v3 2770", tmpfiles)
 
     def test_nginx_routes_v3_to_the_content_api(self):
         locations = FANG_LOCATIONS.read_text(encoding="utf-8")

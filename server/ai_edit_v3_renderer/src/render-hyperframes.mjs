@@ -19,6 +19,7 @@ function safeEnvironment(environment, chromiumPath) {
     ...result,
     LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC",
     PUPPETEER_EXECUTABLE_PATH: chromiumPath,
+    HYPERFRAMES_BROWSER_PATH: chromiumPath,
     HYPERFRAMES_TELEMETRY_DISABLED: "1", DO_NOT_TRACK: "1",
   });
 }
