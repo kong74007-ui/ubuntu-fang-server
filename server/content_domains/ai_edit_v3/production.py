@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
+import re
 import shutil
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -244,8 +246,31 @@ class DashScopeAsr:
 class QwenCompiledDirector:
     """Use Qwen for creative choices, then compile a schema-safe plan."""
 
-    def __init__(self, client: Any | None = None) -> None:
-        self.client = client or DashScopeCompatibleQwenClient(timeout_seconds=45)
+    def __init__(
+        self,
+        client: Any | None = None,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> None:
+        if timeout_seconds is None:
+            raw_timeout = os.environ.get(
+                "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS", "120"
+            )
+            if re.fullmatch(r"[1-9][0-9]*", raw_timeout) is None:
+                raise ValueError("director_timeout_invalid")
+            timeout_seconds = int(raw_timeout)
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or not 30 <= timeout_seconds <= 600
+        ):
+            raise ValueError("director_timeout_invalid")
+        self._timeout_seconds = timeout_seconds
+        if client is None:
+            client = DashScopeCompatibleQwenClient(
+                timeout_seconds=timeout_seconds
+            )
+        self.client = client
 
     def probe_capability(self, capability: str, *, environment: str | None):
         ready = capability == "director" and bool(os.environ.get("DASHSCOPE_API_KEY"))
@@ -474,7 +499,21 @@ class QwenCompiledDirector:
             "选择创意，不要改写事实，不要输出Markdown。"
         )
         user = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
-        result = self.client.generate_edit_plan(system, user)
+        deadline_at = kwargs.get("deadline_at")
+        if (
+            isinstance(deadline_at, bool)
+            or not isinstance(deadline_at, (int, float))
+            or not math.isfinite(deadline_at)
+        ):
+            raise TimeoutError("director_deadline_exceeded")
+        remaining_seconds = math.floor(float(deadline_at) - time.time())
+        if remaining_seconds < 1:
+            raise TimeoutError("director_deadline_exceeded")
+        result = self.client.generate_edit_plan(
+            system,
+            user,
+            timeout_seconds=min(self._timeout_seconds, remaining_seconds),
+        )
         plan = self._compile(request, self._creative_payload(result.payload["content"]))
         return ProviderResult(
             provider="dashscope",

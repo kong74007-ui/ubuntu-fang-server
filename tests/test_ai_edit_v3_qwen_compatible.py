@@ -62,6 +62,27 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             result.payload["content"], '{"creative_concept":"先结论后方法"}'
         )
 
+    def test_per_call_timeout_can_only_reduce_the_configured_timeout(self):
+        timeouts = []
+
+        def recorded(method, url, headers, body, timeout):
+            timeouts.append(timeout)
+            return {
+                "id": "chatcmpl-v3-timeout",
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(
+            http_request=recorded,
+            timeout_seconds=120,
+        )
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            client.generate_edit_plan("system", "user", timeout_seconds=37)
+            client.generate_edit_plan("system", "user", timeout_seconds=240)
+
+        self.assertEqual(timeouts, [37, 120])
+
 
 if __name__ == "__main__":
     unittest.main()

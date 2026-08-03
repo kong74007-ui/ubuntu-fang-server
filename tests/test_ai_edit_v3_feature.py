@@ -51,6 +51,7 @@ class V3EnvironmentManifestTests(unittest.TestCase):
         "AI_EDIT_V3_WORKER_CONCURRENCY": "5",
         "AI_EDIT_V3_QUEUE_CAPACITY": "50",
         "AI_EDIT_V3_TEMP_BYTES_LIMIT": "10737418240",
+        "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS": "120",
     }
     FORBIDDEN_V3_NAMES = {
         "AI_EDIT_V3_OWNER_HMAC_SECRET",
@@ -173,9 +174,27 @@ class FeatureConfigTests(unittest.TestCase):
         config = load_config({})
         self.assertFalse(config.enabled)
         self.assertIsNone(config.db_path)
+        self.assertEqual(config.director_timeout_seconds, 120)
         self.assertEqual(dict(os.environ), before)
         with self.assertRaises(FrozenInstanceError):
             config.enabled = True
+
+    def test_director_timeout_is_part_of_the_frozen_config_contract(self):
+        env = self.enabled_env()
+        env["AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS"] = "180"
+
+        config = load_config(env)
+
+        self.assertEqual(config.director_timeout_seconds, 180)
+        with self.assertRaises(FrozenInstanceError):
+            config.director_timeout_seconds = 120
+
+    def test_director_timeout_is_strict_and_bounded(self):
+        for value in ("0", "29", "601", "+30", "030", " 30", "30 ", "1.5", "true"):
+            with self.subTest(value=value):
+                env = self.enabled_env()
+                env["AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS"] = value
+                self.assert_reason("config_integer_invalid", env)
 
     def test_enabled_requires_every_documented_write_dependency(self):
         full = self.enabled_env()
