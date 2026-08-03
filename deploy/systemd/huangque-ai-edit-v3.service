@@ -7,8 +7,12 @@ Wants=network-online.target
 Type=simple
 User=huangque-ai-edit-v3
 Group=huangque-ai-edit-v3
+SupplementaryGroups=ubuntu
 EnvironmentFile=-/home/ubuntu/content-api/content.env
+EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=/etc/huangque/ai-edit-v3.env
+Environment=CONTENT_ASSET_DB=/var/lib/huangque-ai-edit-v3/shared-assets.db
+UMask=0007
 WorkingDirectory=/home/ubuntu/content-api
 ExecStart=/home/ubuntu/content-api/venv/bin/python /home/ubuntu/content-api/ai_edit_v3_worker.py
 Restart=on-failure
