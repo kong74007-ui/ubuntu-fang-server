@@ -171,6 +171,38 @@ def _render_captions(values: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }
         for item in values
     ]
+
+
+def _material_asset_hashes(
+    manifest: Mapping[str, Any],
+    material_document: Mapping[str, Any],
+) -> dict[str, str]:
+    """Bind render asset ids to the already-frozen material content hashes."""
+
+    assets = manifest.get("assets")
+    items = material_document.get("items")
+    if not isinstance(assets, list) or not isinstance(items, list):
+        raise ValueError("quality_material_evidence_invalid")
+    if len(assets) > len(items):
+        raise ValueError("quality_material_evidence_incomplete")
+    evidence: dict[str, str] = {}
+    for asset, material in zip(assets, items):
+        if not isinstance(asset, Mapping) or not isinstance(material, Mapping):
+            raise ValueError("quality_material_evidence_invalid")
+        asset_id = asset.get("id")
+        asset_sha256 = asset.get("sha256")
+        material_sha256 = material.get("sha256")
+        if (
+            not isinstance(asset_id, str)
+            or not asset_id
+            or not isinstance(asset_sha256, str)
+            or asset_sha256 != material_sha256
+        ):
+            raise ValueError("quality_material_evidence_mismatch")
+        evidence[asset_id] = asset_sha256
+    return evidence
+
+
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -809,7 +841,15 @@ class ProductionStageCoordinator:
             mux = mux_master_audio(output_root / render["silent_video_relpath"], root / master["relative_path"], final_path, duration_ms=int(master["duration_ms"]), deadline_at=context.deadline_at)
             manifest = _json(root / f"render-{attempt}" / "input" / "render-manifest.json")
             report = _json(output_root / render["report_relpath"])
-            quality = run_blocking_quality(mux, manifest, report, owner_evidence={"owner": job["owner_id"], "job_id": job_id, "asset_hashes": {}}, visual_inspector=self.visual_inspector, deadline_at=context.deadline_at)
+            owner_evidence = {
+                "owner": job["owner_id"],
+                "job_id": job_id,
+                "asset_hashes": _material_asset_hashes(
+                    manifest,
+                    _json(root / "materials.json"),
+                ),
+            }
+            quality = run_blocking_quality(mux, manifest, report, owner_evidence=owner_evidence, visual_inspector=self.visual_inspector, deadline_at=context.deadline_at)
             payload = {"passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "report_sha256": quality.report_sha256, "final_relpath": final_path.relative_to(root).as_posix(), "final": {"relative_path": mux.relative_path, "sha256": mux.sha256, "duration_ms": mux.duration_ms, "video_codec": mux.video_codec, "audio_codec": mux.audio_codec, "width": mux.width, "height": mux.height, "fps_num": mux.fps_num, "fps_den": mux.fps_den, "sample_rate": mux.sample_rate, "channels": mux.channels, "audit": dict(mux.audit)}}
             digest = _write_json(root / f"quality-{attempt}.json", payload)
             if quality.passed:
