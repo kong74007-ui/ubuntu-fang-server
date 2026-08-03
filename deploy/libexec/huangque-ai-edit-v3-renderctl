@@ -140,35 +140,53 @@ class RenderController:
                 return False
             if declared.get("sha256") != _sha256(video_path):
                 return False
-            for entry in report.get("snapshots", []):
+            entries = report.get("snapshots")
+            if not isinstance(entries, list) or not 1 <= len(entries) <= 6:
+                return False
+            snapshot_names: list[str] = []
+            for entry in entries:
                 relative = entry.get("path")
                 if not isinstance(relative, str) or Path(relative).name != relative:
                     return False
                 snapshot = snapshots / relative
                 if not _plain_file(snapshot) or entry.get("size_bytes") != snapshot.stat().st_size or entry.get("sha256") != _sha256(snapshot):
                     return False
+                snapshot_names.append(relative)
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
             return False
         self.results_root.mkdir(parents=True, exist_ok=True)
         destination = self.results_root / instance
         if destination.exists():
-            return _plain_file(destination / "silent.mp4")
+            return (
+                _plain_file(destination / "silent.mp4")
+                and _plain_file(destination / "silent.report.json")
+                and all(_plain_file(destination / "snapshots" / name) for name in snapshot_names)
+            )
         staging = self.results_root / f".{instance}.ready"
-        if staging.exists():
-            shutil.rmtree(staging)
-        shutil.copytree(output, staging, symlinks=False)
         try:
             import grp
             worker_gid = grp.getgrnam("huangque-ai-edit-v3").gr_gid
         except (ImportError, KeyError):
             worker_gid = -1
-        for path in (staging, *staging.rglob("*")):
-            if path.is_symlink():
-                shutil.rmtree(staging, ignore_errors=True)
-                return False
-            os.chown(path, 0, worker_gid)
-            path.chmod(0o750 if path.is_dir() else 0o640)
-        os.replace(staging, destination)
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+            staging.mkdir(mode=0o700)
+            shutil.copyfile(video_path, staging / "silent.mp4", follow_symlinks=False)
+            shutil.copyfile(report_path, staging / "silent.report.json", follow_symlinks=False)
+            snapshot_output = staging / "snapshots"
+            snapshot_output.mkdir(mode=0o700)
+            for name in snapshot_names:
+                shutil.copyfile(snapshots / name, snapshot_output / name, follow_symlinks=False)
+            for path in (staging, *staging.rglob("*")):
+                if path.is_symlink():
+                    raise ValueError("render_result_symlink_forbidden")
+                os.chown(path, 0, worker_gid)
+                path.chmod(0o750 if path.is_dir() else 0o640)
+            os.replace(staging, destination)
+        except (OSError, ValueError, shutil.Error):
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
         return True
 
     def query(self, instance_id: str) -> dict[str, object]:
