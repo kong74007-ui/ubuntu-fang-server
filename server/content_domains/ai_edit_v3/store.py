@@ -34,6 +34,7 @@ from .contracts import (
     canonical_json,
     parse_strict_json,
     request_fingerprint,
+    schema_sha256,
 )
 
 
@@ -4512,6 +4513,84 @@ class V3Store:
             )
         )
 
+    def save_director_plan(
+        self,
+        claim: LeaseClaim,
+        stage_attempt_id: str,
+        validated_plan: Any,
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Persist one validated director plan under the active lease."""
+
+        claim = _require_claim(claim)
+        stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+        now_ms = _require_now_ms(now_ms)
+        value = getattr(validated_plan, "value", None)
+        if not isinstance(value, Mapping):
+            raise _configuration_error("director_plan_invalid", "validated plan is unavailable")
+        normalized = canonical_json(value).decode("utf-8")
+        plan_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        raw_sha = getattr(validated_plan, "raw_output_sha256", None)
+        if not isinstance(raw_sha, str) or re.fullmatch(r"[0-9a-f]{64}", raw_sha) is None:
+            raw_sha = plan_sha
+        request_id = getattr(validated_plan, "provider_request_id", None)
+        if request_id is not None and (not isinstance(request_id, str) or not request_id):
+            raise _configuration_error("director_request_id_invalid", "director request id is invalid")
+        identity = hashlib.sha256(f"{claim.job_id}:{stage_attempt_id}".encode("utf-8")).hexdigest()
+        model_call_id = f"model-{identity[:40]}"
+        plan_id = f"plan-{identity[:40]}"
+        edit_schema = schema_sha256("edit-plan-2.0.schema.json")
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            if not _lease_owned_tx(connection, claim, now_ms):
+                raise _lease_lost(claim)
+            attempt = connection.execute(
+                "SELECT stage FROM edit_v3_stage_attempts WHERE id=? AND job_id=?",
+                (stage_attempt_id, claim.job_id),
+            ).fetchone()
+            if attempt is None or attempt["stage"] != "planning":
+                raise StoreConflictError("director_attempt_invalid", "director plan has no active planning attempt")
+            connection.execute(
+                """INSERT OR IGNORE INTO edit_v3_model_calls(
+                       id,job_id,stage_attempt_id,provider,model,purpose,prompt_version,
+                       request_schema_sha256,response_schema_sha256,request_id,
+                       redacted_final_output_json,validation_json,usage_json,elapsed_ms,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    model_call_id, claim.job_id, stage_attempt_id, "dashscope",
+                    "qwen3.7-max-2026-06-08", "director", "v3-compiled-1",
+                    raw_sha, edit_schema, request_id, normalized,
+                    _json_text({"status": "valid", "plan_sha256": plan_sha}),
+                    None, 0, now_ms,
+                ),
+            )
+            existing = connection.execute(
+                "SELECT * FROM edit_v3_plans WHERE job_id=? AND version=1",
+                (claim.job_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO edit_v3_plans(
+                           id,job_id,version,model_call_id,raw_final_output_json,
+                           normalized_plan_json,plan_sha256,schema_sha256,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        plan_id, claim.job_id, 1, model_call_id, normalized,
+                        normalized, plan_sha, edit_schema, now_ms,
+                    ),
+                )
+            elif existing["plan_sha256"] != plan_sha:
+                raise StoreConflictError("director_plan_conflict", "director plan replay changed")
+            return dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_plans WHERE job_id=? AND version=1",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+
+        return self._write(write)
+
     def get_checkpoint_for_claim(
         self,
         claim: LeaseClaim,
@@ -7529,12 +7608,22 @@ class V3Store:
                     "publish_intent_missing",
                     "publication winner has no matching durable operation",
                 )
+            result_json = _json_text(
+                {
+                    "asset_id": asset_id,
+                    "delivery_object_key": connection.execute(
+                        "SELECT delivery_object_key FROM edit_v3_jobs WHERE job_id=?",
+                        (claim.job_id,),
+                    ).fetchone()["delivery_object_key"],
+                }
+            )
             updated = connection.execute(
-                """UPDATE edit_v3_jobs SET asset_id=?,updated_at=?
+                """UPDATE edit_v3_jobs SET asset_id=?,result_json=?,updated_at=?
                    WHERE job_id=? AND worker_id=? AND fencing_token=?
                      AND lease_until>? AND (asset_id IS NULL OR asset_id=?)""",
                 (
                     asset_id,
+                    result_json,
                     now_ms,
                     claim.job_id,
                     claim.worker_id,

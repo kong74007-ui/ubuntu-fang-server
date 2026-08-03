@@ -845,6 +845,25 @@ def list_video_assets(username, limit=120):
     except Exception as e:
         print("[video-assets] V2 COS adapter unavailable: %s" % e, flush=True)
     try:
+        from .ai_edit_v3.cos import V3Cos
+        signers = {}
+        for item in items:
+            if (
+                item.get("mode") == "ai_edit_v3"
+                and item.get("status") == "done"
+                and item.get("phase") == "completed"
+                and item.get("video_file")
+            ):
+                item["video_url"] = None
+                object_key = str(item["video_file"])
+                environment = object_key.split("/", 1)[0]
+                if environment not in {"test", "production"}:
+                    raise ValueError("v3_asset_environment_invalid")
+                signer = signers.setdefault(environment, V3Cos(environment=environment))
+                item["video_url"] = signer.presign_get(object_key, expires=300)
+    except Exception as e:
+        print("[video-assets] V3 COS playback signing failed: %s" % e, flush=True)
+    try:
         from . import cos
         if cos.enabled():
             for item in items:

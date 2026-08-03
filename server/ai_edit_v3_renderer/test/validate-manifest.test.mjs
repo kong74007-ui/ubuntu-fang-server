@@ -38,7 +38,8 @@ test("manifest binds renderer registry schema and silent video", () => {
     source_video: {path: "media/source.mp4", silent: true},
     compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000}],
   };
-  const valid = validateManifest(manifest, {rendererBuildId: "build", registrySha256: "registry", schemaSha256: "schema"});
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256: "schema"};
+  const valid = validateManifest(manifest, expected);
   assert(Object.isFrozen(valid));
   for (const mutate of [
     (value) => value.renderer_environment.renderer_build_id = "wrong",
@@ -47,6 +48,6 @@ test("manifest binds renderer registry schema and silent video", () => {
     (value) => value.output_spec.width = 1920,
   ]) {
     const changed = structuredClone(manifest); mutate(changed);
-    assert.throws(() => validateManifest(changed, {rendererBuildId: "build", registrySha256: "registry", schemaSha256: "schema"}));
+    assert.throws(() => validateManifest(changed, expected));
   }
 });

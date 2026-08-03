@@ -134,6 +134,25 @@ class HyperframesRenderer:
         self._sleeper = sleeper
         self._stopped_instances: set[str] = set()
 
+    @property
+    def renderer_build_id(self) -> str:
+        return self._renderer_build_id
+
+    @property
+    def registry_sha256(self) -> str:
+        return self._registry_sha256
+
+    @property
+    def schema_sha256(self) -> str:
+        return self._schema_sha256
+
+    def probe_capability(self, capability: str, *, environment: str | None):
+        return {
+            "available": capability == "renderer",
+            "environment": environment,
+            "renderer_build_id": self._renderer_build_id,
+        }
+
     def _command(self, action: str, instance_id: str) -> dict[str, Any]:
         if action not in {"start", "query", "stop"} or _INSTANCE_ID.fullmatch(instance_id) is None:
             raise HyperframesRendererError("render_control_argument_invalid")

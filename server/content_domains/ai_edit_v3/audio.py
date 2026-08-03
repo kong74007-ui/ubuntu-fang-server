@@ -260,6 +260,39 @@ def _audio_probe(path: Path, expected_duration_ms: int) -> tuple[int, int, int, 
     return probe.duration_ms, sample_rate, channels, digest
 
 
+def _normalize_generated_audio(
+    source: Path,
+    target: Path,
+    *,
+    expected_duration_ms: int,
+    deadline_at: float,
+) -> None:
+    """Convert provider-specific audio bytes into a deterministic WAV asset."""
+    seconds = expected_duration_ms / 1000
+    _run(
+        (
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-i",
+            os.fspath(source),
+            "-af",
+            f"aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo,apad,atrim=duration={seconds:.3f}",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s16le",
+            "-y",
+            os.fspath(target),
+        ),
+        deadline_at,
+    )
+
+
 def _generate_one(
     *,
     kind: Literal["bgm", "sfx"],
@@ -317,14 +350,22 @@ def generate_task_audio(
     ]
     for kind, cue_id, request, required in requests:
         context.assert_active()
+        provider_path = task_root / f".{cue_id}.provider-audio"
         path = task_root / f"{cue_id}.wav"
         try:
-            result = _generate_one(kind=kind, cue_id=cue_id, request=request, generator=generator, path=path, key=job_id, deadline_at=float(deadline_at))
+            result = _generate_one(kind=kind, cue_id=cue_id, request=request, generator=generator, path=provider_path, key=job_id, deadline_at=float(deadline_at))
             expected = plan.duration_ms if kind == "bgm" else request.duration_ms
-            duration_ms, sample_rate, channels, digest = _audio_probe(path, expected)
+            provider_sha = hashlib.sha256(provider_path.read_bytes()).hexdigest()
             payload_sha = result.payload.get("sha256")
-            if payload_sha is not None and payload_sha != digest:
+            if payload_sha is not None and payload_sha != provider_sha:
                 raise AudioGenerationError("generated_audio_hash_mismatch")
+            _normalize_generated_audio(
+                provider_path,
+                path,
+                expected_duration_ms=expected,
+                deadline_at=float(deadline_at),
+            )
+            duration_ms, sample_rate, channels, digest = _audio_probe(path, expected)
             environment = getattr(cos, "environment", "test")
             if environment not in {"test", "production"}:
                 raise AudioGenerationError("audio_environment_invalid")
@@ -349,6 +390,8 @@ def generate_task_audio(
                 raise
             if path.exists():
                 path.unlink()
+        finally:
+            provider_path.unlink(missing_ok=True)
     context.assert_active()
     return tuple(assets)
 
