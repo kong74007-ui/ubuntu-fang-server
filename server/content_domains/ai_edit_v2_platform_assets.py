@@ -20,8 +20,12 @@ READY_STATUSES = {"done", "ready", "completed", "succeeded"}
 TALKING_MODES = {"text", "audio"}
 
 
-def _connect(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=10)
+def _connect(path: str, *, immutable: bool = False) -> sqlite3.Connection:
+    if immutable:
+        target = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(target, timeout=10, uri=True)
+    else:
+        conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -74,7 +78,7 @@ def _authoritative_text(row: sqlite3.Row) -> str:
     job_id = row["job_id"]
     if job_id is None or not os.path.isfile(_jobs_db_path()):
         raise ValueError("platform_original_text_missing")
-    with closing(_connect(_jobs_db_path())) as conn:
+    with closing(_connect(_jobs_db_path(), immutable=True)) as conn:
         job = conn.execute(
             "SELECT payload FROM jobs WHERE id=? AND username=?", (job_id, row["username"])
         ).fetchone()
@@ -110,7 +114,7 @@ def _is_digital_ip_asset(
     if not os.path.isfile(jobs_db):
         raise sqlite3.OperationalError("platform jobs database unavailable")
     if jobs_conn is None:
-        with closing(_connect(jobs_db)) as conn:
+        with closing(_connect(jobs_db, immutable=True)) as conn:
             job = conn.execute(
                 """SELECT kind,status,payload,result,COALESCE(deleted,0) AS deleted
                    FROM jobs WHERE id=? AND username=?""",
@@ -170,7 +174,7 @@ def list_assets(owner: str, limit: int = 100) -> list[dict[str, Any]]:
     items = []
     with (
         closing(_connect(_asset_db_path())) as conn,
-        closing(_connect(_jobs_db_path())) as jobs_conn,
+        closing(_connect(_jobs_db_path(), immutable=True)) as jobs_conn,
     ):
         rows = conn.execute(
             """SELECT id,job_id,username,mode,image_file,video_file,provider_video_id,
