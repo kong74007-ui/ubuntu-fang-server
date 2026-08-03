@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib.machinery
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -154,7 +156,8 @@ class RenderCtlTests(unittest.TestCase):
             (incoming / "assets/render-manifest.json").write_text("{}", encoding="utf-8")
             controller.start("job_1")
             self.assertEqual(calls[0], ("/usr/bin/systemctl", "start", "huangque-ai-edit-v3-render@job_1.service"))
-            result = controller.query("job_1")
+            with patch.object(helper.os, "chown", create=True):
+                result = controller.query("job_1")
             self.assertEqual(result["state"], "failed")
             controller.stop("job_1")
             self.assertEqual(calls[-1], ("/usr/bin/systemctl", "stop", "huangque-ai-edit-v3-render@job_1.service"))
@@ -199,6 +202,56 @@ class RenderCtlTests(unittest.TestCase):
             self.assertFalse(incoming.exists())
             self.assertTrue((destination / "request.json").is_file())
             self.assertTrue((destination / "assets/render-manifest.json").is_file())
+
+    def test_publish_result_copies_only_reported_delivery_artifacts(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as folder:
+            controller = helper.RenderController(
+                spool_root=Path(folder) / "spool",
+                state_root=Path(folder) / "state",
+                systemctl=lambda _argv: (
+                    0,
+                    "Result=success\nExecMainStatus=0\nSubState=dead\nActiveState=inactive\n",
+                    "",
+                ),
+            )
+            output = controller.state_root / "job_1" / "output"
+            snapshots = output / "snapshots"
+            snapshots.mkdir(parents=True)
+            video = output / "silent.mp4"
+            video.write_bytes(b"video")
+            frame = snapshots / "frame.png"
+            frame.write_bytes(b"frame")
+            report = {
+                "status": "done",
+                "output": {
+                    "path": "silent.mp4",
+                    "size_bytes": video.stat().st_size,
+                    "sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
+                    "silent": True,
+                },
+                "snapshots": [
+                    {
+                        "path": "frame.png",
+                        "size_bytes": frame.stat().st_size,
+                        "sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+            (output / "silent.report.json").write_text(json.dumps(report), encoding="utf-8")
+            browser_cache = output / "home" / ".config" / "chrome"
+            browser_cache.mkdir(parents=True)
+            (browser_cache / "cache.bin").write_bytes(b"must-not-publish")
+
+            with patch.object(helper.os, "chown", create=True):
+                result = controller.query("job_1")
+
+            published = controller.results_root / "job_1"
+            self.assertEqual("succeeded", result["state"])
+            self.assertTrue((published / "silent.mp4").is_file())
+            self.assertTrue((published / "silent.report.json").is_file())
+            self.assertTrue((published / "snapshots/frame.png").is_file())
+            self.assertFalse((published / "home").exists())
 
 
 if __name__ == "__main__":
