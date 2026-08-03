@@ -4,8 +4,10 @@ import json
 import hashlib
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from server.content_domains.ai_edit_v2_providers.base import ProviderResult as V2Result
 from server.content_domains.ai_edit_v3.director import validate_edit_plan
@@ -170,6 +172,59 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_generating_images_probes_with_a_bounded_timeout(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        class Generator:
+            def generate(self, *, output_path, **kwargs):
+                Path(output_path).write_bytes(b"generated-image")
+                return None
+
+        class Cos:
+            def put_file(self, *args, **kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.store = type("Store", (), {"environment": "test"})()
+            coordinator.work_root = Path(directory)
+            coordinator.owner_hmac_secret = b"0123456789abcdef"
+            coordinator.image_generator = Generator()
+            coordinator.cos = Cos()
+            root = coordinator._root("job-image")
+            (root / "materials").mkdir()
+            (root / "materials.json").write_text('{"items":[]}', encoding="utf-8")
+            (root / "plan.json").write_text(
+                json.dumps({
+                    "ratio": "9:16",
+                    "materials": [{
+                        "request_id": "material_01",
+                        "semantic": "通用行业方法视觉",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with patch(
+                "server.content_domains.ai_edit_v3.production._probe_image",
+                autospec=True,
+                return_value=SimpleNamespace(width=1024, height=1536),
+            ) as probe:
+                outcome = coordinator._stage(
+                    "generating_images",
+                    {
+                        "job_id": "job-image",
+                        "owner_id": "alice",
+                        "stage_input_sha256": "0" * 64,
+                        "normalized_request_json": '{"input_type":"platform_talking_head"}',
+                    },
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+
+        self.assertEqual("generating_audio", outcome.next_state)
+        timeout = probe.call_args.kwargs["timeout_seconds"]
+        self.assertGreater(timeout, 0)
+        self.assertLessEqual(timeout, 30)
+
     def test_queued_stage_enters_media_pipeline(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 

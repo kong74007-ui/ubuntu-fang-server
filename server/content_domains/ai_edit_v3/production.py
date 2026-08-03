@@ -613,7 +613,10 @@ class ProductionStageCoordinator:
                         idempotency_key=f"ai-edit-v3:{job_id}:image:{material_request['request_id']}",
                         deadline_at=context.deadline_at,
                     )
-                image = _probe_image(destination)
+                remaining = context.deadline_at - time.time()
+                if remaining <= 0:
+                    raise TimeoutError("image_probe_deadline_exceeded")
+                image = _probe_image(destination, timeout_seconds=min(30.0, remaining))
                 digest = _sha(destination)
                 object_key = (
                     f"{self.store.environment}/ai-edit-v3/{self._owner_hmac(str(job['owner_id']))}/"
