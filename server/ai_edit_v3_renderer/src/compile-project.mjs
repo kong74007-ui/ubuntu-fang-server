@@ -110,17 +110,31 @@ function compileScene({manifest, composition, theme}) {
     .map(([key, value]) => `${key}:${escapeAttribute(value)}`).join(";");
   const rootId = `${prefix}_root`;
   const timeline = timelineRecorder();
-  const animationScript = (composition.animations ?? []).map((animation) => {
+  const fps = manifest.output_spec.fps_num / manifest.output_spec.fps_den;
+  const minimumAnimationMs = Math.ceil(1000 / fps);
+  const animationScript = (composition.animations ?? []).flatMap((animation) => {
     if (!composition.overlay_ids.includes(animation.target)) throw new Error("animation_target_unknown");
-    const target = animation.target === "standard_caption"
-      ? `#${prefix}_root .hf-overlay-standard_caption`
-      : `#${prefix}_${animation.target}`;
-    const audit = applyAnimation({
-      timeline, preset: animation.preset, target,
-      params: {durationMs: animation.duration_ms, delayMs: animation.delay_ms},
-      sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
+    const targets = animation.target === "standard_caption"
+      ? captions.map((caption, captionIndex) => ({
+        target: `#${prefix}_caption_${captionIndex + 1}_standard_caption`,
+        windowStartMs: caption.startMs,
+        windowDurationMs: caption.endMs - caption.startMs,
+        delayMs: animation.delay_ms,
+      })).filter((item) => item.windowDurationMs >= minimumAnimationMs)
+      : [{
+        target: `#${prefix}_${animation.target}`,
+        windowStartMs: 0,
+        windowDurationMs: durationMs,
+        delayMs: animation.delay_ms,
+      }];
+    return targets.map(({target, windowStartMs, windowDurationMs, delayMs}) => {
+      const audit = applyAnimation({
+        timeline, preset: animation.preset, target,
+        params: {durationMs: animation.duration_ms, delayMs},
+        sceneDurationMs: windowDurationMs, fps,
+      });
+      return compileAnimationScript({...audit, target, startMs: audit.startMs + windowStartMs});
     });
-    return compileAnimationScript({...audit, target});
   }).join("");
   const transitionAudit = applyTransition({
     timeline, transition: composition.transition, outgoing: `#${prefix}_background`, incoming: `#${rootId}`,

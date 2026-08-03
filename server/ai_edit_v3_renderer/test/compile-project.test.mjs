@@ -83,18 +83,45 @@ test("compiler renders one material as one column and captions on their own time
   manifest.assets = [{id: "material_01", kind: "image", path: "media/material-01.png"}];
   manifest.compositions[0].layout_id = "editorial_collage";
   manifest.compositions[0].asset_ids = ["material_01"];
+  manifest.compositions[0].animations = [{
+    target: "standard_caption", preset: "subtitle_pop", direction: "up", duration_ms: 280, delay_ms: 500,
+  }];
   manifest.captions = [
-    {id: "caption_01", start_ms: 0, end_ms: 2000, text: "First caption"},
-    {id: "caption_02", start_ms: 2000, end_ms: 4000, text: "Second caption"},
+    {id: "caption_01", start_ms: 0, end_ms: 1800, text: "First caption"},
+    {id: "caption_02", start_ms: 1800, end_ms: 3900, text: "Second caption"},
+    {id: "caption_03", start_ms: 3900, end_ms: 4000, text: "Tail caption"},
   ];
 
   await compileProject({manifest, outputRoot});
   const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
 
   assert.match(scene, /class="hf-materials hf-material-count-1" style="grid-template-columns:1fr"/);
-  assert.match(scene, /data-safe-text="First caption"[^>]+data-start="0"[^>]+data-duration="2"/);
-  assert.match(scene, /data-safe-text="Second caption"[^>]+data-start="2"[^>]+data-duration="2"/);
+  assert.match(scene, /data-safe-text="First caption"[^>]+data-start="0"[^>]+data-duration="1\.8"/);
+  assert.match(scene, /data-safe-text="Second caption"[^>]+data-start="1\.8"[^>]+data-duration="2\.1"/);
+  assert.match(scene, /data-safe-text="Tail caption"[^>]+data-start="3\.9"[^>]+data-duration="0\.1"/);
   assert.doesNotMatch(scene, /data-safe-text="First caption Second caption"/);
+  assert.match(scene, /tl\.fromTo\("#composition_01_caption_1_standard_caption"[\s\S]+,0\.5\);/);
+  assert.match(scene, /tl\.fromTo\("#composition_01_caption_2_standard_caption"[\s\S]+,2\.3\);/);
+  assert.match(scene, /tl\.fromTo\("#composition_01_caption_3_standard_caption"[\s\S]+"duration":0\.1[\s\S]+,3\.9\);/);
+  assert.doesNotMatch(scene, /tl\.fromTo\("#composition_01_root \.hf-overlay-standard_caption"/);
+});
+
+test("compiler skips sub-frame caption animation without shifting later caption ids", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-short-caption-")), "project");
+  const manifest = fixtureManifest("Short");
+  manifest.compositions[0].animations = [{
+    target: "standard_caption", preset: "subtitle_pop", direction: "up", duration_ms: 280, delay_ms: 0,
+  }];
+  manifest.captions = [
+    {id: "caption_01", start_ms: 0, end_ms: 10, text: "Short"},
+    {id: "caption_02", start_ms: 10, end_ms: 4000, text: "Visible"},
+  ];
+
+  await compileProject({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+
+  assert.doesNotMatch(scene, /tl\.fromTo\("#composition_01_caption_1_standard_caption"/);
+  assert.match(scene, /tl\.fromTo\("#composition_01_caption_2_standard_caption"/);
 });
 
 test("compiler raises source video above fullscreen material for speaker pip", async () => {
