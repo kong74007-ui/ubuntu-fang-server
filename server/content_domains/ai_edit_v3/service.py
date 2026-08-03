@@ -627,6 +627,7 @@ class EditV3Service:
         capability_report: CapabilityReport
         | Callable[[], CapabilityReport]
         | None = None,
+        result_signer: Callable[[str, int, str | None], str] | None = None,
     ) -> None:
         if not isinstance(store, V3Store):
             raise TypeError("store_invalid")
@@ -643,6 +644,7 @@ class EditV3Service:
             (lambda: int(time.time() * 1000)) if clock is None else clock
         )
         self._capability_report_source = capability_report
+        self._result_signer = result_signer
 
     def now(self) -> int:
         return _require_now(self._clock())
@@ -1962,6 +1964,37 @@ class EditV3Service:
     def list_platform_assets(self, owner: str) -> dict[str, Any]:
         return self._catalog_list(owner, "platform_assets", "list_platform_assets")
 
+    def authorize_platform_preview(self, owner: str, asset_id: str) -> dict[str, Any]:
+        owner = _require_owner(owner)
+        asset_id = _require_identifier("asset_id", asset_id)
+        catalog = getattr(self, "platform_catalog", self.source_catalog)
+        method = getattr(catalog, "preview", None)
+        if not callable(method):
+            raise ServiceError("platform_assets_unavailable", "preview unavailable", status=503)
+        try:
+            result = method(owner, asset_id)
+        except Exception as exc:
+            raise ServiceError("platform_assets_unavailable", "preview unavailable", status=503) from exc
+        if not isinstance(result, Mapping):
+            raise ServiceError("not_found", "resource was not found", status=404)
+        safe: dict[str, Any] = {"asset_id": asset_id, "expires_in": 300}
+        for source, target in (("video_url", "preview_url"), ("cover_url", "cover_url")):
+            value = result.get(source)
+            if value is None:
+                continue
+            if (
+                not isinstance(value, str)
+                or not value.startswith("/api/gen/file/")
+                or "?" in value
+                or "\\" in value
+                or ".." in value.split("/")
+            ):
+                raise ServiceError("platform_assets_unavailable", "preview unavailable", status=503)
+            safe[target] = value
+        if "preview_url" not in safe:
+            raise ServiceError("not_found", "resource was not found", status=404)
+        return safe
+
     def list_audio_assets(self, owner: str) -> dict[str, Any]:
         return self._catalog_list(owner, "audio_assets", "list_audio_assets")
 
@@ -2063,8 +2096,21 @@ class EditV3Service:
             raise ServiceError(
                 "result_storage_invalid", "stored result is invalid", status=503
             ) from exc
+        public_result = self._redact_public_value(result)
+        object_key = result.get("delivery_object_key") if isinstance(result, Mapping) else None
+        if isinstance(object_key, str) and callable(self._result_signer):
+            try:
+                public_result["play_url"] = self._result_signer(object_key, 300, None)
+                public_result["download_url"] = self._result_signer(
+                    object_key, 300, f"ai-edit-v3-{job_id}.mp4"
+                )
+                public_result["expires_in"] = 300
+            except Exception as exc:
+                raise ServiceError(
+                    "result_storage_invalid", "result authorization failed", status=503
+                ) from exc
         return {
             "job_id": job_id,
             "state": job["state"],
-            "result": self._redact_public_value(result),
+            "result": public_result,
         }

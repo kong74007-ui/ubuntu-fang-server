@@ -15,12 +15,12 @@ class AiEditV2AssetPreviewUiTests(unittest.TestCase):
         block = self.html.split("function refreshVideoAssetUrl(x){", 1)[1].split(
             "function previewVideoAsset", 1
         )[0]
-        self.assertIn("if(x.mode!=='ai_edit_v2')", block)
+        self.assertIn("['ai_edit_v2','ai_edit_v3'].indexOf(x.mode)<0", block)
         self.assertIn("/api/gen/video/assets?limit=120", block)
         self.assertIn("cache:'no-store'", block)
         self.assertIn("Authorization:'Bearer '+tok", block)
         self.assertIn("String(item.id)===String(x.id)", block)
-        self.assertIn("item.mode==='ai_edit_v2'", block)
+        self.assertIn("item.mode===x.mode", block)
         self.assertIn("x.video_url=fresh", block)
 
     def test_preview_and_download_wait_for_a_fresh_url(self):

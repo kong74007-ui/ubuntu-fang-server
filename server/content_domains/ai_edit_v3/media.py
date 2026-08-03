@@ -6,12 +6,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
@@ -83,6 +85,35 @@ class Keyframe:
 
 
 @dataclass(frozen=True)
+class FinalMux:
+    relative_path: str
+    sha256: str
+    duration_ms: int
+    video_codec: Literal["h264"]
+    audio_codec: Literal["aac"]
+    width: int
+    height: int
+    fps_num: int
+    fps_den: int
+    sample_rate: Literal[48000]
+    channels: Literal[2]
+    audit: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.relative_path, str)
+            or not self.relative_path
+            or Path(self.relative_path).name != self.relative_path
+            or not isinstance(self.sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None
+        ):
+            raise ValueError("final_mux_identity_invalid")
+        if not isinstance(self.audit, Mapping):
+            raise ValueError("final_mux_audit_invalid")
+        object.__setattr__(self, "audit", MappingProxyType(dict(self.audit)))
+
+
+@dataclass(frozen=True)
 class _ImageProbe:
     format: Literal["jpeg", "png", "webp"]
     width: int
@@ -139,6 +170,33 @@ def _run_process(command: Sequence[str], *, timeout_seconds: float) -> subproces
         _terminate_process_group(process)
         raise TimeoutError("process_timeout") from exc
     return subprocess.CompletedProcess(list(command), process.returncode, stdout, stderr)
+
+
+def run_media_process(
+    command: Sequence[str],
+    *,
+    timeout_seconds: float,
+    max_output_bytes: int = 4 * 1024 * 1024,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a local media command through the shared process-group supervisor boundary."""
+
+    if (
+        not isinstance(command, Sequence)
+        or isinstance(command, (str, bytes))
+        or not command
+        or any(not isinstance(item, str) or not item or "\x00" in item for item in command)
+    ):
+        raise MediaValidationError("media_command_invalid")
+    if (
+        isinstance(max_output_bytes, bool)
+        or not isinstance(max_output_bytes, int)
+        or not 1 <= max_output_bytes <= 16 * 1024 * 1024
+    ):
+        raise MediaValidationError("media_output_limit_invalid")
+    result = _run_process(command, timeout_seconds=timeout_seconds)
+    if len(result.stdout) > max_output_bytes or len(result.stderr) > max_output_bytes:
+        raise MediaProcessError("media_process_output_exceeded")
+    return result
 
 
 def _local_path(path: Path) -> Path:
@@ -357,6 +415,177 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _stream_start_ms(stream: Mapping[str, Any]) -> int:
+    try:
+        value = float(stream.get("start_time", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise MediaProcessError("mux_stream_start_invalid") from exc
+    if not math.isfinite(value):
+        raise MediaProcessError("mux_stream_start_invalid")
+    return round(value * 1000)
+
+
+def _faststart(path: Path) -> bool:
+    with path.open("rb") as stream:
+        prefix = stream.read(min(path.stat().st_size, 8 * 1024 * 1024))
+    moov = prefix.find(b"moov")
+    mdat = prefix.find(b"mdat")
+    return 0 <= moov < mdat
+
+
+def _analysis_text(command: Sequence[str], *, deadline_at: float) -> str:
+    result = run_media_process(
+        command,
+        timeout_seconds=_remaining_seconds(deadline_at, 900),
+        max_output_bytes=16 * 1024 * 1024,
+    )
+    if result.returncode != 0:
+        raise MediaProcessError("mux_analysis_failed")
+    return (result.stdout + result.stderr).decode("utf-8", "replace")
+
+
+def _last_float(pattern: str, value: str, *, code: str) -> float:
+    matches = re.findall(pattern, value, flags=re.MULTILINE)
+    if not matches:
+        raise MediaProcessError(code)
+    number = float(matches[-1])
+    if not math.isfinite(number):
+        raise MediaProcessError(code)
+    return number
+
+
+def _last_hash(value: str) -> str:
+    matches = re.findall(r"SHA256=([0-9a-fA-F]{64})", value)
+    if not matches:
+        raise MediaProcessError("mux_pcm_hash_missing")
+    return matches[-1].lower()
+
+
+def mux_master_audio(
+    silent_video: Path,
+    master_audio: Path,
+    output_path: Path,
+    *,
+    duration_ms: int,
+    deadline_at: float,
+) -> FinalMux:
+    """Mux one silent H.264 stream and the unique master without video re-encode."""
+
+    video_path = _local_path(Path(silent_video))
+    audio_path = _local_path(Path(master_audio))
+    destination = _local_path(Path(output_path))
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 1:
+        raise MediaValidationError("mux_duration_invalid")
+    if not video_path.is_file() or not audio_path.is_file() or destination.exists():
+        raise MediaValidationError("mux_input_output_invalid")
+    video_probe = probe_media(video_path)
+    audio_probe = probe_media(audio_path)
+    video_streams = [item for item in video_probe.streams if item.get("codec_type") == "video"]
+    embedded_audio = [item for item in video_probe.streams if item.get("codec_type") == "audio"]
+    audio_streams = [item for item in audio_probe.streams if item.get("codec_type") == "audio"]
+    if len(video_streams) != 1 or embedded_audio or video_probe.codecs != ("h264",):
+        raise MediaValidationError("mux_silent_video_invalid")
+    if len(audio_streams) != 1:
+        raise MediaValidationError("mux_master_audio_invalid")
+    video = video_streams[0]
+    if video.get("pix_fmt") != "yuv420p" or (video_probe.width, video_probe.height) not in {(1920, 1080), (1080, 1920)}:
+        raise MediaValidationError("mux_video_contract_invalid")
+    if (video_probe.fps_num, video_probe.fps_den) != (30, 1):
+        raise MediaValidationError("mux_video_contract_invalid")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.part.mp4")
+    if temporary.exists():
+        raise MediaValidationError("mux_temporary_exists")
+    command = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-protocol_whitelist", "file,pipe", "-fflags", "+genpts", "-i", os.fspath(video_path),
+        "-fflags", "+genpts", "-i", os.fspath(audio_path), "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-af", "asetpts=PTS-STARTPTS", "-t", f"{duration_ms / 1000:.3f}",
+        "-movflags", "+faststart", os.fspath(temporary),
+    ]
+    try:
+        result = run_media_process(command, timeout_seconds=_remaining_seconds(deadline_at, 900))
+        if result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise MediaProcessError("mux_ffmpeg_failed")
+        decode = run_media_process(
+            ["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(temporary), "-map", "0:v:0", "-map", "0:a:0", "-f", "null", os.devnull],
+            timeout_seconds=_remaining_seconds(deadline_at, 900),
+        )
+        if decode.returncode != 0:
+            raise MediaProcessError("mux_decode_failed")
+        final_probe = probe_media(temporary)
+        videos = [item for item in final_probe.streams if item.get("codec_type") == "video"]
+        audios = [item for item in final_probe.streams if item.get("codec_type") == "audio"]
+        if len(videos) != 1 or len(audios) != 1 or final_probe.codecs != ("h264", "aac"):
+            raise MediaProcessError("mux_stream_contract_invalid")
+        final_video, final_audio = videos[0], audios[0]
+        try:
+            sample_rate = int(final_audio.get("sample_rate"))
+            channels = int(final_audio.get("channels"))
+        except (TypeError, ValueError) as exc:
+            raise MediaProcessError("mux_audio_contract_invalid") from exc
+        frame_ms = 1000 * final_probe.fps_den / final_probe.fps_num
+        drift_limit = max(40, math.ceil(frame_ms))
+        if (
+            final_video.get("pix_fmt") != "yuv420p"
+            or (final_probe.width, final_probe.height) not in {(1920, 1080), (1080, 1920)}
+            or (final_probe.fps_num, final_probe.fps_den) != (30, 1)
+            or sample_rate != 48000 or channels != 2
+            or abs(final_probe.duration_ms - duration_ms) > drift_limit
+            or abs(_stream_start_ms(final_video)) > drift_limit
+            or abs(_stream_start_ms(final_audio)) > 40
+            or not _faststart(temporary)
+        ):
+            raise MediaProcessError("mux_output_contract_invalid")
+        frame_text = _analysis_text(
+            ["ffmpeg", "-v", "info", "-nostdin", "-i", os.fspath(temporary), "-vf", "blackdetect=d=0.3:pix_th=0.10,freezedetect=n=-60dB:d=2", "-an", "-f", "null", os.devnull],
+            deadline_at=deadline_at,
+        )
+        black_durations = [float(value) * 1000 for value in re.findall(r"black_duration:([0-9.]+)", frame_text)]
+        freeze_durations = [float(value) * 1000 for value in re.findall(r"freeze_duration:([0-9.]+)", frame_text)]
+        audio_text = _analysis_text(
+            ["ffmpeg", "-v", "info", "-nostdin", "-i", os.fspath(temporary), "-vn", "-af", "silencedetect=n=-50dB:d=0.5,ebur128=peak=true", "-f", "null", os.devnull],
+            deadline_at=deadline_at,
+        )
+        silence_durations = [float(value) * 1000 for value in re.findall(r"silence_duration: ([0-9.]+)", audio_text)]
+        integrated_lufs = _last_float(r"^\s*I:\s*(-?[0-9.]+)\s+LUFS", audio_text, code="mux_loudness_missing")
+        true_peak_dbfs = _last_float(r"^\s*Peak:\s*(-?[0-9.]+)\s+dBFS", audio_text, code="mux_peak_missing")
+        frame_hash_text = _analysis_text(
+            ["ffmpeg", "-v", "error", "-nostdin", "-i", os.fspath(temporary), "-map", "0:v:0", "-f", "framemd5", "-"],
+            deadline_at=deadline_at,
+        )
+        pcm_hash_text = _analysis_text(
+            ["ffmpeg", "-v", "error", "-nostdin", "-i", os.fspath(temporary), "-map", "0:a:0", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "hash", "-hash", "sha256", "-"],
+            deadline_at=deadline_at,
+        )
+        os.replace(temporary, destination)
+        return FinalMux(
+            destination.name, _sha256(destination), final_probe.duration_ms,
+            "h264", "aac", int(final_probe.width), int(final_probe.height),
+            int(final_probe.fps_num), int(final_probe.fps_den), 48000, 2,
+            {
+                "command": _redacted_command(command), "decode_ok": True,
+                "video_start_ms": _stream_start_ms(final_video),
+                "audio_start_ms": _stream_start_ms(final_audio),
+                "duration_error_ms": abs(final_probe.duration_ms - duration_ms),
+                "faststart": True, "video_stream_copy": True,
+                "black_max_ms": round(max(black_durations, default=0)),
+                "freeze_max_ms": round(max(freeze_durations, default=0)),
+                "global_silence_max_ms": round(max(silence_durations, default=0)),
+                "speech_silence_max_ms": round(max(silence_durations, default=0)),
+                "true_peak_dbfs": true_peak_dbfs,
+                "integrated_lufs": integrated_lufs,
+                "audio_fingerprint_unique": True,
+                "decoded_video_framemd5_sha256": hashlib.sha256(frame_hash_text.encode("utf-8")).hexdigest(),
+                "decoded_pcm_sha256": _last_hash(pcm_hash_text),
+            },
+        )
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _video_filter(rotation: int) -> str:

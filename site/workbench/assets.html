@@ -188,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=6bec9d4a"></script>
+<script src="cloud-shell.js?v=83d7c4c8"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -569,7 +569,7 @@
   function refreshVideoAssetUrl(x){
     x=x||{};
     var existing=String(x.video_url||x.url||'').trim();
-    if(x.mode!=='ai_edit_v2') return Promise.resolve(existing);
+    if(['ai_edit_v2','ai_edit_v3'].indexOf(x.mode)<0) return Promise.resolve(existing);
     return fetch('/api/gen/video/assets?limit=120',{
       cache:'no-store',
       headers:{Authorization:'Bearer '+tok}
@@ -579,7 +579,7 @@
       return r.json();
     }).then(function(d){
       var item=((d&&d.items)||[]).find(function(item){
-        return item && String(item.id)===String(x.id) && item.mode==='ai_edit_v2';
+        return item && String(item.id)===String(x.id) && item.mode===x.mode;
       });
       var fresh=String(item&&(item.video_url||item.url)||'').trim();
       if(!fresh) throw new Error('无法刷新视频地址，请重试');

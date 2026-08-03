@@ -327,7 +327,7 @@ def _template_for_request(
     ratio_ok = (
         requested_ratio in supported
         if requested_ratio != "auto"
-        else supported == {"16:9", "9:16"}
+        else bool(supported)
     )
     if not ratio_ok:
         raise _error("template_ratio_unsupported", "template does not support request ratio")

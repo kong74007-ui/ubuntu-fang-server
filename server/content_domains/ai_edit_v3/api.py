@@ -16,6 +16,7 @@ _PREFIX = "/api/v3/edit"
 _MAX_BODY_BYTES = 64 * 1024
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 _UPLOAD_COMPLETE = re.compile(r"/api/v3/edit/uploads/([^/]+)/complete\Z")
+_PLATFORM_PREVIEW = re.compile(r"/api/v3/edit/platform-assets/([^/]+)/preview\Z")
 _JOB_DETAIL = re.compile(r"/api/v3/edit/jobs/([^/]+)\Z")
 _JOB_PLAN = re.compile(r"/api/v3/edit/jobs/([^/]+)/plan\Z")
 _JOB_RESULT = re.compile(r"/api/v3/edit/jobs/([^/]+)/result\Z")
@@ -338,6 +339,7 @@ def _route(path: str) -> tuple[str, tuple[str, ...], frozenset[str]] | None:
     if path in static:
         return static[path]
     for pattern, name, methods in (
+        (_PLATFORM_PREVIEW, "platform-preview", frozenset({"GET"})),
         (_UPLOAD_COMPLETE, "upload-complete", frozenset({"POST"})),
         (_JOB_PLAN, "job-plan", frozenset({"GET"})),
         (_JOB_RESULT, "job-result", frozenset({"GET"})),
@@ -403,14 +405,21 @@ def dispatch(
     try:
         owner = _owner(user)
         if service is None:
-            raise ServiceError(
-                "service_unavailable", "AI Edit V3 service is unavailable", status=503
-            )
+            from .bootstrap import get_default_service
+
+            service = get_default_service()
+            if service is None:
+                raise ServiceError(
+                    "service_unavailable", "AI Edit V3 service is unavailable", status=503
+                )
         if name == "capabilities":
             result = service.get_capabilities(owner)
             status = 200
         elif name == "platform-assets":
             result = service.list_platform_assets(owner)
+            status = 200
+        elif name == "platform-preview":
+            result = service.authorize_platform_preview(owner, arguments[0])
             status = 200
         elif name == "audio-assets":
             result = service.list_audio_assets(owner)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
+import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -145,3 +147,29 @@ def run_worker(stop_event, *, config=None, runtime=None) -> None:
 
 
 __all__ = ("WorkerConfig", "run_worker", "worker_config")
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [ai-edit-v3] %(message)s",
+    )
+    stop = threading.Event()
+
+    def request_stop(_signum, _frame):
+        LOG.info("worker shutdown requested")
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    from server.content_domains.ai_edit_v3.bootstrap import get_default_runtime
+
+    runtime = get_default_runtime()
+    LOG.info("worker starting concurrency=%s", runtime.config.worker_concurrency)
+    run_worker(stop, runtime=runtime)
+    LOG.info("worker stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

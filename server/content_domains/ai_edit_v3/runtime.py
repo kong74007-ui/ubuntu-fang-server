@@ -25,6 +25,7 @@ from .feature import (
     load_config,
 )
 from .providers.base import ProviderResult
+from .providers.elevenlabs import ElevenLabsAudioGenerator
 from .renderers import Renderer
 from .store import LeaseLost, V3Store, assert_isolated_db
 
@@ -35,10 +36,10 @@ _REASON_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _SCHEMA_HASHES = MappingProxyType(
     {
         "edit-plan-2.0.schema.json": (
-            "2906e6e542170b7dfdbb6124d388c0e2de71f0576df287d4459bcd0dfe9f2c15"
+            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c"
         ),
         "render-manifest-v1.schema.json": (
-            "a61ab87058918ee2cdaa778b690a09f3f5796c01ee343a699bf5fbe83435c54d"
+            "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0"
         ),
         "quality-verdict-v1.schema.json": (
             "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e"
@@ -222,6 +223,18 @@ _PHASE_B_STAGE_NAMES = (
     "generating_images",
 )
 
+_ENTRY_STAGE_NAMES = ("queued",)
+
+_PHASE_C_STAGE_NAMES = (
+    "generating_audio",
+    "mixing_audio",
+    "compiling",
+    "rendering",
+    "quality_checking",
+    "repair_planning",
+    "staging_delivery",
+)
+
 
 def build_phase_b_stage_handlers(coordinator: Any) -> Mapping[str, StageHandler]:
     """Bind the seven Phase B stages without granting transition authority."""
@@ -241,6 +254,36 @@ def build_phase_b_stage_handlers(coordinator: Any) -> Mapping[str, StageHandler]
         return run
 
     return MappingProxyType({name: handler(name) for name in _PHASE_B_STAGE_NAMES})
+
+
+def build_stage_handlers(coordinator: Any) -> Mapping[str, StageHandler]:
+    """Bind the complete media state graph to one transition-free coordinator."""
+
+    if coordinator is None or not callable(getattr(coordinator, "run_stage", None)):
+        raise ValueError("stage_coordinator_invalid")
+
+    def handler(name: str) -> StageHandler:
+        def run(job: Mapping[str, Any], context: StageContext) -> StageOutcome:
+            context.assert_active()
+            outcome = coordinator.run_stage(name, job, context)
+            if not isinstance(outcome, StageOutcome):
+                raise ValueError("stage_outcome_invalid")
+            context.assert_active()
+            return outcome
+
+        def probe_capability(capability: str, *, environment: str | None):
+            expected = f"stage_handler:{name}"
+            return {
+                "available": capability == expected,
+                "environment": environment,
+                "reason_code": "capability_ready" if capability == expected else "capability_unknown",
+            }
+
+        run.probe_capability = probe_capability  # type: ignore[attr-defined]
+        return run
+
+    names = (*_ENTRY_STAGE_NAMES, *_PHASE_B_STAGE_NAMES, *_PHASE_C_STAGE_NAMES)
+    return MappingProxyType({name: handler(name) for name in names})
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,6 +684,18 @@ def preflight(
             dependencies.stage_handlers, environment, items
         )
 
+    if dependencies is None:
+        items["elevenlabs_audio"] = _implemented(
+            "ElevenLabs music and sound-effect adapter is installed"
+        )
+    elif isinstance(dependencies.audio_generator, ElevenLabsAudioGenerator):
+        items["elevenlabs_audio"] = items["audio_generator"]
+    else:
+        items["elevenlabs_audio"] = _missing(
+            "elevenlabs_not_wired",
+            "ElevenLabs adapter is not the injected audio generator",
+        )
+
     items["content_safety"] = _missing(
         "content_safety_not_implemented",
         "content safety is not implemented in Phase A",
@@ -701,5 +756,6 @@ __all__ = (
     "assert_ready_for_request",
     "build_runtime",
     "build_phase_b_stage_handlers",
+    "build_stage_handlers",
     "preflight",
 )

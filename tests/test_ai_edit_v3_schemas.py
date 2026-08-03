@@ -128,7 +128,7 @@ def valid_timeline():
             "speaker_fullscreen",
             "speaker_right_evidence_left",
         ],
-        "overlay_capabilities": ["headline_block", "evidence_label"],
+        "overlay_capabilities": ["headline_block", "info_card"],
         "animation_capabilities": ["fade", "slide"],
         "transition_capabilities": ["hard_cut", "soft_wipe"],
         "theme_capabilities": {
@@ -226,7 +226,7 @@ class SchemaMetaTests(unittest.TestCase):
 
         self.assertEqual(
             digest,
-            "2906e6e542170b7dfdbb6124d388c0e2de71f0576df287d4459bcd0dfe9f2c15",
+            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
         )
         Draft202012Validator(
             load_schema("edit-plan-2.0.schema.json")

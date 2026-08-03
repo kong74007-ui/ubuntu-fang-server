@@ -1257,11 +1257,11 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn("sqlite", report.runtime_versions)
         self.assertEqual(
             report.runtime_versions["edit-plan-2.0.schema.json"],
-            "2906e6e542170b7dfdbb6124d388c0e2de71f0576df287d4459bcd0dfe9f2c15",
+            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
         )
         self.assertEqual(
             report.runtime_versions["render-manifest-v1.schema.json"],
-            "a61ab87058918ee2cdaa778b690a09f3f5796c01ee343a699bf5fbe83435c54d",
+            "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
         )
         self.assertEqual(
             report.runtime_versions["quality-verdict-v1.schema.json"],

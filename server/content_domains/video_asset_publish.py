@@ -3,9 +3,11 @@
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Literal, Protocol
 
 
@@ -575,3 +577,18 @@ class AssetPublicationService:
 
 
 _NO_REPLAY = object()
+
+
+def build_sqlite_publisher(db_path: str | os.PathLike[str]) -> AssetPublicationService:
+    """Build the shared publisher without leaking SQLite lifecycle into callers."""
+    path = Path(db_path).resolve()
+
+    def connect() -> sqlite3.Connection:
+        connection = sqlite3.connect(os.fspath(path), timeout=30)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    with connect() as connection:
+        init_schema(connection)
+        connection.commit()
+    return AssetPublicationService(connect)

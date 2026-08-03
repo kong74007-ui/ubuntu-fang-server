@@ -1,0 +1,19 @@
+{
+  "name": "huangque-ai-edit-v3-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22 <23"},
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "release:lock": "node src/release-manifest.mjs",
+    "hf:check": "hyperframes check",
+    "hf:keyframes": "hyperframes keyframes",
+    "hf:snapshot": "hyperframes snapshot",
+    "render:fixtures": "node test/render-fixtures.mjs"
+  },
+  "dependencies": {
+    "gsap": "3.15.0",
+    "hyperframes": "0.7.84"
+  }
+}

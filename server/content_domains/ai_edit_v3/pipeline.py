@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -627,9 +628,11 @@ def run_job(
         heartbeat.close()
         terminate_once()
         current_ms = _now_ms(runtime)
-        error_code = (
-            exc.error_code if isinstance(exc, _StageFailure) else "stage_failed"
-        )
+        candidate = getattr(exc, "error_code", None) or getattr(exc, "code", None)
+        if not isinstance(candidate, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", candidate) is None:
+            text_value = str(exc)
+            candidate = text_value if re.fullmatch(r"[a-z][a-z0-9_]{0,127}", text_value) else "stage_failed"
+        error_code = candidate
         if store.lease_owned(claim, current_ms):
             if not attempt_finished:
                 store.finish_stage_attempt(
