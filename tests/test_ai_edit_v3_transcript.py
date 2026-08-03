@@ -79,7 +79,7 @@ class TranscriptContractTests(unittest.TestCase):
         )
         asr = NormalizedTranscript(
             language="zh-CN",
-            duration_ms=1600,
+            duration_ms=1620,
             words=(
                 AsrWord("果", 0, 100, None),
                 AsrWord("燃", 100, 200, None),
