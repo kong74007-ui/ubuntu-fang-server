@@ -369,7 +369,9 @@ def build_text_timeline(
     if not captions:
         raise TranscriptError("caption_timeline_empty")
     media_duration = getattr(source.media, "duration_ms", asr.duration_ms)
-    duration_ms = max(int(media_duration), asr.duration_ms, captions[-1].end_ms)
+    duration_ms = int(media_duration)
+    if captions[-1].end_ms > duration_ms:
+        raise TranscriptError("caption_timeline_exceeds_media")
     return TextTimeline(
         duration_ms=duration_ms,
         captions=captions,
