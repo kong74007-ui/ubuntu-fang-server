@@ -9,8 +9,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RENDER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3-render@.service"
 WORKER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3.service"
+API_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3-api.service"
+API_ROLE_ENV = ROOT / "deploy/ai-edit-v3-api.env.example"
 CONTENT_DROPIN = ROOT / "deploy/systemd/huangque-content.service.d/ai-edit-v3.conf"
-CONTENT_ROLE_ENV = ROOT / "deploy/ai-edit-v3-content.env.example"
 V2_ASSET_DROPIN = ROOT / "deploy/systemd/huangque-ai-edit-v2.service.d/ai-edit-v3-assets.conf"
 HELPER = ROOT / "deploy/libexec/huangque-ai-edit-v3-renderctl"
 SUDOERS = ROOT / "deploy/sudoers.d/huangque-ai-edit-v3-render"
@@ -49,18 +50,29 @@ class RenderSandboxStaticTests(unittest.TestCase):
 
     def test_worker_sudoers_and_tmpfiles_are_narrow(self):
         worker = WORKER_UNIT.read_text(encoding="utf-8")
+        self.assertTrue(API_UNIT.is_file())
+        self.assertTrue(API_ROLE_ENV.is_file())
+        api_unit = API_UNIT.read_text(encoding="utf-8")
+        api_role = API_ROLE_ENV.read_text(encoding="utf-8")
         content = CONTENT_DROPIN.read_text(encoding="utf-8")
-        self.assertTrue(CONTENT_ROLE_ENV.is_file())
-        content_role = CONTENT_ROLE_ENV.read_text(encoding="utf-8")
         v2_assets = V2_ASSET_DROPIN.read_text(encoding="utf-8")
         sudoers = SUDOERS.read_text(encoding="utf-8")
         tmpfiles = TMPFILES.read_text(encoding="utf-8")
         self.assertIn("User=huangque-ai-edit-v3", worker)
+        self.assertIn("WantedBy=multi-user.target", worker)
         self.assertIn("SupplementaryGroups=ubuntu", worker)
         self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", worker)
-        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
-        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3-content.env", content)
+        self.assertNotIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
+        self.assertIn("User=huangque-ai-edit-v3", api_unit)
+        self.assertIn("WantedBy=multi-user.target", api_unit)
+        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", api_unit)
+        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3-api.env", api_unit)
+        self.assertIn("AI_EDIT_V3_API_PORT=8113", api_role)
+        self.assertIn(
+            "AI_EDIT_V2_DB=/run/huangque-ai-edit-v3-api/ai_edit_v2.db",
+            api_role,
+        )
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", content)
         shared_db = "/var/lib/huangque-ai-edit-v3/shared-assets.db"
         host_v2_db = "/home/ubuntu/content-api/ai_edit_v2.db"
@@ -68,13 +80,22 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", worker)
         self.assertIn(f"Environment=CONTENT_ASSET_DB={shared_db}", content)
         self.assertIn(f"Environment=AI_EDIT_V2_ASSET_DB={shared_db}", v2_assets)
-        self.assertIn(f"AI_EDIT_V2_DB={host_v2_db}", content_role)
         self.assertNotIn("Environment=AI_EDIT_V2_DB=", worker)
         self.assertNotIn("Environment=AI_EDIT_V2_DB=", content)
         self.assertIn("RuntimeDirectory=huangque-ai-edit-v3", worker)
         self.assertIn("RuntimeDirectoryMode=0700", worker)
         self.assertIn(
             f"BindReadOnlyPaths={host_v2_db}:{worker_v2_db}", worker
+        )
+        self.assertIn("RuntimeDirectory=huangque-ai-edit-v3-api", api_unit)
+        self.assertIn("RuntimeDirectoryMode=0700", api_unit)
+        self.assertIn(
+            f"BindReadOnlyPaths={host_v2_db}:/run/huangque-ai-edit-v3-api/ai_edit_v2.db",
+            api_unit,
+        )
+        self.assertIn(
+            "ExecStart=/home/ubuntu/content-api/venv/bin/python /home/ubuntu/content-api/ai_edit_v3_api.py",
+            api_unit,
         )
         self.assertNotIn("Environment=AI_EDIT_V2_DB=", v2_assets)
         self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", v2_assets)
@@ -88,11 +109,15 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertIn("/var/spool/huangque-ai-edit-v3/incoming", tmpfiles)
         self.assertIn("/var/spool/huangque-ai-edit-v3/results", tmpfiles)
         self.assertIn("d /var/lib/huangque-ai-edit-v3 2770", tmpfiles)
+        self.assertIn(
+            "d /var/lib/huangque-ai-edit-v3-private 0700 huangque-ai-edit-v3 huangque-ai-edit-v3",
+            tmpfiles,
+        )
 
     def test_nginx_routes_v3_to_the_content_api(self):
         locations = FANG_LOCATIONS.read_text(encoding="utf-8")
         block = locations.split("location ^~ /api/v3/edit/", 1)[1].split("}", 1)[0]
-        self.assertIn("proxy_pass http://127.0.0.1:8096", block)
+        self.assertIn("proxy_pass http://127.0.0.1:8113", block)
         self.assertIn("proxy_buffering off", block)
 
 
