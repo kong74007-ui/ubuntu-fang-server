@@ -191,7 +191,8 @@ class MasterAudioTests(unittest.TestCase):
             self.assertLessEqual(abs(result.duration_ms - 4_000), 40)
             self.assertGreaterEqual(result.integrated_lufs, -18)
             self.assertLessEqual(result.integrated_lufs, -14)
-            self.assertLessEqual(result.true_peak_dbtp, -1)
+            self.assertLessEqual(result.true_peak_dbtp, -1.25)
+            self.assertEqual(result.audit["true_peak_target_dbtp"], -1.5)
             self.assertEqual(result.sha256, hashlib.sha256(output.read_bytes()).hexdigest())
             self.assertEqual(result.audit["loudness_passes"], 2)
 

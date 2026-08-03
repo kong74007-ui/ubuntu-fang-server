@@ -21,6 +21,7 @@ from .transcript import SourceSegment, TextTimeline
 _ID = re.compile(r"[a-z0-9_]{1,64}\Z")
 _PROTECTED_FACT = re.compile(r"\d|品牌|产品|价格|售价|元|折|型号|不能|不是|不含")
 _SFX_ROLES = frozenset({"reversal", "number", "method", "transition", "cta"})
+_MASTER_TRUE_PEAK_TARGET_DBTP = -1.5
 
 
 class AudioPlanError(ValueError):
@@ -543,7 +544,7 @@ def build_master_audio(
     command.extend(["-filter_complex", ";".join(filters), "-map", "[master]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", "-y", os.fspath(premaster)])
     _run(command, deadline_at)
 
-    _, analysis_stderr = _run(["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(premaster), "-af", "loudnorm=I=-16:TP=-1:LRA=11:print_format=json", "-f", "null", os.devnull], deadline_at)
+    _, analysis_stderr = _run(["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(premaster), "-af", f"loudnorm=I=-16:TP={_MASTER_TRUE_PEAK_TARGET_DBTP}:LRA=11:print_format=json", "-f", "null", os.devnull], deadline_at)
     measured = _loudnorm_json(analysis_stderr)
     measured_i = _finite_measurement(measured, "input_i")
     measured_tp = _finite_measurement(measured, "input_tp")
@@ -551,12 +552,12 @@ def build_master_audio(
     measured_thresh = _finite_measurement(measured, "input_thresh")
     offset = _finite_measurement(measured, "target_offset")
     loud_filter = (
-        "loudnorm=I=-16:TP=-1:LRA=11:linear=true:print_format=json:"
+        f"loudnorm=I=-16:TP={_MASTER_TRUE_PEAK_TARGET_DBTP}:LRA=11:linear=true:print_format=json:"
         f"measured_I={measured_i}:measured_TP={measured_tp}:measured_LRA={measured_lra}:"
         f"measured_thresh={measured_thresh}:offset={offset}"
     )
     _run(["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(premaster), "-af", loud_filter, "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", "-y", os.fspath(normalized)], deadline_at)
-    _, verify_stderr = _run(["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(normalized), "-af", "loudnorm=I=-16:TP=-1:LRA=11:print_format=json", "-f", "null", os.devnull], deadline_at)
+    _, verify_stderr = _run(["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(normalized), "-af", f"loudnorm=I=-16:TP={_MASTER_TRUE_PEAK_TARGET_DBTP}:LRA=11:print_format=json", "-f", "null", os.devnull], deadline_at)
     verified = _loudnorm_json(verify_stderr)
     integrated = _finite_measurement(verified, "input_i")
     true_peak = _finite_measurement(verified, "input_tp")
@@ -584,6 +585,7 @@ def build_master_audio(
         true_peak_dbtp=true_peak,
         audit={
             "loudness_passes": 2,
+            "true_peak_target_dbtp": _MASTER_TRUE_PEAK_TARGET_DBTP,
             "ducking_db_minimum": 12,
             "source_segment_count": len(source_segments),
             "sfx_count": len(ordered_sfx),
