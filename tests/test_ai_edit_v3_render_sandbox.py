@@ -9,9 +9,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RENDER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3-render@.service"
 WORKER_UNIT = ROOT / "deploy/systemd/huangque-ai-edit-v3.service"
+CONTENT_DROPIN = ROOT / "deploy/systemd/huangque-content.service.d/ai-edit-v3.conf"
 HELPER = ROOT / "deploy/libexec/huangque-ai-edit-v3-renderctl"
 SUDOERS = ROOT / "deploy/sudoers.d/huangque-ai-edit-v3-render"
 TMPFILES = ROOT / "deploy/tmpfiles.d/huangque-ai-edit-v3.conf"
+FANG_LOCATIONS = ROOT / "deploy/nginx-fang-locations.conf"
 
 
 def load_helper():
@@ -33,6 +35,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
             "BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/current:/work/release",
             "BindReadOnlyPaths=/var/lib/huangque-ai-edit-v3-render/%i/input:/work/input",
             "BindPaths=/var/lib/huangque-ai-edit-v3-render/%i/output:/work/output",
+            "Environment=PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable",
             "ExecStart=/usr/bin/node /work/release/src/render.mjs --request /work/input/request.json --input-root /work/input/assets --output-root /work/output",
         )
         for directive in required:
@@ -44,16 +47,27 @@ class RenderSandboxStaticTests(unittest.TestCase):
 
     def test_worker_sudoers_and_tmpfiles_are_narrow(self):
         worker = WORKER_UNIT.read_text(encoding="utf-8")
+        content = CONTENT_DROPIN.read_text(encoding="utf-8")
         sudoers = SUDOERS.read_text(encoding="utf-8")
         tmpfiles = TMPFILES.read_text(encoding="utf-8")
         self.assertIn("User=huangque-ai-edit-v3", worker)
+        self.assertIn("SupplementaryGroups=ubuntu", worker)
         self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", worker)
+        self.assertIn("EnvironmentFile=/etc/huangque/ai-edit-v3.env", content)
+        self.assertIn("SupplementaryGroups=huangque-ai-edit-v3", content)
         self.assertIn("/usr/local/libexec/huangque-ai-edit-v3-renderctl start *", sudoers)
         self.assertIn("query *", sudoers)
         self.assertIn("stop *", sudoers)
         self.assertNotIn("systemctl", sudoers)
         self.assertIn("/var/spool/huangque-ai-edit-v3/incoming", tmpfiles)
         self.assertIn("/var/spool/huangque-ai-edit-v3/results", tmpfiles)
+        self.assertIn("d /var/lib/huangque-ai-edit-v3 0770", tmpfiles)
+
+    def test_nginx_routes_v3_to_the_content_api(self):
+        locations = FANG_LOCATIONS.read_text(encoding="utf-8")
+        block = locations.split("location ^~ /api/v3/edit/", 1)[1].split("}", 1)[0]
+        self.assertIn("proxy_pass http://127.0.0.1:8096", block)
+        self.assertIn("proxy_buffering off", block)
 
 
 class RenderCtlTests(unittest.TestCase):

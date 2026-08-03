@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=huangque-ai-edit-v3
 Group=huangque-ai-edit-v3
+SupplementaryGroups=ubuntu
 EnvironmentFile=-/home/ubuntu/content-api/content.env
 EnvironmentFile=/etc/huangque/ai-edit-v3.env
 WorkingDirectory=/home/ubuntu/content-api
