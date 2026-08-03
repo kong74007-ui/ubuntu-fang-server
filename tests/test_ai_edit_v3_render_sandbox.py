@@ -33,7 +33,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
             "RestrictSUIDSGID=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "UMask=0077",
             "KillMode=control-group", "TimeoutStopSec=30", "RuntimeMaxSec=3300",
-            "CPUQuota=200%", "MemoryMax=3G", "TasksMax=64", "LimitFSIZE=8G",
+            "CPUQuota=200%", "MemoryMax=3G", "TasksMax=256", "LimitFSIZE=8G",
             "TemporaryFileSystem=/work:rw,nodev,nosuid,size=8G",
             "BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/current:/work/release",
             "BindReadOnlyPaths=/var/lib/huangque-ai-edit-v3-render/%i/input:/work/input",

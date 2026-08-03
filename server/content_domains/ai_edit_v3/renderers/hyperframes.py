@@ -185,6 +185,32 @@ class HyperframesRenderer:
         except HyperframesRendererError:
             pass
 
+    def _start_with_reconciliation(self, instance_id: str) -> None:
+        """Start one local render, reconciling an ambiguous control response safely."""
+
+        def accepted() -> bool:
+            try:
+                payload = self._command("query", instance_id)
+            except HyperframesRendererError:
+                return False
+            return payload["state"] in {"queued", "running", "succeeded"}
+
+        try:
+            self._command("start", instance_id)
+            return
+        except HyperframesRendererError:
+            self._sleeper(0.25)
+            if accepted():
+                return
+        try:
+            self._command("start", instance_id)
+            return
+        except HyperframesRendererError:
+            self._sleeper(0.25)
+            if accepted():
+                return
+            raise
+
     def _poll(self, instance_id: str, deadline_at: float, assert_active: Callable[[], None]) -> dict[str, Any]:
         delay = 0.25
         while True:
@@ -321,7 +347,7 @@ class HyperframesRenderer:
         manifest = self._stage(request)
         started = False
         try:
-            self._command("start", request.instance_id)
+            self._start_with_reconciliation(request.instance_id)
             started = True
             self._poll(request.instance_id, request.deadline_at, lambda: None)
             return self._collect_result(request, manifest)

@@ -41,6 +41,29 @@ class _Runner:
         return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload).encode(), "stderr": b"", "elapsed_ms": 1})()
 
 
+class _ScriptedRunner:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def run(self, argv, *, timeout_seconds, environment):
+        action = str(argv[-2])
+        self.calls.append(action)
+        expected_action, returncode, payload = self.responses.pop(0)
+        if action != expected_action:
+            raise AssertionError((action, expected_action))
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": returncode,
+                "stdout": json.dumps(payload).encode(),
+                "stderr": b"transient control failure" if returncode else b"",
+                "elapsed_ms": 1,
+            },
+        )()
+
+
 class HyperframesRendererTests(unittest.TestCase):
     def test_spools_fixed_request_polls_and_verifies_result(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -87,6 +110,53 @@ class HyperframesRendererTests(unittest.TestCase):
             with self.assertRaisesRegex(HyperframesRendererError, "render_deadline_exceeded"):
                 renderer._poll("job_1", 99.0, lambda: None)
             self.assertEqual(renderer._command_runner.calls[-1][0][1], "stop")
+
+    def test_start_retries_same_instance_after_unaccepted_transient_control_failure(self):
+        failed = {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_status_failed"}
+        running = {"state": "running", "result_ready": False, "exit_status": None, "error_code": None}
+        runner = _ScriptedRunner(
+            [
+                ("start", 1, failed),
+                ("query", 0, failed),
+                ("start", 0, running),
+            ]
+        )
+        renderer = HyperframesRenderer(
+            renderctl_path=Path("/usr/local/libexec/huangque-ai-edit-v3-renderctl"),
+            spool_root=Path("/var/spool/huangque-ai-edit-v3"),
+            renderer_build_id="sha256:" + "1" * 64,
+            registry_sha256="sha256:" + "2" * 64,
+            schema_sha256="3" * 64,
+            command_runner=runner,
+            sleeper=lambda _seconds: None,
+        )
+
+        renderer._start_with_reconciliation("job_1")
+
+        self.assertEqual(["start", "query", "start"], runner.calls)
+
+    def test_start_does_not_resubmit_when_query_confirms_first_attempt(self):
+        failed = {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_control_failed"}
+        running = {"state": "running", "result_ready": False, "exit_status": None, "error_code": None}
+        runner = _ScriptedRunner(
+            [
+                ("start", 1, failed),
+                ("query", 0, running),
+            ]
+        )
+        renderer = HyperframesRenderer(
+            renderctl_path=Path("/usr/local/libexec/huangque-ai-edit-v3-renderctl"),
+            spool_root=Path("/var/spool/huangque-ai-edit-v3"),
+            renderer_build_id="sha256:" + "1" * 64,
+            registry_sha256="sha256:" + "2" * 64,
+            schema_sha256="3" * 64,
+            command_runner=runner,
+            sleeper=lambda _seconds: None,
+        )
+
+        renderer._start_with_reconciliation("job_1")
+
+        self.assertEqual(["start", "query"], runner.calls)
 
 
 if __name__ == "__main__":
