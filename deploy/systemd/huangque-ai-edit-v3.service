@@ -22,7 +22,9 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=60
 KillSignal=SIGTERM
-NoNewPrivileges=yes
+# The worker crosses only the root-owned, sudoers-whitelisted renderctl boundary.
+# NoNewPrivileges would prevent sudo from executing that fixed control helper.
+NoNewPrivileges=no
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
