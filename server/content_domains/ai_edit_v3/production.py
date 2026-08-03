@@ -6,6 +6,7 @@ the frozen V3 protocol so provider formatting mistakes cannot strand a paid job.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -88,6 +89,221 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> str:
     temporary.write_bytes(raw)
     os.replace(temporary, path)
     return hashlib.sha256(raw).hexdigest()
+
+
+def _compiled_scene_spans(
+    groups: list[list[Mapping[str, Any]]],
+    duration_ms: int,
+) -> list[int]:
+    starts = [0] + [int(group[0]["start_ms"]) for group in groups[1:]]
+    ends = [int(group[0]["start_ms"]) for group in groups[1:]] + [duration_ms]
+    return [end - start for start, end in zip(starts, ends, strict=True)]
+
+
+def _partition_group_starts(
+    captions: list[Mapping[str, Any]],
+    *,
+    duration_ms: int,
+    budget_ms: int,
+    max_scenes: int,
+) -> list[int] | None:
+    positions = [0] + [
+        int(item["start_ms"])
+        for item in captions[1:]
+    ] + [duration_ms]
+    group_starts = [0]
+    position_index = 0
+    scene_count = 0
+    last_index = len(positions) - 1
+    while position_index < last_index:
+        next_index = position_index + 1
+        while (
+            next_index < last_index
+            and positions[next_index + 1] - positions[position_index] <= budget_ms
+        ):
+            next_index += 1
+        if positions[next_index] - positions[position_index] > budget_ms:
+            return None
+        position_index = next_index
+        scene_count += 1
+        if scene_count > max_scenes:
+            return None
+        if position_index < last_index:
+            group_starts.append(position_index)
+    return group_starts
+
+
+def _natural_caption_groups(
+    captions: list[Mapping[str, Any]],
+    *,
+    duration_ms: int,
+    budget_ms: int,
+    max_scenes: int,
+) -> list[list[Mapping[str, Any]]]:
+    target_ms = max(2500, math.ceil(duration_ms / max_scenes))
+    groups: list[list[Mapping[str, Any]]] = []
+    current: list[Mapping[str, Any]] = []
+    for caption in captions:
+        if (
+            current
+            and int(caption["end_ms"]) - int(current[0]["start_ms"])
+            > budget_ms
+        ):
+            groups.append(current)
+            current = []
+        current.append(caption)
+        if int(current[-1]["end_ms"]) - int(current[0]["start_ms"]) >= target_ms:
+            groups.append(current)
+            current = []
+    if current:
+        previous_start = (
+            0 if len(groups) <= 1 else int(groups[-1][0]["start_ms"])
+        )
+        if (
+            groups
+            and int(current[-1]["end_ms"]) - int(current[0]["start_ms"]) < 1400
+            and duration_ms - previous_start <= budget_ms
+        ):
+            groups[-1].extend(current)
+        else:
+            groups.append(current)
+    return groups
+
+
+def _groups_from_starts(
+    captions: list[Mapping[str, Any]],
+    group_starts: list[int],
+) -> list[list[Mapping[str, Any]]]:
+    ends = group_starts[1:] + [len(captions)]
+    return [
+        captions[start:end]
+        for start, end in zip(group_starts, ends, strict=True)
+    ]
+
+
+def _ensure_minimum_scene_groups(
+    groups: list[list[Mapping[str, Any]]],
+    *,
+    duration_ms: int,
+    budget_ms: int,
+    min_scenes: int,
+) -> list[list[Mapping[str, Any]]]:
+    while len(groups) < min_scenes:
+        candidates: list[tuple[tuple[int, int, int, int], int, int]] = []
+        for group_index, group in enumerate(groups):
+            if len(group) < 2:
+                continue
+            scene_start = (
+                0 if group_index == 0 else int(group[0]["start_ms"])
+            )
+            scene_end = (
+                duration_ms
+                if group_index == len(groups) - 1
+                else int(groups[group_index + 1][0]["start_ms"])
+            )
+            for split_index in range(1, len(group)):
+                boundary = int(group[split_index]["start_ms"])
+                left = boundary - scene_start
+                right = scene_end - boundary
+                if left <= budget_ms and right <= budget_ms:
+                    candidates.append((
+                        (max(left, right), abs(left - right), group_index, split_index),
+                        group_index,
+                        split_index,
+                    ))
+        if not candidates:
+            raise ValueError("director_scene_partition_invalid")
+        _, group_index, split_index = min(candidates)
+        group = groups[group_index]
+        groups[group_index:group_index + 1] = [
+            group[:split_index],
+            group[split_index:],
+        ]
+    return groups
+
+
+def _scene_duration_budget(
+    captions: list[Mapping[str, Any]],
+    *,
+    duration_ms: int | None = None,
+    max_scenes: int = 12,
+) -> int:
+    """Return the minimum feasible scene cap for the final compiled boundaries."""
+
+    if not captions or max_scenes < 1:
+        raise ValueError("director_captions_missing")
+    starts = [int(item["start_ms"]) for item in captions]
+    ends = [int(item["end_ms"]) for item in captions]
+    duration = ends[-1] if duration_ms is None else duration_ms
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, int)
+        or duration < ends[-1]
+    ):
+        raise ValueError("director_duration_invalid")
+    baseline_budget_ms = max(
+        8000,
+        max(end - start for start, end in zip(starts, ends, strict=True)),
+    )
+    lower = baseline_budget_ms
+    upper = max(lower, duration)
+    while lower < upper:
+        candidate = (lower + upper) // 2
+        if _partition_group_starts(
+            captions,
+            duration_ms=duration,
+            budget_ms=candidate,
+            max_scenes=max_scenes,
+        ) is not None:
+            upper = candidate
+        else:
+            lower = candidate + 1
+    return lower
+
+
+def _build_caption_groups(
+    captions: list[Mapping[str, Any]],
+    *,
+    duration_ms: int,
+    max_scenes: int,
+) -> list[list[Mapping[str, Any]]]:
+    budget_ms = _scene_duration_budget(
+        captions,
+        duration_ms=duration_ms,
+        max_scenes=max_scenes,
+    )
+    groups = _natural_caption_groups(
+        captions,
+        duration_ms=duration_ms,
+        budget_ms=budget_ms,
+        max_scenes=max_scenes,
+    )
+    if (
+        len(groups) > max_scenes
+        or max(_compiled_scene_spans(groups, duration_ms)) > budget_ms
+    ):
+        group_starts = _partition_group_starts(
+            captions,
+            duration_ms=duration_ms,
+            budget_ms=budget_ms,
+            max_scenes=max_scenes,
+        )
+        if group_starts is None:
+            raise ValueError("director_scene_partition_invalid")
+        groups = _groups_from_starts(captions, group_starts)
+    min_scenes = 3 if duration_ms >= 12000 and len(captions) >= 3 else 1
+    groups = _ensure_minimum_scene_groups(
+        groups,
+        duration_ms=duration_ms,
+        budget_ms=budget_ms,
+        min_scenes=min_scenes,
+    )
+    if (
+        len(groups) > max_scenes
+        or max(_compiled_scene_spans(groups, duration_ms)) > budget_ms
+    ):
+        raise ValueError("director_scene_partition_invalid")
+    return groups
 
 
 def _provider_payload_json(value: Any) -> Any:
@@ -290,30 +506,22 @@ class QwenCompiledDirector:
         return value if isinstance(value, Mapping) else {}
 
     @staticmethod
-    def _caption_groups(captions: list[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+    def _caption_groups(
+        captions: list[Mapping[str, Any]],
+        *,
+        duration_ms: int | None = None,
+    ) -> list[list[Mapping[str, Any]]]:
         """Build bounded scene candidates without letting model formatting own timing."""
 
         if not captions:
             raise ValueError("director_captions_missing")
-        groups: list[list[Mapping[str, Any]]] = []
-        current: list[Mapping[str, Any]] = []
-        for caption in captions:
-            current.append(caption)
-            elapsed = int(current[-1]["end_ms"]) - int(current[0]["start_ms"])
-            if elapsed >= 2500:
-                groups.append(current)
-                current = []
-        if current:
-            if groups and int(current[-1]["end_ms"]) - int(current[0]["start_ms"]) < 1400:
-                groups[-1].extend(current)
-            else:
-                groups.append(current)
-        while len(groups) > 8:
-            merged: list[list[Mapping[str, Any]]] = []
-            for index in range(0, len(groups), 2):
-                merged.append(groups[index] + (groups[index + 1] if index + 1 < len(groups) else []))
-            groups = merged
-        return groups
+        duration = int(captions[-1]["end_ms"]) if duration_ms is None else duration_ms
+        _scene_duration_budget(captions, duration_ms=duration)
+        return _build_caption_groups(
+            captions,
+            duration_ms=duration,
+            max_scenes=12,
+        )
 
     @staticmethod
     def _first_supported(candidates: tuple[str, ...], layouts: list[str]) -> str:
@@ -332,7 +540,10 @@ class QwenCompiledDirector:
         if ratio not in {"16:9", "9:16"}:
             ratio = "9:16"
         layouts = list(capabilities["layout_capabilities"])
-        groups = QwenCompiledDirector._caption_groups(captions)
+        groups = QwenCompiledDirector._caption_groups(
+            captions,
+            duration_ms=duration,
+        )
         source_type = (request.get("source") or {}).get("input_type")
         has_speaker_video = source_type not in {
             "existing_audio", "uploaded_audio", "script_to_audio_video",
@@ -585,6 +796,11 @@ class DeterministicVisualInspector:
             material_binding_valid = len(known_assets) == len(assets)
             long_material_scene = False
             hidden_speaker_ms = 0
+            scene_ranges: list[tuple[int, int]] = []
+            scene_budget_ms = _scene_duration_budget(
+                captions,
+                duration_ms=duration,
+            )
             for composition in compositions:
                 if not isinstance(composition, Mapping):
                     scene_flow_valid = False
@@ -603,6 +819,7 @@ class DeterministicVisualInspector:
                     scene_flow_valid = False
                     continue
                 expected_start = end
+                scene_ranges.append((start, end))
                 scene_duration = end - start
                 max_scene_ms = max(max_scene_ms, scene_duration)
                 layouts.append(layout_id)
@@ -610,7 +827,7 @@ class DeterministicVisualInspector:
                 if len(scene_asset_set) != len(scene_assets) or not scene_asset_set.issubset(known_assets):
                     material_binding_valid = False
                 used_assets.update(scene_asset_set)
-                if scene_assets and scene_duration > 8000:
+                if scene_assets and scene_duration > scene_budget_ms:
                     long_material_scene = True
                 if layout_id in {"product_hero", "number_proof"}:
                     hidden_speaker_ms += scene_duration
@@ -618,6 +835,7 @@ class DeterministicVisualInspector:
             material_binding_valid = material_binding_valid and used_assets == known_assets
             caption_ids = []
             caption_valid = True
+            caption_scene_binding_valid = scene_flow_valid
             for caption in captions:
                 if not isinstance(caption, Mapping):
                     caption_valid = False
@@ -634,12 +852,20 @@ class DeterministicVisualInspector:
                     or not isinstance(text, str) or not text.strip() or len(text) > 80
                 ):
                     caption_valid = False
+                elif sum(
+                    scene_start <= start and end <= scene_end
+                    for scene_start, scene_end in scene_ranges
+                ) != 1:
+                    caption_scene_binding_valid = False
                 caption_ids.append(caption_id)
             caption_valid = caption_valid and len(caption_ids) == len(set(caption_ids))
             requires_scene_rhythm = duration >= 12000 and len(captions) >= 3
             scene_rhythm_valid = (
                 scene_flow_valid
-                and (not requires_scene_rhythm or (len(compositions) >= 3 and max_scene_ms <= 8000))
+                and (
+                    not requires_scene_rhythm
+                    or (len(compositions) >= 3 and max_scene_ms <= scene_budget_ms)
+                )
             )
             layout_varied = not requires_scene_rhythm or len(set(layouts)) >= 2
             source_video = isinstance(manifest.get("source_video"), Mapping)
@@ -656,9 +882,15 @@ class DeterministicVisualInspector:
             )
             material_identity = material_binding_valid and not long_material_scene and scene_rhythm_valid
             structural = {
-                "caption_fact_accuracy": (caption_valid, "authoritative_caption_ranges_valid"),
+                "caption_fact_accuracy": (
+                    caption_valid and caption_scene_binding_valid,
+                    "authoritative_captions_have_one_complete_scene_binding",
+                ),
                 "safe_area_and_text_visibility": (
-                    caption_valid and scene_rhythm_valid and layout_varied,
+                    caption_valid
+                    and caption_scene_binding_valid
+                    and scene_rhythm_valid
+                    and layout_varied,
                     "captions_are_timed_per_bounded_varied_scene",
                 ),
                 "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
@@ -707,6 +939,151 @@ class DeterministicVisualInspector:
             "model_request_id": "deterministic-structural-inspector-v2",
             "checks": checks,
         }
+
+
+def _composition_split_boundaries(
+    start_ms: int,
+    end_ms: int,
+    captions: list[Mapping[str, Any]],
+    budget_ms: int,
+) -> list[int]:
+    positions = [start_ms] + sorted({
+        int(item["start_ms"])
+        for item in captions
+        if start_ms < int(item["start_ms"]) < end_ms
+    }) + [end_ms]
+    boundaries = [start_ms]
+    position_index = 0
+    last_index = len(positions) - 1
+    while position_index < last_index:
+        next_index = position_index + 1
+        while (
+            next_index < last_index
+            and positions[next_index + 1] - positions[position_index] <= budget_ms
+        ):
+            next_index += 1
+        if positions[next_index] - positions[position_index] > budget_ms:
+            raise ValueError("repair_manifest_caption_partition_invalid")
+        position_index = next_index
+        boundaries.append(positions[position_index])
+    return boundaries
+
+
+def _repair_render_manifest(
+    manifest: Mapping[str, Any],
+    repairable_ids: set[str] | frozenset[str],
+) -> dict[str, Any]:
+    """Apply bounded structural repairs instead of rerendering identical input."""
+
+    repaired = copy.deepcopy(dict(manifest))
+    compositions = repaired.get("compositions")
+    if not isinstance(compositions, list) or not compositions:
+        raise ValueError("repair_manifest_invalid")
+    requested = frozenset(repairable_ids)
+    supported_ids = {
+        "safe_area_and_text_visibility",
+        "face_product_obstruction",
+        "material_semantic_identity",
+        "opening_hook_visual_consistency",
+    }
+    if requested - supported_ids:
+        raise ValueError("repair_manifest_unsupported")
+    captions = list(repaired.get("captions") or ())
+    scene_budget_ms = _scene_duration_budget(
+        captions,
+        duration_ms=repaired.get("duration_ms"),
+    )
+    if requested & (supported_ids - {"face_product_obstruction"}):
+        bounded: list[dict[str, Any]] = []
+        reserved_ids = {
+            str(item.get("id"))
+            for item in compositions
+            if isinstance(item, Mapping)
+            and isinstance(item.get("start_ms"), int)
+            and not isinstance(item.get("start_ms"), bool)
+            and isinstance(item.get("end_ms"), int)
+            and not isinstance(item.get("end_ms"), bool)
+            and int(item["end_ms"]) - int(item["start_ms"]) <= scene_budget_ms
+        }
+        for raw in compositions:
+            if not isinstance(raw, Mapping):
+                raise ValueError("repair_manifest_invalid")
+            composition = copy.deepcopy(dict(raw))
+            start = composition.get("start_ms")
+            end = composition.get("end_ms")
+            if (
+                isinstance(start, bool)
+                or not isinstance(start, int)
+                or isinstance(end, bool)
+                or not isinstance(end, int)
+                or end <= start
+            ):
+                raise ValueError("repair_manifest_invalid")
+            if end - start <= scene_budget_ms:
+                bounded.append(composition)
+                continue
+            part = 1
+            original_id = str(composition.get("id") or "composition")
+            boundaries = _composition_split_boundaries(
+                start,
+                end,
+                captions,
+                scene_budget_ms,
+            )
+            for segment_start, segment_end in zip(
+                boundaries,
+                boundaries[1:],
+            ):
+                segment = copy.deepcopy(composition)
+                identity = hashlib.sha256(
+                    f"{original_id}:{part}".encode("utf-8")
+                ).hexdigest()[:12]
+                suffix = f"_r{part:02d}_{identity}"
+                segment["id"] = f"{original_id[:64 - len(suffix)]}{suffix}"
+                if segment["id"] in reserved_ids:
+                    raise ValueError("repair_manifest_id_collision")
+                reserved_ids.add(segment["id"])
+                segment["start_ms"] = segment_start
+                segment["end_ms"] = segment_end
+                bounded.append(segment)
+                part += 1
+        repaired["compositions"] = bounded
+
+    if (
+        "opening_hook_visual_consistency" in requested
+        and isinstance(repaired.get("source_video"), Mapping)
+        and not str(repaired["compositions"][0].get("layout_id", "")).startswith("speaker_")
+    ):
+        repaired["compositions"][0]["layout_id"] = "speaker_fullscreen"
+        repaired["compositions"][0]["asset_ids"] = []
+
+    if "face_product_obstruction" in requested:
+        for composition in repaired["compositions"]:
+            if composition.get("layout_id") in {"product_hero", "number_proof"}:
+                composition["layout_id"] = "speaker_fullscreen"
+                composition["asset_ids"] = []
+
+    if repaired == dict(manifest):
+        raise ValueError("repair_manifest_unchanged")
+    verdict = DeterministicVisualInspector().inspect(
+        manifest=repaired,
+        render_report={},
+    )
+    results = {
+        item.get("check_id"): item.get("result")
+        for item in verdict.get("checks", ())
+        if isinstance(item, Mapping)
+    }
+    required_preflight = requested | {
+        "caption_fact_accuracy",
+        "safe_area_and_text_visibility",
+        "face_product_obstruction",
+        "material_semantic_identity",
+        "generated_evidence_claim",
+    }
+    if any(results.get(check_id) != "pass" for check_id in required_preflight):
+        raise ValueError("repair_manifest_unresolved")
+    return repaired
 
 
 class ProductionStageCoordinator:
@@ -1104,6 +1481,17 @@ class ProductionStageCoordinator:
                 "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
+            if attempt > 1:
+                previous_quality = _json(root / f"quality-{attempt - 1}.json")
+                repairable_ids = previous_quality.get("repairable_ids")
+                if not isinstance(repairable_ids, list) or not all(
+                    isinstance(item, str) for item in repairable_ids
+                ):
+                    raise ValueError("repair_quality_invalid")
+                manifest = _repair_render_manifest(
+                    manifest,
+                    set(repairable_ids),
+                )
             frozen = freeze_render_manifest(manifest, input_root / "render-manifest.json", sandbox_root=input_root)
             payload = {"attempt": attempt, "input_root": input_root.relative_to(root).as_posix(), "manifest_sha256": frozen.sha256}
             digest = _write_json(root / f"compile-{attempt}.json", payload)

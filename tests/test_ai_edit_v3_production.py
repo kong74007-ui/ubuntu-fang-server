@@ -39,6 +39,177 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_scene_budget_adapts_when_twelve_scenes_cannot_hold_all_captions(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _scene_duration_budget,
+        )
+
+        captions = [
+            {
+                "id": f"caption_{index:03d}",
+                "start_ms": (index - 1) * 6000,
+                "end_ms": index * 6000,
+                "text": f"Caption {index}",
+            }
+            for index in range(1, 14)
+        ]
+
+        budget = _scene_duration_budget(captions)
+        groups = QwenCompiledDirector._caption_groups(captions)
+
+        self.assertEqual(12000, budget)
+        self.assertLessEqual(len(groups), 12)
+        self.assertLessEqual(
+            max(
+                int(group[-1]["end_ms"]) - int(group[0]["start_ms"])
+                for group in groups
+            ),
+            budget,
+        )
+
+    def test_scene_budget_accepts_one_indivisible_long_caption(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _scene_duration_budget,
+        )
+
+        captions = [
+            {"id": "caption_001", "start_ms": 0, "end_ms": 10000, "text": "Long caption"},
+            {"id": "caption_002", "start_ms": 10000, "end_ms": 14000, "text": "Tail"},
+        ]
+
+        self.assertEqual(10000, _scene_duration_budget(captions))
+
+    def test_scene_budget_accounts_for_legal_caption_gaps_in_compiled_boundaries(self):
+        from server.content_domains.ai_edit_v3.production import (
+            DeterministicVisualInspector,
+            _scene_duration_budget,
+        )
+
+        captions = [
+            {"id": "caption_001", "start_ms": 0, "end_ms": 7900, "text": "One"},
+            {"id": "caption_002", "start_ms": 8100, "end_ms": 10000, "text": "Two"},
+            {"id": "caption_003", "start_ms": 10200, "end_ms": 18000, "text": "Three"},
+        ]
+        capabilities = {
+            "layout_capabilities": ["speaker_fullscreen", "speaker_left_info_right"],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium"],
+                "image_fit": ["cover"],
+            },
+        }
+        plan = QwenCompiledDirector._compile(
+            {
+                "timeline": {"duration_ms": 18000, "captions": captions, "source_segments": []},
+                "source": {"input_type": "platform_talking_head"},
+                "current_materials": [],
+                "generate_missing_material": False,
+                "capabilities": capabilities,
+                "ratio": "9:16",
+            },
+            {
+                "layout_sequence": [
+                    "speaker_fullscreen",
+                    "speaker_left_info_right",
+                    "speaker_fullscreen",
+                ],
+                "motion_energy": "medium",
+            },
+        )
+
+        budget = _scene_duration_budget(captions, duration_ms=18000)
+        self.assertEqual(8100, budget)
+        self.assertLessEqual(
+            max(scene["end_ms"] - scene["start_ms"] for scene in plan["scenes"]),
+            budget,
+        )
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": f"composition_{index:03d}",
+                    "start_ms": scene["start_ms"],
+                    "end_ms": scene["end_ms"],
+                    "layout_id": scene["layout_id"],
+                    "asset_ids": [],
+                }
+                for index, scene in enumerate(plan["scenes"], start=1)
+            ],
+            "captions": captions,
+        }
+        checks = {
+            item["check_id"]: item["result"]
+            for item in DeterministicVisualInspector().inspect(
+                manifest=manifest,
+                render_report={},
+            )["checks"]
+        }
+        self.assertEqual("pass", checks["safe_area_and_text_visibility"])
+        self.assertEqual("pass", checks["opening_hook_visual_consistency"])
+
+    def test_scene_budget_does_not_over_relax_when_feasibility_is_non_monotonic(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _scene_duration_budget,
+        )
+
+        ranges = (
+            (252, 2109), (2389, 9167), (9401, 10457), (10689, 15619),
+            (15923, 17904), (18170, 23103), (23359, 28405), (28593, 33101),
+            (33378, 35881), (35882, 38888), (38934, 40146), (40384, 44469),
+            (44700, 46631), (46977, 53754), (54088, 57241),
+        )
+        captions = [
+            {
+                "id": f"caption_{index:03d}",
+                "start_ms": start,
+                "end_ms": end,
+                "text": f"Caption {index}",
+            }
+            for index, (start, end) in enumerate(ranges, start=1)
+        ]
+        groups = QwenCompiledDirector._caption_groups(
+            captions,
+            duration_ms=57719,
+        )
+        starts = [0] + [int(group[0]["start_ms"]) for group in groups[1:]]
+        ends = [int(group[0]["start_ms"]) for group in groups[1:]] + [57719]
+
+        self.assertEqual(
+            8000,
+            _scene_duration_budget(captions, duration_ms=57719),
+        )
+        self.assertLessEqual(len(groups), 12)
+        self.assertLessEqual(
+            max(end - start for start, end in zip(starts, ends, strict=True)),
+            8000,
+        )
+
+    def test_short_tail_stays_separate_when_merging_would_break_scene_rhythm(self):
+        from server.content_domains.ai_edit_v3.production import _scene_duration_budget
+
+        captions = [
+            {"id": "caption_001", "start_ms": 0, "end_ms": 4200, "text": "One"},
+            {"id": "caption_002", "start_ms": 4700, "end_ms": 12300, "text": "Two"},
+            {"id": "caption_003", "start_ms": 12800, "end_ms": 13800, "text": "Three"},
+        ]
+        groups = QwenCompiledDirector._caption_groups(
+            captions,
+            duration_ms=14300,
+        )
+
+        self.assertEqual(3, len(groups))
+        self.assertEqual(
+            8100,
+            _scene_duration_budget(captions, duration_ms=14300),
+        )
+
     def test_default_client_uses_v3_compatible_qwen_transport(self):
         with patch.dict(os.environ, {}, clear=True):
             provider = QwenCompiledDirector()
@@ -269,12 +440,12 @@ class ProductionDirectorTests(unittest.TestCase):
             {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
             for index, (start, end, text) in enumerate(
                 (
-                    (0, 4200, "Introduce the platform"),
-                    (4200, 8200, "Explain image generation"),
-                    (8200, 12400, "Explain digital presenters"),
-                    (12400, 16600, "Explain voice generation"),
-                    (16600, 21200, "Explain poster workflows"),
-                    (21200, 26178, "Conclude with delivery efficiency"),
+                    (0, 6045, "Introduce the platform"),
+                    (6045, 10205, "Explain image generation"),
+                    (10205, 16460, "Explain digital presenters"),
+                    (16460, 18938, "Explain voice generation"),
+                    (18938, 25090, "Explain poster workflows"),
+                    (25090, 26178, "Conclude with delivery efficiency"),
                 ),
                 start=1,
             )
@@ -314,6 +485,48 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertNotIn("product_hero", layouts)
         self.assertGreater(len(set(layouts)), 1)
         self.assertGreaterEqual(len(plan["materials"]), 2)
+        self.assertLessEqual(
+            max(scene["end_ms"] - scene["start_ms"] for scene in plan["scenes"]),
+            8000,
+        )
+        from server.content_domains.ai_edit_v3.production import (
+            DeterministicVisualInspector,
+            _scene_asset_ids,
+        )
+
+        material_ids = [item["request_id"] for item in plan["materials"]]
+        manifest = {
+            "duration_ms": plan["duration_ms"],
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [
+                {"id": material_id, "kind": "image"}
+                for material_id in material_ids
+            ],
+            "compositions": [
+                {
+                    "id": f"composition_{index:03d}",
+                    "start_ms": scene["start_ms"],
+                    "end_ms": scene["end_ms"],
+                    "layout_id": scene["layout_id"],
+                    "asset_ids": _scene_asset_ids(scene, material_ids),
+                }
+                for index, scene in enumerate(plan["scenes"], start=1)
+            ],
+            "captions": plan["captions"],
+        }
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=manifest,
+                render_report={},
+            )["checks"]
+        }
+        for check_id in (
+            "safe_area_and_text_visibility",
+            "material_semantic_identity",
+            "opening_hook_visual_consistency",
+        ):
+            self.assertEqual("pass", checks[check_id]["result"], check_id)
 
     def test_invalid_optional_layout_sequence_keeps_multi_scene_fallback(self):
         class InvalidSequenceQwen(_Qwen):
@@ -366,6 +579,292 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_repair_manifest_changes_the_failed_structure_and_passes_bounded_checks(self):
+        from server.content_domains.ai_edit_v3.production import (
+            DeterministicVisualInspector,
+            _repair_render_manifest,
+        )
+
+        manifest = {
+            "duration_ms": 26178,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [
+                {"id": "material_01", "kind": "image"},
+                {"id": "material_02", "kind": "image"},
+            ],
+            "compositions": [
+                {
+                    "id": "composition_001", "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 6045,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "scene_id": "scene_02",
+                    "start_ms": 6045, "end_ms": 10205,
+                    "layout_id": "speaker_left_info_right", "asset_ids": ["material_01"],
+                },
+                {
+                    "id": "composition_003", "scene_id": "scene_03",
+                    "start_ms": 10205, "end_ms": 16460,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_004", "scene_id": "scene_04",
+                    "start_ms": 16460, "end_ms": 26178,
+                    "layout_id": "material_fullscreen_speaker_pip", "asset_ids": ["material_02"],
+                },
+            ],
+            "captions": [
+                {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+                for index, (start, end, text) in enumerate(
+                    (
+                        (0, 6045, "Platform introduction"),
+                        (6045, 10205, "Image and presenter tools"),
+                        (10205, 16460, "Marketing content"),
+                        (16460, 18938, "One workbench"),
+                        (18938, 25090, "Deliver final videos"),
+                        (25090, 26178, "More efficient"),
+                    ),
+                    start=1,
+                )
+            ],
+        }
+
+        repaired = _repair_render_manifest(
+            manifest,
+            {
+                "safe_area_and_text_visibility",
+                "material_semantic_identity",
+                "opening_hook_visual_consistency",
+            },
+        )
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=repaired,
+                render_report={},
+            )["checks"]
+        }
+
+        self.assertNotEqual(repaired, manifest)
+        self.assertEqual(4, len(manifest["compositions"]))
+        self.assertGreater(len(repaired["compositions"]), 4)
+        for caption in repaired["captions"]:
+            containing_scenes = [
+                composition
+                for composition in repaired["compositions"]
+                if composition["start_ms"] <= caption["start_ms"]
+                and caption["end_ms"] <= composition["end_ms"]
+            ]
+            self.assertEqual(1, len(containing_scenes), caption["id"])
+        for check_id in (
+            "safe_area_and_text_visibility",
+            "material_semantic_identity",
+            "opening_hook_visual_consistency",
+        ):
+            self.assertEqual("pass", checks[check_id]["result"], check_id)
+
+    def test_visual_inspector_rejects_a_caption_split_across_compositions(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": "composition_001", "start_ms": 0, "end_ms": 8000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "start_ms": 8000, "end_ms": 14000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": [],
+                },
+                {
+                    "id": "composition_003", "start_ms": 14000, "end_ms": 18000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 10000, "text": "Split"},
+                {"id": "caption_003", "start_ms": 10000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=manifest,
+                render_report={},
+            )["checks"]
+        }
+
+        self.assertEqual("fail", checks["caption_fact_accuracy"]["result"])
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+
+    def test_repair_manifest_rejects_changed_but_still_failing_structure(self):
+        from server.content_domains.ai_edit_v3.production import _repair_render_manifest
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [{
+                "id": "composition_001", "scene_id": "scene_01",
+                "start_ms": 0, "end_ms": 18000,
+                "layout_id": "speaker_fullscreen", "asset_ids": [],
+            }],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "repair_manifest_unresolved"):
+            _repair_render_manifest(manifest, {"safe_area_and_text_visibility"})
+
+    def test_repair_manifest_rejects_unsupported_failed_check_before_render(self):
+        from server.content_domains.ai_edit_v3.production import _repair_render_manifest
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": "composition_001", "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 9000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "scene_id": "scene_02",
+                    "start_ms": 9000, "end_ms": 18000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": [],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "repair_manifest_unsupported"):
+            _repair_render_manifest(
+                manifest,
+                {"safe_area_and_text_visibility", "audio_integrity"},
+            )
+
+    def test_repair_manifest_keeps_split_composition_ids_schema_bounded(self):
+        from server.content_domains.ai_edit_v3.production import _repair_render_manifest
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "a" * 64, "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 12000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "scene_id": "scene_02",
+                    "start_ms": 12000, "end_ms": 18000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": ["material_01"],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        repaired = _repair_render_manifest(
+            manifest,
+            {"safe_area_and_text_visibility"},
+        )
+        ids = [item["id"] for item in repaired["compositions"]]
+
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(len(item) <= 64 for item in ids))
+
+    def test_repair_manifest_keeps_similar_long_split_ids_unique(self):
+        from server.content_domains.ai_edit_v3.production import _repair_render_manifest
+
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "a" * 63 + "b", "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 12000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "a" * 63 + "c", "scene_id": "scene_02",
+                    "start_ms": 12000, "end_ms": 24000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": ["material_01"],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+                {"id": "caption_004", "start_ms": 18000, "end_ms": 24000, "text": "Four"},
+            ],
+        }
+
+        repaired = _repair_render_manifest(
+            manifest,
+            {"safe_area_and_text_visibility"},
+        )
+        ids = [item["id"] for item in repaired["compositions"]]
+
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(len(item) <= 64 for item in ids))
+
+    def test_repair_manifest_rejects_a_new_structural_regression(self):
+        from server.content_domains.ai_edit_v3.production import _repair_render_manifest
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "composition_001", "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 6000,
+                    "layout_id": "product_hero", "asset_ids": ["material_01"],
+                },
+                {
+                    "id": "composition_002", "scene_id": "scene_02",
+                    "start_ms": 6000, "end_ms": 12000,
+                    "layout_id": "speaker_right_evidence_left", "asset_ids": [],
+                },
+                {
+                    "id": "composition_003", "scene_id": "scene_03",
+                    "start_ms": 12000, "end_ms": 18000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": [],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "repair_manifest_unresolved"):
+            _repair_render_manifest(
+                manifest,
+                {"opening_hook_visual_consistency"},
+            )
+
     def test_visual_inspector_blocks_single_card_talking_head_failure_pattern(self):
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
 
