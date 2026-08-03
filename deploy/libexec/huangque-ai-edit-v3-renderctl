@@ -165,13 +165,22 @@ class RenderController:
         argv = [
             _SYSTEMCTL, "show", self._unit(instance),
             "--property=ActiveState", "--property=SubState", "--property=Result",
-            "--property=ExecMainStatus", "--value",
+            "--property=ExecMainStatus",
         ]
         code, stdout, _stderr = self._systemctl(argv)
         if code != 0 or len(stdout.encode("utf-8", errors="replace")) > _MAX_JSON_BYTES:
             return {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_status_failed"}
-        values = stdout.splitlines()
-        active, sub, result, raw_status = (values + ["", "", "", ""])[:4]
+        properties: dict[str, str] = {}
+        for line in stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key in {"ActiveState", "SubState", "Result", "ExecMainStatus"}:
+                properties[key] = value
+        if set(properties) != {"ActiveState", "SubState", "Result", "ExecMainStatus"}:
+            return {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_status_failed"}
+        active = properties["ActiveState"]
+        sub = properties["SubState"]
+        result = properties["Result"]
+        raw_status = properties["ExecMainStatus"]
         try:
             exit_status = int(raw_status)
         except ValueError:

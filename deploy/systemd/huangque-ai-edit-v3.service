@@ -29,7 +29,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 BindReadOnlyPaths=/home/ubuntu/content-api/ai_edit_v2.db:/run/huangque-ai-edit-v3/ai_edit_v2.db
-ReadWritePaths=/var/lib/huangque-ai-edit-v3-private /var/lib/huangque-ai-edit-v3 /var/spool/huangque-ai-edit-v3
+ReadWritePaths=/var/lib/huangque-ai-edit-v3-private /var/lib/huangque-ai-edit-v3 /var/lib/huangque-ai-edit-v3-render /var/spool/huangque-ai-edit-v3
 
 [Install]
 WantedBy=multi-user.target

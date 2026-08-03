@@ -33,7 +33,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
             "RestrictSUIDSGID=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "UMask=0077",
             "KillMode=control-group", "TimeoutStopSec=30", "RuntimeMaxSec=3300",
-            "CPUQuota=200%", "MemoryMax=3G", "TasksMax=256", "LimitFSIZE=8G",
+            "CPUQuota=200%", "MemoryMax=3G", "TasksMax=512", "LimitFSIZE=8G",
             "TemporaryFileSystem=/work:rw,nodev,nosuid,size=8G",
             "BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/current:/work/release",
             "BindReadOnlyPaths=/var/lib/huangque-ai-edit-v3-render/%i/input:/work/input",
@@ -87,6 +87,10 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertNotIn("Environment=AI_EDIT_V2_DB=", content)
         self.assertIn("RuntimeDirectory=huangque-ai-edit-v3", worker)
         self.assertIn("RuntimeDirectoryMode=0700", worker)
+        self.assertIn(
+            "ReadWritePaths=/var/lib/huangque-ai-edit-v3-private /var/lib/huangque-ai-edit-v3 /var/lib/huangque-ai-edit-v3-render /var/spool/huangque-ai-edit-v3",
+            worker,
+        )
         self.assertIn(
             f"BindReadOnlyPaths={host_v2_db}:{worker_v2_db}", worker
         )
@@ -152,6 +156,19 @@ class RenderCtlTests(unittest.TestCase):
             self.assertEqual(result["state"], "failed")
             controller.stop("job_1")
             self.assertEqual(calls[-1], ("/usr/bin/systemctl", "stop", "huangque-ai-edit-v3-render@job_1.service"))
+
+    def test_query_parses_named_systemd_properties_independent_of_output_order(self):
+        helper = load_helper()
+        output = "Result=success\nExecMainStatus=0\nSubState=running\nActiveState=active\n"
+        controller = helper.RenderController(
+            systemctl=lambda _argv: (0, output, ""),
+        )
+
+        result = controller.query("job_1")
+
+        self.assertEqual("running", result["state"])
+        self.assertFalse(result["result_ready"])
+        self.assertIsNone(result["error_code"])
 
 
 if __name__ == "__main__":
