@@ -172,6 +172,22 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_render_captions_strip_director_only_emphasis_metadata(self):
+        from server.content_domains.ai_edit_v3.production import _render_captions
+
+        self.assertEqual(
+            [{"id": "caption_001", "start_ms": 0, "end_ms": 1000, "text": "准确字幕"}],
+            _render_captions([
+                {
+                    "id": "caption_001",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "text": "准确字幕",
+                    "emphasis": "primary",
+                }
+            ]),
+        )
+
     def test_full_source_audio_timeline_compiles_output_mapping(self):
         from server.content_domains.ai_edit_v3.production import (
             _timeline_with_full_source_map,

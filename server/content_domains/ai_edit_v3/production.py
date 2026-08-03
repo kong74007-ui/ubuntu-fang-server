@@ -159,6 +159,18 @@ def _timeline_with_full_source_map(value: TextTimeline) -> TextTimeline:
     )
 
 
+def _render_captions(values: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project director captions onto the narrower renderer contract."""
+
+    return [
+        {
+            "id": item["id"],
+            "start_ms": item["start_ms"],
+            "end_ms": item["end_ms"],
+            "text": item["text"],
+        }
+        for item in values
+    ]
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -766,7 +778,7 @@ class ProductionStageCoordinator:
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
                 "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": material_asset_ids} for index, scene in enumerate(plan["scenes"], 1)],
-                "captions": plan["captions"],
+                "captions": _render_captions(plan["captions"]),
             }
             frozen = freeze_render_manifest(manifest, input_root / "render-manifest.json", sandbox_root=input_root)
             payload = {"attempt": attempt, "input_root": input_root.relative_to(root).as_posix(), "manifest_sha256": frozen.sha256}
