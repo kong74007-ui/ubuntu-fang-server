@@ -170,6 +170,122 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertEqual("product_hero", plan["scenes"][0]["layout_id"])
         self.assertEqual("context", plan["materials"][0]["purpose"])
 
+    def test_talking_head_captions_compile_to_multiple_speaker_safe_scenes(self):
+        provider = QwenCompiledDirector(_Qwen())
+        capabilities = {
+            "layout_capabilities": [
+                "speaker_fullscreen",
+                "speaker_left_info_right",
+                "speaker_right_evidence_left",
+                "material_fullscreen_speaker_pip",
+                "product_hero",
+            ],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium", "high"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+            for index, (start, end, text) in enumerate(
+                (
+                    (0, 4200, "Introduce the platform"),
+                    (4200, 8200, "Explain image generation"),
+                    (8200, 12400, "Explain digital presenters"),
+                    (12400, 16600, "Explain voice generation"),
+                    (16600, 21200, "Explain poster workflows"),
+                    (21200, 26178, "Conclude with delivery efficiency"),
+                ),
+                start=1,
+            )
+        ]
+        request = {
+            "timeline": {"duration_ms": 26178, "captions": captions, "source_segments": []},
+            "source": {"input_type": "platform_talking_head"},
+            "current_materials": [],
+            "generate_missing_material": True,
+            "capabilities": capabilities,
+            "ratio": "9:16",
+            "user_direction": "ai_auto",
+        }
+
+        plan = json.loads(provider.generate_plan(
+            request, purpose="initial", idempotency_key="x", deadline_at=9999999999
+        ).payload["content"])
+
+        timeline = SimpleNamespace(
+            duration_ms=26178,
+            captions=tuple(
+                Caption(item["id"], item["text"], item["start_ms"], item["end_ms"])
+                for item in captions
+            ),
+        )
+
+        self.assertEqual(plan, validate_edit_plan(plan, timeline=timeline, capabilities=capabilities))
+        self.assertGreaterEqual(len(plan["scenes"]), 4)
+        self.assertEqual(0, plan["scenes"][0]["start_ms"])
+        self.assertEqual(26178, plan["scenes"][-1]["end_ms"])
+        self.assertEqual(
+            [scene["end_ms"] for scene in plan["scenes"][:-1]],
+            [scene["start_ms"] for scene in plan["scenes"][1:]],
+        )
+        layouts = [scene["layout_id"] for scene in plan["scenes"]]
+        self.assertEqual("speaker_fullscreen", layouts[0])
+        self.assertNotIn("product_hero", layouts)
+        self.assertGreater(len(set(layouts)), 1)
+        self.assertGreaterEqual(len(plan["materials"]), 2)
+
+    def test_invalid_optional_layout_sequence_keeps_multi_scene_fallback(self):
+        class InvalidSequenceQwen(_Qwen):
+            def generate_edit_plan(self, system_prompt, user_prompt):
+                result = super().generate_edit_plan(system_prompt, user_prompt)
+                result.payload["content"] = json.dumps({
+                    "creative_concept": "Safe fallback",
+                    "layout_sequence": ["unknown_layout"],
+                    "motion_energy": "high",
+                })
+                return result
+
+        provider = QwenCompiledDirector(InvalidSequenceQwen())
+        capabilities = {
+            "layout_capabilities": ["speaker_fullscreen", "speaker_left_info_right"],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium", "high"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {"id": f"caption_{index:03d}", "start_ms": start, "end_ms": end, "text": text}
+            for index, (start, end, text) in enumerate(
+                ((0, 3000, "One"), (3000, 6000, "Two"), (6000, 9000, "Three")),
+                start=1,
+            )
+        ]
+
+        plan = json.loads(provider.generate_plan({
+            "timeline": {"duration_ms": 9000, "captions": captions, "source_segments": []},
+            "source": {"input_type": "platform_talking_head"},
+            "current_materials": [],
+            "generate_missing_material": False,
+            "capabilities": capabilities,
+            "ratio": "9:16",
+        }, purpose="initial", idempotency_key="x", deadline_at=9999999999).payload["content"])
+
+        self.assertEqual(3, len(plan["scenes"]))
+        self.assertTrue(all(scene["layout_id"] in capabilities["layout_capabilities"] for scene in plan["scenes"]))
+
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):

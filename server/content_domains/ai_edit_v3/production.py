@@ -253,6 +253,39 @@ class QwenCompiledDirector:
         return value if isinstance(value, Mapping) else {}
 
     @staticmethod
+    def _caption_groups(captions: list[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+        """Build bounded scene candidates without letting model formatting own timing."""
+
+        if not captions:
+            raise ValueError("director_captions_missing")
+        groups: list[list[Mapping[str, Any]]] = []
+        current: list[Mapping[str, Any]] = []
+        for caption in captions:
+            current.append(caption)
+            elapsed = int(current[-1]["end_ms"]) - int(current[0]["start_ms"])
+            if elapsed >= 2500:
+                groups.append(current)
+                current = []
+        if current:
+            if groups and int(current[-1]["end_ms"]) - int(current[0]["start_ms"]) < 1400:
+                groups[-1].extend(current)
+            else:
+                groups.append(current)
+        while len(groups) > 8:
+            merged: list[list[Mapping[str, Any]]] = []
+            for index in range(0, len(groups), 2):
+                merged.append(groups[index] + (groups[index + 1] if index + 1 < len(groups) else []))
+            groups = merged
+        return groups
+
+    @staticmethod
+    def _first_supported(candidates: tuple[str, ...], layouts: list[str]) -> str:
+        for candidate in candidates:
+            if candidate in layouts:
+                return candidate
+        return layouts[0]
+
+    @staticmethod
     def _compile(request: Mapping[str, Any], creative: Mapping[str, Any]) -> dict[str, Any]:
         timeline = request["timeline"]
         captions = list(timeline["captions"])
@@ -264,28 +297,37 @@ class QwenCompiledDirector:
         layouts = list(capabilities["layout_capabilities"])
         preferred_layout = creative.get("layout_id")
         layout = preferred_layout if preferred_layout in layouts else layouts[0]
+        groups = QwenCompiledDirector._caption_groups(captions)
+        source_type = (request.get("source") or {}).get("input_type")
+        has_speaker_video = source_type not in {
+            "existing_audio", "uploaded_audio", "script_to_audio_video",
+        }
         current_materials = list(request.get("current_materials") or ())[:4]
         if (
             not current_materials
             and request.get("generate_missing_material") is True
             and any(item in layouts for item in ("product_hero", "material_fullscreen_speaker_pip", "speaker_left_info_right"))
         ):
-            current_materials = [{
-                "semantic": f"围绕口播主题的通用场景视觉：{captions[0]['text'][:120]}",
-                "purpose": "context",
-                "generated": True,
-            }]
-        if current_materials and layout == "speaker_fullscreen":
-            source_type = (request.get("source") or {}).get("input_type")
-            candidates = (
-                ("product_hero", "material_fullscreen_speaker_pip", "speaker_left_info_right")
-                if source_type in {"uploaded_audio", "script_to_audio_video"}
-                else ("speaker_left_info_right", "material_fullscreen_speaker_pip", "product_hero")
+            requested_count = min(4, len(groups) if not has_speaker_video else max(1, len(groups) // 2))
+            visual_focuses = creative.get("visual_focuses")
+            safe_focuses = visual_focuses if isinstance(visual_focuses, list) else []
+            material_group_indexes = (
+                list(range(requested_count))
+                if not has_speaker_video
+                else [min(1 + index * 2, len(groups) - 1) for index in range(requested_count)]
             )
-            for candidate in candidates:
-                if candidate in layouts:
-                    layout = candidate
-                    break
+            current_materials = []
+            for index, group_index in enumerate(material_group_indexes):
+                group = groups[group_index]
+                focus = safe_focuses[index] if index < len(safe_focuses) else ""
+                if not isinstance(focus, str) or not focus.strip():
+                    focus = "".join(str(item["text"]) for item in group)[:160]
+                current_materials.append({
+                    "semantic": f"Context visual for: {focus.strip()}",
+                    "purpose": "context",
+                    "generated": True,
+                    "scene_index": group_index,
+                })
         motion = creative.get("motion_energy")
         if motion not in capabilities["theme_capabilities"]["motion_energy"]:
             motion = capabilities["theme_capabilities"]["motion_energy"][0]
@@ -294,7 +336,7 @@ class QwenCompiledDirector:
             concept = "内容驱动的清晰口播包装"
         first = captions[0]
         caption_ids = [item["id"] for item in captions]
-        material_slots = []
+        scene_materials: dict[int, list[dict[str, Any]]] = {}
         material_requests = []
         for index, item in enumerate(current_materials, 1):
             request_id = f"material_{index:02d}"
@@ -302,23 +344,83 @@ class QwenCompiledDirector:
             if not semantic:
                 semantic = "用户上传的补充素材"
             purpose = item.get("purpose") if item.get("purpose") in {"evidence", "product", "context", "decoration"} else "product"
+            default_scene_index = min(index - 1, len(groups) - 1)
+            if has_speaker_video and len(groups) > 1:
+                default_scene_index = min(1 + (index - 1) * 2, len(groups) - 1)
+            scene_index = item.get("scene_index", default_scene_index)
+            if not isinstance(scene_index, int) or isinstance(scene_index, bool) or not (0 <= scene_index < len(groups)):
+                scene_index = default_scene_index
+            scene_start = 0 if scene_index == 0 else int(groups[scene_index][0]["start_ms"])
+            scene_end = duration if scene_index == len(groups) - 1 else int(groups[scene_index + 1][0]["start_ms"])
             slot = {
                 "id": request_id,
                 "semantic": semantic,
                 "purpose": purpose,
                 "priority": "required",
                 "ratio": ratio,
-                "start_ms": 0,
-                "end_ms": duration,
+                "start_ms": scene_start,
+                "end_ms": scene_end,
             }
-            material_slots.append(slot)
+            scene_materials.setdefault(scene_index, []).append(slot)
             material_requests.append({
                 "request_id": request_id,
                 "semantic": semantic,
                 "purpose": purpose,
                 "priority": "required",
                 "ratio": ratio,
-                "time_range": {"start_ms": 0, "end_ms": duration},
+                "time_range": {"start_ms": scene_start, "end_ms": scene_end},
+            })
+        creative_sequence = creative.get("layout_sequence")
+        safe_sequence = creative_sequence if isinstance(creative_sequence, list) else []
+        material_layout_index = 0
+        scenes = []
+        for index, group in enumerate(groups):
+            start_ms = 0 if index == 0 else int(group[0]["start_ms"])
+            end_ms = duration if index == len(groups) - 1 else int(groups[index + 1][0]["start_ms"])
+            slots = scene_materials.get(index, [])
+            requested_layout = safe_sequence[index] if index < len(safe_sequence) else None
+            if slots and has_speaker_video:
+                material_candidates = (
+                    ("speaker_left_info_right", "material_fullscreen_speaker_pip", "speaker_right_evidence_left")
+                    if material_layout_index % 2 == 0
+                    else ("material_fullscreen_speaker_pip", "speaker_right_evidence_left", "speaker_left_info_right")
+                )
+                scene_layout = QwenCompiledDirector._first_supported(material_candidates, layouts)
+                material_layout_index += 1
+                if requested_layout in material_candidates and requested_layout in layouts:
+                    scene_layout = requested_layout
+            elif slots:
+                material_candidates = ("product_hero", "editorial_collage", "number_proof")
+                scene_layout = QwenCompiledDirector._first_supported(material_candidates, layouts)
+                if requested_layout in material_candidates and requested_layout in layouts:
+                    scene_layout = requested_layout
+            elif has_speaker_video:
+                scene_layout = QwenCompiledDirector._first_supported(
+                    ("speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left"), layouts
+                )
+                if requested_layout in layouts and str(requested_layout).startswith("speaker_"):
+                    scene_layout = requested_layout
+            else:
+                scene_layout = QwenCompiledDirector._first_supported(
+                    ("product_hero", "editorial_collage", "number_proof"), layouts
+                )
+            group_caption_ids = [str(item["id"]) for item in group]
+            headline_text = "".join(str(item["text"]) for item in group)
+            scenes.append({
+                "id": f"scene_{index + 1:02d}", "start_ms": start_ms, "end_ms": end_ms,
+                "intent": headline_text[:240], "layout_id": scene_layout,
+                "layout_variant": "balanced_a", "visual_type": "content_led_hook",
+                "headline": {
+                    "text": headline_text, "text_kind": "verbatim",
+                    "source_caption_ids": group_caption_ids,
+                },
+                "highlight": {"text_kind": "ui_label", "ui_label_id": "chapter"},
+                "overlay_ids": ["standard_caption"], "material_slots": slots,
+                "animations": [{
+                    "target": "standard_caption", "preset": "subtitle_pop",
+                    "direction": "up", "duration_ms": 280, "delay_ms": 0,
+                }],
+                "transition": "hard_cut",
             })
         return {
             "version": "2.0",
@@ -346,22 +448,7 @@ class QwenCompiledDirector:
                 "output_end_ms": duration, "caption_ids": caption_ids,
                 "keep_reason": "保留完整口播并确保文案准确",
             }],
-            "scenes": [{
-                "id": "scene_01", "start_ms": 0, "end_ms": duration,
-                "intent": concept, "layout_id": layout,
-                "layout_variant": "balanced_a", "visual_type": "content_led_hook",
-                "headline": {
-                    "text": first["text"], "text_kind": "verbatim",
-                    "source_caption_ids": [first["id"]],
-                },
-                "highlight": {"text_kind": "ui_label", "ui_label_id": "chapter"},
-                "overlay_ids": ["standard_caption"], "material_slots": material_slots,
-                "animations": [{
-                    "target": "standard_caption", "preset": "subtitle_pop",
-                    "direction": "up", "duration_ms": 280, "delay_ms": 0,
-                }],
-                "transition": "hard_cut",
-            }],
+            "scenes": scenes,
             "materials": material_requests,
             "audio_cues": [{
                 "id": "bgm_01", "type": "bgm", "priority": "required",
@@ -373,7 +460,9 @@ class QwenCompiledDirector:
     def generate_plan(self, request: Mapping[str, Any], **kwargs: Any) -> ProviderResult:
         system = (
             "你是中文短视频导演。只返回一个JSON对象，字段仅允许creative_concept、"
-            "layout_id、motion_energy。根据口播内容选择创意，不要改写事实，不要输出Markdown。"
+            "layout_id、layout_sequence、visual_focuses、motion_energy。layout_sequence只能使用"
+            "请求能力白名单中的布局ID，visual_focuses只描述各段需要的视觉语义。根据口播内容"
+            "选择创意，不要改写事实，不要输出Markdown。"
         )
         user = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
         result = self.client.generate_edit_plan(system, user)
