@@ -14,5 +14,5 @@ export function compileStepsStack(input) {
     numbered_cards: `<section class="hf-v2-card-process"><header class="hf-v2-card-counter clip" ${clipAttributes(prepared.duration, 2)}></header>${steps}<footer>${accent}</footer></section>`,
     progress_path: `<svg class="hf-v2-progress-line clip" viewBox="0 0 100 100" aria-hidden="true" ${clipAttributes(prepared.duration, 2)}><path d="M8 88C25 16 70 84 92 12"></path></svg><nav class="hf-v2-progress-nodes">${steps}</nav><aside>${accent}</aside>`,
   };
-  return layoutResult({contract: STEPS_STACK_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `steps-${input.variantId}`, body: bodies[input.variantId], criticalRegions: {process: input.ratio === "16:9" ? {x: 180, y: 180, width: 1560, height: 560} : {x: 100, y: 380, width: 880, height: 960}}});
+  return layoutResult({contract: STEPS_STACK_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `steps-${input.variantId}`, body: bodies[input.variantId], criticalRegions: {steps: input.ratio === "16:9" ? {x: 180, y: 180, width: 1560, height: 560} : {x: 100, y: 380, width: 880, height: 960}}});
 }

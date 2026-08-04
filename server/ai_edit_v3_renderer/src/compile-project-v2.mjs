@@ -1,4 +1,5 @@
-import {compileProject} from "./compile-project.mjs";
+import {compileProject, compileSourceVideo} from "./compile-project.mjs";
+import {resolveLayout, resolveLayoutV2} from "./registry/index.mjs";
 
 /**
  * V2 binds model-facing instance identifiers to the renderer's stable component
@@ -31,5 +32,42 @@ export async function compileProjectV2({manifest, outputRoot}) {
       }),
     };
   });
-  return compileProject({manifest: {...manifest, compositions}, outputRoot});
+  return compileProject({
+    manifest: {...manifest, compositions}, outputRoot,
+    sceneOptions: {layoutResolver: resolveV2OrLegacyLayout, buildLayoutInput: buildV2LayoutInput, compileSource: compileV2Source},
+  });
+}
+
+function resolveV2OrLegacyLayout(layoutId, variantId, ratio) {
+  try {
+    return resolveLayoutV2(layoutId, variantId, ratio);
+  } catch (error) {
+    if (!/^(?:layout_unknown|layout_variant_unknown)$/u.test(error?.message ?? "")) throw error;
+    return resolveLayout(layoutId, variantId, ratio);
+  }
+}
+
+function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays, assets, captions, theme, layout}) {
+  if (layout.contract.version !== "2.0.0") {
+    return {idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays, scene: composition, assets};
+  }
+  const slots = layout.contract.id === "speaker_fullscreen"
+    ? {speaker: sourceSlot(manifest, prefix), evidence: assets[0]}
+    : layout.contract.id === "product_hero"
+      ? {primary: assets[0], detail: assets[1]}
+      : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: assets[0]};
+  return {
+    idPrefix: prefix, durationMs, slots, overlays,
+    designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},
+  };
+}
+
+function sourceSlot(manifest, prefix) {
+  if (!manifest.source_video?.path) return undefined;
+  return {id: `${prefix}_speaker`, kind: "video", relativePath: manifest.source_video.path};
+}
+
+function compileV2Source({manifest, composition, prefix, layout}) {
+  if (layout.contract.version === "2.0.0") return "";
+  return compileSourceVideo({manifest, composition, prefix});
 }

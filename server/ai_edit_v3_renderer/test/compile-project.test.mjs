@@ -65,6 +65,53 @@ test("v2 compiler keeps repeated components distinct by instance animation targe
   assert.match(scene, /#composition_01_headline_b_headline_block/);
 });
 
+test("v2 compiler renders a real clean_center manifest through the V2 layout dispatcher", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-layout-")), "project");
+  const manifest = fixtureManifest("V2 speaker caption");
+  manifest.version = "2.0";
+  manifest.output_spec = {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1};
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{
+    id: "segment_01", source_path: "media/source.mp4", source_start_ms: 0, source_end_ms: 4000,
+    output_start_ms: 0, output_end_ms: 4000,
+  }];
+  manifest.compositions[0] = {
+    ...manifest.compositions[0], layout_id: "speaker_fullscreen", layout_variant: "clean_center",
+    overlay_ids: ["standard_caption"], overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}],
+  };
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /data-layout-v2="speaker_fullscreen"/);
+  assert.match(scene, /data-layout-variant="clean_center"/);
+  assert.match(scene, /data-layout-ratio="16:9"/);
+  assert.match(scene, /data-slot="speaker"/);
+  assert.match(scene, /src="media\/source\.mp4"/);
+  assert.doesNotMatch(scene, /<(?:div|section)[^>]+class="[^"]*\bhf-layout-frame\b/);
+  const ids = [...scene.matchAll(/\sid="([^"]+)"/gu)].map((match) => match[1]);
+  assert.equal(new Set(ids).size, ids.length, "V2 layout targets must not shadow the composition root");
+});
+
+test("v2 compiler hydrates compiled steps text from parent safe-text nodes", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-steps-")), "project");
+  const manifest = fixtureManifest("Prepare");
+  manifest.version = "2.0";
+  manifest.compositions[0] = {
+    ...manifest.compositions[0], layout_id: "steps_stack", layout_variant: "numbered_cards",
+    overlay_ids: ["standard_caption"], overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}],
+  };
+  manifest.captions = [
+    {id: "caption_01", start_ms: 0, end_ms: 1333, text: "Prepare"},
+    {id: "caption_02", start_ms: 1333, end_ms: 2666, text: "Execute"},
+    {id: "caption_03", start_ms: 2666, end_ms: 4000, text: "Review"},
+  ];
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  const hydrated = hydrateCompiledStepText(scene);
+  assert.deepEqual(hydrated, ["Prepare", "Execute", "Review"]);
+});
+
 test("compiler treats hostile model text as data and rejects bidi controls", async () => {
   const hostile = '</script><img onerror="globalThis.pwned=1"> javascript: {color:red}';
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-inject-")), "project");
@@ -195,4 +242,16 @@ function fixtureManifest(text) {
     }],
     captions: [{id: "caption_01", start_ms: 0, end_ms: 4000, text}],
   };
+}
+
+function hydrateCompiledStepText(scene) {
+  const nodes = [...scene.matchAll(/<li[^>]+data-safe-text="([^"]+)"[^>]*><span><\/span><\/li>/gu)].map((match) => {
+    const span = {textContent: ""};
+    return {dataset: {safeText: match[1]}, querySelector: (selector) => selector === "span" ? span : null, span};
+  });
+  assert.ok(nodes.length > 0, "compiled steps must put data-safe-text on a parent with a child span");
+  const loop = scene.match(/for\(const node of root\.querySelectorAll\('\[data-safe-text\]'\)\)node\.querySelector\('span'\)\.textContent=node\.dataset\.safeText;/u)?.[0];
+  assert.ok(loop, "compiled scene contains the safe-text hydration loop");
+  new Function("root", loop)({querySelectorAll: () => nodes});
+  return nodes.map(({span}) => span.textContent);
 }

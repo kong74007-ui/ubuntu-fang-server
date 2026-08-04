@@ -76,8 +76,7 @@ test("layout v2 compiles all nine variants for both ratios with auditable struct
     assert.match(compiled.html, new RegExp(`data-layout-variant="${variantId}"`));
     assert.match(compiled.html, /data-fallback="no_optional_media"/);
     assert.match(compiled.html, /data-fallback-state="rendered"/);
-    const signature = compiled.html.match(/data-layout-structure="([^"]+)"/u)?.[1];
-    assert.ok(signature, `${layout.id}/${variantId} exposes a structural signature`);
+    const signature = treeSignature(compiled.html);
     const variantKey = `${layout.id}/${variantId}`;
     if (signatures.has(variantKey)) assert.equal(signatures.get(variantKey), signature, "ratio changes geometry, not the variant DOM structure");
     else assert.equal([...signatures.values()].includes(signature), false, `each variant has a distinct DOM structure: ${signature}`);
@@ -91,9 +90,23 @@ test("layout v2 compiles all nine variants for both ratios with auditable struct
     const expectedSize = ratio === "16:9" ? [1920, 1080] : [1080, 1920];
     assert.deepEqual([compiled.geometryAudit.width, compiled.geometryAudit.height], expectedSize);
     for (const box of Object.values(compiled.geometryAudit.safeAreas)) assertBox(box, compiled.geometryAudit);
-    for (const box of Object.values(compiled.geometryAudit.criticalRegions)) assertBox(box, compiled.geometryAudit);
+    for (const [region, box] of Object.entries(compiled.geometryAudit.criticalRegions)) {
+      assertBox(box, compiled.geometryAudit);
+      assert.match(compiled.html, new RegExp(`data-v2-region="${region}"`));
+      assert.match(compiled.html, new RegExp(`\\[data-v2-region="${region}"\\]\\{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px`));
+    }
   }
   assert.equal(signatures.size, 9);
+});
+
+test("layout v2 emits byte-identical styles for semantically identical token objects", () => {
+  const layout = CASES[1];
+  const first = compileCase(layout, "center_pedestal", "16:9", requiredSlots(layout));
+  const second = resolveV2(layout.id, "center_pedestal", "16:9").compile({
+    idPrefix: "v2_product_hero_centerpedestal", durationMs: 3000, slots: requiredSlots(layout),
+    designTokens: {"--hf-surface": "#ffffff", "--hf-accent": "#315b8a"},
+  });
+  assert.equal(first.html, second.html);
 });
 
 test("layout v2 fails closed for required slots and renders a nonblank optional-slot fallback", () => {
@@ -109,4 +122,25 @@ test("layout v2 fails closed for required slots and renders a nonblank optional-
 function assertBox(box, audit) {
   assert.ok(box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0);
   assert.ok(box.x + box.width <= audit.width && box.y + box.height <= audit.height);
+}
+
+function treeSignature(html) {
+  const root = {tag: "root", children: []};
+  const stack = [root];
+  for (const match of html.matchAll(/<\/?([a-z][a-z0-9-]*)\b[^>]*>/giu)) {
+    const [token, tag] = match;
+    if (token.startsWith("</")) {
+      assert.equal(stack.pop().tag, tag.toLowerCase(), `balanced HTML tree closes ${tag}`);
+    } else {
+      const node = {tag: tag.toLowerCase(), children: []};
+      stack.at(-1).children.push(node);
+      if (!token.endsWith("/>") && node.tag !== "img") stack.push(node);
+    }
+  }
+  assert.equal(stack.length, 1, "balanced HTML tree");
+  return serialize(root);
+}
+
+function serialize(node) {
+  return `${node.tag}(${node.children.map(serialize).join(",")})`;
 }
