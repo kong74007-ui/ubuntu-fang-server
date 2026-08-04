@@ -12,14 +12,12 @@ import {buildRenderReport, canonicalReportBytes} from "./report.mjs";
 import {renderHyperframes} from "./render-hyperframes.mjs";
 import {verifyInputFiles} from "./validate-files.mjs";
 import {validateManifest} from "./validate-manifest.mjs";
+import {MANIFEST_SCHEMA_SHA256_BY_VERSION} from "./manifest-schema-digests.mjs";
 
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHA256 = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^sha256:[0-9a-f]{64}$/;
-export const MANIFEST_SCHEMA_SHA256_BY_VERSION = Object.freeze({
-  "1.0": "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
-  "2.0": "78d0c9623fac31c0896049cdf500869929326ceb370e5bdea95d87229b92638b",
-});
+export {MANIFEST_SCHEMA_SHA256_BY_VERSION};
 
 function hash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 

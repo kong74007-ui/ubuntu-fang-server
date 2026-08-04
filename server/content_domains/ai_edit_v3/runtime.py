@@ -35,25 +35,14 @@ from .store import LeaseLost, V3Store, assert_isolated_db
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _REASON_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
-_SCHEMA_HASHES = MappingProxyType(
-    {
-        "director-decision-v1.schema.json": (
-            "2cb045e387e1b02e0ae4e1633208d7cb16c0a32c5c71b7564c9cdae48cde0d15"
-        ),
-        "edit-plan-2.0.schema.json": (
-            "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c"
-        ),
-        "render-manifest-v1.schema.json": (
-            "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0"
-        ),
-        "render-manifest-v2.schema.json": (
-            "8b29d7e68f6f3bae93202dd970ce43d10c7bb0623099c1321430b5abd330cf5b"
-        ),
-        "quality-verdict-v1.schema.json": (
-            "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e"
-        ),
-    }
-)
+_SCHEMA_HASHES = MappingProxyType({
+    name: schema_sha256(name)
+    for name in (
+        "director-decision-v1.schema.json", "edit-plan-2.0.schema.json",
+        "render-manifest-v1.schema.json", "render-manifest-v2.schema.json",
+        "quality-verdict-v1.schema.json",
+    )
+})
 _HISTORICAL_SCHEMA_HASHES = MappingProxyType({
     "edit-plan-2.0.schema.json": frozenset({
         "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",

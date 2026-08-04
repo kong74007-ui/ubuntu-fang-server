@@ -58,16 +58,28 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
       ? productSlots(bindings)
       : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
   return {
-    idPrefix: prefix, durationMs, slots, overlays,
+    idPrefix: prefix, durationMs, slots, overlays: routeV2Overlays(overlays, composition.overlay_instances),
     designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},
   };
 }
 
+function routeV2Overlays(overlays, instances) {
+  const hosts = {title: "", captions: ""};
+  for (const instance of instances ?? []) {
+    const placement = instance.placement ?? "safe_bottom";
+    const host = placement === "safe_top" ? "title" : placement === "safe_bottom" ? "captions" : null;
+    if (!host) throw new Error("manifest_overlay_placement_invalid");
+    const escaped = instance.component_id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    hosts[host] += [...overlays.matchAll(new RegExp(`<div\\b(?=[^>]*data-overlay-id="${escaped}")[\\s\\S]*?<\\/div>`, "gu"))].map((match) => match[0]).join("");
+  }
+  return hosts;
+}
+
 function sourceSlot(manifest, composition, prefix) {
   if (!manifest.source_video?.path) return undefined;
-  const clip = sourceSegmentClips({manifest, composition})[0];
-  if (!clip) return undefined;
-  return {id: `${prefix}_speaker`, kind: "video", relativePath: manifest.source_video.path, ...clip};
+  const clips = sourceSegmentClips({manifest, composition});
+  if (!clips.length) return undefined;
+  return {id: `${prefix}_speaker`, kind: "video", relativePath: manifest.source_video.path, clips};
 }
 
 function assetSlotBindings(composition, assets) {
@@ -76,7 +88,7 @@ function assetSlotBindings(composition, assets) {
   if (!Array.isArray(composition.layout_slot_bindings)) throw new Error("layout_slot_bindings_invalid");
   const slots = new Map();
   for (const binding of composition.layout_slot_bindings) {
-    if (!binding || !["primary", "detail", "evidence", "accent"].includes(binding.slot_id) || typeof binding.asset_id !== "string" || slots.has(binding.slot_id)) throw new Error("layout_slot_bindings_invalid");
+    if (!binding || !["primary", "detail", "evidence", "accent", "steps"].includes(binding.slot_id) || typeof binding.asset_id !== "string" || slots.has(binding.slot_id)) throw new Error("layout_slot_bindings_invalid");
     const asset = available.get(binding.asset_id);
     if (!asset) throw new Error("layout_slot_asset_unknown");
     slots.set(binding.slot_id, asset);

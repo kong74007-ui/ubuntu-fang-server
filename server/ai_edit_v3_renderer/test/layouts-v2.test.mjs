@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, readFile, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -73,6 +73,13 @@ test("layout v2 capability entries are bound into the checked-in registry hash",
   const stale = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-registry-drift-")), "registry-sha256.txt");
   await writeFile(stale, "sha256:" + "0".repeat(64) + "\n", "utf8");
   await assert.rejects(checkRegistryHash(stale), /registry_hash_drift/);
+});
+
+test("registry source manifest sorts slash-normalized paths by Unicode code point", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "v3-registry-source-"));
+  await mkdir(path.join(root, "nested"));
+  await Promise.all(["z.mjs", "ä.mjs", "nested/a.mjs"].map((file) => writeFile(path.join(root, file), "export {};", "utf8")));
+  assert.deepEqual(registry.getRegistrySourceManifest(root).map((entry) => entry.path), ["nested/a.mjs", "z.mjs", "ä.mjs"]);
 });
 
 test("layout v2 compiles all nine variants for both ratios with auditable structural contracts", () => {

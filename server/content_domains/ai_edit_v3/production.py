@@ -311,15 +311,34 @@ def _layout_slot_bindings(
 ) -> list[dict[str, str]]:
     """Emit deterministic V2 semantic bindings from the scene's frozen slots."""
 
-    asset_ids = _scene_asset_ids(scene, known_asset_ids)
     layout_id = str(scene.get("layout_id") or "")
-    if layout_id != "product_hero":
-        return []
-    if not asset_ids:
-        raise ValueError("scene_primary_material_missing")
-    bindings = [{"slot_id": "primary", "asset_id": asset_ids[0]}]
-    if len(asset_ids) > 1:
-        bindings.append({"slot_id": "detail", "asset_id": asset_ids[1]})
+    known = set(known_asset_ids)
+    bindings: list[dict[str, str]] = []
+    seen_slots: set[str] = set()
+    for raw in scene.get("material_slots") or ():
+        if not isinstance(raw, Mapping):
+            raise ValueError("scene_layout_binding_invalid")
+        asset_id = raw.get("id")
+        purpose = raw.get("purpose")
+        priority = raw.get("priority")
+        if not isinstance(asset_id, str) or asset_id not in known or priority not in {"required", "optional"}:
+            raise ValueError("scene_layout_binding_invalid")
+        if purpose == "product":
+            if priority != "required":
+                raise ValueError("scene_layout_binding_invalid")
+            slot_id = "primary"
+        elif purpose == "evidence":
+            slot_id = "evidence"
+        elif purpose == "context":
+            slot_id = "steps" if layout_id == "steps_stack" else "detail"
+        elif purpose == "decoration":
+            slot_id = "accent"
+        else:
+            raise ValueError("scene_layout_binding_invalid")
+        if slot_id in seen_slots:
+            raise ValueError("scene_layout_binding_duplicate")
+        seen_slots.add(slot_id)
+        bindings.append({"slot_id": slot_id, "asset_id": asset_id})
     return bindings
 
 

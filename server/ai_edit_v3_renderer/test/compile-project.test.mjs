@@ -92,6 +92,25 @@ test("v2 compiler renders a real clean_center manifest through the V2 layout dis
   assert.equal(new Set(ids).size, ids.length, "V2 layout targets must not shadow the composition root");
 });
 
+test("v2 routes title and caption overlays into distinct audited safe-area hosts", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-safe-hosts-")), "project");
+  const manifest = fixtureManifest("Safe caption");
+  manifest.version = "2.0";
+  manifest.output_spec = {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1};
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{id: "segment_01", source_path: "media/source.mp4", source_start_ms: 0, source_end_ms: 4000, output_start_ms: 0, output_end_ms: 4000}];
+  manifest.compositions[0] = {...manifest.compositions[0], layout_id: "speaker_fullscreen", layout_variant: "headline_top", overlay_ids: ["headline_block", "standard_caption"], overlay_instances: [
+    {instance_id: "headline_01", component_id: "headline_block", placement: "safe_top"},
+    {instance_id: "caption_01", component_id: "standard_caption", placement: "safe_bottom"},
+  ]};
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /data-safe-host="title"[^>]*data-safe-area="16:9"[\s\S]*?headline_block/);
+  assert.match(scene, /data-safe-host="captions"[^>]*data-safe-area="16:9"[\s\S]*?standard_caption/);
+  assert.doesNotMatch(scene.match(/data-safe-host="title"[\s\S]*?<\/aside>/u)?.[0] ?? "", /standard_caption/);
+});
+
 test("v2 compiler hydrates compiled steps text from parent safe-text nodes", async () => {
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-steps-")), "project");
   const manifest = fixtureManifest("Prepare");
@@ -135,6 +154,33 @@ test("v2 speaker uses the intersecting source segment once with local and media 
   assert.match(scene, /hf-v2-speaker>video\{width:100%;height:100%;object-fit:var\(--hf-image-fit\)/);
 });
 
+test("v2 speaker preserves every intersecting source clip in composition order", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-multiclip-")), "project");
+  const manifest = fixtureManifest("Two source clips");
+  manifest.version = "2.0";
+  manifest.output_spec = {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1};
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [
+    {id: "segment_01", source_path: "media/source.mp4", source_start_ms: 100, source_end_ms: 2600, output_start_ms: 500, output_end_ms: 3000},
+    {id: "segment_02", source_path: "media/source.mp4", source_start_ms: 300, source_end_ms: 2300, output_start_ms: 3000, output_end_ms: 5000},
+  ];
+  manifest.duration_ms = 5000;
+  manifest.compositions = [
+    {...manifest.compositions[0], id: "composition_01", start_ms: 0, end_ms: 1000, layout_id: "steps_stack", layout_variant: "vertical_steps", overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}]},
+    {...manifest.compositions[0], id: "composition_02", start_ms: 1000, end_ms: 5000, layout_id: "speaker_fullscreen", layout_variant: "clean_center", overlay_instances: [{instance_id: "caption_02", component_id: "standard_caption"}]},
+  ];
+  manifest.compositions.forEach((composition) => composition.overlay_ids = ["standard_caption"]);
+  manifest.captions = [{id: "caption_01", start_ms: 0, end_ms: 1000, text: "Intro"}, {id: "caption_02", start_ms: 1000, end_ms: 5000, text: "Two source clips"}];
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_02.html"), "utf8");
+  const speaker = scene.match(/data-slot="speaker"[\s\S]*?<\/div>/u)?.[0] ?? "";
+  assert.equal((speaker.match(/<video\b/g) ?? []).length, 2);
+  assert.equal((scene.match(/src="media\/source\.mp4"/g) ?? []).length, 2, "only speaker-host clips render source media");
+  assert.match(speaker, /id="composition_02_speaker_clip_0"[^>]+data-start="0"[^>]+data-duration="2"[^>]+data-playback-start="0\.6"/);
+  assert.match(speaker, /id="composition_02_speaker_clip_1"[^>]+data-start="2"[^>]+data-duration="2"[^>]+data-playback-start="0\.3"/);
+});
+
 test("v2 product binds primary only through explicit layout slot bindings", async () => {
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-bindings-")), "project");
   const manifest = fixtureManifest("Product");
@@ -150,7 +196,7 @@ test("v2 product binds primary only through explicit layout slot bindings", asyn
   assert.match(scene, /data-slot="primary"[^>]*><img alt="" src="media\/primary\.png"/);
   assert.match(scene, /data-slot="detail"[^>]*><img alt="" src="media\/evidence\.png"/);
   const missing = structuredClone(manifest);
-  missing.compositions[0].layout_slot_bindings = [{slot_id: "detail", asset_id: "evidence_asset"}];
+  missing.compositions[0].layout_slot_bindings = [{slot_id: "evidence", asset_id: "evidence_asset"}];
   await assert.rejects(compileProjectV2({manifest: missing, outputRoot: path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-no-primary-")), "project")}), /layout_required_slot_missing/);
   const impersonating = structuredClone(manifest);
   impersonating.compositions[0].layout_slot_bindings = [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "primary_asset"}];

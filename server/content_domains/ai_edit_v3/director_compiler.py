@@ -62,7 +62,7 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
         slots=[]
         for source in [*directive.get("material_bindings",()),*directive.get("material_slot_directives",())]:
             if not isinstance(source,Mapping) or not isinstance(source.get("slot_id"),str): raise ValueError("director_material_slot_invalid")
-            mid=f"scene_{index:02d}_{source['slot_id']}"; bound=material_by_id.get(str(source.get("material_id")),{})
+            mid=source["slot_id"]; bound=material_by_id.get(str(source.get("material_id")),{})
             semantic=str(source.get("semantic") or bound.get("semantic") or "source-bound visual")[:240]; purpose=source.get("purpose") or "context"; priority=source.get("priority") or ("required" if source.get("required") else "optional"); ratio=source.get("ratio") or "auto"
             slot={"id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"start_ms":start,"end_ms":end}; slots.append(slot); requests.append({"request_id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"time_range":{"start_ms":start,"end_ms":end}})
         scenes.append({"id":f"scene_{index:02d}","start_ms":start,"end_ms":end,"intent":str(candidate.get("authoritative_text") or "authoritative scene")[:240],"layout_id":layout,"layout_variant":variant,"visual_type":"director_program","headline":headline,"highlight":highlight,"overlay_ids":[item["component_id"] for item in instances],"overlay_instances":instances,"material_slots":slots,"animations":anim,"transition":transition})

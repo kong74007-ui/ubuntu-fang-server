@@ -29,8 +29,8 @@ export function assertLayoutInput(contract, {variantId, ratio, idPrefix, duratio
   const prefix = assertSafeId(idPrefix, "id_prefix");
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) throw new Error("layout_slots_invalid");
   for (const slot of contract.requiredSlots) if (!slots[slot]) throw new Error("layout_required_slot_missing");
-  if (typeof overlays !== "string") throw new Error("layout_overlays_invalid");
-  return Object.freeze({prefix, duration: seconds(durationMs), slots, style: styleFromTokens(designTokens), overlays});
+  if (typeof overlays !== "string" && (!overlays || typeof overlays !== "object" || Array.isArray(overlays) || !["title", "captions"].every((key) => typeof overlays[key] === "string"))) throw new Error("layout_overlays_invalid");
+  return Object.freeze({prefix, duration: seconds(durationMs), slots, style: styleFromTokens(designTokens), overlays: typeof overlays === "string" ? {title: "", captions: overlays} : overlays});
 }
 
 export function assetOrFallback({prefix, slot, value, duration, trackIndex}) {
@@ -45,14 +45,21 @@ export function assetOrFallback({prefix, slot, value, duration, trackIndex}) {
 
 export function speakerSlot({prefix, value, duration, trackIndex}) {
   const asset = normalizeAsset(value, "speaker");
-  const start = Number.isInteger(value.localStartMs) ? seconds(value.localStartMs) : "0";
-  const clipDuration = Number.isInteger(value.durationMs) ? seconds(value.durationMs) : duration;
-  const playbackStart = Number.isInteger(value.playbackStartMs) ? ` data-playback-start="${seconds(value.playbackStartMs)}"` : "";
-  const attrs = `data-start="${start}" data-duration="${clipDuration}" data-track-index="${trackIndex}"`;
+  const attrs = clipAttributes(duration, trackIndex);
   const element = asset.kind === "video"
-    ? `<video muted playsinline preload="metadata" src="${asset.path}" ${attrs}${playbackStart}></video>`
+    ? speakerVideos({prefix, value, asset, duration, trackIndex})
     : `<img alt="" src="${asset.path}">`;
   return `<div id="${prefix}_speaker" class="hf-v2-speaker clip" data-slot="speaker" data-v2-region="speaker" ${attrs}>${element}</div>`;
+}
+
+function speakerVideos({prefix, value, asset, duration, trackIndex}) {
+  const clips = Array.isArray(value.clips) ? value.clips : [{index: 0, localStartMs: 0, durationMs: Math.round(Number(duration) * 1000), playbackStartMs: 0}];
+  if (!clips.length) throw new Error("layout_required_slot_missing");
+  return clips.map((clip, ordinal) => {
+    if (!Number.isInteger(clip.localStartMs) || clip.localStartMs < 0 || !Number.isInteger(clip.durationMs) || clip.durationMs <= 0 || !Number.isInteger(clip.playbackStartMs) || clip.playbackStartMs < 0) throw new Error("layout_source_clip_invalid");
+    const id = `${prefix}_speaker_clip_${Number.isInteger(clip.index) ? clip.index : ordinal}`;
+    return `<video id="${id}" muted playsinline preload="metadata" src="${asset.path}" data-start="${seconds(clip.localStartMs)}" data-duration="${seconds(clip.durationMs)}" data-playback-start="${seconds(clip.playbackStartMs)}" data-track-index="${trackIndex}"></video>`;
+  }).join("");
 }
 
 export function stepsSlot({prefix, value, duration, trackIndex}) {
@@ -68,8 +75,9 @@ export function layoutResult({contract, variantId, ratio, input, structure, body
     : {title: {x: 60, y: 84, width: 960, height: 220}, captions: {x: 60, y: 1480, width: 960, height: 280}};
   const root = `${input.prefix}_layout`;
   const safe = `${input.prefix}_safe`;
+  const titleSafe = `${input.prefix}_safe_title`;
   const publicSlots = Object.fromEntries([...contract.requiredSlots, ...contract.optionalSlots].map((slot) => [slot, `#${input.prefix}_${slot}`]));
-  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}<aside id="${safe}" class="hf-v2-safe-area clip" data-safe-area="${ratio}" ${clipAttributes(input.duration, 20)}>${input.overlays}</aside><style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
+  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}<aside id="${titleSafe}" class="hf-v2-safe-area hf-v2-safe-title clip" data-safe-host="title" data-safe-area="${ratio}" ${clipAttributes(input.duration, 19)}>${input.overlays.title}</aside><aside id="${safe}" class="hf-v2-safe-area hf-v2-safe-captions clip" data-safe-host="captions" data-safe-area="${ratio}" ${clipAttributes(input.duration, 20)}>${input.overlays.captions}</aside><style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
   return Object.freeze({
     html,
     publicTargets: Object.freeze({root: `#${root}`, safeArea: `#${safe}`, slots: Object.freeze(publicSlots)}),
@@ -99,8 +107,8 @@ function styleFromTokens(tokens) {
 function layoutCss({contract, variantId, ratio, criticalRegions}) {
   const selector = `.hf-v2-layout[data-layout-v2="${contract.id}"][data-layout-variant="${variantId}"][data-layout-ratio="${ratio}"]`;
   const regions = Object.entries(criticalRegions).map(([name, box]) => `${selector} [data-v2-region="${name}"]{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px}`).join("");
-  const safe = ratio === "16:9" ? {x: 160, y: 804, width: 1600, height: 180} : {x: 60, y: 1480, width: 960, height: 280};
-  return `${selector}{position:absolute;inset:0;overflow:hidden}${selector} .hf-v2-safe-area{position:absolute;left:${safe.x}px;top:${safe.y}px;width:${safe.width}px;height:${safe.height}px;z-index:20}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video,${selector} .hf-v2-speaker>img,${selector} .hf-v2-speaker>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${variantCss(selector, contract.id, variantId, ratio)}${regions}`;
+  const safe = ratio === "16:9" ? {title: {x: 96, y: 54, width: 1120, height: 176}, captions: {x: 160, y: 804, width: 1600, height: 180}} : {title: {x: 60, y: 84, width: 960, height: 220}, captions: {x: 60, y: 1480, width: 960, height: 280}};
+  return `${selector}{position:absolute;inset:0;overflow:hidden}${selector} .hf-v2-safe-title{position:absolute;left:${safe.title.x}px;top:${safe.title.y}px;width:${safe.title.width}px;height:${safe.title.height}px;z-index:20}${selector} .hf-v2-safe-captions{position:absolute;left:${safe.captions.x}px;top:${safe.captions.y}px;width:${safe.captions.width}px;height:${safe.captions.height}px;z-index:20}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video,${selector} .hf-v2-speaker>img,${selector} .hf-v2-speaker>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${variantCss(selector, contract.id, variantId, ratio)}${regions}`;
 }
 
 function variantCss(selector, layoutId, variantId, ratio) {

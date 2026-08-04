@@ -1278,23 +1278,47 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
     def test_render_compositions_bind_only_scene_requested_materials(self):
         from server.content_domains.ai_edit_v3.production import _layout_slot_bindings, _scene_asset_ids
 
-        known = ["material_01", "material_02"]
+        known = ["evidence_01", "product_01", "context_01", "decoration_01"]
         scenes = [
-            {"id": "scene_01", "material_slots": [{"id": "material_01"}]},
+            {"id": "scene_01", "material_slots": [{"id": "evidence_01"}]},
             {"id": "scene_02", "material_slots": []},
-            {"id": "scene_03", "material_slots": [{"id": "material_02"}]},
+            {"id": "scene_03", "material_slots": [{"id": "product_01"}]},
         ]
 
         self.assertEqual(
-            [["material_01"], [], ["material_02"]],
+            [["evidence_01"], [], ["product_01"]],
             [_scene_asset_ids(scene, known) for scene in scenes],
         )
         self.assertEqual(
-            [{"slot_id": "primary", "asset_id": "material_02"}],
-            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "material_02"}]}, known),
+            [
+                {"slot_id": "evidence", "asset_id": "evidence_01"},
+                {"slot_id": "primary", "asset_id": "product_01"},
+                {"slot_id": "detail", "asset_id": "context_01"},
+                {"slot_id": "accent", "asset_id": "decoration_01"},
+            ],
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [
+                {"id": "evidence_01", "purpose": "evidence", "priority": "optional"},
+                {"id": "product_01", "purpose": "product", "priority": "required"},
+                {"id": "context_01", "purpose": "context", "priority": "optional"},
+                {"id": "decoration_01", "purpose": "decoration", "priority": "optional"},
+            ]}, known),
         )
-        with self.assertRaisesRegex(ValueError, "scene_primary_material_missing"):
-            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": []}, known)
+        self.assertEqual(
+            [{"slot_id": "evidence", "asset_id": "evidence_01"}],
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known),
+        )
+        self.assertEqual(
+            [{"slot_id": "evidence", "asset_id": "evidence_01"}],
+            _layout_slot_bindings({"layout_id": "speaker_fullscreen", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known),
+        )
+        self.assertEqual(
+            [{"slot_id": "steps", "asset_id": "context_01"}, {"slot_id": "accent", "asset_id": "decoration_01"}],
+            _layout_slot_bindings({"layout_id": "steps_stack", "material_slots": [{"id": "context_01", "purpose": "context", "priority": "optional"}, {"id": "decoration_01", "purpose": "decoration", "priority": "optional"}]}, known),
+        )
+        with self.assertRaisesRegex(ValueError, "scene_layout_binding_invalid"):
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "product_01", "purpose": "product", "priority": "optional"}]}, known)
+        with self.assertRaisesRegex(ValueError, "scene_layout_binding_duplicate"):
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}, {"id": "context_01", "purpose": "evidence", "priority": "optional"}]}, known)
 
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict
