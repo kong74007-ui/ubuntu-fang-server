@@ -21,6 +21,7 @@ _MAX_JSON_BYTES = 64 * 1024
 _SYSTEMCTL = "/usr/bin/systemctl"
 _BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_HISTORICAL_INDEX = "historical-release-index.json"
 
 
 def validate_instance_id(value: str) -> str:
@@ -77,6 +78,57 @@ def _read_json(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("render_release_lock_invalid")
     return value
+
+
+def _historical_release_path(root_parent: Path, build_id: str) -> Path:
+    index_path = root_parent / _HISTORICAL_INDEX
+    if not _plain_file(index_path) or index_path.stat().st_size > _MAX_JSON_BYTES:
+        raise ValueError("render_release_unknown" if not index_path.exists() else "render_release_index_invalid")
+    try:
+        raw = index_path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+        canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("render_release_index_invalid") from exc
+    if raw != canonical or not isinstance(value, dict) or set(value) != {"releases", "schema_version"} or value.get("schema_version") != 1:
+        raise ValueError("render_release_index_invalid")
+    releases = value.get("releases")
+    if not isinstance(releases, dict) or any(not isinstance(key, str) or _BUILD_ID.fullmatch(key) is None for key in releases):
+        raise ValueError("render_release_index_invalid")
+    relative = releases.get(build_id)
+    if relative is None:
+        raise ValueError("render_release_unknown")
+    if (
+        not isinstance(relative, str)
+        or not relative.startswith("historical/")
+        or "\\" in relative
+        or Path(relative).is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.split("/"))
+    ):
+        raise ValueError("render_release_index_invalid")
+    return root_parent.joinpath(*relative.split("/"))
+
+
+def _resolve_release_directory(root_parent: Path, build_id: str) -> Path:
+    release = root_parent / build_id.removeprefix("sha256:")
+    try:
+        metadata = release.lstat()
+    except FileNotFoundError:
+        release = _historical_release_path(root_parent, build_id)
+        try:
+            metadata = release.lstat()
+        except OSError as exc:
+            raise ValueError("render_release_index_invalid") from exc
+    if release.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("render_release_path_invalid")
+    try:
+        release = release.resolve(strict=True)
+        release.relative_to(root_parent)
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("render_"):
+            raise
+        raise ValueError("render_release_path_invalid") from exc
+    return release
 
 
 def _verify_release_tree(root: Path, lock: dict[str, object]) -> None:
@@ -152,12 +204,7 @@ def resolve_render_command(
         raise ValueError("render_request_build_invalid")
     try:
         root_parent = Path(releases_root).resolve(strict=True)
-        release = root_parent / build_id.removeprefix("sha256:")
-        metadata = release.lstat()
-        if release.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-            raise ValueError("render_release_path_invalid")
-        release = release.resolve(strict=True)
-        release.relative_to(root_parent)
+        release = _resolve_release_directory(root_parent, build_id)
     except (OSError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("render_"):
             raise

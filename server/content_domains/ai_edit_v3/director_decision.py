@@ -13,7 +13,14 @@ from .providers.base import ProviderResult
 
 
 _UNSAFE_TEXT = re.compile(r"(?:[a-z][a-z0-9+.-]*://|^[a-zA-Z]:[\\/]|^[/\\]|```|<script\b)", re.IGNORECASE)
-_UNSAFE_REQUEST_KEY = re.compile(r"(?:api[_-]?key|secret|password|token|signed[_-]?url|cos[_-]?key|local[_-]?path|provider)", re.IGNORECASE)
+_UNSAFE_REQUEST_KEY = re.compile(
+    r"(?:api[_-]?key|secret|password|token|authorization|credential|provider|(?:^|_)(?:url|path|key)$)",
+    re.IGNORECASE,
+)
+_UNSAFE_REQUEST_VALUE = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*://|^[a-zA-Z]:[\\/]|^[/\\]|\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,})",
+    re.IGNORECASE,
+)
 
 
 class DirectorDecisionError(ValueError):
@@ -70,6 +77,8 @@ def _reject_unsafe_request_keys(value: Any, path: str = "$") -> None:
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _reject_unsafe_request_keys(item, f"{path}[{index}]")
+    elif isinstance(value, str) and _UNSAFE_REQUEST_VALUE.search(value.strip()):
+        raise DirectorDecisionError("director_request_unsafe", path)
 
 
 def _validate_visible_text(value: Mapping[str, Any], candidate: Mapping[str, Any], path: str) -> None:
@@ -108,6 +117,16 @@ def validate_director_decision(
     layout_variants = capabilities.get("layout_variants", {})
     if not isinstance(layout_variants, Mapping):
         raise DirectorDecisionError("director_capabilities_invalid", "$.capabilities.layout_variants")
+    overlay_variants = capabilities.get("overlay_variants", {})
+    overlay_targets = capabilities.get("overlay_animation_targets", {})
+    layout_targets = capabilities.get("layout_animation_targets", {})
+    for name, catalog in (
+        ("overlay_variants", overlay_variants),
+        ("overlay_animation_targets", overlay_targets),
+        ("layout_animation_targets", layout_targets),
+    ):
+        if not isinstance(catalog, Mapping):
+            raise DirectorDecisionError("director_capabilities_invalid", f"$.capabilities.{name}")
 
     for index, (directive, candidate) in enumerate(zip(directives, candidate_records, strict=True)):
         path = f"$.scene_directives[{index}]"
@@ -128,20 +147,35 @@ def validate_director_decision(
         for name in visible_names:
             _validate_visible_text(directive[name], candidate, f"{path}.{name}")
         instance_ids: set[str] = set()
+        declared_layout_targets = layout_targets.get(layout_id, ())
+        if not isinstance(declared_layout_targets, (list, tuple)) or any(
+            not isinstance(item, str) for item in declared_layout_targets
+        ):
+            raise DirectorDecisionError("director_capabilities_invalid", "$.capabilities.layout_animation_targets")
+        public_targets = set(declared_layout_targets)
         for overlay_index, overlay in enumerate(directive["overlay_instances"]):
             overlay_path = f"{path}.overlay_instances[{overlay_index}]"
             if overlay["component_id"] not in overlays:
                 raise DirectorDecisionError("director_component_unknown", f"{overlay_path}.component_id")
             if overlay["content_ref"] not in visible_names:
                 raise DirectorDecisionError("director_content_reference_invalid", f"{overlay_path}.content_ref")
+            variants = overlay_variants.get(overlay["component_id"])
+            if "variant" in overlay and (
+                not isinstance(variants, (list, tuple)) or overlay["variant"] not in variants
+            ):
+                raise DirectorDecisionError("director_overlay_variant_unknown", f"{overlay_path}.variant")
             if overlay["instance_id"] in instance_ids:
                 raise DirectorDecisionError("director_overlay_duplicate", f"{overlay_path}.instance_id")
             instance_ids.add(overlay["instance_id"])
+            targets = overlay_targets.get(overlay["component_id"], ())
+            if not isinstance(targets, (list, tuple)) or any(not isinstance(item, str) for item in targets):
+                raise DirectorDecisionError("director_capabilities_invalid", "$.capabilities.overlay_animation_targets")
+            public_targets.update(targets)
         for animation_index, animation in enumerate(directive["animations"]):
             animation_path = f"{path}.animations[{animation_index}]"
             if animation["preset"] not in animations:
                 raise DirectorDecisionError("director_animation_unknown", f"{animation_path}.preset")
-            if animation["target_id"] not in instance_ids:
+            if animation["target_id"] not in instance_ids | public_targets:
                 raise DirectorDecisionError("director_animation_target_unknown", f"{animation_path}.target_id")
 
         available = set(candidate.get("available_material_ids", ()))

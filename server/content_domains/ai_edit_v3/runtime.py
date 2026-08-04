@@ -762,7 +762,8 @@ def assert_ready_for_request(
 
 def get_or_generate_director_decision(
     store: V3Store,
-    job_id: str,
+    claim: LeaseClaim,
+    stage_attempt_id: str,
     context: Any,
     provider: Any,
     *,
@@ -772,7 +773,9 @@ def get_or_generate_director_decision(
 
     from .director_decision import ValidatedDecision, generate_director_decision
 
-    existing = store.get_director_decision(job_id)
+    if not store.lease_owned(claim, now_ms):
+        raise LeaseLost("lease_lost", "director decision lease is no longer owned")
+    existing = store.get_director_decision(claim.job_id)
     if existing is not None:
         raw_output = existing["raw_output_json"]
         return ValidatedDecision(
@@ -786,7 +789,12 @@ def get_or_generate_director_decision(
             prompt_version=existing["prompt_version"],
         )
     generated = generate_director_decision(context, provider)
-    store.save_director_decision(job_id, generated, now_ms=now_ms)
+    store.save_director_decision(
+        claim,
+        stage_attempt_id,
+        generated,
+        now_ms=now_ms,
+    )
     return generated
 
 

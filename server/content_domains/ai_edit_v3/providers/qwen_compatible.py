@@ -43,6 +43,35 @@ class DashScopeCompatibleQwenClient:
         *,
         timeout_seconds: int | None = None,
     ) -> ProviderResult:
+        return self._generate(
+            system_prompt,
+            user_prompt,
+            timeout_seconds=timeout_seconds,
+            strict_json=False,
+        )
+
+    def generate_director_decision(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> ProviderResult:
+        return self._generate(
+            system_prompt,
+            user_prompt,
+            timeout_seconds=timeout_seconds,
+            strict_json=True,
+        )
+
+    def _generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        timeout_seconds: int | None,
+        strict_json: bool,
+    ) -> ProviderResult:
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ProviderError("dashscope_director_prompt_invalid")
         if not isinstance(user_prompt, str) or not user_prompt.strip():
@@ -52,15 +81,17 @@ class DashScopeCompatibleQwenClient:
         if not api_key:
             raise ProviderError("dashscope_not_configured")
         started_at = self._clock_ms()
+        request_body = {
+            "model": os.environ.get("DASHSCOPE_QWEN_MODEL", _MODEL),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if strict_json:
+            request_body["response_format"] = {"type": "json_object"}
         body = json.dumps(
-            {
-                "model": os.environ.get("DASHSCOPE_QWEN_MODEL", _MODEL),
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "response_format": {"type": "json_object"},
-            },
+            request_body,
             ensure_ascii=False,
         ).encode("utf-8")
         request_timeout = self._timeout_seconds

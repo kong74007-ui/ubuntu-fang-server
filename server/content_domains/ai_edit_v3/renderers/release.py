@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_HISTORICAL_INDEX = "historical-release-index.json"
+_MAX_INDEX_BYTES = 64 * 1024
 
 
 class RendererReleaseError(ValueError):
@@ -54,6 +56,63 @@ def _read_json(path: Path) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise RendererReleaseError("renderer_release_json_invalid")
     return value
+
+
+def _historical_release_path(root_parent: Path, build_id: str) -> Path:
+    index_path = root_parent / _HISTORICAL_INDEX
+    try:
+        metadata = index_path.lstat()
+        raw = index_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise RendererReleaseError("renderer_release_unknown") from exc
+    except OSError as exc:
+        raise RendererReleaseError("renderer_release_index_invalid") from exc
+    if index_path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or len(raw) > _MAX_INDEX_BYTES:
+        raise RendererReleaseError("renderer_release_index_invalid")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RendererReleaseError("renderer_release_index_invalid") from exc
+    canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if raw != canonical or not isinstance(value, Mapping) or set(value) != {"releases", "schema_version"} or value.get("schema_version") != 1:
+        raise RendererReleaseError("renderer_release_index_invalid")
+    releases = value.get("releases")
+    if not isinstance(releases, Mapping) or any(not isinstance(key, str) or _BUILD_ID.fullmatch(key) is None for key in releases):
+        raise RendererReleaseError("renderer_release_index_invalid")
+    relative = releases.get(build_id)
+    if relative is None:
+        raise RendererReleaseError("renderer_release_unknown")
+    if (
+        not isinstance(relative, str)
+        or not relative.startswith("historical/")
+        or "\\" in relative
+        or Path(relative).is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.split("/"))
+    ):
+        raise RendererReleaseError("renderer_release_index_invalid")
+    return root_parent.joinpath(*relative.split("/"))
+
+
+def _resolve_release_directory(root_parent: Path, build_id: str) -> Path:
+    candidate = root_parent / build_id.removeprefix("sha256:")
+    try:
+        metadata = candidate.lstat()
+    except FileNotFoundError:
+        candidate = _historical_release_path(root_parent, build_id)
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise RendererReleaseError("renderer_release_index_invalid") from exc
+    except OSError as exc:
+        raise RendererReleaseError("renderer_release_path_invalid") from exc
+    if candidate.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise RendererReleaseError("renderer_release_path_invalid")
+    try:
+        root = candidate.resolve(strict=True)
+        root.relative_to(root_parent)
+    except (OSError, ValueError) as exc:
+        raise RendererReleaseError("renderer_release_path_invalid") from exc
+    return root
 
 
 def _build_id(value: Mapping[str, Any]) -> str:
@@ -212,18 +271,7 @@ def resolve_renderer_release(build_id: str, releases_root: Path) -> RendererRele
         root_parent = Path(releases_root).resolve(strict=True)
     except OSError as exc:
         raise RendererReleaseError("renderer_releases_root_invalid") from exc
-    candidate = root_parent / build_id.removeprefix("sha256:")
-    try:
-        metadata = candidate.lstat()
-    except OSError as exc:
-        raise RendererReleaseError("renderer_release_unknown") from exc
-    if candidate.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-        raise RendererReleaseError("renderer_release_path_invalid")
-    try:
-        root = candidate.resolve(strict=True)
-        root.relative_to(root_parent)
-    except (OSError, ValueError) as exc:
-        raise RendererReleaseError("renderer_release_path_invalid") from exc
+    root = _resolve_release_directory(root_parent, build_id)
     report = verify_renderer_release(root)
     if report.renderer_build_id != build_id:
         raise RendererReleaseError("renderer_build_id_mismatch")

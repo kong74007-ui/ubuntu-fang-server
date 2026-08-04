@@ -15,10 +15,10 @@ from server.content_domains.ai_edit_v3.director_decision import (
     generate_director_decision,
     validate_director_decision,
 )
-from server.content_domains.ai_edit_v3.contracts import canonical_json, request_fingerprint, schema_sha256
+from server.content_domains.ai_edit_v3.contracts import LeaseClaim, canonical_json, request_fingerprint, schema_sha256
 from server.content_domains.ai_edit_v3.providers.base import ProviderResult
 from server.content_domains.ai_edit_v3.runtime import get_or_generate_director_decision
-from server.content_domains.ai_edit_v3.store import StoreConflictError, V3Store, open_store
+from server.content_domains.ai_edit_v3.store import LeaseLost, StoreConflictError, V3Store, open_store
 
 
 CANDIDATES = (
@@ -29,6 +29,9 @@ CAPABILITIES = {
     "layout_capabilities": ["quote_reversal", "speaker_fullscreen"],
     "layout_variants": {"quote_reversal": ["diagonal_statement"], "speaker_fullscreen": ["clean_center"]},
     "overlay_capabilities": ["headline_block", "standard_caption"],
+    "overlay_variants": {"headline_block": ["primary"], "standard_caption": ["default"]},
+    "overlay_animation_targets": {"headline_block": ["metric_value"], "standard_caption": []},
+    "layout_animation_targets": {"quote_reversal": ["scene_root"], "speaker_fullscreen": []},
     "animation_capabilities": ["wipe", "fade"],
     "transition_capabilities": ["soft_wipe", "hard_cut"],
     "theme_profile_ids": ["editorial_clean"],
@@ -95,8 +98,19 @@ class DirectorDecisionValidationTests(unittest.TestCase):
                 validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
         value = valid_decision(); value["scene_directives"][0]["animations"][0]["preset"] = "unknown_animation"
         with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
+        value = valid_decision(); value["scene_directives"][0]["overlay_instances"][0]["variant"] = "unknown_variant"
+        with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
         value = valid_decision(); value["scene_directives"][0]["material_bindings"][0]["material_id"] = "material_99"
         with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
+
+    def test_animation_can_target_only_declared_public_layout_or_overlay_targets(self):
+        value = valid_decision()
+        value["scene_directives"][0]["overlay_instances"][0]["variant"] = "primary"
+        value["scene_directives"][0]["animations"][0]["target_id"] = "metric_value"
+        self.assertEqual(value, validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES))
+        value["scene_directives"][0]["animations"][0]["target_id"] = "private_selector"
+        with self.assertRaises(DirectorDecisionError):
+            validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
         value = valid_decision(); value["scene_directives"][0]["headline"]["source_caption_ids"] = ["caption_002"]
         with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
 
@@ -133,6 +147,19 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(DirectorDecisionError, "director_decision_invalid"):
             generate_director_decision(context, Provider(), max_repairs=1)
 
+    def test_frozen_request_rejects_url_path_and_secret_bearing_values(self):
+        class Provider:
+            def generate_decision(self, *args, **kwargs):
+                raise AssertionError("unsafe request must fail before provider call")
+        for request in (
+            {"asset_url": "https://cos.invalid/file?signature=secret"},
+            {"asset": "C:\\private\\input.mp4"},
+            {"metadata": {"authorization": "Bearer secret"}},
+        ):
+            context = SimpleNamespace(job_id="job-1", request=request, candidates=CANDIDATES, capabilities=CAPABILITIES, deadline_at=123.0)
+            with self.subTest(request=request), self.assertRaisesRegex(DirectorDecisionError, "director_request_unsafe"):
+                generate_director_decision(context, Provider(), max_repairs=1)
+
 
 class DirectorDecisionPersistenceTests(unittest.TestCase):
     def setUp(self):
@@ -153,8 +180,17 @@ class DirectorDecisionPersistenceTests(unittest.TestCase):
                    created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 ("job-1", "test", "alice", "created_draft", "{}", request_fingerprint({}), "quote-1", "key-1", 3, 3),
             )
+            connection.execute(
+                "UPDATE edit_v3_jobs SET state='planning',worker_id='worker-1',fencing_token=7,lease_until=1000 WHERE job_id='job-1'"
+            )
+            connection.execute(
+                """INSERT INTO edit_v3_stage_attempts(id,job_id,stage,attempt,worker_id,
+                   fencing_token,status,input_sha256,started_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("attempt-planning", "job-1", "planning", 1, "worker-1", 7, "running", "d" * 64, 4),
+            )
         finally:
             connection.close()
+        self.claim = LeaseClaim("job-1", "worker-1", 7, 1000)
 
     @staticmethod
     def decision(value=None):
@@ -171,20 +207,35 @@ class DirectorDecisionPersistenceTests(unittest.TestCase):
         )
 
     def test_persistence_is_canonical_immutable_and_replay_skips_provider(self):
-        stored = self.store.save_director_decision("job-1", self.decision(), now_ms=10)
-        replay = self.store.save_director_decision("job-1", self.decision(), now_ms=11)
+        stored = self.store.save_director_decision(self.claim, "attempt-planning", self.decision(), now_ms=10)
+        replay = self.store.save_director_decision(self.claim, "attempt-planning", self.decision(), now_ms=11)
         self.assertEqual(stored, replay)
         self.assertEqual(canonical_json(valid_decision()).decode("utf-8"), stored["normalized_decision_json"])
 
         changed = valid_decision(); changed["creative_concept"] = "different"
         with self.assertRaisesRegex(StoreConflictError, "director_decision_conflict"):
-            self.store.save_director_decision("job-1", self.decision(changed), now_ms=12)
+            self.store.save_director_decision(self.claim, "attempt-planning", self.decision(changed), now_ms=12)
+
+        with self.assertRaises(LeaseLost):
+            self.store.save_director_decision(
+                LeaseClaim("job-1", "worker-1", 6, 1000),
+                "attempt-planning",
+                self.decision(),
+                now_ms=13,
+            )
 
         class Provider:
             def generate_decision(self, *args, **kwargs):
                 raise AssertionError("persisted replay must not call Qwen")
         context = SimpleNamespace(job_id="job-1", request={}, candidates=CANDIDATES, capabilities=CAPABILITIES, deadline_at=1.0)
-        result = get_or_generate_director_decision(self.store, "job-1", context, Provider(), now_ms=13)
+        result = get_or_generate_director_decision(
+            self.store,
+            self.claim,
+            "attempt-planning",
+            context,
+            Provider(),
+            now_ms=13,
+        )
         self.assertEqual(valid_decision(), result.value)
 
 

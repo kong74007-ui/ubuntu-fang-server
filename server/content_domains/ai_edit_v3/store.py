@@ -4655,14 +4655,17 @@ class V3Store:
 
     def save_director_decision(
         self,
-        job_id: str,
+        claim: LeaseClaim,
+        stage_attempt_id: str,
         validated_decision: Any,
         *,
         now_ms: int,
     ) -> dict[str, Any]:
         """Persist the validated visual decision once and reject divergent replay."""
 
-        job_id = _require_nonblank("job_id", job_id)
+        claim = _require_claim(claim)
+        job_id = claim.job_id
+        stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
         now_ms = _require_now_ms(now_ms)
         value = getattr(validated_decision, "value", None)
         if not isinstance(value, Mapping):
@@ -4691,8 +4694,24 @@ class V3Store:
         decision_id = f"decision-{identity[:40]}"
 
         def write(connection: sqlite3.Connection) -> dict[str, Any]:
-            if connection.execute("SELECT 1 FROM edit_v3_jobs WHERE job_id=?", (job_id,)).fetchone() is None:
-                raise StoreConflictError("director_job_missing", "director decision job does not exist")
+            if not _lease_owned_tx(connection, claim, now_ms):
+                raise _lease_lost(claim)
+            attempt = connection.execute(
+                """SELECT stage,status,worker_id,fencing_token
+                   FROM edit_v3_stage_attempts WHERE id=? AND job_id=?""",
+                (stage_attempt_id, job_id),
+            ).fetchone()
+            if (
+                attempt is None
+                or attempt["stage"] != "planning"
+                or attempt["status"] != "running"
+                or attempt["worker_id"] != claim.worker_id
+                or attempt["fencing_token"] != claim.fencing_token
+            ):
+                raise StoreConflictError(
+                    "director_attempt_invalid",
+                    "director decision has no active fenced planning attempt",
+                )
             existing = connection.execute(
                 "SELECT * FROM edit_v3_director_decisions WHERE job_id=? AND version=1",
                 (job_id,),
@@ -4713,7 +4732,7 @@ class V3Store:
                        redacted_final_output_json,validation_json,usage_json,elapsed_ms,created_at
                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    model_call_id, job_id, None, "dashscope", "qwen3.7-max-2026-06-08",
+                    model_call_id, job_id, stage_attempt_id, "dashscope", "qwen3.7-max-2026-06-08",
                     "director_decision", prompt_version, candidates_sha, schema_sha,
                     request_id, normalized,
                     _json_text({"decision_sha256": decision_sha, "status": "valid"}),

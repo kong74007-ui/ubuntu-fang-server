@@ -172,6 +172,44 @@ class RenderCtlTests(unittest.TestCase):
                     output_root=Path("/work/output"),
                 )
 
+    def test_run_command_resolves_true_v1_release_through_historical_index(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            releases = root / "releases"
+            historical = releases / "historical" / "legacy-a"
+            historical.parent.mkdir(parents=True)
+            source = ROOT / "server/ai_edit_v3_renderer"
+            shutil.copytree(source, historical, ignore=shutil.ignore_patterns("node_modules"))
+            lock_path = historical / "renderer-release.lock.json"
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock["schema_version"] = 1
+            lock.pop("release_tree_files", None)
+            lock.pop("release_tree_sha256", None)
+            lock["git_commit"] = "a" * 40
+            lock["renderer_build_id"] = helper._canonical_build_id(lock)
+            lock_path.write_text(json.dumps(lock, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            (releases / "historical-release-index.json").write_text(
+                json.dumps(
+                    {"schema_version": 1, "releases": {lock["renderer_build_id"]: "historical/legacy-a"}},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            request = root / "request.json"
+            request.write_text(json.dumps({"renderer_build_id": lock["renderer_build_id"]}), encoding="utf-8")
+
+            command = helper.resolve_render_command(
+                request_path=request,
+                releases_root=releases,
+                node_path=Path("/usr/bin/node"),
+                input_root=Path("/work/input/assets"),
+                output_root=Path("/work/output"),
+            )
+
+            self.assertEqual(Path(command[1]), historical / "src/render.mjs")
+
     def test_instance_id_is_exact_and_rejects_injection(self):
         helper = load_helper()
         for value in ("job_1", "a", "a-b_c", "9" * 64):
