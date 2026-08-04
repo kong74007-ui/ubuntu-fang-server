@@ -39,6 +39,26 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_variation_seed_is_a_stable_16_lowercase_hex_derivation(self):
+        from server.content_domains.ai_edit_v3 import production
+
+        derive = getattr(production, "derive_variation_seed", None)
+        self.assertTrue(callable(derive), "variation seed derivation is required")
+        request_sha256 = "a" * 64
+        director_decision_sha256 = "b" * 64
+        registry_sha256 = "c" * 64
+        seed = derive(request_sha256, director_decision_sha256, registry_sha256)
+
+        self.assertRegex(seed, r"^[0-9a-f]{16}$")
+        self.assertEqual(
+            seed,
+            derive(request_sha256, director_decision_sha256, registry_sha256),
+        )
+        self.assertNotEqual(
+            seed,
+            derive("d" * 64, director_decision_sha256, registry_sha256),
+        )
+
     def test_visual_program_rejects_missing_real_variant_catalog_before_provider_call(self):
         from server.content_domains.ai_edit_v3.production import visual_program_capabilities
 

@@ -85,6 +85,61 @@ def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, An
         raise ValueError("visual_program_capabilities_incomplete")
     return copy.deepcopy(dict(capabilities))
 
+
+_VARIATION_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_VARIATION_SEED = re.compile(r"^[0-9a-f]{16}$")
+_THEME_PROFILES = {
+    "editorial_clean": {"bg": "#f7f4ed", "surface": "#ffffff", "text": "#17212b", "accent": "#315b8a", "border": "rgba(49,91,138,.28)", "shadow": "0 18px 48px rgba(23,33,43,.14)", "texture": "none"},
+    "commercial_energy": {"bg": "#10122a", "surface": "#1e2360", "text": "#ffffff", "accent": "#ff6b35", "border": "rgba(255,107,53,.52)", "shadow": "0 22px 64px rgba(255,107,53,.22)", "texture": "grain_subtle"},
+    "premium_dark": {"bg": "#07111f", "surface": "#101d2f", "text": "#f7f5ef", "accent": "#d9a441", "border": "rgba(217,164,65,.42)", "shadow": "0 24px 80px rgba(0,0,0,.30)", "texture": "none"},
+    "warm_lifestyle": {"bg": "#fff5e8", "surface": "#fffdfa", "text": "#49352c", "accent": "#b9603d", "border": "rgba(185,96,61,.30)", "shadow": "0 16px 44px rgba(106,65,45,.16)", "texture": "paper_subtle"},
+}
+
+
+def derive_variation_seed(
+    request_sha256: str, director_decision_sha256: str, registry_sha256: str
+) -> str:
+    """Keep the visual choice seed string-safe and bound to frozen inputs."""
+    values = (request_sha256, director_decision_sha256, registry_sha256)
+    if any(not isinstance(value, str) or _VARIATION_SHA256.fullmatch(value) is None for value in values):
+        raise ValueError("variation_seed_source_invalid")
+    return hashlib.sha256("".join(values).encode("ascii")).hexdigest()[:16]
+
+
+def _resolve_design_tokens(
+    theme_profile_id: str, design_intent: Mapping[str, Any], variation_seed: str
+) -> dict[str, str]:
+    profile = _THEME_PROFILES.get(theme_profile_id)
+    if profile is None or _VARIATION_SEED.fullmatch(variation_seed) is None:
+        raise ValueError("visual_design_tokens_invalid")
+    density = {"minimal": "airy", "balanced": "balanced", "dense": "dense"}.get(design_intent.get("density"))
+    motion_distance = {"low": "18px", "medium": "36px", "high": "54px"}.get(design_intent.get("motion_energy"))
+    image_fit = {"contain": "contain", "cover": "cover", "smart_crop": "cover"}.get(design_intent.get("image_fit"))
+    if density is None or motion_distance is None or image_fit is None or design_intent.get("decoration_intensity") not in {"low", "medium", "high"}:
+        raise ValueError("visual_design_tokens_invalid")
+    left, right = int(variation_seed[:8], 16), int(variation_seed[8:], 16)
+    if left | right == 0:
+        right = 0x9E3779B9
+
+    def next_uint32() -> int:
+        nonlocal left, right
+        left ^= (left << 13) & 0xFFFFFFFF; left &= 0xFFFFFFFF
+        left ^= left >> 17; left &= 0xFFFFFFFF
+        left ^= (left << 5) & 0xFFFFFFFF; left &= 0xFFFFFFFF
+        right = (right + 0x9E3779B9) & 0xFFFFFFFF
+        return (left ^ right) & 0xFFFFFFFF
+
+    type_scale = ("0.960", "1.000", "1.040")[next_uint32() % 3]
+    gap = {"airy": ("34px", "38px"), "balanced": ("24px", "28px"), "dense": ("16px", "20px")}[density][next_uint32() % 2]
+    radius = ("18px", "22px", "26px")[next_uint32() % 3]
+    return {
+        "--hf-theme-profile": theme_profile_id, "--hf-bg": profile["bg"], "--hf-surface": profile["surface"],
+        "--hf-text": profile["text"], "--hf-accent": profile["accent"], "--hf-font": '"Noto Sans SC", sans-serif',
+        "--hf-type-scale": type_scale, "--hf-gap": gap, "--hf-radius": radius, "--hf-border": profile["border"],
+        "--hf-shadow": profile["shadow"], "--hf-texture": profile["texture"], "--hf-density": density,
+        "--hf-motion-distance": motion_distance, "--hf-image-fit": image_fit,
+    }
+
 _LAYOUTS_REQUIRING_MATERIALS = frozenset({
     "comparison_split",
     "cta_offer",
@@ -1143,7 +1198,9 @@ class ProductionStageCoordinator:
                 visual_capabilities = visual_program_capabilities(capabilities)
                 decision_request = {**director_request, "scene_candidates": [item.__dict__ if hasattr(item, "__dict__") else {slot: getattr(item, slot) for slot in item.__slots__} for item in candidates], "capabilities": visual_capabilities}
                 decision = generate_director_decision(SimpleNamespace(request=decision_request, timeline=timeline, candidates=candidates, capabilities=visual_capabilities, job_id=job_id, deadline_at=context.deadline_at), self.director)
-                plan = compile_edit_plan(decision.value, candidates=candidates, timeline={"duration_ms": timeline.duration_ms, "captions": [{"id": item.id, "start_ms": item.start_ms, "end_ms": item.end_ms, "text": item.text} for item in timeline.captions], "ratio": normalized["ratio"]}, materials=descriptors, capabilities=visual_capabilities, variation_seed=int(hashlib.sha256(job_id.encode()).hexdigest()[:8], 16))
+                variation_seed = derive_variation_seed(normalized["sha256"], decision.decision_sha256, self.renderer.registry_sha256.removeprefix("sha256:"))
+                plan = compile_edit_plan(decision.value, candidates=candidates, timeline={"duration_ms": timeline.duration_ms, "captions": [{"id": item.id, "start_ms": item.start_ms, "end_ms": item.end_ms, "text": item.text} for item in timeline.captions], "ratio": normalized["ratio"]}, materials=descriptors, capabilities=visual_capabilities, variation_seed=int(variation_seed[:8], 16))
+                _write_json(root / "visual-program.json", {"theme_profile_id": decision.value["theme_profile_id"], "design_intent": decision.value["design_intent"], "variation_seed": variation_seed})
                 generated = ValidatedPlan(plan, provider_request_id=decision.provider_request_id, raw_output_sha256=decision.raw_output_sha256)
             else:
                 generated = generate_edit_plan(
@@ -1345,6 +1402,14 @@ class ProductionStageCoordinator:
                 "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"]} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
+            if visual_program:
+                visual = _json(root / "visual-program.json")
+                manifest.update({
+                    "theme_profile_id": visual["theme_profile_id"],
+                    "design_intent": visual["design_intent"],
+                    "variation_seed": visual["variation_seed"],
+                    "design_tokens": _resolve_design_tokens(visual["theme_profile_id"], visual["design_intent"], visual["variation_seed"]),
+                })
             if attempt > 1:
                 previous_quality = _json(root / f"quality-{attempt - 1}.json")
                 repairable_ids = previous_quality.get("repairable_ids")

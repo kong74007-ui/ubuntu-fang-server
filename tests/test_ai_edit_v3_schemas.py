@@ -88,6 +88,7 @@ EXPECTED_ROOT_FIELDS = {
     "render-manifest-v2.schema.json": {
         "version", "schema_sha256", "renderer_environment", "output_spec",
         "duration_ms", "edit_plan_sha256", "registry_sha256", "theme", "seed",
+        "theme_profile_id", "design_intent", "variation_seed", "design_tokens",
         "source_video", "source_segments", "master_audio", "assets", "compositions", "captions",
     },
 }
@@ -244,6 +245,34 @@ class SchemaMetaTests(unittest.TestCase):
     def test_v2_manifest_accepts_the_in_direction_preserved_from_visual_edit_plans(self):
         manifest = load_fixture("valid-render-manifest-v2.json")
         manifest["compositions"][0]["animations"][0]["direction"] = "in"
+        Draft202012Validator(
+            load_schema("render-manifest-v2.schema.json")
+        ).validate(manifest)
+
+    def test_v2_manifest_requires_a_frozen_theme_profile_seed_and_design_tokens(self):
+        manifest = load_fixture("valid-render-manifest-v2.json")
+        manifest.update({
+            "theme_profile_id": "editorial_clean",
+            "design_intent": {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"},
+            "variation_seed": "0123456789abcdef",
+            "design_tokens": {
+                "--hf-theme-profile": "editorial_clean",
+                "--hf-bg": "#f7f4ed",
+                "--hf-surface": "#ffffff",
+                "--hf-text": "#17212b",
+                "--hf-accent": "#315b8a",
+                "--hf-font": '"Noto Sans SC", sans-serif',
+                "--hf-type-scale": "0.960",
+                "--hf-gap": "28px",
+                "--hf-radius": "26px",
+                "--hf-border": "rgba(49,91,138,.28)",
+                "--hf-shadow": "0 18px 48px rgba(23,33,43,.14)",
+                "--hf-texture": "none",
+                "--hf-density": "balanced",
+                "--hf-motion-distance": "36px",
+                "--hf-image-fit": "cover",
+            },
+        })
         Draft202012Validator(
             load_schema("render-manifest-v2.schema.json")
         ).validate(manifest)

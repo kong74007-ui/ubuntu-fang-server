@@ -1,3 +1,7 @@
+import {isDeepStrictEqual} from "node:util";
+
+import {resolveTheme} from "./registry/index.mjs";
+
 const FORBIDDEN = new Set(["html", "css", "javascript", "script", "expression", "plugin", "url", "output_path", "command", "env", "systemd_property"]);
 
 
@@ -53,5 +57,16 @@ export function validateManifest(document, expected) {
     }
   }
   if (cursor !== document.duration_ms) throw new Error("manifest_composition_timeline_invalid");
+  if (document.version === "2.0") {
+    let resolved;
+    try {
+      resolved = resolveTheme({
+        profileId: document.theme_profile_id,
+        intent: document.design_intent,
+        variationSeed: document.variation_seed,
+      });
+    } catch { throw new Error("manifest_design_tokens_mismatch"); }
+    if (!isDeepStrictEqual(document.design_tokens, resolved)) throw new Error("manifest_design_tokens_mismatch");
+  }
   return deepCopyFreeze(document);
 }

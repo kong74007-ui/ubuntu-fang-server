@@ -18,7 +18,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^sha256:[0-9a-f]{64}$/;
 export const MANIFEST_SCHEMA_SHA256_BY_VERSION = Object.freeze({
   "1.0": "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
-  "2.0": "8b29d7e68f6f3bae93202dd970ce43d10c7bb0623099c1321430b5abd330cf5b",
+  "2.0": "78d0c9623fac31c0896049cdf500869929326ceb370e5bdea95d87229b92638b",
 });
 
 function hash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
