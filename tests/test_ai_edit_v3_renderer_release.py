@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,7 +35,6 @@ class RendererReleaseTests(unittest.TestCase):
     def test_one_byte_lock_or_font_change_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             copied = Path(directory) / "release"
-            import shutil
             shutil.copytree(RELEASE, copied, ignore=shutil.ignore_patterns("node_modules"))
             font = copied / "assets" / "fonts" / "NotoSansSC-Regular.woff2"
             font.write_bytes(font.read_bytes() + b"x")
@@ -50,6 +50,28 @@ class RendererReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RendererReleaseError, "renderer_schema_version_invalid"):
                 verify_renderer_release(copied)
 
+    def test_locked_json_runtime_inputs_are_required_hashed_and_exclusive(self) -> None:
+        catalog_relative = Path("src/registry/overlays/overlay-placement-v1.json")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for case in ("valid", "missing", "drifted", "extra"):
+                copied = root / case
+                shutil.copytree(RELEASE, copied, ignore=shutil.ignore_patterns("node_modules"))
+                catalog = copied / catalog_relative
+                if case == "missing":
+                    catalog.unlink()
+                elif case == "drifted":
+                    catalog.write_bytes(catalog.read_bytes() + b" ")
+                elif case == "extra":
+                    (catalog.parent / "unlisted-runtime.json").write_text("{}\n", encoding="utf-8")
+                if case == "valid":
+                    verify_renderer_release(copied)
+                else:
+                    with self.assertRaisesRegex(
+                        RendererReleaseError,
+                        "renderer_release_(?:file_missing|tree_hash_mismatch|tree_incomplete)",
+                    ):
+                        verify_renderer_release(copied)
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,7 @@ _SYSTEMCTL = "/usr/bin/systemctl"
 _BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _HISTORICAL_INDEX = "historical-release-index.json"
+_LOCKED_SOURCE_SUFFIXES = frozenset({".mjs", ".json"})
 
 
 def validate_instance_id(value: str) -> str:
@@ -178,7 +179,7 @@ def _verify_release_tree(root: Path, lock: dict[str, object]) -> None:
         actual_names.extend(
             (directory_path / name).relative_to(root).as_posix()
             for name in files
-            if name.endswith(".mjs")
+            if (directory_path / name).suffix in _LOCKED_SOURCE_SUFFIXES
         )
     fonts_root = root / "assets" / "fonts"
     try:

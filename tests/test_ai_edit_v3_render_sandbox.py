@@ -172,6 +172,40 @@ class RenderCtlTests(unittest.TestCase):
                     output_root=Path("/work/output"),
                 )
 
+    def test_renderctl_requires_exact_locked_json_runtime_inputs(self):
+        helper = load_helper()
+        source = ROOT / "server/ai_edit_v3_renderer"
+        catalog_relative = Path("src/registry/overlays/overlay-placement-v1.json")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for case in ("valid", "missing", "drifted", "extra"):
+                releases = root / case / "releases"
+                releases.mkdir(parents=True)
+                lock = json.loads((source / "renderer-release.lock.json").read_text(encoding="utf-8"))
+                release = releases / lock["renderer_build_id"].removeprefix("sha256:")
+                shutil.copytree(source, release, ignore=shutil.ignore_patterns("node_modules"))
+                catalog = release / catalog_relative
+                if case == "missing":
+                    catalog.unlink()
+                elif case == "drifted":
+                    catalog.write_bytes(catalog.read_bytes() + b" ")
+                elif case == "extra":
+                    (catalog.parent / "unlisted-runtime.json").write_text("{}\n", encoding="utf-8")
+                request = root / case / "request.json"
+                request.write_text(json.dumps({"renderer_build_id": lock["renderer_build_id"]}), encoding="utf-8")
+                arguments = {
+                    "request_path": request,
+                    "releases_root": releases,
+                    "node_path": Path("/usr/bin/node"),
+                    "input_root": Path("/work/input/assets"),
+                    "output_root": Path("/work/output"),
+                }
+                if case == "valid":
+                    helper.resolve_render_command(**arguments)
+                else:
+                    with self.assertRaisesRegex(ValueError, "render_release_tree_(?:mismatch|incomplete)"):
+                        helper.resolve_render_command(**arguments)
+
     def test_run_command_resolves_true_v1_release_through_historical_index(self):
         helper = load_helper()
         with tempfile.TemporaryDirectory() as folder:

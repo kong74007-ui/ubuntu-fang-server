@@ -14,6 +14,7 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _HISTORICAL_INDEX = "historical-release-index.json"
 _MAX_INDEX_BYTES = 64 * 1024
+_LOCKED_SOURCE_SUFFIXES = frozenset({".mjs", ".json"})
 
 
 class RendererReleaseError(ValueError):
@@ -138,8 +139,9 @@ def _release_tree_paths(root: Path) -> tuple[Path, ...]:
             if candidate.is_symlink():
                 raise RendererReleaseError("renderer_release_symlink_forbidden")
         for name in files:
-            if name.endswith(".mjs"):
-                paths.append(directory_path / name)
+            candidate = directory_path / name
+            if candidate.suffix in _LOCKED_SOURCE_SUFFIXES:
+                paths.append(candidate)
     fonts_root = root / "assets" / "fonts"
     try:
         paths.extend(path for path in fonts_root.iterdir())
