@@ -33,7 +33,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: design-system/package-lock.json
+          cache-dependency-path: |
+            design-system/package-lock.json
+            server/ai_edit_v3_renderer/package-lock.json
 
       - name: 安装微信消息推送加密依赖
         run: python -m pip install "cryptography>=41,<50"
@@ -70,6 +72,18 @@ jobs:
 
       - name: 测试全部工作台 JavaScript
         run: node --test tests/*.js
+
+      - name: 安装 AI Edit V3 renderer 依赖
+        working-directory: server/ai_edit_v3_renderer
+        run: npm ci
+
+      - name: 测试 AI Edit V3 renderer
+        working-directory: server/ai_edit_v3_renderer
+        run: npm test
+
+      - name: 校验 AI Edit V3 renderer release lock
+        working-directory: server/ai_edit_v3_renderer
+        run: npm run release:lock:check
 
       - name: 安装设计系统依赖
         working-directory: design-system

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, mkdir, readFile, writeFile} from "node:fs/promises";
+import {cp, mkdtemp, mkdir, readFile, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import test from "node:test";
@@ -43,7 +43,7 @@ test("release schema and build id are exact and deterministic", () => {
   assert.equal(computeRendererBuildId({...release, renderer_build_id: id}), id);
   assert.deepEqual(JSON.parse(canonicalReleaseBytes({...release, renderer_build_id: id})), {...release, renderer_build_id: id});
   validateRendererRelease({...release, renderer_build_id: id});
-  for (const schemaVersion of ["1", 0, 2, undefined]) {
+  for (const schemaVersion of ["1", 0, 3, undefined]) {
     assert.throws(() => validateRendererRelease({...release, schema_version: schemaVersion, renderer_build_id: id}), /renderer_schema_version_invalid/);
   }
 });
@@ -52,7 +52,12 @@ test("release schema and build id are exact and deterministic", () => {
 test("inspection records actual binary and font bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "v3-release-"));
   await mkdir(join(root, "assets", "fonts"), {recursive: true});
+  await mkdir(join(root, "src"), {recursive: true});
+  await writeFile(join(root, "src", "render.mjs"), "export {};\n");
+  await writeFile(join(root, "package.json"), "{}\n");
   await writeFile(join(root, "package-lock.json"), "{}\n");
+  await writeFile(join(root, "hyperframes.json"), "{}\n");
+  await writeFile(join(root, "registry-sha256.txt"), `sha256:${"1".repeat(64)}\n`);
   await writeFile(join(root, "assets", "fonts", "font.woff2"), "font-bytes");
   const executable = join(root, process.platform === "win32" ? "fake.cmd" : "fake");
   await writeFile(executable, process.platform === "win32" ? "@echo v22.22.0\r\n" : "#!/bin/sh\necho v22.22.0\n");
@@ -68,7 +73,49 @@ test("inspection records actual binary and font bytes", async () => {
     versionProbe: async () => "v22.22.0",
   });
 
-  assert.equal(release.schema_version, 1);
+  assert.equal(release.schema_version, 2);
   assert.equal(release.fonts.length, 1);
   assert.match(release.renderer_build_id, /^sha256:/);
+});
+
+
+test("release identity covers every allowlisted runtime input", async () => {
+  const root = await mkdtemp(join(tmpdir(), "v3-release-tree-"));
+  await mkdir(join(root, "src", "registry"), {recursive: true});
+  await mkdir(join(root, "assets", "fonts"), {recursive: true});
+  await writeFile(join(root, "src", "render.mjs"), "export const value = 1;\n");
+  await writeFile(join(root, "src", "registry", "layouts.mjs"), "export const layout = 1;\n");
+  await writeFile(join(root, "assets", "fonts", "font.woff2"), "font-bytes");
+  await writeFile(join(root, "package.json"), "{}\n");
+  await writeFile(join(root, "package-lock.json"), "{}\n");
+  await writeFile(join(root, "hyperframes.json"), "{}\n");
+  await writeFile(join(root, "registry-sha256.txt"), `sha256:${"1".repeat(64)}\n`);
+  const executable = join(root, process.platform === "win32" ? "fake.cmd" : "fake");
+  await writeFile(executable, process.platform === "win32" ? "@echo v22.22.0\r\n" : "#!/bin/sh\necho v22.22.0\n");
+  const inspect = (releaseRoot) => inspectRendererRelease({
+    repoRoot: releaseRoot,
+    releaseRoot,
+    nodePath: executable,
+    chromiumPath: executable,
+    ffmpegPath: executable,
+    ffprobePath: executable,
+    gitCommit: "a".repeat(40),
+    versionProbe: async () => "v22.22.0",
+  });
+  const baseline = await inspect(root);
+  for (const relativePath of [
+    ["src", "registry", "layouts.mjs"],
+    ["package-lock.json"],
+    ["assets", "fonts", "font.woff2"],
+    ["hyperframes.json"],
+  ]) {
+    const copy = `${root}-${relativePath.at(-1)}`;
+    await cp(root, copy, {recursive: true});
+    await writeFile(join(copy, ...relativePath), "changed-byte");
+    const changed = await inspect(copy);
+    assert.notEqual(changed.renderer_build_id, baseline.renderer_build_id, relativePath.join("/"));
+  }
+  assert.ok(Array.isArray(baseline.release_tree_files));
+  assert.match(baseline.release_tree_sha256, /^[0-9a-f]{64}$/);
+  assert.ok(!baseline.release_tree_files.some((item) => item.relative_path === "renderer-release.lock.json"));
 });

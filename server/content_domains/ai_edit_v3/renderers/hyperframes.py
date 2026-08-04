@@ -14,6 +14,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from . import RenderRequest, RenderResult
+from .release import RendererReleaseError, resolve_renderer_release
 
 
 _BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -113,6 +114,7 @@ class HyperframesRenderer:
         renderer_build_id: str,
         registry_sha256: str,
         schema_sha256: str,
+        releases_root: Path | None = None,
         command_runner=None,
         clock: Callable[[], float] = time.time,
         sleeper: Callable[[float], None] = time.sleep,
@@ -129,6 +131,7 @@ class HyperframesRenderer:
         self._renderer_build_id = renderer_build_id
         self._registry_sha256 = registry_sha256
         self._schema_sha256 = schema_sha256
+        self._releases_root = Path(releases_root) if releases_root is not None else None
         self._command_runner = command_runner or _SubprocessRunner()
         self._clock = clock
         self._sleeper = sleeper
@@ -232,8 +235,11 @@ class HyperframesRenderer:
             delay = min(delay * 1.5, 2.0)
 
     def _stage(self, request: RenderRequest) -> Mapping[str, Any]:
-        if request.renderer_build_id != self._renderer_build_id:
-            raise HyperframesRendererError("renderer_build_id_mismatch")
+        if self._releases_root is not None:
+            try:
+                resolve_renderer_release(request.renderer_build_id, self._releases_root)
+            except RendererReleaseError as exc:
+                raise HyperframesRendererError(exc.code) from exc
         if not _plain_file(request.manifest_path) or _sha256(request.manifest_path) != request.manifest_sha256:
             raise HyperframesRendererError("render_manifest_hash_mismatch")
         try:
@@ -243,8 +249,14 @@ class HyperframesRenderer:
         if not isinstance(manifest, Mapping):
             raise HyperframesRendererError("render_manifest_json_invalid")
         environment = manifest.get("renderer_environment")
-        if not isinstance(environment, Mapping) or environment.get("renderer_build_id") != self._renderer_build_id:
+        if not isinstance(environment, Mapping) or environment.get("renderer_build_id") != request.renderer_build_id:
             raise HyperframesRendererError("render_manifest_release_mismatch")
+        registry_sha256 = manifest.get("registry_sha256")
+        schema_sha256 = manifest.get("schema_sha256")
+        if not isinstance(registry_sha256, str) or _SHA256.fullmatch(registry_sha256) is None:
+            raise HyperframesRendererError("render_manifest_registry_invalid")
+        if not isinstance(schema_sha256, str) or _SHA256.fullmatch(schema_sha256) is None:
+            raise HyperframesRendererError("render_manifest_schema_invalid")
         declarations = _declared_files(manifest)
         incoming_root = self._spool_root / "incoming"
         incoming_root.mkdir(parents=True, exist_ok=True)
@@ -273,9 +285,9 @@ class HyperframesRenderer:
                 "version": "1.0",
                 "manifest_path": "render-manifest.json",
                 "manifest_sha256": request.manifest_sha256,
-                "renderer_build_id": self._renderer_build_id,
-                "registry_sha256": self._registry_sha256,
-                "schema_sha256": self._schema_sha256,
+                "renderer_build_id": request.renderer_build_id,
+                "registry_sha256": f"sha256:{registry_sha256}",
+                "schema_sha256": schema_sha256,
             }
             (staging / "request.json").write_text(
                 json.dumps(control, sort_keys=True, separators=(",", ":")), encoding="utf-8"

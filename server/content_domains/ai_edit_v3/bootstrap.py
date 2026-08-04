@@ -359,12 +359,19 @@ def _build():
     renderer_root = Path(
         os.environ.get("AI_EDIT_V3_RENDERER_ROOT", "/opt/huangque/ai-edit-v3-renderer/current")
     ).resolve()
+    renderer_releases_root = Path(
+        os.environ.get(
+            "AI_EDIT_V3_RENDERER_RELEASES_ROOT",
+            "/opt/huangque/ai-edit-v3-renderer/releases",
+        )
+    ).resolve()
     release = verify_renderer_release(renderer_root)
     registry = (renderer_root / "registry-sha256.txt").read_text(encoding="ascii").strip()
     renderer = HyperframesRenderer(
         renderer_build_id=release.renderer_build_id,
         registry_sha256=registry,
         schema_sha256=schema_sha256("render-manifest-v1.schema.json"),
+        releases_root=renderer_releases_root,
     )
     audio_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     audio = ElevenLabsAudioGenerator(api_key=SecretValue(audio_key) if audio_key else None)

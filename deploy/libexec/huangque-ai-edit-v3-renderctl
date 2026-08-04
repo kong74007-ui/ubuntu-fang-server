@@ -19,6 +19,8 @@ _INSTANCE_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,63})\Z")
 _MAX_INPUT_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_JSON_BYTES = 64 * 1024
 _SYSTEMCTL = "/usr/bin/systemctl"
+_BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def validate_instance_id(value: str) -> str:
@@ -55,6 +57,135 @@ def _plain_file(path: Path) -> bool:
     except OSError:
         return False
     return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1 and not path.is_symlink()
+
+
+def _canonical_build_id(lock: dict[str, object]) -> str:
+    payload = dict(lock)
+    payload.pop("renderer_build_id", None)
+    payload.pop("release_archive_sha256", None)
+    encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    if not _plain_file(path) or path.stat().st_size > _MAX_JSON_BYTES:
+        raise ValueError("render_release_lock_invalid")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("render_release_lock_invalid") from exc
+    if not isinstance(value, dict):
+        raise ValueError("render_release_lock_invalid")
+    return value
+
+
+def _verify_release_tree(root: Path, lock: dict[str, object]) -> None:
+    declarations = lock.get("release_tree_files")
+    tree_sha = lock.get("release_tree_sha256")
+    if not isinstance(declarations, list) or not isinstance(tree_sha, str) or _SHA256.fullmatch(tree_sha) is None:
+        raise ValueError("render_release_tree_invalid")
+    digest = hashlib.sha256()
+    seen: set[str] = set()
+    declared_names: list[str] = []
+    for item in declarations:
+        if not isinstance(item, dict) or set(item) != {"relative_path", "sha256", "size_bytes"}:
+            raise ValueError("render_release_tree_invalid")
+        relative = item.get("relative_path")
+        expected_hash = item.get("sha256")
+        expected_size = item.get("size_bytes")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or relative in seen
+            or "\\" in relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or not isinstance(expected_hash, str)
+            or _SHA256.fullmatch(expected_hash) is None
+            or isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or expected_size < 0
+        ):
+            raise ValueError("render_release_tree_invalid")
+        seen.add(relative)
+        declared_names.append(relative)
+        candidate = root.joinpath(*relative.split("/"))
+        if not _plain_file(candidate) or candidate.stat().st_size != expected_size or _sha256(candidate) != expected_hash:
+            raise ValueError("render_release_tree_mismatch")
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(expected_hash.encode("ascii"))
+    if digest.hexdigest() != tree_sha:
+        raise ValueError("render_release_tree_mismatch")
+    actual_names: list[str] = []
+    for directory, names, files in os.walk(root / "src", followlinks=False):
+        directory_path = Path(directory)
+        for name in names:
+            if (directory_path / name).is_symlink():
+                raise ValueError("render_release_tree_incomplete")
+        actual_names.extend(
+            (directory_path / name).relative_to(root).as_posix()
+            for name in files
+            if name.endswith(".mjs")
+        )
+    fonts_root = root / "assets" / "fonts"
+    try:
+        actual_names.extend(path.relative_to(root).as_posix() for path in fonts_root.iterdir())
+    except OSError as exc:
+        raise ValueError("render_release_tree_incomplete") from exc
+    actual_names.extend((root / name).relative_to(root).as_posix() for name in ("package.json", "package-lock.json", "hyperframes.json", "registry-sha256.txt"))
+    if sorted(actual_names) != declared_names:
+        raise ValueError("render_release_tree_incomplete")
+
+
+def resolve_render_command(
+    *,
+    request_path: Path,
+    releases_root: Path,
+    node_path: Path,
+    input_root: Path,
+    output_root: Path,
+) -> tuple[str, ...]:
+    request = _read_json(Path(request_path))
+    build_id = request.get("renderer_build_id")
+    if not isinstance(build_id, str) or _BUILD_ID.fullmatch(build_id) is None:
+        raise ValueError("render_request_build_invalid")
+    try:
+        root_parent = Path(releases_root).resolve(strict=True)
+        release = root_parent / build_id.removeprefix("sha256:")
+        metadata = release.lstat()
+        if release.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("render_release_path_invalid")
+        release = release.resolve(strict=True)
+        release.relative_to(root_parent)
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("render_"):
+            raise
+        raise ValueError("render_release_path_invalid") from exc
+    lock = _read_json(release / "renderer-release.lock.json")
+    if lock.get("schema_version") not in {1, 2}:
+        raise ValueError("render_release_lock_invalid")
+    if lock.get("renderer_build_id") != build_id or _canonical_build_id(lock) != build_id:
+        raise ValueError("render_release_identity_mismatch")
+    if lock.get("schema_version") == 2:
+        _verify_release_tree(release, lock)
+    else:
+        package_hash = lock.get("package_lock_sha256")
+        if not isinstance(package_hash, str) or _sha256(release / "package-lock.json") != package_hash:
+            raise ValueError("render_release_identity_mismatch")
+        for font in lock.get("fonts", []):
+            if not isinstance(font, dict) or _sha256(release / str(font.get("relative_path"))) != font.get("sha256"):
+                raise ValueError("render_release_identity_mismatch")
+    entry = release / "src" / "render.mjs"
+    if not _plain_file(entry):
+        raise ValueError("render_release_entry_invalid")
+    return (
+        Path(node_path).as_posix(),
+        os.fspath(entry),
+        "--request", os.fspath(request_path),
+        "--input-root", os.fspath(input_root),
+        "--output-root", os.fspath(output_root),
+    )
 
 
 class RenderController:
@@ -240,6 +371,28 @@ class RenderController:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "run":
+        try:
+            validate_instance_id(argv[2])
+            command = resolve_render_command(
+                request_path=Path("/work/input/request.json"),
+                releases_root=Path("/renderer-releases"),
+                node_path=Path("/usr/bin/node"),
+                input_root=Path("/work/input/assets"),
+                output_root=Path("/work/output"),
+            )
+            environment = {
+                "HOME": "/work/output/home",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "TZ": "UTC",
+                "PUPPETEER_EXECUTABLE_PATH": os.environ.get("PUPPETEER_EXECUTABLE_PATH", "/usr/bin/google-chrome-stable"),
+            }
+            os.execve(command[0], list(command), environment)
+        except Exception as exc:
+            error = str(exc) if str(exc).startswith("render_") else "render_control_failed"
+            print(json.dumps({"state": "failed", "result_ready": False, "exit_status": None, "error_code": error}, separators=(",", ":")))
+            return 1
     if len(argv) != 3 or argv[1] not in {"start", "query", "stop"}:
         result = {"state": "failed", "result_ready": False, "exit_status": None, "error_code": "render_command_invalid"}
         print(json.dumps(result, separators=(",", ":")))

@@ -598,6 +598,20 @@ def preflight(
         if config.enabled
         else _missing("feature_disabled", "V3 feature is disabled")
     )
+    items["visual_program_v1"] = _implemented(
+        "V3.1 visual program is enabled"
+        if config.visual_program_enabled
+        else "V3.1 visual program is disabled"
+    )
+    items["visual_program_v1"] = CapabilityItem(
+        status=items["visual_program_v1"].status,
+        reason_code=(
+            "visual_program_enabled"
+            if config.visual_program_enabled
+            else "visual_program_disabled"
+        ),
+        detail=items["visual_program_v1"].detail,
+    )
     items["owner_hmac_reference"] = (
         _ready("owner-HMAC secret file reference is configured")
         if config.owner_hmac_secret_file is not None

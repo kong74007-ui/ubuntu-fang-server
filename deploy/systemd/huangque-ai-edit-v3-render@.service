@@ -36,7 +36,7 @@ Environment=TZ=UTC
 Environment=PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 WorkingDirectory=/work/output
 TemporaryFileSystem=/work:rw,nodev,nosuid,size=8G
-BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/current:/work/release
+BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/releases:/renderer-releases
 BindReadOnlyPaths=/var/lib/huangque-ai-edit-v3-render/%i/input:/work/input
 BindPaths=/var/lib/huangque-ai-edit-v3-render/%i/output:/work/output
 InaccessiblePaths=/etc/huangque
@@ -44,4 +44,4 @@ InaccessiblePaths=/home
 InaccessiblePaths=/var/spool/huangque-ai-edit-v3
 InaccessiblePaths=/var/lib/huangque-ai-edit-v3
 InaccessiblePaths=/var/lib/huangque-ai-edit-v3-render
-ExecStart=/usr/bin/node /work/release/src/render.mjs --request /work/input/request.json --input-root /work/input/assets --output-root /work/output
+ExecStart=/usr/local/libexec/huangque-ai-edit-v3-renderctl run %i
