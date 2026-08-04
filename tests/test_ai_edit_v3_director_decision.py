@@ -74,6 +74,16 @@ class DirectorDecisionValidationTests(unittest.TestCase):
     def test_valid_decision_is_canonical_and_complete(self):
         self.assertEqual(valid_decision(), validate_director_decision(valid_decision(), candidates=CANDIDATES, capabilities=CAPABILITIES))
 
+    def test_decision_accepts_in_direction_for_a_declared_animation_target(self):
+        value = valid_decision()
+        value["scene_directives"][0]["animations"][0]["direction"] = "in"
+        self.assertEqual(
+            "in",
+            validate_director_decision(
+                value, candidates=CANDIDATES, capabilities=CAPABILITIES
+            )["scene_directives"][0]["animations"][0]["direction"],
+        )
+
     def test_rejects_unknown_fields_code_paths_urls_and_over_limit_parameters(self):
         mutations = []
         value = valid_decision(); value["javascript"] = "alert(1)"; mutations.append(value)

@@ -241,6 +241,13 @@ class SchemaMetaTests(unittest.TestCase):
                 )
                 self.assertEqual(fixture["schema_sha256"], schema_sha256(name))
 
+    def test_v2_manifest_accepts_the_in_direction_preserved_from_visual_edit_plans(self):
+        manifest = load_fixture("valid-render-manifest-v2.json")
+        manifest["compositions"][0]["animations"][0]["direction"] = "in"
+        Draft202012Validator(
+            load_schema("render-manifest-v2.schema.json")
+        ).validate(manifest)
+
     def test_edit_plan_fixture_is_bound_to_the_frozen_schema_digest(self):
         fixture = load_fixture("valid-edit-plan-2.0.json")
         digest = schema_sha256("edit-plan-2.0.schema.json")

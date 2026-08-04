@@ -29,6 +29,12 @@ class DirectorCompilerTests(unittest.TestCase):
         self.assertEqual([item["overlay_instances"] for item in DECISION["scene_directives"]], [item["overlay_instances"] for item in plan["scenes"]])
         self.assertEqual([item["transition"] for item in DECISION["scene_directives"]], [item["transition"] for item in plan["scenes"]])
 
+    def test_compiler_preserves_the_decision_in_direction_in_the_visual_edit_plan(self):
+        plan = self.compile()
+        self.assertEqual("in", DECISION["scene_directives"][-1]["animations"][0]["direction"])
+        self.assertEqual("in", plan["scenes"][-1]["animations"][0]["direction"])
+        validate_edit_plan(plan, timeline={"duration_ms": 25000, "accurate_captions": CAPTIONS, **CAPABILITIES})
+
     def test_compiler_is_canonical_and_rejects_invented_caption_reference(self):
         first = self.compile()
         second = self.compile()

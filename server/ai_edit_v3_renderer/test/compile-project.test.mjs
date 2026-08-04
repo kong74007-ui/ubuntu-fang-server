@@ -43,7 +43,26 @@ test("v2 compiler consumes overlay instances and maps instance animation targets
   manifest.compositions[0].animations = [{target: "headline_01", preset: "fade", direction: "none", duration_ms: 400, delay_ms: 0}];
   await compileProjectV2({manifest, outputRoot});
   const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
-  assert.match(scene, /composition_01_headline_block/);
+  assert.match(scene, /composition_01_headline_01_headline_block/);
+});
+
+test("v2 compiler keeps repeated components distinct by instance animation target", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-repeat-")), "project");
+  const manifest = fixtureManifest("repeated component instances");
+  manifest.version = "2.0";
+  manifest.compositions[0].overlay_ids = ["headline_block", "headline_block"];
+  manifest.compositions[0].overlay_instances = [
+    {instance_id: "headline_a", component_id: "headline_block"},
+    {instance_id: "headline_b", component_id: "headline_block"},
+  ];
+  manifest.compositions[0].animations = [
+    {target: "headline_a", preset: "fade", direction: "none", duration_ms: 400, delay_ms: 0},
+    {target: "headline_b", preset: "scale", direction: "none", duration_ms: 400, delay_ms: 50},
+  ];
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /#composition_01_headline_a_headline_block/);
+  assert.match(scene, /#composition_01_headline_b_headline_block/);
 });
 
 test("compiler treats hostile model text as data and rejects bidi controls", async () => {

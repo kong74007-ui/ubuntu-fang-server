@@ -73,13 +73,18 @@ function compileScene({manifest, composition, theme}) {
       startMs: Math.max(caption.start_ms, composition.start_ms) - composition.start_ms,
       endMs: Math.min(caption.end_ms, composition.end_ms) - composition.start_ms,
     }));
-  const overlays = composition.overlay_ids.map((overlayId, index) => {
-    resolveOverlay(overlayId);
-    const overlayContract = getOverlayContract(overlayId);
-    if (overlayId === "standard_caption") {
+  const overlayBindings = manifest.version === "2.0"
+    ? composition.overlay_instances.map(({instance_id, component_id}) => ({instanceId: instance_id, componentId: component_id}))
+    : composition.overlay_ids.map((componentId) => ({instanceId: componentId, componentId}));
+  const overlayByTarget = new Map(overlayBindings.map((binding) => [binding.instanceId, binding]));
+  const overlays = overlayBindings.map(({instanceId, componentId}, index) => {
+    resolveOverlay(componentId);
+    const overlayContract = getOverlayContract(componentId);
+    const idPrefix = manifest.version === "2.0" ? `${prefix}_${instanceId}` : prefix;
+    if (componentId === "standard_caption") {
       return captions.map((caption, captionIndex) => compileOverlay({
-        overlayId,
-        idPrefix: `${prefix}_caption_${captionIndex + 1}`,
+        overlayId: componentId,
+        idPrefix: `${idPrefix}_caption_${captionIndex + 1}`,
         text: caption.text,
         startMs: caption.startMs,
         durationMs: caption.endMs - caption.startMs,
@@ -88,8 +93,8 @@ function compileScene({manifest, composition, theme}) {
     }
     const overlayText = [...captions.map((caption) => caption.text).join(" ")].slice(0, overlayContract.maxChars).join("");
     return compileOverlay({
-      overlayId,
-      idPrefix: prefix,
+      overlayId: componentId,
+      idPrefix,
       text: overlayText,
       durationMs,
       trackIndex: index + 21,
@@ -113,16 +118,18 @@ function compileScene({manifest, composition, theme}) {
   const fps = manifest.output_spec.fps_num / manifest.output_spec.fps_den;
   const minimumAnimationMs = Math.ceil(1000 / fps);
   const animationScript = (composition.animations ?? []).flatMap((animation) => {
-    if (!composition.overlay_ids.includes(animation.target)) throw new Error("animation_target_unknown");
-    const targets = animation.target === "standard_caption"
+    const binding = overlayByTarget.get(animation.target);
+    if (!binding) throw new Error("animation_target_unknown");
+    const animationPrefix = manifest.version === "2.0" ? `${prefix}_${binding.instanceId}` : prefix;
+    const targets = binding.componentId === "standard_caption"
       ? captions.map((caption, captionIndex) => ({
-        target: `#${prefix}_caption_${captionIndex + 1}_standard_caption`,
+        target: `#${animationPrefix}_caption_${captionIndex + 1}_standard_caption`,
         windowStartMs: caption.startMs,
         windowDurationMs: caption.endMs - caption.startMs,
         delayMs: animation.delay_ms,
       })).filter((item) => item.windowDurationMs >= minimumAnimationMs)
       : [{
-        target: `#${prefix}_${animation.target}`,
+        target: `#${animationPrefix}_${binding.componentId}`,
         windowStartMs: 0,
         windowDurationMs: durationMs,
         delayMs: animation.delay_ms,

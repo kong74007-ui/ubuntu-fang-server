@@ -23,14 +23,11 @@ export async function compileProjectV2({manifest, outputRoot}) {
     if (JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item.component_id))) {
       throw new Error("manifest_component_projection_invalid");
     }
-    const componentIds = instances.map((item) => item.component_id);
-    if (new Set(componentIds).size !== componentIds.length) throw new Error("manifest_component_instance_ambiguous");
     return {
       ...composition,
       animations: (composition.animations ?? []).map((animation) => {
-        const target = instanceToComponent.get(animation.target);
-        if (!target) throw new Error("manifest_component_animation_target_invalid");
-        return {...animation, target};
+        if (!instanceToComponent.has(animation.target)) throw new Error("manifest_component_animation_target_invalid");
+        return {...animation};
       }),
     };
   });
