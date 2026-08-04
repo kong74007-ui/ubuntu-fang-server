@@ -49,6 +49,7 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
         )
         self.assertEqual(request[2]["Authorization"], "Bearer test-key")
         self.assertEqual(request_body["model"], "qwen3.7-max-2026-06-08")
+        self.assertEqual(request_body["response_format"], {"type": "json_object"})
         self.assertEqual(
             request_body["messages"],
             [

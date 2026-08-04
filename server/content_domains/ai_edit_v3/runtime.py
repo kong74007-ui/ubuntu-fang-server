@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
+import json
 import math
 import platform
 import re
@@ -758,6 +760,36 @@ def assert_ready_for_request(
     raise CapabilityUnavailable(reasons)
 
 
+def get_or_generate_director_decision(
+    store: V3Store,
+    job_id: str,
+    context: Any,
+    provider: Any,
+    *,
+    now_ms: int,
+):
+    """Reuse immutable decision evidence on replay before calling Qwen again."""
+
+    from .director_decision import ValidatedDecision, generate_director_decision
+
+    existing = store.get_director_decision(job_id)
+    if existing is not None:
+        raw_output = existing["raw_output_json"]
+        return ValidatedDecision(
+            value=json.loads(existing["normalized_decision_json"]),
+            provider_request_id=None,
+            raw_output_json=raw_output,
+            raw_output_sha256=hashlib.sha256(raw_output.encode("utf-8")).hexdigest(),
+            decision_sha256=existing["decision_sha256"],
+            schema_sha256=existing["schema_sha256"],
+            candidates_sha256=existing["candidates_sha256"],
+            prompt_version=existing["prompt_version"],
+        )
+    generated = generate_director_decision(context, provider)
+    store.save_director_decision(job_id, generated, now_ms=now_ms)
+    return generated
+
+
 __all__ = (
     "Clock",
     "LeaseHeartbeat",
@@ -771,5 +803,6 @@ __all__ = (
     "build_runtime",
     "build_phase_b_stage_handlers",
     "build_stage_handlers",
+    "get_or_generate_director_decision",
     "preflight",
 )

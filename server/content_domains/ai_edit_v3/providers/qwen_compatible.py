@@ -59,6 +59,7 @@ class DashScopeCompatibleQwenClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                "response_format": {"type": "json_object"},
             },
             ensure_ascii=False,
         ).encode("utf-8")

@@ -143,6 +143,7 @@ _AUTHORITY_FIELDS = frozenset(
 )
 _SCHEMA_NAMES = frozenset(
     {
+        "director-decision-v1.schema.json",
         "edit-plan-2.0.schema.json",
         "render-manifest-v1.schema.json",
         "quality-verdict-v1.schema.json",
@@ -819,6 +820,14 @@ def _validate_schema(value: Any, name: str, error_code: str) -> None:
             _json_path(first.absolute_path),
             first.message,
         )
+
+
+def validate_director_decision_schema(value: Any) -> None:
+    _validate_schema(
+        value,
+        "director-decision-v1.schema.json",
+        "director_decision_schema_invalid",
+    )
 
 
 def _ensure_unique_ids(

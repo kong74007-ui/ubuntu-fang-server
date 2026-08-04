@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangque.invalid/schemas/ai-edit-v3/director-decision-v1.schema.json",
+  "title": "AI Edit V3 Director Decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "creative_concept", "narrative_pattern", "theme_profile_id", "design_intent", "scene_directives", "audio_intent"],
+  "properties": {
+    "version": {"const": "1.0"},
+    "creative_concept": {"type": "string", "minLength": 1, "maxLength": 500},
+    "narrative_pattern": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "theme_profile_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "design_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["density", "motion_energy", "image_fit", "decoration_intensity"],
+      "properties": {
+        "density": {"enum": ["minimal", "balanced", "dense"]},
+        "motion_energy": {"enum": ["low", "medium", "high"]},
+        "image_fit": {"enum": ["contain", "cover", "smart_crop"]},
+        "decoration_intensity": {"enum": ["low", "medium", "high"]}
+      }
+    },
+    "scene_directives": {
+      "type": "array", "minItems": 1, "maxItems": 12,
+      "items": {"$ref": "#/$defs/sceneDirective"}
+    },
+    "audio_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bgm_description", "energy", "dialogue_priority"],
+      "properties": {
+        "bgm_description": {"type": "string", "minLength": 1, "maxLength": 300},
+        "energy": {"enum": ["low", "medium", "high"]},
+        "dialogue_priority": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "visibleText": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text_kind", "source_caption_ids"],
+      "properties": {
+        "text_kind": {"enum": ["verbatim", "compressed"]},
+        "source_caption_ids": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^caption_[0-9]{3}$"}}
+      }
+    },
+    "overlay": {
+      "type": "object", "additionalProperties": false,
+      "required": ["instance_id", "component_id", "content_ref", "placement"],
+      "properties": {
+        "instance_id": {"$ref": "#/$defs/identifier"},
+        "component_id": {"$ref": "#/$defs/identifier"},
+        "content_ref": {"enum": ["headline", "highlight"]},
+        "placement": {"enum": ["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]},
+        "variant": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "materialBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slot_id", "material_id", "required"],
+      "properties": {
+        "slot_id": {"$ref": "#/$defs/identifier"},
+        "material_id": {"$ref": "#/$defs/identifier"},
+        "required": {"type": "boolean"}
+      }
+    },
+    "materialSlot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slot_id", "semantic", "purpose", "priority", "ratio"],
+      "properties": {
+        "slot_id": {"$ref": "#/$defs/identifier"},
+        "semantic": {"type": "string", "minLength": 1, "maxLength": 300},
+        "purpose": {"enum": ["context", "product", "evidence", "background", "illustration", "chart"]},
+        "priority": {"enum": ["required", "optional"]},
+        "ratio": {"enum": ["auto", "16:9", "9:16", "1:1"]}
+      }
+    },
+    "animation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target_id", "preset", "direction", "duration_ms", "delay_ms"],
+      "properties": {
+        "target_id": {"$ref": "#/$defs/identifier"},
+        "preset": {"$ref": "#/$defs/identifier"},
+        "direction": {"enum": ["none", "left", "right", "up", "down", "in", "out"]},
+        "duration_ms": {"type": "integer", "minimum": 80, "maximum": 2000},
+        "delay_ms": {"type": "integer", "minimum": 0, "maximum": 3000}
+      }
+    },
+    "soundEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "priority", "offset_ms"],
+      "properties": {
+        "role": {"enum": ["reversal", "number", "method", "transition", "cta"]},
+        "priority": {"enum": ["required", "optional"]},
+        "offset_ms": {"type": "integer", "minimum": 0, "maximum": 600000}
+      }
+    },
+    "sceneDirective": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scene_id", "narrative_role", "layout_id", "layout_variant", "overlay_instances", "material_bindings", "material_slot_directives", "animations", "transition", "sound_events"],
+      "properties": {
+        "scene_id": {"type": "string", "pattern": "^candidate_(0[1-9]|1[0-2])$"},
+        "narrative_role": {"enum": ["hook", "context", "problem", "method", "proof", "transition", "cta"]},
+        "layout_id": {"$ref": "#/$defs/identifier"},
+        "layout_variant": {"$ref": "#/$defs/identifier"},
+        "headline": {"$ref": "#/$defs/visibleText"},
+        "highlight": {"$ref": "#/$defs/visibleText"},
+        "overlay_instances": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/overlay"}},
+        "material_bindings": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/materialBinding"}},
+        "material_slot_directives": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/materialSlot"}},
+        "animations": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/animation"}},
+        "transition": {"$ref": "#/$defs/identifier"},
+        "sound_events": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/soundEvent"}}
+      }
+    }
+  }
+}

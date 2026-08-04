@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "creative_concept": "以问题开场，再给出结构化证据。",
+  "narrative_pattern": "question_proof",
+  "theme_profile_id": "editorial_clean",
+  "design_intent": {
+    "density": "balanced",
+    "motion_energy": "medium",
+    "image_fit": "smart_crop",
+    "decoration_intensity": "medium"
+  },
+  "scene_directives": [
+    {
+      "scene_id": "candidate_01",
+      "narrative_role": "hook",
+      "layout_id": "quote_reversal",
+      "layout_variant": "diagonal_statement",
+      "headline": {
+        "text_kind": "verbatim",
+        "source_caption_ids": ["caption_001"]
+      },
+      "overlay_instances": [
+        {
+          "instance_id": "hook_headline",
+          "component_id": "headline_block",
+          "content_ref": "headline",
+          "placement": "title_safe"
+        }
+      ],
+      "material_bindings": [],
+      "material_slot_directives": [],
+      "animations": [
+        {
+          "target_id": "hook_headline",
+          "preset": "wipe",
+          "direction": "left",
+          "duration_ms": 520,
+          "delay_ms": 80
+        }
+      ],
+      "transition": "soft_wipe",
+      "sound_events": []
+    }
+  ],
+  "audio_intent": {
+    "bgm_description": "克制的无歌词电子氛围",
+    "energy": "medium",
+    "dialogue_priority": true
+  }
+}

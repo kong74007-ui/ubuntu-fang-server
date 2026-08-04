@@ -89,6 +89,11 @@ EXPECTED_TABLE_COLUMNS = {
         "redacted_final_output_json", "validation_json", "usage_json", "elapsed_ms",
         "created_at",
     ),
+    "edit_v3_director_decisions": (
+        "id", "job_id", "version", "model_call_id", "prompt_version",
+        "raw_output_json", "normalized_decision_json", "decision_sha256",
+        "schema_sha256", "candidates_sha256", "created_at",
+    ),
     "edit_v3_provider_tasks": (
         "id", "job_id", "stage", "stage_attempt_id", "provider", "capability",
         "operation_key", "request_sha256", "external_id", "status", "fencing_token",
@@ -158,6 +163,10 @@ EXPECTED_FOREIGN_KEYS = {
         ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
         ("stage_attempt_id", "edit_v3_stage_attempts", "id", "RESTRICT"),
     },
+    "edit_v3_director_decisions": {
+        ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
+        ("model_call_id", "edit_v3_model_calls", "id", "RESTRICT"),
+    },
     "edit_v3_provider_tasks": {
         ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
         ("stage_attempt_id", "edit_v3_stage_attempts", "id", "RESTRICT"),
@@ -201,8 +210,9 @@ EXPECTED_DECLARED_INDEXES = {
 
 
 EXPECTED_MIGRATION_SHA256 = (
-    "ac0f6a45cc1e97976dfbfea95f9112e6ccc38802a3a4899f1b8fd435b09d3387"
+    "50dd6199f274f98e94083efaf720dc279600a56d004f8ddb9b5c14a4b9dfc73f"
 )
+V1_MIGRATION_SHA256 = "ac0f6a45cc1e97976dfbfea95f9112e6ccc38802a3a4899f1b8fd435b09d3387"
 
 
 class V3StorePathTests(unittest.TestCase):
@@ -550,7 +560,7 @@ class V3StoreSchemaTests(unittest.TestCase):
 
         meta = connection.execute("SELECT * FROM edit_v3_schema_meta").fetchone()
         self.assertEqual(meta["id"], 1)
-        self.assertEqual(meta["version"], 1)
+        self.assertEqual(meta["version"], 2)
         self.assertEqual(meta["migration_sha256"], EXPECTED_MIGRATION_SHA256)
 
     def test_every_connection_has_wal_foreign_keys_busy_timeout_and_mapping_rows(self):
@@ -798,7 +808,7 @@ class V3StoreSchemaTests(unittest.TestCase):
 
     def test_future_mismatched_and_metadata_less_schemas_fail_closed(self):
         cases = (
-            (2, EXPECTED_MIGRATION_SHA256, "v3_schema_future_version"),
+            (3, EXPECTED_MIGRATION_SHA256, "v3_schema_future_version"),
             (1, "f" * 64, "v3_schema_migration_sha_mismatch"),
         )
         for version, migration_sha, error_code in cases:
@@ -825,7 +835,7 @@ class V3StoreSchemaTests(unittest.TestCase):
         self.assertEqual(remaining, {"edit_v3_jobs"})
 
     def test_valid_meta_cannot_mask_a_partial_or_tampered_v1_schema(self):
-        self.write_schema_meta(1, EXPECTED_MIGRATION_SHA256)
+        self.write_schema_meta(1, V1_MIGRATION_SHA256)
         with self.assertRaises(StoreMigrationError) as caught:
             self.initialize()
         self.assertEqual(caught.exception.error_code, "v3_schema_manifest_mismatch")
@@ -971,7 +981,7 @@ class V3StoreMigrationRaceTests(unittest.TestCase):
             for tables, indexes, meta, pragmas in snapshots:
                 self.assertEqual(tables, expected_tables)
                 self.assertEqual(indexes, expected_indexes)
-                self.assertEqual(meta, (1, EXPECTED_MIGRATION_SHA256))
+                self.assertEqual(meta, (2, EXPECTED_MIGRATION_SHA256))
                 self.assertEqual(pragmas[0], "wal")
                 self.assertEqual(pragmas[1], 1)
                 self.assertGreaterEqual(pragmas[2], 10_000)
@@ -985,6 +995,45 @@ class V3StoreMigrationRaceTests(unittest.TestCase):
 
     def test_existing_wal_v0_database_8_threads_50_rounds(self):
         self.run_mode("wal", "wal")
+
+    def test_schema_v1_to_v2_migration_is_serialized_across_threads(self):
+        path = self.root / "schema-v1.db"
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            store_module._register_connection_functions(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            for name in sorted(set(store_module._CREATE_TABLE_SQL) - {"edit_v3_director_decisions"}):
+                connection.execute(store_module._CREATE_TABLE_SQL[name])
+            for name in sorted(store_module._CREATE_INDEX_SQL):
+                connection.execute(store_module._CREATE_INDEX_SQL[name])
+            connection.execute(
+                "INSERT INTO edit_v3_schema_meta VALUES(1,?,?,?,?)",
+                (1, V1_MIGRATION_SHA256, 1, 1),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        barrier = threading.Barrier(self.THREADS)
+        failures = []
+        lock = threading.Lock()
+        def migrate():
+            try:
+                barrier.wait(timeout=10)
+                init_db(path, v2_db_path=self.v2)
+            except BaseException as exc:
+                with lock:
+                    failures.append(exc)
+        threads = [threading.Thread(target=migrate) for _ in range(self.THREADS)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(timeout=20)
+        self.assertEqual([], failures)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        final = sqlite3.connect(path)
+        try:
+            self.assertEqual((2, EXPECTED_MIGRATION_SHA256), final.execute("SELECT version,migration_sha256 FROM edit_v3_schema_meta").fetchone())
+            self.assertIsNotNone(final.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='edit_v3_director_decisions'").fetchone())
+        finally:
+            final.close()
 
 
 class V3StorePrimitiveTests(unittest.TestCase):
