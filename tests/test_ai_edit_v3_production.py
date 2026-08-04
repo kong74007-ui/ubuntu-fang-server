@@ -1276,7 +1276,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertTrue(checks["safe_area_and_text_visibility"]["blocking"])
 
     def test_render_compositions_bind_only_scene_requested_materials(self):
-        from server.content_domains.ai_edit_v3.production import _scene_asset_ids
+        from server.content_domains.ai_edit_v3.production import _layout_slot_bindings, _scene_asset_ids
 
         known = ["material_01", "material_02"]
         scenes = [
@@ -1289,6 +1289,12 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             [["material_01"], [], ["material_02"]],
             [_scene_asset_ids(scene, known) for scene in scenes],
         )
+        self.assertEqual(
+            [{"slot_id": "primary", "asset_id": "material_02"}],
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "material_02"}]}, known),
+        )
+        with self.assertRaisesRegex(ValueError, "scene_primary_material_missing"):
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": []}, known)
 
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict

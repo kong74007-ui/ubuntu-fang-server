@@ -306,6 +306,23 @@ def _scene_asset_ids(
     return requested
 
 
+def _layout_slot_bindings(
+    scene: Mapping[str, Any], known_asset_ids: list[str]
+) -> list[dict[str, str]]:
+    """Emit deterministic V2 semantic bindings from the scene's frozen slots."""
+
+    asset_ids = _scene_asset_ids(scene, known_asset_ids)
+    layout_id = str(scene.get("layout_id") or "")
+    if layout_id != "product_hero":
+        return []
+    if not asset_ids:
+        raise ValueError("scene_primary_material_missing")
+    bindings = [{"slot_id": "primary", "asset_id": asset_ids[0]}]
+    if len(asset_ids) > 1:
+        bindings.append({"slot_id": "detail", "asset_id": asset_ids[1]})
+    return bindings
+
+
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -1399,7 +1416,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"]} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"], "layout_slot_bindings": _layout_slot_bindings(scene, material_asset_ids)} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             if visual_program:

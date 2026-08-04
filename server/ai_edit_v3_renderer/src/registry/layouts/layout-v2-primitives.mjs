@@ -45,9 +45,12 @@ export function assetOrFallback({prefix, slot, value, duration, trackIndex}) {
 
 export function speakerSlot({prefix, value, duration, trackIndex}) {
   const asset = normalizeAsset(value, "speaker");
-  const attrs = clipAttributes(duration, trackIndex);
+  const start = Number.isInteger(value.localStartMs) ? seconds(value.localStartMs) : "0";
+  const clipDuration = Number.isInteger(value.durationMs) ? seconds(value.durationMs) : duration;
+  const playbackStart = Number.isInteger(value.playbackStartMs) ? ` data-playback-start="${seconds(value.playbackStartMs)}"` : "";
+  const attrs = `data-start="${start}" data-duration="${clipDuration}" data-track-index="${trackIndex}"`;
   const element = asset.kind === "video"
-    ? `<video muted playsinline preload="metadata" src="${asset.path}"></video>`
+    ? `<video muted playsinline preload="metadata" src="${asset.path}" ${attrs}${playbackStart}></video>`
     : `<img alt="" src="${asset.path}">`;
   return `<div id="${prefix}_speaker" class="hf-v2-speaker clip" data-slot="speaker" data-v2-region="speaker" ${attrs}>${element}</div>`;
 }
@@ -96,7 +99,25 @@ function styleFromTokens(tokens) {
 function layoutCss({contract, variantId, ratio, criticalRegions}) {
   const selector = `.hf-v2-layout[data-layout-v2="${contract.id}"][data-layout-variant="${variantId}"][data-layout-ratio="${ratio}"]`;
   const regions = Object.entries(criticalRegions).map(([name, box]) => `${selector} [data-v2-region="${name}"]{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px}`).join("");
-  return `${selector}{position:absolute;inset:0;overflow:hidden}${selector} .hf-v2-safe-area{position:absolute;inset:0;z-index:20}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${regions}`;
+  const safe = ratio === "16:9" ? {x: 160, y: 804, width: 1600, height: 180} : {x: 60, y: 1480, width: 960, height: 280};
+  return `${selector}{position:absolute;inset:0;overflow:hidden}${selector} .hf-v2-safe-area{position:absolute;left:${safe.x}px;top:${safe.y}px;width:${safe.width}px;height:${safe.height}px;z-index:20}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video,${selector} .hf-v2-speaker>img,${selector} .hf-v2-speaker>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${variantCss(selector, contract.id, variantId, ratio)}${regions}`;
+}
+
+function variantCss(selector, layoutId, variantId, ratio) {
+  const portrait = ratio === "9:16";
+  if (layoutId === "speaker_fullscreen") {
+    if (variantId === "clean_center") return `${selector} .hf-v2-speaker-stage{position:absolute;inset:0}${selector} .hf-v2-evidence-dock{position:absolute;left:${portrait ? 60 : 96}px;top:${portrait ? 1320 : 760}px;width:${portrait ? 260 : 340}px;height:${portrait ? 180 : 160}px}`;
+    if (variantId === "headline_top") return `${selector} .hf-v2-headline-band{position:absolute;left:${portrait ? 60 : 96}px;top:${portrait ? 84 : 54}px;width:${portrait ? 960 : 1120}px;height:${portrait ? 220 : 176}px;background:var(--hf-surface)}${selector} .hf-v2-speaker-stage{position:absolute;inset:0}`;
+    return `${selector} .hf-v2-speaker-stage{position:absolute;inset:0}${selector} .hf-v2-caption-rail{position:absolute;left:${portrait ? 60 : 1420}px;top:${portrait ? 1320 : 190}px;width:${portrait ? 960 : 360}px;height:${portrait ? 180 : 550}px}`;
+  }
+  if (layoutId === "product_hero") {
+    if (variantId === "center_pedestal") return `${selector} .hf-v2-product-pedestal{position:absolute;inset:0}${selector} .hf-v2-product-plinth{position:absolute;left:${portrait ? 150 : 610}px;top:${portrait ? 1180 : 760}px;width:${portrait ? 780 : 700}px;height:${portrait ? 90 : 70}px;background:var(--hf-surface)}${selector} .hf-v2-detail-orbit{position:absolute;left:${portrait ? 720 : 1320}px;top:${portrait ? 360 : 160}px;width:${portrait ? 210 : 300}px;height:${portrait ? 210 : 240}px}`;
+    if (variantId === "split_copy") return `${selector} .hf-v2-product-copy{position:absolute;left:${portrait ? 60 : 96}px;top:${portrait ? 110 : 170}px;width:${portrait ? 960 : 430}px;height:${portrait ? 220 : 570}px;background:var(--hf-surface)}${selector} .hf-v2-product-frame{position:absolute;inset:0}`;
+    return `${selector} .hf-v2-product-gallery{position:absolute;inset:0}${selector} .hf-v2-detail-strip{position:absolute;left:${portrait ? 150 : 1340}px;top:${portrait ? 1220 : 240}px;width:${portrait ? 780 : 260}px;height:${portrait ? 210 : 420}px}`;
+  }
+  if (variantId === "vertical_steps") return `${selector} .hf-v2-vertical-process{position:absolute;inset:0}${selector} .hf-v2-process-accent{position:absolute;left:${portrait ? 740 : 1460}px;top:${portrait ? 360 : 180}px;width:${portrait ? 240 : 200}px;height:${portrait ? 300 : 560}px}`;
+  if (variantId === "numbered_cards") return `${selector} .hf-v2-card-process{position:absolute;inset:0}${selector} .hf-v2-card-counter{position:absolute;left:${portrait ? 100 : 180}px;top:${portrait ? 210 : 110}px;width:${portrait ? 260 : 380}px;height:${portrait ? 120 : 90}px;background:var(--hf-surface)}${selector} .hf-v2-card-process footer{position:absolute;left:${portrait ? 100 : 1520}px;top:${portrait ? 1400 : 650}px;width:${portrait ? 220 : 180}px;height:${portrait ? 160 : 120}px}`;
+  return `${selector} .hf-v2-progress-line{position:absolute;left:${portrait ? 100 : 180}px;top:${portrait ? 380 : 180}px;width:${portrait ? 880 : 1560}px;height:${portrait ? 960 : 560}px;fill:none;stroke:var(--hf-accent);stroke-width:2}${selector} .hf-v2-progress-nodes{position:absolute;inset:0}${selector} aside:not(.hf-v2-safe-area){position:absolute;left:${portrait ? 760 : 1500}px;top:${portrait ? 1200 : 600}px;width:${portrait ? 180 : 180}px;height:${portrait ? 180 : 130}px}`;
 }
 
 function freezeBoxes(boxes) {

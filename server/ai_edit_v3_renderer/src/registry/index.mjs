@@ -6,6 +6,7 @@ import {getLayoutV2Contracts, LAYOUT_V2_CONTRACTS, resolveLayoutV2} from "./layo
 import {getOverlayContract, OVERLAY_CONTRACTS} from "./overlays.mjs";
 import {resolveTheme as resolveBoundedTheme, THEME_CONTRACT} from "./themes.mjs";
 import {TRANSITION_CONTRACTS} from "./transitions.mjs";
+import {getRegistrySourceManifest, getRegistrySourceSha256} from "./source-manifest.mjs";
 
 export const REGISTRY_VERSION = "ai-edit-v3-registry-v1";
 const RATIOS = Object.freeze(["16:9", "9:16"]);
@@ -54,7 +55,7 @@ const CONTRACT = createRegistryContract({
   animations: ANIMATION_CONTRACTS,
   transitions: TRANSITION_CONTRACTS,
 });
-const SHA256 = `sha256:${createHash("sha256").update(JSON.stringify(CONTRACT)).digest("hex")}`;
+const SHA256 = `sha256:${createHash("sha256").update(JSON.stringify({contract: CONTRACT, sources: getRegistrySourceManifest(), source_sha256: getRegistrySourceSha256()})).digest("hex")}`;
 const LAYOUT_BY_ID = new Map(LAYOUT_CONTRACTS.map((contract) => [contract.id, contract]));
 
 export function getRegistryContract() {
@@ -64,6 +65,8 @@ export function getRegistryContract() {
 export function getRegistrySha256() {
   return SHA256;
 }
+
+export {getRegistrySourceManifest, getRegistrySourceSha256};
 
 export function resolveLayout(layoutId, variantId, ratio) {
   const contract = LAYOUT_BY_ID.get(layoutId);

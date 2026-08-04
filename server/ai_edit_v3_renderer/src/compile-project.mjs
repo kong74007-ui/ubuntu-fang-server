@@ -161,22 +161,28 @@ export function compileSourceVideo({manifest, composition, prefix}) {
   if (typeof sourcePath !== "string" || !/^(?!\/)(?![A-Za-z]:)(?!.*\\)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/u.test(sourcePath)) {
     throw new Error("source_video_path_invalid");
   }
-  const segments = Array.isArray(manifest.source_segments) ? manifest.source_segments : [];
   const speakerPip = composition.layout_id === "material_fullscreen_speaker_pip";
   const sourceClass = speakerPip ? "hf-source-video hf-source-video-pip clip" : "hf-source-video clip";
   const pipStyle = speakerPip
     ? ` style="inset:auto 7.85% 8.8% auto;width:26.6%;height:30.6%;z-index:3;border-radius:var(--hf-radius)"`
     : "";
+  return sourceSegmentClips({manifest, composition}).map((clip) => {
+    return `<video id="${prefix}_source_${clip.index}" class="${sourceClass}" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(clip.localStartMs)}" data-duration="${seconds(clip.durationMs)}" data-playback-start="${seconds(clip.playbackStartMs)}" data-volume="0" data-track-index="10"${pipStyle}></video>`;
+  }).join("");
+}
+
+/** Returns source intervals that actually intersect this composition. */
+export function sourceSegmentClips({manifest, composition}) {
+  if (!manifest.source_video) return [];
+  const sourcePath = manifest.source_video.path;
+  const segments = Array.isArray(manifest.source_segments) ? manifest.source_segments : [];
   return segments.flatMap((segment, index) => {
     const start = Math.max(segment.output_start_ms, composition.start_ms);
     const end = Math.min(segment.output_end_ms, composition.end_ms);
     if (end <= start) return [];
     if (segment.source_path !== sourcePath) throw new Error("source_segment_path_mismatch");
-    const localStart = start - composition.start_ms;
-    const mediaStart = segment.source_start_ms + (start - segment.output_start_ms);
-    const durationMs = end - start;
-    return [`<video id="${prefix}_source_${index}" class="${sourceClass}" muted playsinline preload="auto" src="${escapeAttribute(sourcePath)}" data-start="${seconds(localStart)}" data-duration="${seconds(durationMs)}" data-playback-start="${seconds(mediaStart)}" data-volume="0" data-track-index="10"${pipStyle}></video>`];
-  }).join("");
+    return [{index, localStartMs: start - composition.start_ms, playbackStartMs: segment.source_start_ms + (start - segment.output_start_ms), durationMs: end - start}];
+  });
 }
 
 function timelineRecorder() {

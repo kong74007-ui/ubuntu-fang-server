@@ -1,4 +1,4 @@
-import {compileProject, compileSourceVideo} from "./compile-project.mjs";
+import {compileProject, compileSourceVideo, sourceSegmentClips} from "./compile-project.mjs";
 import {resolveLayout, resolveLayoutV2} from "./registry/index.mjs";
 
 /**
@@ -51,20 +51,50 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
   if (layout.contract.version !== "2.0.0") {
     return {idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays, scene: composition, assets};
   }
+  const bindings = assetSlotBindings(composition, assets);
   const slots = layout.contract.id === "speaker_fullscreen"
-    ? {speaker: sourceSlot(manifest, prefix), evidence: assets[0]}
+    ? {speaker: sourceSlot(manifest, composition, prefix), evidence: bindings.get("evidence")}
     : layout.contract.id === "product_hero"
-      ? {primary: assets[0], detail: assets[1]}
-      : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: assets[0]};
+      ? productSlots(bindings)
+      : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
   return {
     idPrefix: prefix, durationMs, slots, overlays,
     designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},
   };
 }
 
-function sourceSlot(manifest, prefix) {
+function sourceSlot(manifest, composition, prefix) {
   if (!manifest.source_video?.path) return undefined;
-  return {id: `${prefix}_speaker`, kind: "video", relativePath: manifest.source_video.path};
+  const clip = sourceSegmentClips({manifest, composition})[0];
+  if (!clip) return undefined;
+  return {id: `${prefix}_speaker`, kind: "video", relativePath: manifest.source_video.path, ...clip};
+}
+
+function assetSlotBindings(composition, assets) {
+  const available = new Map(assets.map((asset) => [asset.id, asset]));
+  if (composition.layout_slot_bindings === undefined) return new Map();
+  if (!Array.isArray(composition.layout_slot_bindings)) throw new Error("layout_slot_bindings_invalid");
+  const slots = new Map();
+  for (const binding of composition.layout_slot_bindings) {
+    if (!binding || !["primary", "detail", "evidence", "accent"].includes(binding.slot_id) || typeof binding.asset_id !== "string" || slots.has(binding.slot_id)) throw new Error("layout_slot_bindings_invalid");
+    const asset = available.get(binding.asset_id);
+    if (!asset) throw new Error("layout_slot_asset_unknown");
+    slots.set(binding.slot_id, asset);
+  }
+  return slots;
+}
+
+function requiredBinding(bindings, slot) {
+  const asset = bindings.get(slot);
+  if (!asset) throw new Error("layout_required_slot_missing");
+  return asset;
+}
+
+function productSlots(bindings) {
+  const primary = requiredBinding(bindings, "primary");
+  const detail = bindings.get("detail");
+  if (detail?.id === primary.id) throw new Error("layout_slot_identity_invalid");
+  return {primary, detail};
 }
 
 function compileV2Source({manifest, composition, prefix, layout}) {

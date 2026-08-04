@@ -112,6 +112,51 @@ test("v2 compiler hydrates compiled steps text from parent safe-text nodes", asy
   assert.deepEqual(hydrated, ["Prepare", "Execute", "Review"]);
 });
 
+test("v2 speaker uses the intersecting source segment once with local and media offsets", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-offset-")), "project");
+  const manifest = fixtureManifest("First");
+  manifest.version = "2.0";
+  manifest.output_spec = {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1};
+  manifest.duration_ms = 8000;
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{id: "segment_01", source_path: "media/source.mp4", source_start_ms: 700, source_end_ms: 6700, output_start_ms: 1000, output_end_ms: 7000}];
+  manifest.compositions = [
+    {...manifest.compositions[0], id: "composition_01", start_ms: 0, end_ms: 4000, layout_id: "steps_stack", layout_variant: "vertical_steps", overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}]},
+    {...manifest.compositions[0], id: "composition_02", start_ms: 4000, end_ms: 8000, layout_id: "speaker_fullscreen", layout_variant: "clean_center", overlay_instances: [{instance_id: "caption_02", component_id: "standard_caption"}]},
+  ];
+  manifest.compositions.forEach((composition) => composition.overlay_ids = ["standard_caption"]);
+  manifest.captions = [{id: "caption_01", start_ms: 0, end_ms: 4000, text: "First"}, {id: "caption_02", start_ms: 4000, end_ms: 8000, text: "Second"}];
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_02.html"), "utf8");
+  assert.match(scene, /data-slot="speaker"[\s\S]*?<video[^>]+data-start="0"[^>]+data-duration="3"[^>]+data-playback-start="3\.7"/);
+  assert.equal((scene.match(/src="media\/source\.mp4"/g) ?? []).length, 1, "V2 speaker does not append a second legacy source video");
+  assert.match(scene, /width:820px;height:650px/);
+  assert.match(scene, /hf-v2-speaker>video\{width:100%;height:100%;object-fit:var\(--hf-image-fit\)/);
+});
+
+test("v2 product binds primary only through explicit layout slot bindings", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-bindings-")), "project");
+  const manifest = fixtureManifest("Product");
+  manifest.version = "2.0";
+  manifest.assets = [
+    {id: "evidence_asset", kind: "image", path: "media/evidence.png"},
+    {id: "primary_asset", kind: "image", path: "media/primary.png"},
+  ];
+  manifest.compositions[0] = {...manifest.compositions[0], layout_id: "product_hero", layout_variant: "center_pedestal", asset_ids: ["evidence_asset", "primary_asset"], layout_slot_bindings: [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "evidence_asset"}], overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}]};
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /data-slot="primary"[^>]*><img alt="" src="media\/primary\.png"/);
+  assert.match(scene, /data-slot="detail"[^>]*><img alt="" src="media\/evidence\.png"/);
+  const missing = structuredClone(manifest);
+  missing.compositions[0].layout_slot_bindings = [{slot_id: "detail", asset_id: "evidence_asset"}];
+  await assert.rejects(compileProjectV2({manifest: missing, outputRoot: path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-no-primary-")), "project")}), /layout_required_slot_missing/);
+  const impersonating = structuredClone(manifest);
+  impersonating.compositions[0].layout_slot_bindings = [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "primary_asset"}];
+  await assert.rejects(compileProjectV2({manifest: impersonating, outputRoot: path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-duplicate-primary-")), "project")}), /layout_slot_identity_invalid/);
+});
+
 test("compiler treats hostile model text as data and rejects bidi controls", async () => {
   const hostile = '</script><img onerror="globalThis.pwned=1"> javascript: {color:red}';
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-inject-")), "project");

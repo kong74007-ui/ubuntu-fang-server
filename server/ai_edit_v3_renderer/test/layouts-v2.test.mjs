@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import {readFile} from "node:fs/promises";
+import {mkdtemp, readFile, writeFile} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import * as registry from "../src/registry/index.mjs";
+import {checkRegistryHash} from "../src/write-registry-hash.mjs";
 
 const CASES = Object.freeze([
   {id: "speaker_fullscreen", variants: ["clean_center", "headline_top", "caption_sidebar"], required: "speaker", optional: "evidence", identitySlots: ["speaker"]},
@@ -64,6 +67,12 @@ test("layout v2 dispatch leaves legacy V1 layout resolution unchanged", () => {
 test("layout v2 capability entries are bound into the checked-in registry hash", async () => {
   const recorded = await readFile(new URL("../registry-sha256.txt", import.meta.url), "utf8");
   assert.equal(recorded, `${registry.getRegistrySha256()}\n`);
+  const manifest = registry.getRegistrySourceManifest();
+  assert.ok(manifest.some((entry) => entry.path === "layouts/product_hero.mjs"));
+  assert.ok(manifest.some((entry) => entry.path === "layouts/layout-v2-primitives.mjs"));
+  const stale = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-registry-drift-")), "registry-sha256.txt");
+  await writeFile(stale, "sha256:" + "0".repeat(64) + "\n", "utf8");
+  await assert.rejects(checkRegistryHash(stale), /registry_hash_drift/);
 });
 
 test("layout v2 compiles all nine variants for both ratios with auditable structural contracts", () => {
