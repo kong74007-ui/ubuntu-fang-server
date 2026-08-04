@@ -53,6 +53,7 @@ from .director_layout_policy import (
     required_material_layout_ids,
 )
 from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_media, probe_media
+from .materials import MaterialError, bind_scene_materials, validate_generated_material_review
 from .overlay_catalog import load_overlay_placement_catalog, overlay_budget_index
 from .providers.asr import normalize_asr_result
 from .providers.base import ProviderResult
@@ -267,6 +268,95 @@ def _json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _record_material_rejection(
+    root: Path,
+    *,
+    material_request: Mapping[str, Any],
+    cos_key: str,
+    source_metadata: Mapping[str, Any],
+    review: Mapping[str, Any],
+    cos: Any,
+) -> None:
+    path = root / "material-rejections.json"
+    document = _json(path) if path.exists() else {"items": []}
+    items = document.get("items")
+    if not isinstance(items, list):
+        raise MaterialError("material_rejection_audit_invalid")
+    audit = {
+        "scene_id": material_request["scene_id"],
+        "slot_id": material_request["slot_id"],
+        "request_id": material_request["request_id"],
+        "semantic": material_request["semantic"],
+        "reason": review["reason"],
+        "evidence": review["evidence"],
+        "cos_key": cos_key,
+        "source_metadata": dict(source_metadata),
+        "cleanup_status": "pending",
+        "cleanup_required": True,
+        "cleanup_attempt": {
+            "attempt_count": 1,
+            "last_error_code": None,
+        },
+    }
+    items.append(audit)
+    _write_json(path, document)
+    try:
+        delete = getattr(cos, "delete_object")
+        delete(cos_key)
+        audit["cleanup_status"] = "deleted"
+        audit["cleanup_required"] = False
+    except Exception:
+        audit["cleanup_status"] = "cleanup_failed"
+        audit["cleanup_attempt"]["last_error_code"] = "cos_delete_failed"
+    _write_json(path, document)
+
+
+def scan_material_cleanup_retries(root: Path) -> list[dict[str, Any]]:
+    """Return a deterministic, secret-free list of task-private COS cleanup work."""
+
+    path = root / "material-rejections.json"
+    if not path.exists():
+        return []
+    document = _json(path)
+    items = document.get("items")
+    if not isinstance(items, list):
+        raise MaterialError("material_rejection_audit_invalid")
+    retries: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise MaterialError("material_rejection_audit_invalid")
+        if item.get("cleanup_status") != "cleanup_failed" or item.get("cleanup_required") is not True:
+            continue
+        attempt = item.get("cleanup_attempt")
+        values = {
+            "scene_id": item.get("scene_id"),
+            "slot_id": item.get("slot_id"),
+            "request_id": item.get("request_id"),
+            "cos_key": item.get("cos_key"),
+        }
+        if (
+            not isinstance(attempt, Mapping)
+            or not isinstance(attempt.get("attempt_count"), int)
+            or isinstance(attempt.get("attempt_count"), bool)
+            or attempt.get("attempt_count") < 1
+            or attempt.get("last_error_code") != "cos_delete_failed"
+            or any(not isinstance(value, str) or not value for value in values.values())
+        ):
+            raise MaterialError("material_rejection_audit_invalid")
+        retries.append({
+            "audit_path": path.name,
+            **values,
+            "attempt_count": attempt["attempt_count"],
+            "last_error_code": attempt["last_error_code"],
+        })
+    return sorted(
+        retries,
+        key=lambda item: (
+            item["scene_id"], item["slot_id"], item["request_id"], item["cos_key"]
+        ),
+    )
+
+
 def _write_json(path: Path, value: Mapping[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = canonical_json(value)
@@ -392,19 +482,35 @@ def _material_asset_hashes(
 
 
 def _scene_asset_ids(
-    scene: Mapping[str, Any], known_asset_ids: list[str]
+    scene: Mapping[str, Any],
+    known_asset_ids: list[str],
+    scene_slot_asset_ids: Mapping[tuple[str, str], str] | None = None,
 ) -> list[str]:
     """Bind a composition only to the frozen assets requested by its scene."""
 
     known = set(known_asset_ids)
-    requested = [str(slot["id"]) for slot in scene.get("material_slots") or ()]
+    if scene_slot_asset_ids is not None:
+        scene_id = str(scene.get("id") or "")
+        requested = []
+        for slot in scene.get("material_slots") or ():
+            slot_id = str(slot.get("layout_slot_id") or slot.get("id") or "")
+            asset_id = scene_slot_asset_ids.get((scene_id, slot_id))
+            if asset_id is None:
+                if slot.get("priority") == "required":
+                    raise ValueError("scene_material_binding_invalid")
+                continue
+            requested.append(asset_id)
+    else:
+        requested = [str(slot["id"]) for slot in scene.get("material_slots") or ()]
     if len(requested) != len(set(requested)) or any(asset_id not in known for asset_id in requested):
         raise ValueError("scene_material_binding_invalid")
     return requested
 
 
 def _layout_slot_bindings(
-    scene: Mapping[str, Any], known_asset_ids: list[str]
+    scene: Mapping[str, Any],
+    known_asset_ids: list[str],
+    scene_slot_asset_ids: Mapping[tuple[str, str], str] | None = None,
 ) -> list[dict[str, str]]:
     """Emit deterministic V2 semantic bindings from the scene's frozen slots."""
 
@@ -431,11 +537,11 @@ def _layout_slot_bindings(
     for raw in scene.get("material_slots") or ():
         if not isinstance(raw, Mapping):
             raise ValueError("scene_layout_binding_invalid")
-        asset_id = raw.get("id")
+        original_asset_id = raw.get("id")
         purpose = raw.get("purpose")
         priority = raw.get("priority")
         explicit_slot = raw.get("layout_slot_id")
-        if not isinstance(asset_id, str) or asset_id not in known or priority not in {"required", "optional"}:
+        if not isinstance(original_asset_id, str) or priority not in {"required", "optional"}:
             raise ValueError("scene_layout_binding_invalid")
         if explicit_slot is not None:
             if explicit_slot not in {"primary", "detail", "evidence", "accent", "steps"}:
@@ -452,6 +558,18 @@ def _layout_slot_bindings(
         elif purpose == "decoration":
             slot_id = "accent"
         else:
+            raise ValueError("scene_layout_binding_invalid")
+        lookup_slot_id = str(explicit_slot or original_asset_id)
+        asset_id = (
+            scene_slot_asset_ids.get((str(scene.get("id") or ""), lookup_slot_id))
+            if scene_slot_asset_ids is not None
+            else original_asset_id
+        )
+        if asset_id is None:
+            if priority == "required":
+                raise ValueError("scene_layout_binding_invalid")
+            continue
+        if asset_id not in known:
             raise ValueError("scene_layout_binding_invalid")
         if slot_id not in consumed_slots:
             if priority == "required":
@@ -1104,6 +1222,177 @@ class DeterministicVisualInspector:
         }
 
 
+class _MaterialReviewMapping(dict[str, Any]):
+    """Mapping-compatible review carrying provider identity outside JSON."""
+
+    def __init__(self, value: Mapping[str, Any], *, request_id: str) -> None:
+        super().__init__(value)
+        self.request_id = request_id
+
+
+class QwenMaterialReviewer(DeterministicVisualInspector):
+    """Keep COS signing inside the Qwen-VL adapter and return only review JSON."""
+
+    def __init__(self, *, cos: Any, client: Any) -> None:
+        if not callable(getattr(client, "inspect_image", None)):
+            raise ValueError("material_review_client_invalid")
+        self.cos = cos
+        self.client = client
+
+    def inspect_material(
+        self,
+        *,
+        cos_key: str,
+        semantic: str,
+        forbidden_subjects: tuple[str, ...] | list[str],
+        source_metadata: Mapping[str, Any],
+        deadline_at: float,
+        **_: Any,
+    ) -> Mapping[str, Any]:
+        if (
+            not isinstance(cos_key, str)
+            or not cos_key
+            or "://" in cos_key
+            or ".." in cos_key
+            or "\\" in cos_key
+            or not isinstance(semantic, str)
+            or not semantic.strip()
+            or not isinstance(source_metadata, Mapping)
+            or not isinstance(forbidden_subjects, (tuple, list))
+            or any(not isinstance(item, str) or not item for item in forbidden_subjects)
+        ):
+            raise ValueError("material_review_request_invalid")
+        presign_get = getattr(self.cos, "presign_get", None)
+        if not callable(presign_get):
+            raise ValueError("material_review_cos_invalid")
+        signed_url = presign_get(cos_key, expires=300)
+        if not isinstance(signed_url, str) or not signed_url.startswith("https://"):
+            raise ValueError("material_review_signed_url_invalid")
+        result = self.client.inspect_image(
+            {
+                "image_url": signed_url,
+                "semantic": semantic.strip(),
+                "forbidden_subjects": list(forbidden_subjects),
+                "source_metadata": dict(source_metadata),
+                "output_contract": "material-review-v1",
+            },
+            deadline_at=deadline_at,
+        )
+        request_id = getattr(result, "request_id", None)
+        payload = getattr(result, "payload", None)
+        if not isinstance(request_id, str) or not isinstance(payload, Mapping):
+            raise ValueError("material_review_response_invalid")
+        content = payload.get("content")
+        if not isinstance(content, str) or not content or len(content.encode("utf-8")) > 16 * 1024:
+            raise ValueError("material_review_response_invalid")
+        try:
+            review = json.loads(content)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("material_review_response_invalid") from exc
+        if not isinstance(review, Mapping):
+            raise ValueError("material_review_response_invalid")
+        normalized = validate_generated_material_review(review, required=False)
+        return _MaterialReviewMapping(normalized, request_id=request_id)
+
+
+def invoke_provider_once(
+    *,
+    store: Any,
+    context: Any,
+    stage: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    call: Any,
+    now_ms: int,
+) -> Mapping[str, Any]:
+    """Use the real V3 provider receipt before making a replayable provider call."""
+
+    if not callable(call):
+        raise ValueError("provider_call_invalid")
+    def completed_result(task: Any) -> Mapping[str, Any] | None:
+        if not isinstance(task, Mapping) or task.get("status") != "completed":
+            return None
+        raw = task.get("result_json", task.get("result"))
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("provider_receipt_invalid") from exc
+        if not isinstance(raw, Mapping):
+            raise ValueError("provider_receipt_invalid")
+        return dict(raw)
+
+    existing = store.get_provider_task_for_claim(
+        context.claim,
+        operation_key,
+        now_ms,
+    )
+    replay = completed_result(existing)
+    if replay is not None:
+        return replay
+    if existing is not None and existing.get("status") != "intent_recorded":
+        raise ValueError("provider_receipt_pending")
+    if existing is None or existing.get("status") == "intent_recorded":
+        store.record_provider_intent(
+            context.claim,
+            stage,
+            context.stage_attempt_id,
+            provider,
+            capability,
+            operation_key,
+            request_sha256,
+            now_ms,
+        )
+    if not store.claim_provider_submission(
+        context.claim,
+        stage,
+        context.stage_attempt_id,
+        provider,
+        capability,
+        operation_key,
+        request_sha256,
+        now_ms,
+    ):
+        existing = store.get_provider_task_for_claim(
+            context.claim,
+            operation_key,
+            now_ms,
+        )
+        replay = completed_result(existing)
+        if replay is not None:
+            return replay
+        raise ValueError("provider_receipt_pending")
+
+    result = call()
+    if isinstance(result, ProviderResult):
+        external_id = result.request_id
+        payload: Any = result.payload.get("content", result.payload)
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ValueError("provider_result_invalid") from exc
+    elif isinstance(result, Mapping):
+        external_id = getattr(result, "request_id", result.get("request_id"))
+        payload = dict(result)
+    else:
+        raise ValueError("provider_result_invalid")
+    if not isinstance(external_id, str) or not external_id or not isinstance(payload, Mapping):
+        raise ValueError("provider_result_invalid")
+    frozen = dict(payload)
+    store.bind_provider_result(
+        context.claim,
+        operation_key,
+        external_id,
+        "completed",
+        frozen,
+        now_ms,
+    )
+    return frozen
+
+
 def _composition_split_boundaries(
     start_ms: int,
     end_ms: int,
@@ -1554,20 +1843,40 @@ class ProductionStageCoordinator:
                     "mime_type": mime,
                     "size_bytes": destination.stat().st_size,
                     "sha256": digest,
+                    "metadata": json.loads(material.get("metadata_json") or "{}"),
                 })
-            digest = _write_json(root / "materials.json", {"items": frozen})
+            plan_path = root / "plan.json"
+            plan = _json(plan_path) if plan_path.exists() else {}
+            material_document = (
+                bind_scene_materials(plan, frozen)
+                if plan.get("visual_program_version") == "1.0"
+                else {"items": frozen}
+            )
+            digest = _write_json(root / "materials.json", material_document)
             return StageOutcome(
                 _NEXT[name],
-                {"materials_sha256": digest, "material_count": len(frozen)},
+                {"materials_sha256": digest, "material_count": len(material_document["items"])},
                 input_sha,
             )
         if name == "generating_images":
             material_document = _json(root / "materials.json")
             items = list(material_document["items"])
+            initial_item_count = len(items)
             plan = _json(root / "plan.json")
-            required = list(plan.get("materials") or ())
+            visual_program = plan.get("visual_program_version") == "1.0"
+            plan_materials = list(plan.get("materials") or ())
+            required = (
+                list(material_document.get("unresolved") or ())
+                if visual_program
+                else plan_materials[initial_item_count:]
+            )
             provider_result = None
-            for index, material_request in enumerate(required[len(items):], len(items) + 1):
+            generated_count = sum(1 for item in items if item.get("source") == "generated")
+            for material_request in required:
+                if material_request.get("priority", "required") != "required":
+                    continue
+                generated_count += 1
+                index = generated_count
                 destination = root / "materials" / f"generated-{index:02d}.png"
                 if not destination.exists():
                     provider_result = self.image_generator.generate(
@@ -1593,7 +1902,7 @@ class ProductionStageCoordinator:
                     f"{job_id}/materials/generated-{index:02d}.png"
                 )
                 self.cos.put_file(destination, object_key, "image/png", private=True, if_absent=True)
-                items.append({
+                generated_item = {
                     "material_id": f"generated_{index:02d}",
                     "relative_path": destination.relative_to(root).as_posix(),
                     "mime_type": "image/png",
@@ -1603,16 +1912,165 @@ class ProductionStageCoordinator:
                     "height": image.height,
                     "source": "generated",
                     "object_key": object_key,
-                })
-            digest = _write_json(root / "materials.json", {"items": items})
+                }
+                if visual_program:
+                    generated_item.update({
+                        "scene_id": material_request["scene_id"],
+                        "slot_id": material_request["slot_id"],
+                        "request_id": material_request["request_id"],
+                        "semantic": material_request["semantic"],
+                        "purpose": material_request["purpose"],
+                        "priority": material_request["priority"],
+                        "ratio": material_request["ratio"],
+                        "reason": "required_slot_generated",
+                    })
+                    source_metadata = {
+                        "source": "generated",
+                        "sha256": digest,
+                        "mime_type": "image/png",
+                        "width": image.width,
+                        "height": image.height,
+                        "provider_request_id": getattr(provider_result, "request_id", None),
+                    }
+                    inspect_material = getattr(self.visual_inspector, "inspect_material", None)
+                    if not callable(inspect_material):
+                        _record_material_rejection(
+                            root,
+                            material_request=material_request,
+                            cos_key=object_key,
+                            source_metadata=source_metadata,
+                            review={
+                                "result": "fail",
+                                "reason": "reviewer_unavailable",
+                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
+                            },
+                            cos=self.cos,
+                        )
+                        raise MaterialError("generated_material_reviewer_unavailable")
+                    def call_material_reviewer() -> Mapping[str, Any]:
+                        return inspect_material(
+                            scene_id=material_request["scene_id"],
+                            slot_id=material_request["slot_id"],
+                            semantic=material_request["semantic"],
+                            forbidden_subjects=(
+                                "person", "face", "wrong_product", "wrong_store",
+                                "fabricated_real_world_evidence",
+                            ),
+                            cos_key=object_key,
+                            source_metadata=source_metadata,
+                            deadline_at=context.deadline_at,
+                        )
+                    try:
+                        real_receipts = (
+                            hasattr(context, "claim")
+                            and hasattr(context, "stage_attempt_id")
+                            and callable(getattr(self.store, "record_provider_intent", None))
+                            and callable(getattr(self.store, "get_provider_task_for_claim", None))
+                            and callable(getattr(self.store, "claim_provider_submission", None))
+                            and callable(getattr(self.store, "bind_provider_result", None))
+                        )
+                        if real_receipts:
+                            review_request = {
+                                "scene_id": material_request["scene_id"],
+                                "slot_id": material_request["slot_id"],
+                                "semantic": material_request["semantic"],
+                                "forbidden_subjects": [
+                                    "person", "face", "wrong_product", "wrong_store",
+                                    "fabricated_real_world_evidence",
+                                ],
+                                "cos_key": object_key,
+                                "source_metadata": source_metadata,
+                            }
+                            review = invoke_provider_once(
+                                store=self.store,
+                                context=context,
+                                stage="generating_images",
+                                provider="dashscope",
+                                capability="material_review",
+                                operation_key=(
+                                    f"ai-edit-v3:{job_id}:material-review:"
+                                    f"{material_request['scene_id']}:{material_request['slot_id']}"
+                                ),
+                                request_sha256=hashlib.sha256(
+                                    canonical_json(review_request)
+                                ).hexdigest(),
+                                call=call_material_reviewer,
+                                now_ms=round(time.time() * 1000),
+                            )
+                        else:
+                            review = call_material_reviewer()
+                    except Exception:
+                        _record_material_rejection(
+                            root,
+                            material_request=material_request,
+                            cos_key=object_key,
+                            source_metadata=source_metadata,
+                            review={
+                                "result": "fail",
+                                "reason": "reviewer_failed",
+                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
+                            },
+                            cos=self.cos,
+                        )
+                        raise
+                    try:
+                        normalized_review = validate_generated_material_review(review, required=False)
+                    except MaterialError:
+                        _record_material_rejection(
+                            root,
+                            material_request=material_request,
+                            cos_key=object_key,
+                            source_metadata=source_metadata,
+                            review={
+                                "result": "fail",
+                                "reason": "review_schema_invalid",
+                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
+                            },
+                            cos=self.cos,
+                        )
+                        raise
+                    if normalized_review["result"] != "pass":
+                        _record_material_rejection(
+                            root,
+                            material_request=material_request,
+                            cos_key=object_key,
+                            source_metadata=source_metadata,
+                            review=normalized_review,
+                            cos=self.cos,
+                        )
+                        raise MaterialError("generated_required_material_review_failed")
+                    generated_item["visual_review"] = normalized_review
+                items.append(generated_item)
+            output_document = {"items": items}
+            if visual_program:
+                output_document.update({"unresolved": [], "omitted": list(material_document.get("omitted") or ())})
+            digest = _write_json(root / "materials.json", output_document)
             material_count = len(items)
+            if visual_program:
+                skipped = not required
+                reason = (
+                    "all_director_slots_resolved_from_user_materials"
+                    if not required and material_document["items"]
+                    else "optional_director_slots_omitted"
+                    if not required and material_document.get("omitted")
+                    else "missing_director_slots_generated"
+                    if required
+                    else "no_required_material_slots"
+                )
+            else:
+                skipped = len(plan_materials) <= initial_item_count
+                reason = (
+                    "all_director_slots_resolved_from_user_materials"
+                    if plan_materials and len(plan_materials) <= initial_item_count
+                    else "missing_director_slots_generated"
+                    if plan_materials
+                    else "no_required_material_slots"
+                )
             return StageOutcome(
                 _NEXT[name],
                 {
-                    "skipped": len(required) <= len(material_document["items"]),
-                    "reason": "all_director_slots_resolved_from_user_materials"
-                    if required and len(required) <= len(material_document["items"])
-                    else "missing_director_slots_generated" if required else "no_required_material_slots",
+                    "skipped": skipped,
+                    "reason": reason,
                     "material_count": material_count,
                     "materials_sha256": digest,
                 },
@@ -1691,13 +2149,33 @@ class ProductionStageCoordinator:
             material_assets = []
             material_asset_ids = []
             material_items = list(_json(root / "materials.json")["items"])
-            maximum_assets = min(4, len(plan.get("materials") or ()), len(material_items))
-            for index, material in enumerate(material_items[:maximum_assets], 1):
+            visual_program = plan.get("visual_program_version") == "1.0"
+            scene_slot_asset_ids: dict[tuple[str, str], str] = {}
+            if visual_program:
+                requested_slots = [
+                    (str(scene["id"]), str(slot.get("layout_slot_id") or slot["id"]))
+                    for scene in plan["scenes"]
+                    for slot in scene.get("material_slots") or ()
+                ]
+                material_by_slot: dict[tuple[str, str], Mapping[str, Any]] = {}
+                for material in material_items:
+                    key = (str(material.get("scene_id") or ""), str(material.get("slot_id") or ""))
+                    if key in requested_slots:
+                        if key in material_by_slot:
+                            raise ValueError("scene_material_binding_duplicate")
+                        material_by_slot[key] = material
+                selected_materials = [material_by_slot[key] for key in requested_slots if key in material_by_slot]
+            else:
+                maximum_assets = min(4, len(plan.get("materials") or ()), len(material_items))
+                selected_materials = material_items[:maximum_assets]
+            for index, material in enumerate(selected_materials, 1):
                 source = root / material["relative_path"]
                 target = input_root / "media" / f"material-{index:02d}{source.suffix.lower()}"
                 shutil.copyfile(source, target)
                 asset_id = f"material_{index:02d}"
                 material_asset_ids.append(asset_id)
+                if visual_program:
+                    scene_slot_asset_ids[(str(material["scene_id"]), str(material["slot_id"]))] = asset_id
                 material_assets.append({
                     "id": asset_id,
                     "kind": "image",
@@ -1707,7 +2185,6 @@ class ProductionStageCoordinator:
                 })
             ratio = plan["ratio"]
             width, height = ((1920, 1080) if ratio == "16:9" else (1080, 1920))
-            visual_program = plan.get("visual_program_version") == "1.0"
             if visual_program:
                 for scene in plan["scenes"]:
                     _validate_layout_source_requirements(scene, source_video=source_video)
@@ -1723,7 +2200,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"], "layout_slot_bindings": _layout_slot_bindings(scene, material_asset_ids), "authoritative_content": _freeze_overlay_authoritative_content(scene)} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"], "layout_slot_bindings": _layout_slot_bindings(scene, material_asset_ids, scene_slot_asset_ids), "authoritative_content": _freeze_overlay_authoritative_content(scene)} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids, scene_slot_asset_ids if visual_program else None)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             if visual_program:

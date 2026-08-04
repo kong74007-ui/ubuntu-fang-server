@@ -5514,7 +5514,7 @@ class V3LeaseTests(unittest.TestCase):
             connection.close()
         self.assertEqual(status, "running")
 
-    def test_provider_intent_is_immutable_and_new_token_recovers_result(self):
+    def test_provider_intent_is_immutable_and_completed_result_replays_read_only(self):
         self.assertTrue(hasattr(self.store, "record_provider_intent"))
         self.seed_job("job-1")
         old = self.store.claim_next_job("worker-a", 30, 100_000)
@@ -5555,14 +5555,31 @@ class V3LeaseTests(unittest.TestCase):
                 "c" * 64,
                 103_000,
             )
+        self.assertTrue(
+            self.store.claim_provider_submission(
+                old,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-1",
+                "b" * 64,
+                103_000,
+            )
+        )
+        bound = self.store.bind_provider_result(
+            old,
+            "op-1",
+            "external-1",
+            "done",
+            {"z": 2, "a": 1},
+            103_500,
+        )
         self.store.finish_stage_attempt(old, attempt["id"], "completed", 104_000)
         self.assertTrue(self.store.release_lease(old, 105_000))
         new = self.store.claim_next_job("worker-b", 30, 106_000)
-        self.assertEqual(
-            self.store.get_provider_task_for_claim(new, "op-1", 107_000)["id"],
-            intent["id"],
-        )
         before = self.store.get_provider_task_for_claim(new, "op-1", 107_000)
+        self.assertEqual(bound, before)
         with self.assertRaises(store_module.LeaseLost):
             self.store.bind_provider_result(
                 old,
@@ -5575,17 +5592,9 @@ class V3LeaseTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_provider_task_for_claim(new, "op-1", 107_000), before
         )
-        bound = self.store.bind_provider_result(
-            new,
-            "op-1",
-            "external-1",
-            "done",
-            {"z": 2, "a": 1},
-            108_000,
-        )
         self.assertEqual(bound["result_json"], '{"a":1,"z":2}')
-        self.assertEqual(bound["fencing_token"], new.fencing_token)
-        self.assertEqual(
+        self.assertEqual(bound["fencing_token"], old.fencing_token)
+        with self.assertRaises(StoreConflictError) as raised:
             self.store.bind_provider_result(
                 new,
                 "op-1",
@@ -5593,9 +5602,8 @@ class V3LeaseTests(unittest.TestCase):
                 "done",
                 {"a": 1, "z": 2},
                 109_000,
-            ),
-            bound,
-        )
+            )
+        self.assertEqual("provider_submission_stale", raised.exception.error_code)
         with self.assertRaises(StoreConflictError):
             self.store.bind_provider_result(
                 new,
@@ -5605,6 +5613,209 @@ class V3LeaseTests(unittest.TestCase):
                 {"a": 1, "z": 2},
                 109_000,
             )
+
+    def test_provider_submission_claim_has_one_winner(self):
+        self.seed_job("job-provider-claim")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim,
+            "queued",
+            "a" * 64,
+            101_000,
+        )
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review",
+            "b" * 64,
+            102_000,
+        )
+
+        self.assertIs(
+            True,
+            self.store.claim_provider_submission(
+                claim,
+                "queued",
+                attempt["id"],
+                "dashscope",
+                "material_review",
+                "op-material-review",
+                "b" * 64,
+                103_000,
+            ),
+        )
+        self.assertIs(
+            False,
+            self.store.claim_provider_submission(
+                claim,
+                "queued",
+                attempt["id"],
+                "dashscope",
+                "material_review",
+                "op-material-review",
+                "b" * 64,
+                104_000,
+            ),
+        )
+
+    def test_provider_submission_claim_rejects_divergent_intent_identity(self):
+        self.seed_job("job-provider-identity")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 101_000
+        )
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-identity",
+            "b" * 64,
+            102_000,
+        )
+
+        with self.assertRaises(StoreConflictError) as raised:
+            self.store.claim_provider_submission(
+                claim,
+                "queued",
+                attempt["id"],
+                "dashscope",
+                "material_review",
+                "op-material-review-identity",
+                "c" * 64,
+                103_000,
+            )
+        self.assertEqual("provider_intent_conflict", raised.exception.error_code)
+
+    def test_unsubmitted_intent_moves_to_new_running_attempt_after_crash(self):
+        self.seed_job("job-provider-rearm")
+        old = self.store.claim_next_job("worker-a", 1, 100_000)
+        old_attempt = self.store.start_stage_attempt(
+            old, "queued", "a" * 64, 100_100
+        )
+        intent = self.store.record_provider_intent(
+            old,
+            "queued",
+            old_attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-rearm",
+            "b" * 64,
+            100_200,
+        )
+
+        new = self.store.claim_next_job("worker-b", 30, 101_000)
+        new_attempt = self.store.start_stage_attempt(
+            new, "queued", "a" * 64, 101_100
+        )
+        recovered = self.store.record_provider_intent(
+            new,
+            "queued",
+            new_attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-rearm",
+            "b" * 64,
+            101_200,
+        )
+
+        self.assertEqual(intent["id"], recovered["id"])
+        self.assertEqual(new_attempt["id"], recovered["stage_attempt_id"])
+        self.assertEqual(new.fencing_token, recovered["fencing_token"])
+        self.assertTrue(
+            self.store.claim_provider_submission(
+                new,
+                "queued",
+                new_attempt["id"],
+                "dashscope",
+                "material_review",
+                "op-material-review-rearm",
+                "b" * 64,
+                101_300,
+            )
+        )
+
+    def test_provider_result_cannot_bind_before_submission_claim(self):
+        self.seed_job("job-provider-bind-state")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 101_000
+        )
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-bind-state",
+            "b" * 64,
+            102_000,
+        )
+
+        with self.assertRaises(StoreConflictError) as raised:
+            self.store.bind_provider_result(
+                claim,
+                "op-material-review-bind-state",
+                "external-review",
+                "completed",
+                {"result": "pass"},
+                103_000,
+            )
+        self.assertEqual("provider_submission_not_claimed", raised.exception.error_code)
+
+    def test_new_worker_cannot_bind_old_attempt_submitting_result(self):
+        self.seed_job("job-provider-stale-bind")
+        old = self.store.claim_next_job("worker-a", 1, 100_000)
+        old_attempt = self.store.start_stage_attempt(
+            old, "queued", "a" * 64, 100_100
+        )
+        self.store.record_provider_intent(
+            old,
+            "queued",
+            old_attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-stale-bind",
+            "b" * 64,
+            100_200,
+        )
+        self.assertTrue(
+            self.store.claim_provider_submission(
+                old,
+                "queued",
+                old_attempt["id"],
+                "dashscope",
+                "material_review",
+                "op-material-review-stale-bind",
+                "b" * 64,
+                100_300,
+            )
+        )
+
+        new = self.store.claim_next_job("worker-b", 30, 101_000)
+        before = self.store.get_provider_task_for_claim(
+            new, "op-material-review-stale-bind", 101_100
+        )
+        with self.assertRaises(StoreConflictError) as raised:
+            self.store.bind_provider_result(
+                new,
+                "op-material-review-stale-bind",
+                "external-review-stale",
+                "completed",
+                {"result": "pass"},
+                101_200,
+            )
+        self.assertEqual("provider_submission_stale", raised.exception.error_code)
+        self.assertEqual(
+            before,
+            self.store.get_provider_task_for_claim(
+                new, "op-material-review-stale-bind", 101_300
+            ),
+        )
 
     def test_closed_attempt_replays_existing_intent_but_rejects_new_intent(self):
         for index, status in enumerate(("completed", "failed", "skipped"), 1):
@@ -5725,6 +5936,18 @@ class V3LeaseTests(unittest.TestCase):
             "op-1",
             "b" * 64,
             102_000,
+        )
+        self.assertTrue(
+            self.store.claim_provider_submission(
+                claim,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-1",
+                "b" * 64,
+                102_500,
+            )
         )
         self.store.bind_provider_result(
             claim, "op-1", "external-1", "done", {"ok": True}, 103_000
@@ -6001,6 +6224,18 @@ class V3LeaseTests(unittest.TestCase):
                 114_000,
             ),
             intent,
+        )
+        self.assertTrue(
+            self.store.claim_provider_submission(
+                claim,
+                "queued",
+                attempt["id"],
+                "provider-a",
+                "render",
+                "op-crash",
+                "b" * 64,
+                114_500,
+            )
         )
         bound = self.store.bind_provider_result(
             claim,

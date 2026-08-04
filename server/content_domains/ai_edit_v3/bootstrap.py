@@ -27,10 +27,12 @@ from .production import (
     DashScopeAsr,
     ProductionStageCoordinator,
     QwenCompiledDirector,
+    QwenMaterialReviewer,
 )
 from .providers.base import SecretValue
 from .providers.elevenlabs import ElevenLabsAudioGenerator
 from .providers.openai_image import OpenAIImageGenerator
+from .providers.qwen_compatible import DashScopeCompatibleQwenClient
 from .renderers.hyperframes import HyperframesRenderer
 from .renderers.release import verify_renderer_release
 from .runtime import (
@@ -387,6 +389,12 @@ def _build():
     director = QwenCompiledDirector(
         timeout_seconds=config.director_timeout_seconds
     )
+    material_reviewer = QwenMaterialReviewer(
+        cos=cos,
+        client=DashScopeCompatibleQwenClient(
+            timeout_seconds=config.director_timeout_seconds,
+        ),
+    )
     work_root = Path(
         os.environ.get("AI_EDIT_V3_WORK_ROOT", "/var/lib/huangque-ai-edit-v3/work")
     ).resolve()
@@ -402,6 +410,7 @@ def _build():
         work_root=work_root,
         owner_hmac_secret=secret,
         renderer_root=renderer_root,
+        visual_inspector=material_reviewer,
     )
     ledger = HttpPointsLedger()
     asset_db = Path(

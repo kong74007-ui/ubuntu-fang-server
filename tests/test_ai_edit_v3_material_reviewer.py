@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from server.content_domains.ai_edit_v3 import production
+from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+
+class _Cos:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def presign_get(self, cos_key, *, expires):
+        self.calls.append((cos_key, expires))
+        return "https://private.example/signed?secret=short-lived"
+
+
+class _QwenVision:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def inspect_image(self, request, *, deadline_at):
+        self.requests.append((request, deadline_at))
+        return ProviderResult(
+            provider="dashscope",
+            capability="material_review",
+            request_id="review-request-1",
+            payload={
+                "content": json.dumps({
+                    "result": "pass",
+                    "reason": "subject and exclusions verified",
+                    "evidence": [{
+                        "semantic_match": True,
+                        "forbidden_subjects": [],
+                    }],
+                })
+            },
+            usage={"tokens": 9},
+            elapsed_ms=3,
+        )
+
+
+class MaterialReviewerTests(unittest.TestCase):
+    def test_bootstrap_injects_qwen_material_reviewer_into_coordinator(self):
+        from server.content_domains.ai_edit_v3 import bootstrap
+
+        captured = {}
+        cos = object()
+        config = SimpleNamespace(
+            enabled=True,
+            db_path=Path("v3.db"),
+            v2_db_path=Path("v2.db"),
+            environment="test",
+            owner_hmac_secret_file=Path("owner.key"),
+            queue_capacity=1,
+            temp_bytes_limit=1024,
+            director_timeout_seconds=45,
+        )
+
+        def coordinator(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ",
+            {
+                "AI_EDIT_V3_RENDERER_ROOT": directory,
+                "AI_EDIT_V3_RENDERER_RELEASES_ROOT": directory,
+                "AI_EDIT_V3_WORK_ROOT": directory,
+            },
+            clear=False,
+        ), patch.object(bootstrap, "load_config", return_value=config), patch.object(
+            bootstrap, "V3Store", return_value=SimpleNamespace()
+        ), patch.object(bootstrap, "_seed", return_value=()), patch.object(
+            bootstrap, "_read_secret", return_value=b"0123456789abcdef"
+        ), patch.object(bootstrap, "V3Cos", return_value=cos), patch.object(
+            bootstrap,
+            "verify_renderer_release",
+            return_value=SimpleNamespace(renderer_build_id="build-1"),
+        ), patch.object(Path, "read_text", return_value="a" * 64), patch.object(
+            bootstrap, "HyperframesRenderer", return_value=object()
+        ), patch.object(
+            bootstrap, "ProductionStageCoordinator", side_effect=coordinator
+        ), patch.object(bootstrap, "build_stage_handlers", return_value={}), patch.object(
+            bootstrap, "build_runtime", return_value=object()
+        ), patch.object(bootstrap, "SharedPublisher", return_value=object()), patch.object(
+            bootstrap, "ProductionCatalog", return_value=object()
+        ), patch.object(bootstrap, "Capacity", return_value=object()), patch.object(
+            bootstrap, "EditV3Service", return_value=SimpleNamespace()
+        ):
+            bootstrap._build()
+
+        reviewer = captured.get("visual_inspector")
+        self.assertIsNotNone(reviewer, "bootstrap must explicitly inject the reviewer")
+        self.assertIs(cos, reviewer.cos)
+        self.assertTrue(callable(getattr(reviewer, "inspect_material", None)))
+
+    def test_qwen_reviewer_presigns_private_key_only_inside_adapter(self):
+        reviewer_type = getattr(production, "QwenMaterialReviewer", None)
+        self.assertTrue(callable(reviewer_type), "production Qwen-VL material reviewer is required")
+        cos = _Cos()
+        qwen = _QwenVision()
+        reviewer = reviewer_type(cos=cos, client=qwen)
+
+        review = reviewer.inspect_material(
+            cos_key="test/ai-edit-v3/owner/job/materials/generated-01.png",
+            semantic="clean product detail on a neutral background",
+            forbidden_subjects=("person", "face", "wrong_product"),
+            source_metadata={"source": "generated", "sha256": "a" * 64},
+            deadline_at=123.0,
+        )
+
+        self.assertEqual("pass", review["result"])
+        self.assertEqual(
+            [("test/ai-edit-v3/owner/job/materials/generated-01.png", 300)],
+            cos.calls,
+        )
+        request, deadline_at = qwen.requests[0]
+        self.assertEqual(123.0, deadline_at)
+        self.assertEqual(
+            "https://private.example/signed?secret=short-lived",
+            request["image_url"],
+        )
+        self.assertNotIn("image_url", review)
+        self.assertNotIn("signed", json.dumps(review))
+
+    def test_qwen_reviewer_rejects_echoed_signed_url_before_receipt(self):
+        class EchoingQwen(_QwenVision):
+            def inspect_image(self, request, *, deadline_at):
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="material_review",
+                    request_id="review-request-echo",
+                    payload={"content": json.dumps({
+                        "result": "pass",
+                        "reason": request["image_url"],
+                        "evidence": [{"semantic_match": True, "forbidden_subjects": []}],
+                    })},
+                    usage={},
+                    elapsed_ms=1,
+                )
+
+        reviewer = production.QwenMaterialReviewer(cos=_Cos(), client=EchoingQwen())
+        with self.assertRaisesRegex(ValueError, "generated_material_review_invalid"):
+            reviewer.inspect_material(
+                cos_key="test/ai-edit-v3/owner/job/materials/generated-01.png",
+                semantic="clean product detail",
+                forbidden_subjects=("person",),
+                source_metadata={"source": "generated", "sha256": "a" * 64},
+                deadline_at=123.0,
+            )
+
+    def test_completed_receipt_replay_does_not_call_review_provider_twice(self):
+        invoke_once = getattr(production, "invoke_provider_once", None)
+        self.assertTrue(callable(invoke_once), "real-store provider receipt helper is required")
+        completed = {
+            "status": "completed",
+            "external_id": "review-request-1",
+            "result_json": json.dumps({
+                "result": "pass",
+                "reason": "subject verified",
+                "evidence": [{"semantic_match": True, "forbidden_subjects": []}],
+            }),
+        }
+
+        class Store:
+            def __init__(self):
+                self.intent_calls = []
+                self.get_calls = []
+                self.bind_calls = []
+                self.claim_calls = []
+
+            def record_provider_intent(self, *args):
+                self.intent_calls.append(args)
+                return completed
+
+            def get_provider_task_for_claim(self, *args):
+                self.get_calls.append(args)
+                return completed
+
+            def bind_provider_result(self, *args):
+                self.bind_calls.append(args)
+                raise AssertionError("completed receipt must not be rebound")
+
+        store = Store()
+        context = SimpleNamespace(
+            claim=object(), stage_attempt_id="stage-attempt-1", deadline_at=123.0
+        )
+        provider_calls = []
+        call = lambda: provider_calls.append(True)
+        kwargs = dict(
+            store=store,
+            context=context,
+            stage="generating_images",
+            provider="dashscope",
+            capability="material_review",
+            operation_key="ai-edit-v3:job-1:material-review:material-01",
+            request_sha256="b" * 64,
+            call=call,
+            now_ms=1000,
+        )
+
+        first = invoke_once(**kwargs)
+        second = invoke_once(**kwargs)
+
+        self.assertEqual(first, second)
+        self.assertEqual([], provider_calls)
+        self.assertEqual([], store.bind_calls)
+        self.assertEqual([], store.intent_calls)
+        self.assertEqual(2, len(store.get_calls))
+        self.assertEqual(context.claim, store.get_calls[0][0])
+
+    def test_first_call_records_and_binds_then_replays_receipt(self):
+        class Review(dict):
+            request_id = "review-request-new"
+
+        class Store:
+            def __init__(self):
+                self.task = None
+                self.intent_calls = []
+                self.bind_calls = []
+                self.claim_calls = []
+
+            def get_provider_task_for_claim(self, *_args):
+                return self.task
+
+            def claim_provider_submission(self, *args):
+                self.claim_calls.append(args)
+                return True
+
+            def record_provider_intent(self, *args):
+                self.intent_calls.append(args)
+                self.task = {"status": "intent_recorded"}
+                return self.task
+
+            def bind_provider_result(self, *args):
+                self.bind_calls.append(args)
+                self.task = {
+                    "status": "completed",
+                    "external_id": args[2],
+                    "result_json": json.dumps(args[4]),
+                }
+                return self.task
+
+        store = Store()
+        context = SimpleNamespace(claim=object(), stage_attempt_id="stage-attempt-1")
+        calls = []
+
+        def provider_call():
+            calls.append(True)
+            return Review({
+                "result": "pass",
+                "reason": "verified",
+                "evidence": [{"semantic_match": True, "forbidden_subjects": []}],
+            })
+
+        kwargs = dict(
+            store=store,
+            context=context,
+            stage="generating_images",
+            provider="dashscope",
+            capability="material_review",
+            operation_key="ai-edit-v3:job-1:material-review:scene-1:detail",
+            request_sha256="b" * 64,
+            call=provider_call,
+            now_ms=1000,
+        )
+        first = production.invoke_provider_once(**kwargs)
+        second = production.invoke_provider_once(**kwargs)
+
+        self.assertEqual(first, second)
+        self.assertEqual([True], calls)
+        self.assertEqual(1, len(store.intent_calls))
+        self.assertEqual(1, len(store.bind_calls))
+        self.assertEqual(1, len(store.claim_calls))
+
+    def test_recorded_but_unclaimed_intent_is_safely_claimed_on_replay(self):
+        class Review(dict):
+            request_id = "review-request-recovered"
+
+        class Store:
+            def __init__(self):
+                self.task = {
+                    "status": "intent_recorded",
+                    "stage_attempt_id": "stage-attempt-1",
+                }
+                self.claim_calls = []
+                self.intent_calls = []
+
+            def get_provider_task_for_claim(self, *_args):
+                return self.task
+
+            def record_provider_intent(self, *args):
+                self.intent_calls.append(args)
+                self.task = {
+                    "status": "intent_recorded",
+                    "stage_attempt_id": args[2],
+                }
+                return self.task
+
+            def claim_provider_submission(self, *args):
+                if self.task["stage_attempt_id"] != args[2]:
+                    raise ValueError("provider_attempt_mismatch")
+                self.claim_calls.append(args)
+                self.task = {"status": "submitting"}
+                return True
+
+            def bind_provider_result(self, *args):
+                self.task = {
+                    "status": "completed",
+                    "external_id": args[2],
+                    "result_json": json.dumps(args[4]),
+                }
+                return self.task
+
+        store = Store()
+        context = SimpleNamespace(claim=object(), stage_attempt_id="stage-attempt-2")
+        provider_calls = []
+
+        result = production.invoke_provider_once(
+            store=store,
+            context=context,
+            stage="generating_images",
+            provider="dashscope",
+            capability="material_review",
+            operation_key="ai-edit-v3:job-1:material-review:scene-1:detail",
+            request_sha256="b" * 64,
+            call=lambda: provider_calls.append(True) or Review({
+                "result": "pass",
+                "reason": "verified",
+                "evidence": [{"semantic_match": True, "forbidden_subjects": []}],
+            }),
+            now_ms=1000,
+        )
+
+        self.assertEqual("pass", result["result"])
+        self.assertEqual([True], provider_calls)
+        self.assertEqual(1, len(store.intent_calls))
+        self.assertEqual(1, len(store.claim_calls))
+
+
+if __name__ == "__main__":
+    unittest.main()

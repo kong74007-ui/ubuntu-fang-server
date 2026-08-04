@@ -12,6 +12,10 @@ from .contracts import request_fingerprint
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]{1,8}", re.IGNORECASE)
+_PRIVATE_LOCATION_RE = re.compile(
+    r"https?://|(?:^|[?&\s])(?:q-sign-[a-z0-9-]+|x-cos-[a-z0-9-]+|signature|credential|security-token)\s*=",
+    re.IGNORECASE,
+)
 
 
 class MaterialError(ValueError):
@@ -49,6 +53,173 @@ class ResolutionDraft:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "slots", MappingProxyType(dict(self.slots)))
+
+
+def bind_scene_materials(
+    plan: Mapping[str, Any],
+    current_items: Sequence[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Freeze visual-program materials by scene and semantic slot.
+
+    Only files already bound to the current request are candidates.  A file may
+    be reused only for the same semantic requirement; unresolved optional slots
+    are recorded but never sent to the image provider.
+    """
+
+    if plan.get("visual_program_version") != "1.0":
+        raise MaterialError("scene_material_plan_invalid")
+    if len(current_items) > 10:
+        raise MaterialError("material_asset_ids_invalid")
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in current_items:
+        item = dict(raw)
+        material_id = item.get("material_id")
+        metadata = item.get("metadata")
+        if (
+            not isinstance(material_id, str)
+            or not material_id
+            or material_id in by_id
+            or not isinstance(metadata, Mapping)
+        ):
+            raise MaterialError("scene_material_upload_invalid")
+        item["metadata"] = dict(metadata)
+        by_id[material_id] = item
+
+    bound: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    reused_semantics: dict[str, frozenset[str]] = {}
+    scenes = plan.get("scenes")
+    if not isinstance(scenes, list):
+        raise MaterialError("scene_material_plan_invalid")
+    for scene in scenes:
+        if not isinstance(scene, Mapping) or not isinstance(scene.get("id"), str):
+            raise MaterialError("scene_material_plan_invalid")
+        slots = scene.get("material_slots")
+        if not isinstance(slots, list) or len(slots) > 4:
+            raise MaterialError("scene_material_slots_invalid")
+        for raw_slot in slots:
+            if not isinstance(raw_slot, Mapping):
+                raise MaterialError("scene_material_slot_invalid")
+            request_id, semantic, required, purpose, ratio = _slot_values(raw_slot)
+            layout_slot_id = raw_slot.get("layout_slot_id", request_id)
+            if not isinstance(layout_slot_id, str) or not layout_slot_id:
+                raise MaterialError("scene_material_slot_invalid")
+            selected = by_id.get(request_id)
+            if selected is None:
+                ranked: list[tuple[float, str, dict[str, Any]]] = []
+                for material_id, candidate in by_id.items():
+                    metadata = candidate["metadata"]
+                    candidate_semantic = _semantic_tokens(metadata.get("semantic", ()))
+                    overlap = semantic & candidate_semantic
+                    previous = reused_semantics.get(material_id)
+                    if not overlap or (previous is not None and previous != semantic):
+                        continue
+                    ranked.append((-(len(overlap) / max(1, len(semantic))), material_id, candidate))
+                if ranked:
+                    selected = sorted(ranked, key=lambda row: (row[0], row[1]))[0][2]
+            if selected is not None:
+                material_id = str(selected["material_id"])
+                previous = reused_semantics.get(material_id)
+                if previous is not None and previous != semantic:
+                    raise MaterialError("scene_material_cross_semantic_reuse")
+                reused_semantics[material_id] = semantic
+                bound.append({
+                    **{key: value for key, value in selected.items() if key != "metadata"},
+                    "scene_id": scene["id"],
+                    "slot_id": layout_slot_id,
+                    "request_id": request_id,
+                    "semantic": str(raw_slot.get("semantic")),
+                    "purpose": purpose,
+                    "priority": "required" if required else "optional",
+                    "ratio": ratio,
+                    "source": "current_upload",
+                    "reason": "current_task_semantic_match",
+                })
+                continue
+            pending = {
+                "scene_id": scene["id"],
+                "slot_id": layout_slot_id,
+                "request_id": request_id,
+                "semantic": str(raw_slot.get("semantic")),
+                "purpose": purpose,
+                "priority": "required" if required else "optional",
+                "ratio": ratio,
+                "reason": "no_qualified_current_upload",
+            }
+            if required:
+                unresolved.append(pending)
+            else:
+                omitted.append({**pending, "source": "omitted_optional", "status": "omitted_optional"})
+    if len(unresolved) > 6:
+        raise MaterialError("generated_material_limit_exceeded")
+    return {"items": bound, "unresolved": unresolved, "omitted": omitted}
+
+
+def validate_generated_material_review(
+    raw: Any,
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    """Accept only an independent, auditable visual review result."""
+
+    if not isinstance(raw, Mapping) or set(raw) != {"result", "reason", "evidence"}:
+        raise MaterialError("generated_material_review_invalid")
+    result = raw.get("result")
+    reason = raw.get("reason")
+    evidence = raw.get("evidence")
+    normalized_reason = reason.strip() if isinstance(reason, str) else None
+    if (
+        result not in {"pass", "fail"}
+        or not normalized_reason
+        or len(normalized_reason) > 500
+        or _PRIVATE_LOCATION_RE.search(normalized_reason) is not None
+        or not isinstance(evidence, list)
+        or not evidence
+        or len(evidence) > 8
+        or any(not isinstance(item, Mapping) for item in evidence)
+    ):
+        raise MaterialError("generated_material_review_invalid")
+    allowed_forbidden = {
+        "person",
+        "face",
+        "wrong_product",
+        "wrong_store",
+        "fabricated_real_world_evidence",
+    }
+    normalized_evidence: list[dict[str, Any]] = []
+    for item in evidence:
+        if set(item) != {"semantic_match", "forbidden_subjects"}:
+            raise MaterialError("generated_material_review_invalid")
+        semantic_match_value = item.get("semantic_match")
+        values = item.get("forbidden_subjects")
+        if (
+            not isinstance(semantic_match_value, bool)
+            or not isinstance(values, list)
+            or len(values) > len(allowed_forbidden)
+            or any(not isinstance(value, str) or value not in allowed_forbidden for value in values)
+            or len(set(values)) != len(values)
+        ):
+            raise MaterialError("generated_material_review_invalid")
+        normalized_evidence.append({
+            "semantic_match": semantic_match_value,
+            "forbidden_subjects": list(values),
+        })
+    semantic_match = any(item["semantic_match"] for item in normalized_evidence)
+    forbidden = [
+        value
+        for item in normalized_evidence
+        for value in item["forbidden_subjects"]
+    ]
+    passed = result == "pass" and semantic_match and not forbidden
+    normalized = {
+        "result": "pass" if passed else "fail",
+        "reason": normalized_reason,
+        "evidence": normalized_evidence,
+    }
+    if required and not passed:
+        raise MaterialError("generated_required_material_review_failed")
+    return normalized
 
 
 def _semantic_tokens(value: Any) -> frozenset[str]:

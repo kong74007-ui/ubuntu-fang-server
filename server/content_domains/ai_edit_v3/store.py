@@ -3940,7 +3940,6 @@ def _record_provider_intent_tx(
     immutable = {
         "job_id": claim.job_id,
         "stage": stage,
-        "stage_attempt_id": stage_attempt_id,
         "provider": provider,
         "capability": capability,
         "operation_key": operation_key,
@@ -3965,7 +3964,72 @@ def _record_provider_intent_tx(
                 "provider_intent_conflict",
                 "provider operation key is bound to another immutable intent",
             )
-        return dict(existing)
+        if existing["stage_attempt_id"] == stage_attempt_id:
+            return dict(existing)
+        if (
+            existing["status"] != "intent_recorded"
+            or existing["external_id"] is not None
+            or existing["result_json"] is not None
+        ):
+            raise StoreConflictError(
+                "provider_intent_conflict",
+                "submitted provider intent cannot move to another stage attempt",
+            )
+        current_attempt = connection.execute(
+            """SELECT a.status FROM edit_v3_stage_attempts AS a
+               JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+               WHERE a.id=? AND a.job_id=? AND a.stage=?
+                 AND a.fencing_token=j.fencing_token AND a.status='running'
+                 AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+            (
+                stage_attempt_id,
+                claim.job_id,
+                stage,
+                claim.worker_id,
+                claim.fencing_token,
+                now_ms,
+            ),
+        ).fetchone()
+        old_attempt = connection.execute(
+            """SELECT status FROM edit_v3_stage_attempts
+               WHERE id=? AND job_id=?""",
+            (existing["stage_attempt_id"], claim.job_id),
+        ).fetchone()
+        if current_attempt is None:
+            raise StoreConflictError(
+                "provider_attempt_not_running",
+                "provider intent recovery requires the current running stage attempt",
+            )
+        if old_attempt is not None and old_attempt["status"] == "running":
+            raise StoreConflictError(
+                "provider_attempt_mismatch",
+                "provider intent cannot move while its original attempt is running",
+            )
+        moved = connection.execute(
+            """UPDATE edit_v3_provider_tasks
+               SET stage_attempt_id=?,fencing_token=?,last_checked_at=?,updated_at=?
+               WHERE id=? AND stage_attempt_id=? AND status='intent_recorded'
+                 AND external_id IS NULL AND result_json IS NULL""",
+            (
+                stage_attempt_id,
+                claim.fencing_token,
+                now_ms,
+                now_ms,
+                existing["id"],
+                existing["stage_attempt_id"],
+            ),
+        )
+        if moved.rowcount != 1:
+            raise StoreConflictError(
+                "provider_intent_conflict",
+                "provider intent was concurrently submitted or recovered",
+            )
+        return dict(
+            connection.execute(
+                "SELECT * FROM edit_v3_provider_tasks WHERE id=?",
+                (existing["id"],),
+            ).fetchone()
+        )
     if not _lease_owned_tx(connection, claim, now_ms):
         raise _lease_lost(claim)
     collision = connection.execute(
@@ -4079,6 +4143,106 @@ def _get_provider_task_for_claim_tx(
     return None
 
 
+def _claim_provider_submission_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage: str,
+    stage_attempt_id: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    now_ms: int,
+) -> bool:
+    claim = _require_claim(claim)
+    stage = _require_nonblank("stage", stage)
+    stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+    provider = _require_nonblank("provider", provider)
+    capability = _require_nonblank("capability", capability)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    request_sha256 = _require_sha256("request_sha256", request_sha256)
+    now_ms = _require_now_ms(now_ms)
+    updated = connection.execute(
+        """UPDATE edit_v3_provider_tasks
+           SET status='submitting',fencing_token=?,last_checked_at=?,updated_at=?
+           WHERE job_id=? AND stage=? AND stage_attempt_id=?
+             AND provider=? AND capability=? AND operation_key=?
+             AND request_sha256=? AND status='intent_recorded'
+             AND external_id IS NULL AND result_json IS NULL
+             AND EXISTS(
+                 SELECT 1 FROM edit_v3_jobs AS j
+                 JOIN edit_v3_stage_attempts AS a ON a.job_id=j.job_id
+                 WHERE j.job_id=edit_v3_provider_tasks.job_id
+                   AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+                   AND a.id=edit_v3_provider_tasks.stage_attempt_id
+                   AND a.stage=edit_v3_provider_tasks.stage
+                   AND a.fencing_token=j.fencing_token AND a.status='running'
+             )""",
+        (
+            claim.fencing_token,
+            now_ms,
+            now_ms,
+            claim.job_id,
+            stage,
+            stage_attempt_id,
+            provider,
+            capability,
+            operation_key,
+            request_sha256,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    if updated.rowcount == 1:
+        return True
+    if not _lease_owned_tx(connection, claim, now_ms):
+        raise _lease_lost(claim)
+    existing = connection.execute(
+        """SELECT * FROM edit_v3_provider_tasks
+           WHERE job_id=? AND operation_key=?""",
+        (claim.job_id, operation_key),
+    ).fetchone()
+    if existing is None:
+        raise StoreConflictError(
+            "provider_intent_missing",
+            "provider submission cannot be claimed before its immutable intent",
+        )
+    expected = {
+        "stage": stage,
+        "stage_attempt_id": stage_attempt_id,
+        "provider": provider,
+        "capability": capability,
+        "request_sha256": request_sha256,
+    }
+    if any(existing[key] != value for key, value in expected.items()):
+        raise StoreConflictError(
+            "provider_intent_conflict",
+            "provider submission claim diverges from its immutable intent",
+        )
+    attempt = connection.execute(
+        """SELECT a.status FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.stage=?
+             AND a.fencing_token=j.fencing_token
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            stage_attempt_id,
+            claim.job_id,
+            stage,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if attempt is None or attempt["status"] != "running":
+        raise StoreConflictError(
+            "provider_attempt_not_running",
+            "provider submission claim requires its current running stage attempt",
+        )
+    return False
+
+
 def _bind_provider_result_tx(
     connection: sqlite3.Connection,
     claim: LeaseClaim,
@@ -4114,6 +4278,27 @@ def _bind_provider_result_tx(
             "provider_intent_missing",
             "provider result cannot be bound before its immutable intent",
         )
+    current_attempt = connection.execute(
+        """SELECT a.status FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.stage=?
+             AND a.fencing_token=? AND a.status='running'
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            existing["stage_attempt_id"],
+            claim.job_id,
+            existing["stage"],
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if existing["fencing_token"] != claim.fencing_token or current_attempt is None:
+        raise StoreConflictError(
+            "provider_submission_stale",
+            "provider result must bind to its current running submission attempt",
+        )
     if existing["external_id"] is not None or existing["result_json"] is not None:
         if (
             existing["external_id"] == external_id
@@ -4125,17 +4310,28 @@ def _bind_provider_result_tx(
             "provider_result_conflict",
             "provider result is immutable once bound",
         )
+    if existing["status"] != "submitting":
+        raise StoreConflictError(
+            "provider_submission_not_claimed",
+            "provider result cannot be bound before submission is claimed",
+        )
     try:
         updated = connection.execute(
             """UPDATE edit_v3_provider_tasks
                SET external_id=?,status=?,result_json=?,fencing_token=?,
                    last_checked_at=?,updated_at=?
                WHERE job_id=? AND operation_key=?
+                 AND status='submitting'
+                 AND fencing_token=? AND stage_attempt_id=? AND stage=?
                  AND external_id IS NULL AND result_json IS NULL
                  AND EXISTS(
                      SELECT 1 FROM edit_v3_jobs AS j
+                     JOIN edit_v3_stage_attempts AS a ON a.job_id=j.job_id
                      WHERE j.job_id=edit_v3_provider_tasks.job_id
                        AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+                       AND a.id=edit_v3_provider_tasks.stage_attempt_id
+                       AND a.stage=edit_v3_provider_tasks.stage
+                       AND a.fencing_token=j.fencing_token AND a.status='running'
                  )""",
             (
                 external_id,
@@ -4146,6 +4342,9 @@ def _bind_provider_result_tx(
                 now_ms,
                 claim.job_id,
                 operation_key,
+                claim.fencing_token,
+                existing["stage_attempt_id"],
+                existing["stage"],
                 claim.worker_id,
                 claim.fencing_token,
                 now_ms,
@@ -4819,6 +5018,31 @@ class V3Store:
         return self._read(
             lambda connection: _get_provider_task_for_claim_tx(
                 connection, claim, operation_key, now_ms
+            )
+        )
+
+    def claim_provider_submission(
+        self,
+        claim: LeaseClaim,
+        stage: str,
+        stage_attempt_id: str,
+        provider: str,
+        capability: str,
+        operation_key: str,
+        request_sha256: str,
+        now_ms: int,
+    ) -> bool:
+        return self._write(
+            lambda connection: _claim_provider_submission_tx(
+                connection,
+                claim,
+                stage,
+                stage_attempt_id,
+                provider,
+                capability,
+                operation_key,
+                request_sha256,
+                now_ms,
             )
         )
 
@@ -8242,6 +8466,30 @@ def get_provider_task_for_claim(
 ) -> dict[str, Any] | None:
     return _configured_store(db_path).get_provider_task_for_claim(
         claim, operation_key, now_ms
+    )
+
+
+def claim_provider_submission(
+    claim: LeaseClaim,
+    stage: str,
+    stage_attempt_id: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    return _configured_store(db_path).claim_provider_submission(
+        claim,
+        stage,
+        stage_attempt_id,
+        provider,
+        capability,
+        operation_key,
+        request_sha256,
+        now_ms,
     )
 
 

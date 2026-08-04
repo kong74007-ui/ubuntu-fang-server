@@ -94,6 +94,40 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             client.generate_director_decision("system", "user")
         self.assertEqual({"type": "json_object"}, bodies[0]["response_format"])
 
+    def test_material_review_uses_multimodal_image_and_strict_json(self):
+        bodies = []
+
+        def recorded(method, url, headers, body, timeout):
+            bodies.append(json.loads(body.decode("utf-8")))
+            return {
+                "id": "material-review-1",
+                "choices": [{"message": {"content": '{"result":"pass","reason":"ok","evidence":[]}'}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(http_request=recorded)
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            result = client.inspect_image(
+                {
+                    "image_url": "https://private.example/image.png?q-signature=secret",
+                    "semantic": "abstract airflow diagram",
+                    "forbidden_subjects": ["person", "face"],
+                    "source_metadata": {"sha256": "a" * 64},
+                    "output_contract": "material-review-v1",
+                },
+                deadline_at=10_000_000_000.0,
+            )
+
+        body = bodies[0]
+        self.assertEqual({"type": "json_object"}, body["response_format"])
+        content = body["messages"][1]["content"]
+        self.assertEqual("image_url", content[1]["type"])
+        self.assertEqual(
+            "https://private.example/image.png?q-signature=secret",
+            content[1]["image_url"]["url"],
+        )
+        self.assertNotIn("https://", json.dumps(result.payload, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     unittest.main()

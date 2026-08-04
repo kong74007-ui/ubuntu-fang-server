@@ -64,6 +64,103 @@ class DashScopeCompatibleQwenClient:
             strict_json=True,
         )
 
+    def inspect_image(
+        self,
+        request: dict[str, Any],
+        *,
+        deadline_at: float,
+    ) -> ProviderResult:
+        """Review one short-lived private image URL without returning that URL."""
+
+        image_url = request.get("image_url") if isinstance(request, dict) else None
+        semantic = request.get("semantic") if isinstance(request, dict) else None
+        forbidden = request.get("forbidden_subjects") if isinstance(request, dict) else None
+        metadata = request.get("source_metadata") if isinstance(request, dict) else None
+        if (
+            not isinstance(image_url, str)
+            or not image_url.startswith("https://")
+            or not isinstance(semantic, str)
+            or not semantic.strip()
+            or not isinstance(forbidden, list)
+            or any(not isinstance(item, str) or not item for item in forbidden)
+            or not isinstance(metadata, dict)
+            or request.get("output_contract") != "material-review-v1"
+        ):
+            raise ProviderError("dashscope_material_review_request_invalid")
+        remaining = int(deadline_at - time.time())
+        if remaining < 1:
+            raise TimeoutError("material_review_deadline_exceeded")
+        api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            raise ProviderError("dashscope_not_configured")
+        prompt = json.dumps(
+            {
+                "semantic": semantic.strip(),
+                "forbidden_subjects": forbidden,
+                "source_metadata": metadata,
+                "output_contract": {
+                    "result": "pass|fail",
+                    "reason": "plain text without URL or credentials",
+                    "evidence": [{
+                        "semantic_match": "boolean",
+                        "forbidden_subjects": forbidden,
+                    }],
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        body = json.dumps(
+            {
+                "model": os.environ.get("DASHSCOPE_QWEN_VL_MODEL", os.environ.get("DASHSCOPE_QWEN_MODEL", _MODEL)),
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Review the image independently. Return only the exact JSON contract; never echo URLs, credentials, or signed parameters.",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        started_at = self._clock_ms()
+        try:
+            response = self._http_request(
+                "POST",
+                os.environ.get("DASHSCOPE_QWEN_COMPATIBLE_URL", _ENDPOINT),
+                {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                body,
+                min(self._timeout_seconds, remaining),
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            raise RetryableProviderError("dashscope_material_review_unavailable") from exc
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            status = getattr(exc, "code", None)
+            if status is None or status in {408, 429} or int(status) >= 500:
+                raise RetryableProviderError("dashscope_material_review_unavailable") from exc
+            raise ProviderError("dashscope_material_review_rejected") from exc
+        request_id, content, tokens = self._normalize_response(response)
+        return ProviderResult(
+            provider="dashscope",
+            capability="material_review",
+            request_id=request_id,
+            payload={"content": content},
+            cost_units=tokens,
+            elapsed_ms=max(0, self._clock_ms() - started_at),
+        )
+
     def _generate(
         self,
         system_prompt: str,
