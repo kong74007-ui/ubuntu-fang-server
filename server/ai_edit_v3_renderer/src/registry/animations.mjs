@@ -41,7 +41,7 @@ export function compileAnimationScript({preset, target, startMs, durationMs, del
   if (!IDS.includes(preset) || !TARGET.test(target)) throw new Error("animation_compile_invalid");
   if (!OPERATION_VERSIONS.has(operationVersion)) throw new Error("animation_operation_version_invalid");
   if (operationVersion === "1.0" && (windowStartMs !== undefined || compositionDurationMs !== undefined)) throw new Error("animation_operation_context_invalid");
-  if (operationVersion === "2.0" && ["fade", "slide", "count_up", "stagger"].includes(preset) && !operations) throw new Error("animation_operations_required");
+  if (operationVersion === "2.0" && !operations) throw new Error("animation_operations_required");
   if (operations) {
     validateAnimationOperations(operations, {
       requireTrusted: true,
@@ -90,7 +90,43 @@ function representativeOperations({preset, target, direction, childTargets, para
       return fromToOperation({target: item, startMs: start, durationMs: boundedDuration, from: {y: 14, opacity: 0}, to: {y: 0, opacity: 1}});
     }));
   }
+  if (preset === "scale") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {scale: .82, opacity: 0}, to: {scale: 1, opacity: 1}})]);
+  if (preset === "rotate") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {rotation: -10, opacity: 0}, to: {rotation: 0, opacity: 1}})]);
+  if (preset === "wipe") {
+    const [from, to] = wipeClip(direction);
+    return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {clipPath: from}, to: {clipPath: to}})]);
+  }
+  if (preset === "image_pan_zoom") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {scale: 1.02, xPercent: -2}, to: {scale: 1.1, xPercent: 2}})]);
+  if (preset === "card_reveal") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {y: 28, scale: .96, opacity: 0}, to: {y: 0, scale: 1, opacity: 1}})]);
+  if (preset === "stamp") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {rotation: -8, scale: 1.24, opacity: 0}, to: {rotation: 0, scale: 1, opacity: 1}})]);
+  if (preset === "light_sweep") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {xPercent: -120, opacity: 0}, to: {xPercent: 120, opacity: 1}})]);
+  if (preset === "highlight_draw") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {scaleX: 0, opacity: .35}, to: {scaleX: 1, opacity: 1}})]);
+  if (preset === "split_screen") {
+    const offset = splitOffset(direction);
+    return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {xPercent: offset, opacity: 0}, to: {xPercent: 0, opacity: 1}})]);
+  }
+  if (preset === "subtitle_pop") return freezeOperations([fromToOperation({target, startMs: delayMs, durationMs, from: {y: 22, scale: .92, opacity: 0}, to: {y: 0, scale: 1, opacity: 1}})]);
   return null;
+}
+
+function wipeClip(direction) {
+  switch (direction) {
+    case "right": case "out": return ["inset(0 0 0 100%)", "inset(0 0 0 0)"];
+    case "up": return ["inset(0 0 100% 0)", "inset(0 0 0 0)"];
+    case "down": return ["inset(100% 0 0 0)", "inset(0 0 0 0)"];
+    case "left": case "in": case "none": return ["inset(0 100% 0 0)", "inset(0 0 0 0)"];
+    default: throw new Error("animation_direction_invalid");
+  }
+}
+
+function splitOffset(direction) {
+  switch (direction) {
+    case "right": case "out": return 50;
+    case "up": return -35;
+    case "down": return 35;
+    case "left": case "in": case "none": return -50;
+    default: throw new Error("animation_direction_invalid");
+  }
 }
 
 function fromToOperation({target, startMs, durationMs, from, to}) {
@@ -211,8 +247,13 @@ function matchesAnimationCompileContext(context, value) {
   return true;
 }
 function validateStyle(style) {
-  const allowed = new Set(["opacity", "x", "y"]);
-  if (!plainRecord(style) || Object.keys(style).some((key) => !allowed.has(key)) || Object.values(style).some((value) => !Number.isFinite(value))) throw new Error("animation_operation_invalid");
+  const numeric = new Set(["opacity", "x", "y", "scale", "scaleX", "rotation", "xPercent"]);
+  const allowed = new Set([...numeric, "clipPath"]);
+  if (!plainRecord(style) || Object.keys(style).some((key) => !allowed.has(key))) throw new Error("animation_operation_invalid");
+  for (const [key, value] of Object.entries(style)) {
+    if (numeric.has(key) && !Number.isFinite(value)) throw new Error("animation_operation_invalid");
+    if (key === "clipPath" && (typeof value !== "string" || !/^inset\((?:0|0%|100%) (?:0|0%|100%) (?:0|0%|100%) (?:0|0%|100%)\)$/u.test(value))) throw new Error("animation_operation_invalid");
+  }
 }
 function exactKeys(value, keys, code) {
   const actual = Object.keys(value).sort(); const expected = [...keys].sort();

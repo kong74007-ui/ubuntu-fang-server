@@ -11,8 +11,8 @@ export function compileProductHero(input) {
   const detail = assetOrFallback({prefix: prepared.prefix, slot: "detail", value: prepared.slots.detail, duration: prepared.duration, trackIndex: 4});
   const copy = copySlot(prepared.slots.copy);
   const bodies = {
-    center_pedestal: `<figure class="hf-v2-product-pedestal">${primary}<figcaption class="hf-v2-product-plinth clip" ${clipAttributes(prepared.duration, 2)}></figcaption></figure><aside class="hf-v2-detail-orbit">${detail}</aside>`,
-    split_copy: `<section class="hf-v2-product-copy clip" data-v2-region="copy" ${clipAttributes(prepared.duration, 2)}>${copy}</section><figure class="hf-v2-product-frame">${primary}${detail}</figure>`,
+    center_pedestal: `<figure class="hf-v2-product-pedestal">${primary}<figcaption id="${prepared.prefix}_product_plinth" class="hf-v2-product-plinth clip" ${clipAttributes(prepared.duration, 2)}></figcaption></figure><aside class="hf-v2-detail-orbit">${detail}</aside>`,
+    split_copy: `<section id="${prepared.prefix}_product_copy" class="hf-v2-product-copy clip" data-v2-region="copy" ${clipAttributes(prepared.duration, 2)}>${copy}</section><figure class="hf-v2-product-frame">${primary}${detail}</figure>`,
     detail_gallery: `<main class="hf-v2-product-gallery"><figure>${primary}</figure><ul class="hf-v2-detail-strip"><li>${detail}</li></ul></main>`,
   };
   const critical = input.ratio === "16:9"

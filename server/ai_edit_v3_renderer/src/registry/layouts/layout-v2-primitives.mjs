@@ -1,4 +1,5 @@
 import {assertSafeId, assertSafeText, escapeAttribute, seconds} from "../layout-primitives.mjs";
+import {safeAreaHostTrackIndex} from "../track-allocation.mjs";
 
 const RATIO_SIZES = Object.freeze({"16:9": Object.freeze([1920, 1080]), "9:16": Object.freeze([1080, 1920])});
 const SAFE_CSS_VALUE = /^(?:#[0-9a-fA-F]{6}|rgba?\([0-9., ]+\))$/u;
@@ -102,7 +103,7 @@ export function layoutResult({contract, variantId, ratio, input, structure, body
   const hosts = V2_OVERLAY_PLACEMENTS.map((placement, index) => {
     const box = safeAreas[placement];
     const legacyHost = placement === "title_safe" ? "title" : placement === "subtitle_safe" ? "captions" : placement;
-    return `<aside id="${input.prefix}_safe_${placement}" class="hf-v2-safe-area hf-v2-safe-${placement} clip" data-safe-host="${legacyHost}" data-overlay-host="${placement}" data-safe-box="${box.x},${box.y},${box.width},${box.height}" data-safe-area="${ratio}" ${clipAttributes(input.duration, 19 + index)}>${input.overlays[placement]}</aside>`;
+    return `<aside id="${input.prefix}_safe_${placement}" class="hf-v2-safe-area hf-v2-safe-${placement} clip" data-safe-host="${legacyHost}" data-overlay-host="${placement}" data-safe-box="${box.x},${box.y},${box.width},${box.height}" data-safe-area="${ratio}" ${clipAttributes(input.duration, safeAreaHostTrackIndex(index))}>${input.overlays[placement]}</aside>`;
   }).join("");
   const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}${hosts}<style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
   return Object.freeze({

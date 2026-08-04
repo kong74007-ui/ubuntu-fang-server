@@ -35,17 +35,21 @@ export async function compileProjectV2({manifest, outputRoot}) {
     if (JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item.component_id))) {
       throw new Error("manifest_component_projection_invalid");
     }
-    return {
+    const trustedComposition = Object.freeze({
       ...composition,
+      layout_slot_bindings: Object.freeze((composition.layout_slot_bindings ?? []).map((binding) => Object.freeze({...binding}))),
       animations: (composition.animations ?? []).map((animation) => {
         if (!instanceToComponent.has(animation.target)) throw new Error("manifest_component_animation_target_invalid");
         return {...animation};
       }),
-    };
+    });
+    return trustedComposition;
   });
   return compileProject({
-    manifest: {...manifest, compositions}, outputRoot,
-    sceneOptions: {layoutResolver: resolveV2OrLegacyLayout, buildLayoutInput: buildV2LayoutInput, compileSource: compileV2Source},
+    manifest: {...manifest, compositions: Object.freeze(compositions)}, outputRoot,
+    sceneOptions: {
+      layoutResolver: resolveV2OrLegacyLayout, buildLayoutInput: buildV2LayoutInput, compileSource: compileV2Source,
+    },
   });
 }
 

@@ -128,7 +128,8 @@ test("Task 8a RED: unproven card identity fails closed and missing identity audi
     timeline: fakeTimeline(), transition: "soft_wipe", outgoing: "#scene_a", incoming: "#scene_b",
     boundaryMs: 1000, sceneDurationMs: 2400, fps: 30,
   });
-  assert.equal(directSoftWipe.operations, undefined);
+  assertNormalizedOperations(directSoftWipe.operations, "soft_wipe-direct");
+  assert.deepEqual(new Set(directSoftWipe.operations.map((operation) => operation.target)), new Set(["#scene_a", "#scene_b"]));
 });
 
 test("Task 8a RED: real V2 number and list components compile dedicated public targets without destroying DOM", async () => {
