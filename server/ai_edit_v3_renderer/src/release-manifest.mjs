@@ -67,13 +67,13 @@ function contained(root, path) {
 }
 
 
-async function collectMjs(root, directory, output) {
+async function collectRuntimeSources(root, directory, output) {
   for (const entry of await readdir(directory, {withFileTypes: true})) {
     const path = resolve(directory, entry.name);
     const metadata = await lstat(path);
     if (metadata.isSymbolicLink()) throw new Error("renderer_release_symlink_forbidden");
-    if (metadata.isDirectory()) await collectMjs(root, path, output);
-    else if (metadata.isFile() && entry.name.endsWith(".mjs")) output.push(path);
+    if (metadata.isDirectory()) await collectRuntimeSources(root, path, output);
+    else if (metadata.isFile() && (entry.name.endsWith(".mjs") || entry.name.endsWith(".json"))) output.push(path);
     else if (!metadata.isFile()) throw new Error("renderer_release_file_invalid");
   }
 }
@@ -82,7 +82,7 @@ async function collectMjs(root, directory, output) {
 export async function inspectReleaseTree(releaseRoot) {
   const root = resolve(releaseRoot);
   const paths = [];
-  await collectMjs(root, resolve(root, "src"), paths);
+  await collectRuntimeSources(root, resolve(root, "src"), paths);
   const fontsRoot = resolve(root, "assets", "fonts");
   for (const entry of await readdir(fontsRoot, {withFileTypes: true})) {
     const path = resolve(fontsRoot, entry.name);

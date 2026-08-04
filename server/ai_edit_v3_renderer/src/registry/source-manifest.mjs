@@ -24,7 +24,7 @@ function walk(directory) {
     .flatMap((entry) => {
       const child = path.join(directory, entry.name);
       if (entry.isDirectory()) return walk(child);
-      return entry.isFile() && entry.name.endsWith(".mjs") ? [child] : [];
+      return entry.isFile() && (entry.name.endsWith(".mjs") || entry.name.endsWith(".json")) ? [child] : [];
     })
     .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
 }

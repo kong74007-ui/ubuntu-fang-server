@@ -17,6 +17,7 @@ class SceneCandidate:
     protected_fact_ids: tuple[str, ...]
     available_material_ids: tuple[str, ...]
     speaker_available: bool
+    caption_texts: tuple[tuple[str, str], ...] = ()
 
 
 def _compiled_scene_spans(
@@ -209,5 +210,6 @@ def build_scene_candidates(
             protected_fact_ids=protected,
             available_material_ids=material_ids,
             speaker_available=speaker_available,
+            caption_texts=tuple((str(item["id"]), str(item["text"])) for item in group),
         ))
     return tuple(result)

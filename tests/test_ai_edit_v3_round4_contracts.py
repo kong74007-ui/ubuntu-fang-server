@@ -16,6 +16,7 @@ from server.content_domains.ai_edit_v3.contracts import (
 )
 from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
 from server.content_domains.ai_edit_v3.director_decision import validate_director_decision
+from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
 from server.content_domains.ai_edit_v3.production import (
     _freeze_overlay_authoritative_content,
     _layout_slot_bindings,
@@ -77,6 +78,8 @@ def _compile_plan(
         },
         "theme_profile_ids": ["editorial_clean"],
         "identity_match_capability": False,
+        "output_ratio": "16:9",
+        "overlay_placement_budgets": load_overlay_placement_catalog(RENDERER),
     }
     decision = {
         "version": "1.0",

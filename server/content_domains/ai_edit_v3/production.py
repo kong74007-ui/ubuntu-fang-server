@@ -41,6 +41,7 @@ from .director_candidates import _build_caption_groups, _scene_duration_budget, 
 from .director_compiler import compile_edit_plan
 from .director_decision import generate_director_decision
 from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_media, probe_media
+from .overlay_catalog import load_overlay_placement_catalog, overlay_budget_index
 from .providers.asr import normalize_asr_result
 from .providers.base import ProviderResult
 from .providers.qwen_compatible import DashScopeCompatibleQwenClient
@@ -80,8 +81,16 @@ def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, An
         for layout in layouts
     ):
         raise ValueError("visual_program_capabilities_incomplete")
-    required = ("overlay_variants", "overlay_animation_targets", "layout_animation_targets", "theme_profile_ids")
+    required = ("overlay_variants", "overlay_animation_targets", "layout_animation_targets", "theme_profile_ids", "overlay_placement_budgets", "output_ratio")
     if any(name not in capabilities for name in required):
+        raise ValueError("visual_program_capabilities_incomplete")
+    if capabilities.get("output_ratio") not in {"16:9", "9:16"}:
+        raise ValueError("visual_program_capabilities_incomplete")
+    try:
+        budget_components = {identity[0] for identity in overlay_budget_index(capabilities)}
+    except ValueError as exc:
+        raise ValueError("visual_program_capabilities_incomplete") from exc
+    if set(capabilities.get("overlay_capabilities", ())) != budget_components:
         raise ValueError("visual_program_capabilities_incomplete")
     return copy.deepcopy(dict(capabilities))
 
@@ -1332,7 +1341,13 @@ class ProductionStageCoordinator:
             director_request["generate_missing_material"] = not descriptors
             if os.environ.get("AI_EDIT_V3_VISUAL_PROGRAM_ENABLED", "0") == "1":
                 candidates = build_scene_candidates(timeline, descriptors, ratio=str(normalized["ratio"]), input_type=normalized["input_type"])
-                visual_capabilities = visual_program_capabilities(capabilities)
+                placement_catalog = load_overlay_placement_catalog(self.renderer_root)
+                visual_capabilities = visual_program_capabilities({
+                    **capabilities,
+                    "overlay_capabilities": sorted({entry["component_id"] for entry in placement_catalog["entries"]}),
+                    "overlay_placement_budgets": placement_catalog,
+                    "output_ratio": str(normalized["ratio"]),
+                })
                 decision_request = {**director_request, "scene_candidates": [item.__dict__ if hasattr(item, "__dict__") else {slot: getattr(item, slot) for slot in item.__slots__} for item in candidates], "capabilities": visual_capabilities}
                 decision = generate_director_decision(SimpleNamespace(request=decision_request, timeline=timeline, candidates=candidates, capabilities=visual_capabilities, job_id=job_id, deadline_at=context.deadline_at), self.director)
                 variation_seed = derive_variation_seed(job.get("request_sha256"), decision.decision_sha256, self.renderer.registry_sha256.removeprefix("sha256:"))
@@ -1562,7 +1577,10 @@ class ProductionStageCoordinator:
                     manifest,
                     set(repairable_ids),
                 )
-            frozen = freeze_render_manifest(manifest, input_root / "render-manifest.json", sandbox_root=input_root)
+            frozen = freeze_render_manifest(
+                manifest, input_root / "render-manifest.json", sandbox_root=input_root,
+                overlay_placement_catalog=(load_overlay_placement_catalog(self.renderer_root) if visual_program else None),
+            )
             payload = {"attempt": attempt, "input_root": input_root.relative_to(root).as_posix(), "manifest_sha256": frozen.sha256}
             digest = _write_json(root / f"compile-{attempt}.json", payload)
             return StageOutcome(_NEXT[name], {"compile_sha256": digest, **payload}, input_sha)

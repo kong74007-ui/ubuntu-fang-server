@@ -7,6 +7,12 @@ export const V2_RATIOS = Object.freeze(["16:9", "9:16"]);
 export const V2_OVERLAY_PLACEMENTS = Object.freeze(["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]);
 const V2_OVERLAY_SAFE_AREAS = Object.freeze(Object.fromEntries(V2_RATIOS.map((ratio) => [ratio, freezeBoxes(placementBoxes(ratio))])));
 
+export function overlayPlacementBox(ratio, placement) {
+  const box = placementBoxes(ratio)?.[placement];
+  if (!box) throw new Error("manifest_overlay_placement_invalid");
+  return Object.freeze({...box});
+}
+
 export function createContract({id, moduleId, variants, requiredSlots, optionalSlots, identitySlots}) {
   return Object.freeze({
     id,

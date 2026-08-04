@@ -1,0 +1,1455 @@
+{
+  "version": "overlay-placement-v1",
+  "entries": [
+    {
+      "component_id": "headline_block",
+      "placement": "title_safe",
+      "ratio": "16:9",
+      "max_chars": 54,
+      "max_lines": 2,
+      "font_size_steps": [
+        64,
+        58,
+        52,
+        46,
+        40
+      ],
+      "line_height": 1.12,
+      "content_box": {
+        "width": 1080,
+        "height": 132
+      },
+      "host_box": {
+        "width": 1680,
+        "height": 150
+      },
+      "chrome": {
+        "width": 0,
+        "height": 18,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "headline_block",
+      "placement": "title_safe",
+      "ratio": "9:16",
+      "max_chars": 75,
+      "max_lines": 3,
+      "font_size_steps": [
+        58,
+        52,
+        46,
+        40,
+        36
+      ],
+      "line_height": 1.12,
+      "content_box": {
+        "width": 900,
+        "height": 162
+      },
+      "host_box": {
+        "width": 960,
+        "height": 180
+      },
+      "chrome": {
+        "width": 0,
+        "height": 18,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "standard_caption",
+      "placement": "subtitle_safe",
+      "ratio": "16:9",
+      "max_chars": 126,
+      "max_lines": 3,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 1276,
+        "height": 126
+      },
+      "host_box": {
+        "width": 1320,
+        "height": 150
+      },
+      "chrome": {
+        "width": 44,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "standard_caption",
+      "placement": "subtitle_safe",
+      "ratio": "9:16",
+      "max_chars": 96,
+      "max_lines": 3,
+      "font_size_steps": [
+        44,
+        40,
+        36,
+        32,
+        28
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 900,
+        "height": 256
+      },
+      "host_box": {
+        "width": 960,
+        "height": 280
+      },
+      "chrome": {
+        "width": 44,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "emphasis_caption",
+      "placement": "title_safe",
+      "ratio": "16:9",
+      "max_chars": 120,
+      "max_lines": 3,
+      "font_size_steps": [
+        48,
+        44,
+        40,
+        36,
+        32
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 1280,
+        "height": 118
+      },
+      "host_box": {
+        "width": 1680,
+        "height": 150
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "emphasis_caption",
+      "placement": "title_safe",
+      "ratio": "9:16",
+      "max_chars": 90,
+      "max_lines": 3,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 900,
+        "height": 148
+      },
+      "host_box": {
+        "width": 960,
+        "height": 180
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "emphasis_caption",
+      "placement": "subtitle_safe",
+      "ratio": "16:9",
+      "max_chars": 117,
+      "max_lines": 3,
+      "font_size_steps": [
+        48,
+        44,
+        40,
+        36,
+        32
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 1268,
+        "height": 118
+      },
+      "host_box": {
+        "width": 1320,
+        "height": 150
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "emphasis_caption",
+      "placement": "subtitle_safe",
+      "ratio": "9:16",
+      "max_chars": 90,
+      "max_lines": 3,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 900,
+        "height": 248
+      },
+      "host_box": {
+        "width": 960,
+        "height": 280
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "chapter_label",
+      "placement": "title_safe",
+      "ratio": "16:9",
+      "max_chars": 50,
+      "max_lines": 2,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.1,
+      "content_box": {
+        "width": 760,
+        "height": 126
+      },
+      "host_box": {
+        "width": 1680,
+        "height": 150
+      },
+      "chrome": {
+        "width": 36,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "chapter_label",
+      "placement": "title_safe",
+      "ratio": "9:16",
+      "max_chars": 54,
+      "max_lines": 2,
+      "font_size_steps": [
+        40,
+        36,
+        32,
+        28
+      ],
+      "line_height": 1.1,
+      "content_box": {
+        "width": 760,
+        "height": 156
+      },
+      "host_box": {
+        "width": 960,
+        "height": 180
+      },
+      "chrome": {
+        "width": 36,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "chapter_label",
+      "placement": "lower_third",
+      "ratio": "16:9",
+      "max_chars": 38,
+      "max_lines": 2,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.1,
+      "content_box": {
+        "width": 584,
+        "height": 116
+      },
+      "host_box": {
+        "width": 620,
+        "height": 140
+      },
+      "chrome": {
+        "width": 36,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "chapter_label",
+      "placement": "lower_third",
+      "ratio": "9:16",
+      "max_chars": 46,
+      "max_lines": 2,
+      "font_size_steps": [
+        40,
+        36,
+        32,
+        28
+      ],
+      "line_height": 1.1,
+      "content_box": {
+        "width": 664,
+        "height": 136
+      },
+      "host_box": {
+        "width": 700,
+        "height": 160
+      },
+      "chrome": {
+        "width": 36,
+        "height": 24,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "lower_third",
+      "placement": "lower_third",
+      "ratio": "16:9",
+      "max_chars": 63,
+      "max_lines": 3,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 560,
+        "height": 108
+      },
+      "host_box": {
+        "width": 620,
+        "height": 140
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "lower_third",
+      "placement": "lower_third",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 3,
+      "font_size_steps": [
+        36,
+        32,
+        28,
+        24
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 640,
+        "height": 128
+      },
+      "host_box": {
+        "width": 700,
+        "height": 160
+      },
+      "chrome": {
+        "width": 52,
+        "height": 32,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 85,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 456,
+        "height": 420
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 55,
+      "max_lines": 5,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 256,
+        "height": 760
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 85,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 456,
+        "height": 420
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 55,
+      "max_lines": 5,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 256,
+        "height": 760
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 90,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 480,
+        "height": 330
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "info_card",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 55,
+      "max_lines": 5,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.25,
+      "content_box": {
+        "width": 256,
+        "height": 510
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 44,
+        "height": 90,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 120,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 460,
+        "height": 424
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 260,
+        "height": 804
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 120,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 460,
+        "height": 424
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 260,
+        "height": 804
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 126,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 470,
+        "height": 324
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "bullet_list",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.2,
+      "content_box": {
+        "width": 260,
+        "height": 504
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 40,
+        "height": 96,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 70,
+      "max_lines": 5,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 448,
+        "height": 198
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 45,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 248,
+        "height": 356
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 70,
+      "max_lines": 5,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 448,
+        "height": 198
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 45,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 248,
+        "height": 356
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 72,
+      "max_lines": 4,
+      "font_size_steps": [
+        46,
+        42,
+        38,
+        34,
+        30
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 568,
+        "height": 156
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "number_proof",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 45,
+      "max_lines": 5,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.14,
+      "content_box": {
+        "width": 248,
+        "height": 231
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 52,
+        "height": 44,
+        "content_height_factor": 2.4
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 102,
+      "max_lines": 6,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 452,
+        "height": 462
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 66,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 252,
+        "height": 780
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 102,
+      "max_lines": 6,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 452,
+        "height": 462
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 66,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 252,
+        "height": 780
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 108,
+      "max_lines": 6,
+      "font_size_steps": [
+        42,
+        38,
+        34,
+        30,
+        26
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 470,
+        "height": 362
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "quote_card",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 66,
+      "max_lines": 6,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.24,
+      "content_box": {
+        "width": 252,
+        "height": 542
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 48,
+        "height": 58,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 126,
+      "max_lines": 6,
+      "font_size_steps": [
+        36,
+        32,
+        28,
+        24,
+        22
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 464,
+        "height": 436
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        32,
+        28,
+        25,
+        22,
+        20
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 264,
+        "height": 816
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 126,
+      "max_lines": 6,
+      "font_size_steps": [
+        36,
+        32,
+        28,
+        24,
+        22
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 464,
+        "height": 436
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        32,
+        28,
+        25,
+        22,
+        20
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 264,
+        "height": 816
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 126,
+      "max_lines": 6,
+      "font_size_steps": [
+        36,
+        32,
+        28,
+        24,
+        22
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 470,
+        "height": 336
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "step_indicator",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 78,
+      "max_lines": 6,
+      "font_size_steps": [
+        32,
+        28,
+        25,
+        22,
+        20
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 264,
+        "height": 516
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 36,
+        "height": 84,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "left_panel",
+      "ratio": "16:9",
+      "max_chars": 84,
+      "max_lines": 4,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 464,
+        "height": 300
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "left_panel",
+      "ratio": "9:16",
+      "max_chars": 52,
+      "max_lines": 4,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 264,
+        "height": 520
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "right_panel",
+      "ratio": "16:9",
+      "max_chars": 84,
+      "max_lines": 4,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 464,
+        "height": 300
+      },
+      "host_box": {
+        "width": 500,
+        "height": 520
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "right_panel",
+      "ratio": "9:16",
+      "max_chars": 52,
+      "max_lines": 4,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 264,
+        "height": 520
+      },
+      "host_box": {
+        "width": 300,
+        "height": 900
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 84,
+      "max_lines": 4,
+      "font_size_steps": [
+        38,
+        34,
+        30,
+        26,
+        22
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 470,
+        "height": 300
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "product_tag",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 52,
+      "max_lines": 4,
+      "font_size_steps": [
+        34,
+        30,
+        26,
+        22,
+        20
+      ],
+      "line_height": 1.16,
+      "content_box": {
+        "width": 264,
+        "height": 520
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 36,
+        "height": 56,
+        "content_height_factor": 1
+      }
+    },
+    {
+      "component_id": "cta_hold",
+      "placement": "center",
+      "ratio": "16:9",
+      "max_chars": 100,
+      "max_lines": 5,
+      "font_size_steps": [
+        44,
+        40,
+        36,
+        32,
+        28
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 572,
+        "height": 271
+      },
+      "host_box": {
+        "width": 620,
+        "height": 420
+      },
+      "chrome": {
+        "width": 48,
+        "height": 81,
+        "content_height_factor": 1.25
+      }
+    },
+    {
+      "component_id": "cta_hold",
+      "placement": "center",
+      "ratio": "9:16",
+      "max_chars": 50,
+      "max_lines": 5,
+      "font_size_steps": [
+        40,
+        36,
+        32,
+        28,
+        24
+      ],
+      "line_height": 1.18,
+      "content_box": {
+        "width": 252,
+        "height": 415
+      },
+      "host_box": {
+        "width": 300,
+        "height": 600
+      },
+      "chrome": {
+        "width": 48,
+        "height": 81,
+        "content_height_factor": 1.25
+      }
+    }
+  ]
+}

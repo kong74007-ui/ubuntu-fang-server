@@ -500,6 +500,7 @@ def freeze_render_manifest(
     destination: Path,
     *,
     sandbox_root: Path,
+    overlay_placement_catalog: Mapping[str, Any] | None = None,
 ) -> FrozenRenderManifest:
     root = sandbox_root.resolve(strict=True)
     target = destination.resolve(strict=False)
@@ -519,7 +520,10 @@ def freeze_render_manifest(
         )
     if target.exists():
         _raise("render_manifest_exists", "destination", "manifest already exists")
-    normalized = validate_render_manifest(document, sandbox_root=root)
+    normalized = validate_render_manifest(
+        document, sandbox_root=root,
+        overlay_placement_catalog=overlay_placement_catalog,
+    )
     encoded = canonical_json(normalized)
     temporary = target.parent / f".{target.name}.{os.getpid()}.tmp"
     descriptor: int | None = None
@@ -1508,6 +1512,7 @@ def validate_render_manifest(
     manifest: Any,
     *,
     sandbox_root: Path,
+    overlay_placement_catalog: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     version = manifest.get("version") if isinstance(manifest, Mapping) else None
     schema_name = {"1.0": "render-manifest-v1.schema.json", "2.0": "render-manifest-v2.schema.json"}.get(version)
@@ -1567,6 +1572,20 @@ def validate_render_manifest(
         )
     known_assets = set(asset_ids)
     visual_manifest = manifest["version"] == "2.0"
+    overlay_capabilities: dict[str, Any] | None = None
+    if visual_manifest:
+        from .overlay_catalog import (
+            load_overlay_placement_catalog,
+            validate_overlay_placement_catalog,
+        )
+        catalog = (
+            validate_overlay_placement_catalog(overlay_placement_catalog)
+            if overlay_placement_catalog is not None
+            else load_overlay_placement_catalog(
+                Path(__file__).resolve().parents[2] / "ai_edit_v3_renderer"
+            )
+        )
+        overlay_capabilities = {"overlay_placement_budgets": catalog}
     composition_start = 0
     for index, composition in enumerate(manifest["compositions"]):
         if (
@@ -1616,6 +1635,26 @@ def validate_render_manifest(
                 _raise("render_layout_slot_duplicate", f"compositions[{index}].layout_slot_bindings", "layout slot IDs must be unique")
             if any(item.get("asset_id") not in composition["asset_ids"] for item in layout_bindings):
                 _raise("render_reference_unknown", f"compositions[{index}].layout_slot_bindings", "layout slot asset is absent from the composition")
+            from .overlay_catalog import validate_overlay_projection
+            for overlay_index, instance in enumerate(instances):
+                try:
+                    authoritative = composition["authoritative_content"][instance["content_ref"]]["text"]
+                    validate_overlay_projection(
+                        overlay_capabilities or {},
+                        component_id=instance["component_id"],
+                        placement=instance["placement"],
+                        ratio=output_spec["ratio"],
+                        text=authoritative,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    error_code = str(exc) if isinstance(exc, ValueError) else "director_overlay_placement_invalid"
+                    if error_code not in {"director_overlay_placement_invalid", "director_overlay_text_budget_exceeded"}:
+                        error_code = "director_overlay_placement_invalid"
+                    _raise(
+                        error_code.replace("director_", "render_"),
+                        f"compositions[{index}].overlay_instances[{overlay_index}]",
+                        "overlay projection exceeds the immutable placement catalog",
+                    )
         if any(
             animation["target"] not in (set(item["instance_id"] for item in composition["overlay_instances"]) if visual_manifest else composition["overlay_ids"])
             for animation in composition["animations"]

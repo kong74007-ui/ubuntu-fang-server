@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -18,6 +19,23 @@ from server.content_domains.ai_edit_v3.providers.qwen_compatible import (
     DashScopeCompatibleQwenClient,
 )
 from server.content_domains.ai_edit_v3.transcript import Caption
+
+
+def _node22_command() -> list[str]:
+    configured = os.environ.get("AI_EDIT_V3_TEST_NODE22_BIN")
+    if configured:
+        return [str(Path(configured).resolve(strict=True))]
+    system_node = shutil.which("node")
+    if system_node:
+        version = subprocess.run(
+            [system_node, "--version"], capture_output=True, text=True, check=False,
+        )
+        if version.returncode == 0 and version.stdout.strip().startswith("v22."):
+            return [system_node]
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("ai_edit_v3_test_node22_missing")
+    return [npm, "exec", "--yes", "--package=node@22", "--", "node"]
 
 
 class _Qwen:
@@ -40,6 +58,23 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_python_and_node_consume_the_same_renderer_owned_overlay_catalog(self):
+        from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
+
+        renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+        python_catalog = load_overlay_placement_catalog(renderer)
+        system_node = shutil.which("node")
+        self.assertIsNotNone(system_node, "system Node runtime is required for compatibility coverage")
+        commands = [[str(Path(system_node).resolve(strict=True))], _node22_command()]
+        for command in commands:
+            probe = subprocess.run(
+                [*command, "--input-type=module", "-e", "import {OVERLAY_PLACEMENT_CATALOG} from './src/registry/overlays/overlay-placement-contract.mjs';process.stdout.write(JSON.stringify(OVERLAY_PLACEMENT_CATALOG));"],
+                cwd=renderer, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(0, probe.returncode, probe.stderr)
+            self.assertEqual(python_catalog, json.loads(probe.stdout))
+        self.assertEqual(52, len(python_catalog["entries"]))
+
     def test_visual_planning_binds_seed_to_persisted_request_sha_and_replays_exactly(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
@@ -63,9 +98,11 @@ class ProductionDirectorTests(unittest.TestCase):
             "overlay_variants": {}, "overlay_animation_targets": {}, "layout_animation_targets": {},
         }
 
+        captured_capabilities = []
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
             coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
             coordinator.director = object()
             coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
@@ -76,7 +113,10 @@ class ProductionDirectorTests(unittest.TestCase):
                 (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
                 (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative", "start_ms": 0, "end_ms": 4000}], "source_segments": [], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
                 job = {"job_id": job_id, "owner_id": "alice", "request_sha256": request_sha256, "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}
-                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", return_value=decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
+                def capture_decision(context, *_args, **_kwargs):
+                    captured_capabilities.append(context.request["capabilities"])
+                    return decision
+                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
                     coordinator._stage("planning", job, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
                 return json.loads((root / "visual-program.json").read_text(encoding="utf-8"))["variation_seed"]
 
@@ -88,6 +128,9 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(first, replay)
         self.assertEqual(replay, replay_again)
+        self.assertEqual(4, len(captured_capabilities))
+        self.assertTrue(all(item["output_ratio"] == "9:16" for item in captured_capabilities))
+        self.assertTrue(all(item["overlay_placement_budgets"]["version"] == "overlay-placement-v1" for item in captured_capabilities))
 
     def test_visual_planning_rejects_missing_or_invalid_persisted_request_sha(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
@@ -97,6 +140,7 @@ class ProductionDirectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
             coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
             coordinator.director = object(); coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64); coordinator._capabilities = lambda _ratio: capabilities
             for index, request_sha256 in enumerate((None, "not-a-sha")):
@@ -122,10 +166,10 @@ class ProductionDirectorTests(unittest.TestCase):
         program = "import fs from 'node:fs'; import {parseCanonicalJson} from './src/parse-canonical-json.mjs'; import {validateManifest} from './src/validate-manifest.mjs'; const values=parseCanonicalJson(fs.readFileSync(process.argv.at(-1))); for (const value of values) validateManifest(value,{rendererBuildId:'build',registrySha256:'sha256:registry',schemaSha256ByVersion:{'2.0':'schema-v2'}});"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifests.json"; path.write_text(json.dumps(manifests), encoding="utf-8")
-            accepted = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
+            accepted = subprocess.run([*_node22_command(), "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
             manifests[0]["design_tokens"]["--hf-bg"] = "#tampered"
             path.write_text(json.dumps(manifests), encoding="utf-8")
-            rejected = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
+            rejected = subprocess.run([*_node22_command(), "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertNotEqual(0, rejected.returncode)
         self.assertIn("manifest_design_tokens_mismatch", rejected.stderr)
@@ -139,7 +183,7 @@ class ProductionDirectorTests(unittest.TestCase):
 
         renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
         registry_probe = subprocess.run(
-            ["node", "--input-type=module", "-e", "import {getRegistrySha256} from './src/registry/index.mjs';process.stdout.write(getRegistrySha256());"],
+            [*_node22_command(), "--input-type=module", "-e", "import {getRegistrySha256} from './src/registry/index.mjs';process.stdout.write(getRegistrySha256());"],
             cwd=renderer, capture_output=True, text=True, check=False,
         )
         self.assertEqual(0, registry_probe.returncode, registry_probe.stderr)
@@ -177,7 +221,7 @@ class ProductionDirectorTests(unittest.TestCase):
             manifest_path = Path(directory) / "manifest.json"
             output_path = Path(directory) / "project"
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-            result = subprocess.run(["node", "--input-type=module", "-e", program, str(manifest_path), str(output_path)], cwd=renderer, capture_output=True, text=True, check=False)
+            result = subprocess.run([*_node22_command(), "--input-type=module", "-e", program, str(manifest_path), str(output_path)], cwd=renderer, capture_output=True, text=True, check=False)
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_variation_seed_is_a_stable_16_lowercase_hex_derivation(self):
@@ -214,6 +258,7 @@ class ProductionDirectorTests(unittest.TestCase):
         ):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
             coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
             coordinator.director = object()
             root = coordinator._root("job-gate-zero")
@@ -235,6 +280,7 @@ class ProductionDirectorTests(unittest.TestCase):
         ):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
             coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
             coordinator.director = object()
             root = coordinator._root("job-gate-one")

@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from . import contracts
 from .contracts import ContractError
 from .providers.base import ProviderResult
+from .overlay_catalog import validate_overlay_projection
 
 
 _UNSAFE_TEXT = re.compile(r"(?:[a-z][a-z0-9+.-]*://|^[a-zA-Z]:[\\/]|^[/\\]|```|<script\b)", re.IGNORECASE)
@@ -88,6 +89,23 @@ def _validate_visible_text(value: Mapping[str, Any], candidate: Mapping[str, Any
         raise DirectorDecisionError("director_text_reference_invalid", path)
 
 
+def _visible_text(value: Mapping[str, Any], candidate: Mapping[str, Any], path: str) -> str:
+    references = value.get("source_caption_ids")
+    caption_texts = candidate.get("caption_texts", ())
+    if isinstance(caption_texts, (list, tuple)):
+        try:
+            index = {str(item[0]): str(item[1]) for item in caption_texts if isinstance(item, (list, tuple)) and len(item) == 2}
+        except (TypeError, ValueError):
+            index = {}
+        if isinstance(references, list) and references and all(reference in index for reference in references):
+            return "".join(index[reference] for reference in references)
+    if list(references or ()) == list(candidate.get("caption_ids", ())):
+        text = candidate.get("authoritative_text")
+        if isinstance(text, str) and text:
+            return text
+    raise DirectorDecisionError("director_text_reference_invalid", path)
+
+
 def validate_director_decision(
     value: Any,
     *,
@@ -159,6 +177,15 @@ def validate_director_decision(
                 raise DirectorDecisionError("director_component_unknown", f"{overlay_path}.component_id")
             if overlay["content_ref"] not in visible_names:
                 raise DirectorDecisionError("director_content_reference_invalid", f"{overlay_path}.content_ref")
+            try:
+                validate_overlay_projection(
+                    capabilities,
+                    component_id=overlay["component_id"], placement=overlay["placement"],
+                    ratio=str(capabilities.get("output_ratio")),
+                    text=_visible_text(directive[overlay["content_ref"]], candidate, f"{overlay_path}.content_ref"),
+                )
+            except ValueError as exc:
+                raise DirectorDecisionError(str(exc), overlay_path) from None
             variants = overlay_variants.get(overlay["component_id"])
             if "variant" in overlay and (
                 not isinstance(variants, (list, tuple)) or overlay["variant"] not in variants

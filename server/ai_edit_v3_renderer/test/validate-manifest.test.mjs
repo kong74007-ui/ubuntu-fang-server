@@ -157,6 +157,21 @@ test("strict parser validates frozen overlay facts and rejects executable or unk
   }
 });
 
+test("v2 manifest rejects component placements outside the frozen semantic matrix", () => {
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  const manifest = {
+    version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+    master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
+    compositions: [{
+      id: "scene_1", start_ms: 0, end_ms: 4000, layout_id: "speaker_fullscreen",
+      overlay_ids: ["info_card"], overlay_instances: [{instance_id: "info_01", component_id: "info_card", content_ref: "highlight", placement: "title_safe"}],
+      authoritative_content: authoritativeContent,
+    }],
+  };
+  assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected), /manifest_overlay_placement_invalid/);
+});
+
 test("v2 manifest rejects extra executable design intent fields before token resolution", () => {
   const manifest = {
     version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},

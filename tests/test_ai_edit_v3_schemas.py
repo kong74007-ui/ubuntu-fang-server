@@ -777,6 +777,23 @@ class RenderManifestValidatorTests(unittest.TestCase):
         self.assertEqual(result, original)
         self.assertEqual(self.manifest, original)
 
+    def test_v2_manifest_uses_the_renderer_catalog_for_overlay_placement_and_text_budget(self):
+        manifest = load_fixture("valid-render-manifest-v2.json")
+        self.assertEqual(
+            manifest,
+            validate_render_manifest(manifest, sandbox_root=self.sandbox),
+        )
+
+        misplaced = copy.deepcopy(manifest)
+        misplaced["compositions"][0]["overlay_instances"][1]["placement"] = "title_safe"
+        with self.assertRaisesRegex(ContractError, "render_overlay_placement_invalid"):
+            validate_render_manifest(misplaced, sandbox_root=self.sandbox)
+
+        oversized = copy.deepcopy(manifest)
+        oversized["compositions"][0]["authoritative_content"]["headline"]["text"] = "权" * 76
+        with self.assertRaisesRegex(ContractError, "render_overlay_text_budget_exceeded"):
+            validate_render_manifest(oversized, sandbox_root=self.sandbox)
+
     def test_rejects_absolute_parent_and_windows_media_paths(self):
         for path in (
             str((self.sandbox / "media" / "source.mp4").resolve()),

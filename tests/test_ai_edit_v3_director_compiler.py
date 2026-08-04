@@ -7,18 +7,20 @@ from pathlib import Path
 
 from server.content_domains.ai_edit_v3.contracts import ContractError, canonical_json, validate_edit_plan
 from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
+from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OVERLAY_CATALOG = load_overlay_placement_catalog(ROOT / "server" / "ai_edit_v3_renderer")
 DECISION = json.loads((ROOT / "tests" / "fixtures" / "ai_edit_v3" / "director-decisions" / "varied-valid.json").read_text(encoding="utf-8"))
 CAPTIONS = [{"id": f"caption_{index:03d}", "start_ms": (index - 1) * 5000, "end_ms": index * 5000, "text": f"第{index}段权威字幕"} for index in range(1, 6)]
 CANDIDATES = [{"id": f"candidate_{index:02d}", "start_ms": (index - 1) * 5000, "end_ms": index * 5000, "caption_ids": [f"caption_{index:03d}"], "authoritative_text": f"第{index}段权威字幕", "protected_fact_ids": [], "available_material_ids": [], "speaker_available": True} for index in range(1, 6)]
-CAPABILITIES = {"layout_capabilities": ["quote_reversal", "speaker_left_info_right", "number_proof", "steps_stack", "cta_offer"], "layout_variants": {"quote_reversal": ["diagonal_statement"], "speaker_left_info_right": ["speaker_focus"], "number_proof": ["metric_focus"], "steps_stack": ["stacked_steps"], "cta_offer": ["offer_hold"]}, "overlay_capabilities": ["standard_caption", "headline_block", "number_proof", "step_indicator", "cta_hold"], "animation_capabilities": ["wipe", "slide", "count_up", "stagger", "scale"], "transition_capabilities": ["hard_cut", "soft_wipe", "directional_slide"], "theme_capabilities": {"palette_id": ["midnight_gold"], "typography_id": ["editorial_sans"], "density": ["balanced"], "motion_energy": ["low", "medium", "high"], "image_fit": ["cover", "smart_crop"]}}
+CAPABILITIES = {"layout_capabilities": ["quote_reversal", "speaker_left_info_right", "number_proof", "steps_stack", "cta_offer"], "layout_variants": {"quote_reversal": ["diagonal_statement"], "speaker_left_info_right": ["speaker_focus"], "number_proof": ["metric_focus"], "steps_stack": ["stacked_steps"], "cta_offer": ["offer_hold"]}, "overlay_capabilities": ["standard_caption", "headline_block", "number_proof", "step_indicator", "cta_hold"], "animation_capabilities": ["wipe", "slide", "count_up", "stagger", "scale"], "transition_capabilities": ["hard_cut", "soft_wipe", "directional_slide"], "theme_capabilities": {"palette_id": ["midnight_gold"], "typography_id": ["editorial_sans"], "density": ["balanced"], "motion_energy": ["low", "medium", "high"], "image_fit": ["cover", "smart_crop"]}, "output_ratio": "9:16", "overlay_placement_budgets": OVERLAY_CATALOG}
 
 
 class DirectorCompilerTests(unittest.TestCase):
     def compile(self):
-        return compile_edit_plan(DECISION, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
+        return compile_edit_plan(DECISION, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
 
     def test_compiler_uses_candidates_for_timing_and_preserves_directives(self):
         plan = self.compile()
@@ -42,7 +44,7 @@ class DirectorCompilerTests(unittest.TestCase):
         invalid = copy.deepcopy(DECISION)
         invalid["scene_directives"][0]["headline"]["source_caption_ids"] = ["caption_999"]
         with self.assertRaisesRegex(ValueError, "director_text_reference_invalid"):
-            compile_edit_plan(invalid, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
+            compile_edit_plan(invalid, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
 
     def test_visual_overlay_projection_rejects_missing_reordered_and_mismatched_ids(self):
         plan = self.compile()
@@ -56,6 +58,17 @@ class DirectorCompilerTests(unittest.TestCase):
             mutate(value)
             with self.subTest(value=value), self.assertRaises(ContractError):
                 validate_edit_plan(value, timeline=timeline)
+
+    def test_compiler_rejects_illegal_overlay_placement_and_authority_over_budget(self):
+        misplaced = copy.deepcopy(DECISION)
+        misplaced["scene_directives"][0]["overlay_instances"][0]["placement"] = "lower_third"
+        with self.assertRaisesRegex(ValueError, "director_overlay_placement_invalid"):
+            compile_edit_plan(misplaced, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
+
+        oversized_captions = copy.deepcopy(CAPTIONS)
+        oversized_captions[0]["text"] = "权" * 76
+        with self.assertRaisesRegex(ValueError, "director_overlay_text_budget_exceeded"):
+            compile_edit_plan(DECISION, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": oversized_captions, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
 
 
 if __name__ == "__main__":

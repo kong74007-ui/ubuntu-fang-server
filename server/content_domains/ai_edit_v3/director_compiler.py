@@ -4,6 +4,7 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 from . import contracts
+from .overlay_catalog import validate_overlay_projection
 
 _ARC = {"hook":"hook", "context":"problem", "problem":"problem", "method":"method", "proof":"evidence", "transition":"offer", "cta":"cta"}
 
@@ -51,13 +52,18 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
         if len(instances) != len(directive.get("overlay_instances",())) or any(item.get("component_id") not in overlays for item in instances): raise ValueError("director_component_unknown")
         ids={item.get("instance_id") for item in instances}
         if len(ids)!=len(instances) or not all(isinstance(item,str) for item in ids): raise ValueError("director_overlay_duplicate")
+        visible_by_name = {"headline": _visible(directive.get("headline"),caption_by_id), "highlight": _visible(directive.get("highlight"),caption_by_id)}
+        for item in instances:
+            visible = visible_by_name.get(item.get("content_ref"))
+            if not isinstance(visible, Mapping) or not isinstance(visible.get("text"), str): raise ValueError("director_content_reference_invalid")
+            validate_overlay_projection(capabilities, component_id=item["component_id"], placement=item["placement"], ratio=str(timeline.get("ratio")), text=visible["text"])
         anim=[]
         for item in directive.get("animations",()):
             if not isinstance(item,Mapping) or item.get("preset") not in presets or item.get("target_id") not in ids: raise ValueError("director_animation_unknown")
             anim.append({"target":item["target_id"],"preset":item["preset"],"direction":item["direction"],"duration_ms":item["duration_ms"],"delay_ms":item["delay_ms"]})
         start,end=candidate.get("start_ms"),candidate.get("end_ms")
         if isinstance(start,bool) or isinstance(end,bool) or not isinstance(start,int) or not isinstance(end,int) or end<=start: raise ValueError("director_candidate_timing_invalid")
-        headline=_visible(directive.get("headline"),caption_by_id); highlight=_visible(directive.get("highlight"),caption_by_id)
+        headline=visible_by_name["headline"]; highlight=visible_by_name["highlight"]
         if headline["text_kind"]=="ui_label" and highlight["text_kind"]=="ui_label": headline=_visible({"text_kind":"verbatim","source_caption_ids":list(candidate.get("caption_ids",()))},caption_by_id)
         slots=[]
         sources = [*( (source, True) for source in directive.get("material_bindings",()) ), *( (source, False) for source in directive.get("material_slot_directives",()) )]

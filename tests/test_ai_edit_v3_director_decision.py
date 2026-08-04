@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import tempfile
@@ -18,6 +19,7 @@ from server.content_domains.ai_edit_v3.director_decision import (
 from server.content_domains.ai_edit_v3.contracts import LeaseClaim, canonical_json, request_fingerprint, schema_sha256
 from server.content_domains.ai_edit_v3.providers.base import ProviderResult
 from server.content_domains.ai_edit_v3.runtime import get_or_generate_director_decision
+from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
 from server.content_domains.ai_edit_v3.store import LeaseLost, StoreConflictError, V3Store, open_store
 
 
@@ -25,6 +27,8 @@ CANDIDATES = (
     SceneCandidate("candidate_01", 0, 4000, ("caption_001",), "权威原文。", ("fact_001",), ("material_01",), True),
     SceneCandidate("candidate_02", 4000, 8000, ("caption_002",), "第二句。", (), (), True),
 )
+ROOT = Path(__file__).resolve().parents[1]
+OVERLAY_CATALOG = load_overlay_placement_catalog(ROOT / "server" / "ai_edit_v3_renderer")
 CAPABILITIES = {
     "layout_capabilities": ["quote_reversal", "speaker_fullscreen"],
     "layout_variants": {"quote_reversal": ["diagonal_statement"], "speaker_fullscreen": ["clean_center"]},
@@ -36,6 +40,8 @@ CAPABILITIES = {
     "transition_capabilities": ["soft_wipe", "hard_cut"],
     "theme_profile_ids": ["editorial_clean"],
     "identity_match_capability": False,
+    "output_ratio": "9:16",
+    "overlay_placement_budgets": OVERLAY_CATALOG,
 }
 
 
@@ -83,6 +89,16 @@ class DirectorDecisionValidationTests(unittest.TestCase):
                 value, candidates=CANDIDATES, capabilities=CAPABILITIES
             )["scene_directives"][0]["animations"][0]["direction"],
         )
+
+    def test_decision_rejects_illegal_overlay_placement_and_authority_over_budget(self):
+        misplaced = valid_decision()
+        misplaced["scene_directives"][0]["overlay_instances"][0]["placement"] = "lower_third"
+        with self.assertRaisesRegex(DirectorDecisionError, "director_overlay_placement_invalid"):
+            validate_director_decision(misplaced, candidates=CANDIDATES, capabilities=CAPABILITIES)
+
+        oversized = (replace(CANDIDATES[0], authoritative_text="权" * 76), CANDIDATES[1])
+        with self.assertRaisesRegex(DirectorDecisionError, "director_overlay_text_budget_exceeded"):
+            validate_director_decision(valid_decision(), candidates=oversized, capabilities=CAPABILITIES)
 
     def test_rejects_unknown_fields_code_paths_urls_and_over_limit_parameters(self):
         mutations = []

@@ -1,4 +1,5 @@
 import {resolveTheme} from "./registry/index.mjs";
+import {assertOverlayTextBudget, OVERLAY_PLACEMENTS_BY_COMPONENT} from "./registry/overlays/overlay-placement-contract.mjs";
 
 const FORBIDDEN = new Set(["html", "css", "javascript", "script", "expression", "plugin", "url", "output_path", "command", "env", "systemd_property"]);
 const DESIGN_INTENT_VALUES = Object.freeze({
@@ -95,7 +96,7 @@ export function validateManifest(document, expected) {
         || JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item?.component_id))) {
         throw new Error("manifest_component_projection_invalid");
       }
-      validateOverlayComposition(composition);
+      validateOverlayComposition(composition, document.output_spec.ratio);
       const bindings = composition.layout_slot_bindings;
       if (composition.layout_id === "product_hero" && (!Array.isArray(bindings) || !bindings.some((item) => item?.slot_id === "primary"))) {
         throw new Error("manifest_layout_required_slot_missing");
@@ -122,7 +123,7 @@ export function validateManifest(document, expected) {
   return deepCopyFreeze(document);
 }
 
-function validateOverlayComposition(composition) {
+function validateOverlayComposition(composition, ratio) {
   const placements = new Set(["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]);
   const references = new Set(["headline", "highlight"]);
   for (const instance of composition.overlay_instances) {
@@ -131,6 +132,7 @@ function validateOverlayComposition(composition) {
     if (Object.keys(instance).some((key) => !allowed.has(key))) throw new Error("manifest_overlay_instance_invalid");
     if (!references.has(instance.content_ref)) throw new Error("manifest_overlay_content_ref_invalid");
     if (!placements.has(instance.placement)) throw new Error("manifest_overlay_placement_invalid");
+    if (!OVERLAY_PLACEMENTS_BY_COMPONENT[instance.component_id]?.includes(instance.placement)) throw new Error("manifest_overlay_placement_invalid");
   }
   const content = composition.authoritative_content;
   if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).length !== 2 || !Object.hasOwn(content, "headline") || !Object.hasOwn(content, "highlight")) {
@@ -140,5 +142,8 @@ function validateOverlayComposition(composition) {
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 2 || !Object.hasOwn(value, "text") || !Object.hasOwn(value, "source_caption_ids") || typeof value.text !== "string" || !value.text || value.text.length > 4000 || !Array.isArray(value.source_caption_ids) || new Set(value.source_caption_ids).size !== value.source_caption_ids.length || !value.source_caption_ids.every((item) => typeof item === "string" && /^[a-z0-9_]{1,64}$/u.test(item))) {
       throw new Error("manifest_overlay_content_ref_invalid");
     }
+  }
+  for (const instance of composition.overlay_instances) {
+    assertOverlayTextBudget(instance.component_id, instance.placement, ratio, content[instance.content_ref].text);
   }
 }

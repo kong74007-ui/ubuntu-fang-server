@@ -38,6 +38,14 @@ const REMAINING_OVERLAYS = Object.freeze([
   Object.freeze({componentId: "cta_hold", targets: ["root", "action", "support", "accent"], tags: ["section", "strong", "small"]}),
 ]);
 
+const LEGAL_PLACEMENTS = Object.freeze({
+  headline_block: ["title_safe"], standard_caption: ["subtitle_safe"], emphasis_caption: ["title_safe", "subtitle_safe"],
+  chapter_label: ["title_safe", "lower_third"], lower_third: ["lower_third"],
+  info_card: ["left_panel", "right_panel", "center"], bullet_list: ["left_panel", "right_panel", "center"],
+  number_proof: ["left_panel", "right_panel", "center"], quote_card: ["left_panel", "right_panel", "center"],
+  step_indicator: ["left_panel", "right_panel", "center"], product_tag: ["left_panel", "right_panel", "center"], cta_hold: ["center"],
+});
+
 test("Task 7a exposes three real overlay modules with distinct structures and public targets", async () => {
   const overlayRegistry = await import("../src/registry/overlays.mjs");
   assert.equal(typeof overlayRegistry.compileOverlayV2, "function");
@@ -50,7 +58,7 @@ test("Task 7a exposes three real overlay modules with distinct structures and pu
       componentId: definition.componentId,
       instanceId: `${definition.componentId}_01`,
       content: {text: "真实权威内容 42%"},
-      placement: "title_safe",
+      placement: LEGAL_PLACEMENTS[definition.componentId][0],
       ratio: "16:9",
       durationMs: 3000,
       trackIndex: 21,
@@ -59,6 +67,7 @@ test("Task 7a exposes three real overlay modules with distinct structures and pu
     assert.equal(output.textAudit.authoritativeText, "真实权威内容 42%");
     assert.equal(output.textAudit.truncated, false);
     assert.match(output.html, /data-overlay-v2=/u);
+    assert.match(output.html, new RegExp(`data-placement="${LEGAL_PLACEMENTS[definition.componentId][0]}"`, "u"));
     assert.match(output.html, /data-text-fit-step=/u);
     for (const tag of definition.expectedStructure) assert.match(output.html, new RegExp(`<${tag}\\b`, "u"));
     signatures.push(normalizeElementTree(output.html));
@@ -87,15 +96,62 @@ test("Task 7a text fitting is deterministic for Unicode without rewriting or tru
   assert.throws(() => fitOverlayText({text: "", ratio: "16:9", bounds: {width: 800, height: 180}, fontSizeSteps: [48], lineHeight: 1.2, maxLines: 2}), /overlay_authoritative_text_empty/);
 });
 
+test("Task 7 semantic splitting preserves Chinese punctuation and metric units without mojibake", async () => {
+  const {boundedClauses, metricParts} = await import("../src/registry/overlays/overlay-v2-primitives.mjs");
+  assert.deepEqual(boundedClauses("第一句。第二句！第三句？第四句；第五句;", 5), ["第一句。", "第二句！", "第三句？", "第四句；", "第五句;"]);
+  for (const unit of ["元", "个", "人", "件", "万", "亿", "倍", "年", "天", "积分", "%"]) {
+    const text = `累计 42.5${unit} 已完成`;
+    const parts = metricParts(text);
+    assert.equal(parts.value, "42.5");
+    assert.equal(parts.unit, unit);
+    assert.equal(parts.label, "累计  已完成");
+  }
+});
+
+test("Task 7 overlay placement matrix fits every legal component content box and rejects unsafe combinations", async () => {
+  const {compileOverlayV2} = await import("../src/registry/overlays.mjs");
+  const {OVERLAY_PLACEMENT_CATALOG, OVERLAY_PLACEMENTS_BY_COMPONENT} = await import("../src/registry/overlays/overlay-placement-contract.mjs");
+  const {overlayPlacementBox} = await import("../src/registry/layouts/layout-v2-primitives.mjs");
+  for (const budget of OVERLAY_PLACEMENT_CATALOG.entries) {
+    const {component_id: componentId, placement, ratio} = budget;
+    const actualHost = overlayPlacementBox(ratio, placement);
+    assert.deepEqual(budget.host_box, {width: actualHost.width, height: actualHost.height}, `${componentId}:${placement}:${ratio} must bind the actual safe host`);
+    for (const text of ["权".repeat(budget.max_chars), "A".repeat(budget.max_chars)]) {
+      const output = compileOverlayV2({componentId, instanceId: `${componentId}_${placement}_${ratio.replace(":", "_")}`, content: {text}, placement, ratio, durationMs: 4000, trackIndex: 21});
+      assert.equal(output.textAudit.authoritativeText, text);
+      assert.equal(output.textAudit.truncated, false);
+      assert.ok(budget.font_size_steps.includes(output.textAudit.fontSize), `${componentId}:${placement}:${ratio} registry font step violated`);
+      assert.ok(output.geometryAudit.contentHeight + output.geometryAudit.chromeHeight <= output.geometryAudit.hostHeight, `${componentId}:${placement}:${ratio} height overflow`);
+      assert.ok(output.geometryAudit.contentWidth + output.geometryAudit.chromeWidth <= output.geometryAudit.hostWidth, `${componentId}:${placement}:${ratio} width overflow`);
+      assert.match(output.html, /data-host-box="\d+,\d+" data-content-box="\d+,\d+"/u);
+    }
+    assert.throws(() => compileOverlayV2({componentId, instanceId: `${componentId}_overflow`, content: {text: "权".repeat(budget.max_chars + 1)}, placement, ratio, durationMs: 4000, trackIndex: 21}), /manifest_overlay_text_budget_exceeded/);
+  }
+  assert.deepEqual(Object.fromEntries(Object.entries(OVERLAY_PLACEMENTS_BY_COMPONENT).map(([key, value]) => [key, [...value]])), LEGAL_PLACEMENTS);
+  assert.throws(() => compileOverlayV2({componentId: "info_card", instanceId: "unsafe_info", content: {text: "权威事实"}, placement: "title_safe", ratio: "16:9", durationMs: 4000, trackIndex: 21}), /manifest_overlay_placement_invalid/);
+});
+
+test("Task 7 placement catalog compares actual host dimensions independent of JSON key order", async () => {
+  const {OVERLAY_PLACEMENT_CATALOG, validateOverlayPlacementCatalog} = await import("../src/registry/overlays/overlay-placement-contract.mjs");
+  const reordered = structuredClone(OVERLAY_PLACEMENT_CATALOG);
+  const first = reordered.entries[0];
+  first.host_box = {height: first.host_box.height, width: first.host_box.width};
+  assert.doesNotThrow(() => validateOverlayPlacementCatalog(reordered));
+  const drifted = structuredClone(reordered);
+  drifted.entries[0].host_box.width += 1;
+  assert.throws(() => validateOverlayPlacementCatalog(drifted), /overlay_placement_catalog_invalid/);
+});
+
 test("Task 7a routes six placements to six independent ratio-aware safe hosts", async () => {
   for (const ratio of ["16:9", "9:16"]) {
     const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), `v3-overlays-six-hosts-${ratio.replace(":", "-")}-`)), "project");
     const manifest = fixtureManifest(ratio);
     const placements = ["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"];
-    manifest.compositions[0].overlay_ids = placements.map(() => "info_card");
+    const components = ["headline_block", "standard_caption", "info_card", "info_card", "cta_hold", "lower_third"];
+    manifest.compositions[0].overlay_ids = components;
     manifest.compositions[0].overlay_instances = placements.map((placement, index) => ({
-      instance_id: `info_${index + 1}`,
-      component_id: "info_card",
+      instance_id: `overlay_${index + 1}`,
+      component_id: components[index],
       content_ref: index % 2 === 0 ? "headline" : "highlight",
       placement,
     }));
@@ -108,7 +164,7 @@ test("Task 7a routes six placements to six independent ratio-aware safe hosts", 
     for (let index = 0; index < placements.length; index += 1) {
       const host = hosts.find((match) => match[1] === placements[index]);
       assert.ok(host, `${placements[index]} host missing`);
-      assert.match(host[3], new RegExp(`id="composition_01_info_${index + 1}_info_card"`, "u"));
+      assert.match(host[3], new RegExp(`id="composition_01_overlay_${index + 1}_${components[index]}"`, "u"));
     }
   }
 });
@@ -174,11 +230,8 @@ test("Task 7b all six placement boxes are bounded and pairwise non-overlapping i
     const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), `v3-overlay-box-audit-${ratio.replace(":", "-")}-`)), "project");
     const manifest = fixtureManifest(ratio);
     const placements = ["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"];
-    manifest.compositions[0].overlay_ids = placements.map((_, index) => index % 2 ? "standard_caption" : "headline_block");
-    manifest.compositions[0].overlay_instances = placements.map((placement, index) => ({
-      instance_id: `overlay_${index + 1}`, component_id: index % 2 ? "standard_caption" : "headline_block",
-      content_ref: index % 2 ? "highlight" : "headline", placement,
-    }));
+    manifest.compositions[0].overlay_ids = [];
+    manifest.compositions[0].overlay_instances = [];
     await compileProjectV2({manifest, outputRoot});
     const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
     const boxes = [...scene.matchAll(/data-overlay-host="([a-z_]+)"[^>]*data-safe-box="(\d+),(\d+),(\d+),(\d+)"/gu)].map((match) => ({placement: match[1], x: Number(match[2]), y: Number(match[3]), width: Number(match[4]), height: Number(match[5])}));
@@ -225,10 +278,10 @@ test("Task 7 repeated component instances preserve exact instance, authoritative
     headline: {text: "中文长标题保持品牌 PRODUCT-X 与价格 499 元，不得重写或截断。", source_caption_ids: ["caption_01"]},
     highlight: {text: "A separate English fact keeps 42.5% and PRODUCT-X exactly unchanged.", source_caption_ids: ["caption_01"]},
   };
-  manifest.compositions[0].overlay_ids = ["headline_block", "headline_block"];
+  manifest.compositions[0].overlay_ids = ["emphasis_caption", "emphasis_caption"];
   manifest.compositions[0].overlay_instances = [
-    {instance_id: "headline_cn", component_id: "headline_block", content_ref: "headline", placement: "title_safe"},
-    {instance_id: "headline_en", component_id: "headline_block", content_ref: "highlight", placement: "lower_third"},
+    {instance_id: "headline_cn", component_id: "emphasis_caption", content_ref: "headline", placement: "title_safe"},
+    {instance_id: "headline_en", component_id: "emphasis_caption", content_ref: "highlight", placement: "subtitle_safe"},
   ];
   manifest.compositions[0].animations = [
     {target: "headline_cn", preset: "fade", direction: "in", duration_ms: 400, delay_ms: 0},
@@ -237,13 +290,13 @@ test("Task 7 repeated component instances preserve exact instance, authoritative
   await compileProjectV2({manifest, outputRoot});
   const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
   const title = scene.match(/data-overlay-host="title_safe"[\s\S]*?<\/aside>/u)?.[0] ?? "";
-  const lower = scene.match(/data-overlay-host="lower_third"[\s\S]*?<\/aside>/u)?.[0] ?? "";
-  assert.match(title, /id="composition_01_headline_cn_headline_block"[\s\S]*data-safe-text="中文长标题保持品牌 PRODUCT-X 与价格 499 元，不得重写或截断。"/u);
+  const lower = scene.match(/data-overlay-host="subtitle_safe"[\s\S]*?<\/aside>/u)?.[0] ?? "";
+  assert.match(title, /id="composition_01_headline_cn_emphasis_caption"[\s\S]*data-safe-text="中文长标题保持品牌 PRODUCT-X 与价格 499 元，不得重写或截断。"/u);
   assert.doesNotMatch(title, /headline_en/u);
-  assert.match(lower, /id="composition_01_headline_en_headline_block"[\s\S]*data-safe-text="A separate English fact keeps 42\.5% and PRODUCT-X exactly unchanged\."/u);
+  assert.match(lower, /id="composition_01_headline_en_emphasis_caption"[\s\S]*data-safe-text="A separate English fact keeps 42\.5% and PRODUCT-X exactly unchanged\."/u);
   assert.doesNotMatch(lower, /headline_cn/u);
   const selectors = [...scene.matchAll(/tl\.fromTo\("(#[a-z][a-z0-9_]*)"/gu)].map((match) => match[1]);
-  assert.deepEqual(selectors, ["#composition_01_headline_cn_headline_block", "#composition_01_headline_en_headline_block"]);
+  assert.deepEqual(selectors, ["#composition_01_headline_cn_emphasis_caption", "#composition_01_headline_en_emphasis_caption"]);
   for (const selector of selectors) {
     assert.equal((scene.match(new RegExp(`\\bid="${selector.slice(1)}"`, "gu")) ?? []).length, 1, `${selector} must resolve exactly once`);
   }
@@ -294,7 +347,7 @@ async function awaitTempRoot() {
 }
 
 function placementFor(componentId) {
-  return ({emphasis_caption: "subtitle_safe", chapter_label: "title_safe", lower_third: "lower_third", bullet_list: "left_panel", number_proof: "center", quote_card: "right_panel", step_indicator: "left_panel", product_tag: "right_panel", cta_hold: "center"})[componentId];
+  return ({headline_block: "title_safe", standard_caption: "subtitle_safe", info_card: "right_panel", emphasis_caption: "subtitle_safe", chapter_label: "title_safe", lower_third: "lower_third", bullet_list: "left_panel", number_proof: "center", quote_card: "right_panel", step_indicator: "left_panel", product_tag: "right_panel", cta_hold: "center"})[componentId];
 }
 
 function overlaps(left, right) {

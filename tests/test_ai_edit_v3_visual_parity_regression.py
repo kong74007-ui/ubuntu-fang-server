@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
+from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,8 +36,10 @@ class VisualParityRegressionTests(unittest.TestCase):
             "animation_capabilities": ["wipe", "slide", "count_up", "stagger", "scale"],
             "transition_capabilities": ["hard_cut", "soft_wipe", "directional_slide"],
             "theme_capabilities": {"palette_id": ["midnight_gold"], "typography_id": ["editorial_sans"], "density": ["balanced"], "motion_energy": ["low", "medium", "high"], "image_fit": ["cover", "smart_crop"]},
+            "output_ratio": "16:9",
+            "overlay_placement_budgets": load_overlay_placement_catalog(ROOT / "server" / "ai_edit_v3_renderer"),
         }
-        return compile_edit_plan(decision, candidates=candidates, timeline={"duration_ms": 25000, "captions": captions}, materials=[], capabilities=capabilities, variation_seed=7)
+        return compile_edit_plan(decision, candidates=candidates, timeline={"duration_ms": 25000, "captions": captions, "ratio": "16:9"}, materials=[], capabilities=capabilities, variation_seed=7)
 
     def test_long_content_does_not_collapse_to_fixed_visual_combination(self):
         plan = self.generate_from_fixture("varied-valid.json")
