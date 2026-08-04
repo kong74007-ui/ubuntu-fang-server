@@ -29,6 +29,7 @@ test("strict parser enforces byte depth item and string limits", () => {
 
 test("manifest binds renderer registry schema and silent video", () => {
   const manifest = {
+    version: "1.0",
     schema_sha256: "schema",
     registry_sha256: "registry",
     renderer_environment: {renderer_build_id: "build"},
@@ -50,4 +51,19 @@ test("manifest binds renderer registry schema and silent video", () => {
     const changed = structuredClone(manifest); mutate(changed);
     assert.throws(() => validateManifest(changed, expected));
   }
+});
+
+test("manifest schema identity dispatches v1 and v2 and rejects unknown versions", () => {
+  const base = {
+    registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1},
+    duration_ms: 4000, master_audio: {path: "media/master.wav"}, source_video: null,
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000}],
+  };
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"1.0": "schema-v1", "2.0": "schema-v2"}};
+  for (const [version, schema] of [["1.0", "schema-v1"], ["2.0", "schema-v2"]]) {
+    assert.equal(validateManifest({...base, version, schema_sha256: schema}, expected).version, version);
+  }
+  assert.throws(() => validateManifest({...base, version: "3.0", schema_sha256: "schema-v3"}, expected), /manifest_version_invalid/);
+  assert.throws(() => validateManifest({...base, version: "2.0", schema_sha256: "schema-v1"}, expected), /manifest_schema_mismatch/);
 });

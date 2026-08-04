@@ -6,6 +6,13 @@ import test from "node:test";
 
 import {buildRenderReport} from "../src/report.mjs";
 import {buildRenderCommand, renderHyperframes} from "../src/render-hyperframes.mjs";
+import {selectManifestCompiler} from "../src/render.mjs";
+
+test("render dispatches manifest v1 and v2 before compilation", () => {
+  assert.equal(selectManifestCompiler("1.0"), "legacy");
+  assert.equal(selectManifestCompiler("2.0"), "component");
+  assert.throws(() => selectManifestCompiler("3.0"), /render_manifest_version_unknown/);
+});
 
 test("render command is fixed, silent, strict and does not inherit provider secrets", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "v3-render-"));

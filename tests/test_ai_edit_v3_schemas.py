@@ -55,6 +55,7 @@ EXPECTED_ROOT_FIELDS = {
     },
     "edit-plan-2.0.schema.json": {
         "version",
+        "visual_program_version",
         "duration_ms",
         "ratio",
         "creative_concept",
@@ -97,7 +98,7 @@ def load_fixture(name):
 def assert_all_object_nodes_closed(test_case, node, path="$"):
     if not isinstance(node, dict):
         return
-    if node.get("type") == "object" or "properties" in node:
+    if (node.get("type") == "object" or "properties" in node) and not path.startswith("$.allOf"):
         test_case.assertIs(
             node.get("additionalProperties"),
             False,
@@ -180,7 +181,10 @@ class SchemaMetaTests(unittest.TestCase):
             with self.subTest(name=name):
                 schema = load_schema(name)
                 self.assertEqual(set(schema["properties"]), expected)
-                self.assertEqual(set(schema["required"]), expected)
+                self.assertEqual(
+                    set(schema["required"]),
+                    expected - {"visual_program_version"},
+                )
 
     def test_phase_a_schemas_freeze_layout_variant_and_theme_identity(self):
         edit_schema = load_schema("edit-plan-2.0.schema.json")
@@ -236,7 +240,7 @@ class SchemaMetaTests(unittest.TestCase):
 
         self.assertEqual(
             digest,
-            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
+            "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c",
         )
         Draft202012Validator(
             load_schema("edit-plan-2.0.schema.json")

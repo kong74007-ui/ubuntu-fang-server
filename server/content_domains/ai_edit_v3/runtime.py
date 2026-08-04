@@ -37,17 +37,38 @@ _CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 _REASON_CODE = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
 _SCHEMA_HASHES = MappingProxyType(
     {
+        "director-decision-v1.schema.json": (
+            "2cb045e387e1b02e0ae4e1633208d7cb16c0a32c5c71b7564c9cdae48cde0d15"
+        ),
         "edit-plan-2.0.schema.json": (
-            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c"
+            "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c"
         ),
         "render-manifest-v1.schema.json": (
             "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0"
+        ),
+        "render-manifest-v2.schema.json": (
+            "de674b53f0864bdeca3192e96d0fe05d8364ba4761341bf158efb1df2bd907fd"
         ),
         "quality-verdict-v1.schema.json": (
             "33d35a1c858c03a9a96309b334ec9c3fb2076a4fbff179221930dd78c83f066e"
         ),
     }
 )
+_HISTORICAL_SCHEMA_HASHES = MappingProxyType({
+    "edit-plan-2.0.schema.json": frozenset({
+        "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
+    }),
+    "render-manifest-v1.schema.json": frozenset({
+        "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
+    }),
+})
+
+
+def schema_hash_is_accepted(name: str, digest: str) -> bool:
+    """Read historical frozen evidence without permitting it for a new version."""
+    if not isinstance(name, str) or not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        return False
+    return digest == _SCHEMA_HASHES.get(name) or digest in _HISTORICAL_SCHEMA_HASHES.get(name, frozenset())
 _DEPENDENCY_FIELDS = (
     "cos",
     "tts",
@@ -813,4 +834,5 @@ __all__ = (
     "build_stage_handlers",
     "get_or_generate_director_decision",
     "preflight",
+    "schema_hash_is_accepted",
 )

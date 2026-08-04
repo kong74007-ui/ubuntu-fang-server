@@ -114,6 +114,7 @@ class HyperframesRenderer:
         renderer_build_id: str,
         registry_sha256: str,
         schema_sha256: str,
+        schema_sha256_by_version: Mapping[str, str] | None = None,
         releases_root: Path | None = None,
         command_runner=None,
         clock: Callable[[], float] = time.time,
@@ -130,7 +131,11 @@ class HyperframesRenderer:
         self._spool_root = Path(spool_root)
         self._renderer_build_id = renderer_build_id
         self._registry_sha256 = registry_sha256
+        values = {"1.0": schema_sha256} if schema_sha256_by_version is None else dict(schema_sha256_by_version)
+        if values.get("1.0") != schema_sha256 or any(not isinstance(version, str) or not isinstance(value, str) or _SHA256.fullmatch(value) is None for version, value in values.items()):
+            raise ValueError("renderer_schema_identity_invalid")
         self._schema_sha256 = schema_sha256
+        self._schema_sha256_by_version = values
         self._releases_root = Path(releases_root) if releases_root is not None else None
         self._command_runner = command_runner or _SubprocessRunner()
         self._clock = clock
@@ -148,6 +153,12 @@ class HyperframesRenderer:
     @property
     def schema_sha256(self) -> str:
         return self._schema_sha256
+
+    def schema_sha256_for_manifest(self, version: str) -> str:
+        value = self._schema_sha256_by_version.get(version)
+        if value is None:
+            raise HyperframesRendererError("render_manifest_version_unknown")
+        return value
 
     def probe_capability(self, capability: str, *, environment: str | None):
         return {
@@ -253,10 +264,13 @@ class HyperframesRenderer:
             raise HyperframesRendererError("render_manifest_release_mismatch")
         registry_sha256 = manifest.get("registry_sha256")
         schema_sha256 = manifest.get("schema_sha256")
+        version = manifest.get("version")
         if not isinstance(registry_sha256, str) or _SHA256.fullmatch(registry_sha256) is None:
             raise HyperframesRendererError("render_manifest_registry_invalid")
         if not isinstance(schema_sha256, str) or _SHA256.fullmatch(schema_sha256) is None:
             raise HyperframesRendererError("render_manifest_schema_invalid")
+        if schema_sha256 != self.schema_sha256_for_manifest(version):
+            raise HyperframesRendererError("render_manifest_schema_mismatch")
         declarations = _declared_files(manifest)
         incoming_root = self._spool_root / "incoming"
         incoming_root.mkdir(parents=True, exist_ok=True)

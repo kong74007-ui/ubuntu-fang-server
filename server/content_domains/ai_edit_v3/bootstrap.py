@@ -371,6 +371,10 @@ def _build():
         renderer_build_id=release.renderer_build_id,
         registry_sha256=registry,
         schema_sha256=schema_sha256("render-manifest-v1.schema.json"),
+        schema_sha256_by_version={
+            "1.0": schema_sha256("render-manifest-v1.schema.json"),
+            "2.0": schema_sha256("render-manifest-v2.schema.json"),
+        },
         releases_root=renderer_releases_root,
     )
     audio_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()

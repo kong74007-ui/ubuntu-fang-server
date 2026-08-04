@@ -18,6 +18,12 @@ const BUILD_ID = /^sha256:[0-9a-f]{64}$/;
 
 function hash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 
+export function selectManifestCompiler(version) {
+  if (version === "1.0") return "legacy";
+  if (version === "2.0") return "component";
+  throw new Error("render_manifest_version_unknown");
+}
+
 function absolute(value, code) {
   if (typeof value !== "string" || !path.isAbsolute(value) || value.includes("\0") || value.includes("://")) throw new Error(code);
   return path.resolve(value);
@@ -72,7 +78,9 @@ export async function runRenderRequest({requestPath, inputRoot, outputRoot, chro
     rendererBuildId: release.renderer_build_id,
     registrySha256,
     schemaSha256: request.schema_sha256,
+    schemaSha256ByVersion: {"1.0": request.schema_sha256, "2.0": "de674b53f0864bdeca3192e96d0fe05d8364ba4761341bf158efb1df2bd907fd"},
   });
+  selectManifestCompiler(manifest.version);
   const verifiedFiles = await verifyInputFiles({manifest, inputRoot: inputs});
   try {
     await mkdir(outputs, {recursive: true});

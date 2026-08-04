@@ -36,8 +36,10 @@ from .contracts import (
     schema_sha256,
 )
 from .delivery import stage_private_delivery
-from .director import build_director_request, generate_edit_plan
-from .director_candidates import _build_caption_groups, _scene_duration_budget
+from .director import ValidatedPlan, build_director_request, generate_edit_plan
+from .director_candidates import _build_caption_groups, _scene_duration_budget, build_scene_candidates
+from .director_compiler import compile_edit_plan
+from .director_decision import generate_director_decision
 from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_media, probe_media
 from .providers.asr import normalize_asr_result
 from .providers.base import ProviderResult
@@ -66,6 +68,22 @@ _NEXT = {
     "repair_planning": "compiling",
     "staging_delivery": "settling",
 }
+
+
+def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, Any]:
+    """Admit visual-v1 only after a versioned registry supplies real variants."""
+    variants = capabilities.get("layout_variants") if isinstance(capabilities, Mapping) else None
+    layouts = capabilities.get("layout_capabilities") if isinstance(capabilities, Mapping) else None
+    if not isinstance(layouts, list) or not isinstance(variants, Mapping) or any(
+        not isinstance(variants.get(layout), (list, tuple)) or not variants[layout]
+        or any(not isinstance(item, str) or item == "balanced_a" for item in variants[layout])
+        for layout in layouts
+    ):
+        raise ValueError("visual_program_capabilities_incomplete")
+    required = ("overlay_variants", "overlay_animation_targets", "layout_animation_targets", "theme_profile_ids")
+    if any(name not in capabilities for name in required):
+        raise ValueError("visual_program_capabilities_incomplete")
+    return copy.deepcopy(dict(capabilities))
 
 _LAYOUTS_REQUIRING_MATERIALS = frozenset({
     "comparison_split",
@@ -532,6 +550,18 @@ class QwenCompiledDirector:
             usage={"tokens": result.cost_units},
             elapsed_ms=result.elapsed_ms,
         )
+
+    def generate_decision(self, request: Mapping[str, Any], **kwargs: Any) -> ProviderResult:
+        """Use the same pinned Qwen transport, returning only director-decision JSON."""
+        deadline_at = kwargs.get("deadline_at")
+        if isinstance(deadline_at, bool) or not isinstance(deadline_at, (int, float)) or not math.isfinite(deadline_at):
+            raise TimeoutError("director_deadline_exceeded")
+        remaining_seconds = math.floor(float(deadline_at) - time.time())
+        if remaining_seconds < 1:
+            raise TimeoutError("director_deadline_exceeded")
+        system = "你是中文短视频导演。只返回符合 director-decision-v1 的 JSON，使用请求冻结的候选场景、组件和参数 ID；不得输出路径、URL、代码或提供商字段。"
+        result = self.client.generate_edit_plan(system, json.dumps(request, ensure_ascii=False, separators=(",", ":")), timeout_seconds=min(self._timeout_seconds, remaining_seconds))
+        return ProviderResult(provider="dashscope", capability="director", request_id=result.request_id, payload={"content": result.payload["content"]}, usage={"tokens": result.cost_units}, elapsed_ms=result.elapsed_ms)
 
 
 class DeterministicVisualInspector:
@@ -1108,10 +1138,18 @@ class ProductionStageCoordinator:
             director_request["ratio"] = normalized["ratio"]
             director_request["user_direction"] = request.get("style_prompt", request.get("creation_mode", "ai_auto"))
             director_request["generate_missing_material"] = not descriptors
-            generated = generate_edit_plan(
-                SimpleNamespace(request=director_request, timeline=timeline, capabilities=capabilities, job_id=job_id, deadline_at=context.deadline_at),
-                self.director,
-            )
+            if os.environ.get("AI_EDIT_V3_VISUAL_PROGRAM_ENABLED", "0") == "1":
+                candidates = build_scene_candidates(timeline, descriptors, ratio=str(normalized["ratio"]), input_type=normalized["input_type"])
+                visual_capabilities = visual_program_capabilities(capabilities)
+                decision_request = {**director_request, "scene_candidates": [item.__dict__ if hasattr(item, "__dict__") else {slot: getattr(item, slot) for slot in item.__slots__} for item in candidates], "capabilities": visual_capabilities}
+                decision = generate_director_decision(SimpleNamespace(request=decision_request, timeline=timeline, candidates=candidates, capabilities=visual_capabilities, job_id=job_id, deadline_at=context.deadline_at), self.director)
+                plan = compile_edit_plan(decision.value, candidates=candidates, timeline={"duration_ms": timeline.duration_ms, "captions": [{"id": item.id, "start_ms": item.start_ms, "end_ms": item.end_ms, "text": item.text} for item in timeline.captions], "ratio": normalized["ratio"]}, materials=descriptors, capabilities=visual_capabilities, variation_seed=int(hashlib.sha256(job_id.encode()).hexdigest()[:8], 16))
+                generated = ValidatedPlan(plan, provider_request_id=decision.provider_request_id, raw_output_sha256=decision.raw_output_sha256)
+            else:
+                generated = generate_edit_plan(
+                    SimpleNamespace(request=director_request, timeline=timeline, capabilities=capabilities, job_id=job_id, deadline_at=context.deadline_at),
+                    self.director,
+                )
             digest = _write_json(root / "plan.json", generated.value)
             save = getattr(self.store, "save_director_plan", None)
             if callable(save):
@@ -1292,8 +1330,9 @@ class ProductionStageCoordinator:
                 })
             ratio = plan["ratio"]
             width, height = ((1920, 1080) if ratio == "16:9" else (1080, 1920))
+            visual_program = plan.get("visual_program_version") == "1.0"
             manifest = {
-                "version": "1.0", "schema_sha256": schema_sha256("render-manifest-v1.schema.json"),
+                "version": "2.0" if visual_program else "1.0", "schema_sha256": schema_sha256("render-manifest-v2.schema.json" if visual_program else "render-manifest-v1.schema.json"),
                 "renderer_environment": self._release_environment(),
                 "output_spec": {"ratio": ratio, "width": width, "height": height, "fps_num": 30, "fps_den": 1, "video_codec": "h264", "pixel_format": "yuv420p", "audio_codec": "aac", "sample_rate": 48000, "channels": 2},
                 "duration_ms": plan["duration_ms"], "edit_plan_sha256": hashlib.sha256(canonical_json(plan)).hexdigest(),
@@ -1303,7 +1342,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"]} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             if attempt > 1:

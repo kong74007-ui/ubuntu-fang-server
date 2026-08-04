@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangquechuanmei.com/schemas/ai-edit-v3/render-manifest-v2.schema.json",
+  "title": "AI Edit V3 render manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "schema_sha256", "renderer_environment", "output_spec", "duration_ms", "edit_plan_sha256", "registry_sha256", "theme", "seed", "source_video", "source_segments", "master_audio", "assets", "compositions", "captions"],
+  "properties": {
+    "version": {"const": "2.0"},
+    "schema_sha256": {"$ref": "#/$defs/sha"},
+    "renderer_environment": {"type": "object", "required": ["renderer_build_id"], "properties": {"renderer_build_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}, "additionalProperties": true},
+    "output_spec": {"type": "object", "required": ["ratio", "width", "height", "fps_num", "fps_den"], "properties": {"ratio": {"enum": ["16:9", "9:16"]}, "width": {"type": "integer"}, "height": {"type": "integer"}, "fps_num": {"const": 30}, "fps_den": {"const": 1}}, "additionalProperties": true},
+    "duration_ms": {"type": "integer", "minimum": 3000, "maximum": 600000},
+    "edit_plan_sha256": {"$ref": "#/$defs/sha"}, "registry_sha256": {"$ref": "#/$defs/sha"}, "theme": {"type": "object"}, "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "source_video": {"type": ["object", "null"]}, "source_segments": {"type": "array", "minItems": 1}, "master_audio": {"type": "object", "required": ["path", "sha256", "size_bytes", "duration_ms", "sample_rate", "channels"]}, "assets": {"type": "array"}, "captions": {"type": "array", "minItems": 1},
+    "compositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/composition"}}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "overlayInstance": {"type": "object", "additionalProperties": false, "required": ["instance_id", "component_id", "content_ref", "placement"], "properties": {"instance_id": {"$ref": "#/$defs/identifier"}, "component_id": {"$ref": "#/$defs/identifier"}, "content_ref": {"enum": ["headline", "highlight"]}, "placement": {"type": "string"}, "variant": {"$ref": "#/$defs/identifier"}}},
+    "composition": {"type": "object", "additionalProperties": false, "required": ["id", "scene_id", "start_ms", "end_ms", "layout_id", "layout_variant", "overlay_ids", "overlay_instances", "animations", "transition", "asset_ids"], "properties": {"id": {"$ref": "#/$defs/identifier"}, "scene_id": {"$ref": "#/$defs/identifier"}, "start_ms": {"type": "integer", "minimum": 0}, "end_ms": {"type": "integer", "minimum": 1}, "layout_id": {"$ref": "#/$defs/identifier"}, "layout_variant": {"$ref": "#/$defs/identifier"}, "overlay_ids": {"type": "array", "items": {"$ref": "#/$defs/identifier"}}, "overlay_instances": {"type": "array", "items": {"$ref": "#/$defs/overlayInstance"}}, "animations": {"type": "array"}, "transition": {"type": "string"}, "asset_ids": {"type": "array", "items": {"$ref": "#/$defs/identifier"}}}}
+  }
+}

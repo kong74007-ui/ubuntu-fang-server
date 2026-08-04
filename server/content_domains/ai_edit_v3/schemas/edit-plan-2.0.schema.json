@@ -21,6 +21,9 @@
     "version": {
       "const": "2.0"
     },
+    "visual_program_version": {
+      "type": "string"
+    },
     "duration_ms": {
       "type": "integer",
       "minimum": 3000,
@@ -64,10 +67,7 @@
     "scenes": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 120,
-      "items": {
-        "$ref": "#/$defs/scene"
-      }
+      "maxItems": 120
     },
     "materials": {
       "type": "array",
@@ -84,6 +84,23 @@
       }
     }
   },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "not": {"required": ["visual_program_version"]},
+          "properties": {"scenes": {"items": {"$ref": "#/$defs/scene"}}}
+        },
+        {
+          "required": ["visual_program_version"],
+          "properties": {
+            "visual_program_version": {"const": "1.0"},
+            "scenes": {"items": {"$ref": "#/$defs/visualScene"}}
+          }
+        }
+      ]
+    }
+  ],
   "$defs": {
     "id": {
       "type": "string",
@@ -479,6 +496,39 @@
             "card_match_cut"
           ]
         }
+      }
+    },
+    "overlayInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance_id", "component_id", "content_ref", "placement"],
+      "properties": {
+        "instance_id": {"$ref": "#/$defs/id"},
+        "component_id": {"$ref": "#/$defs/id"},
+        "content_ref": {"enum": ["headline", "highlight"]},
+        "placement": {"enum": ["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]},
+        "variant": {"$ref": "#/$defs/id"}
+      }
+    },
+    "visualScene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_ms", "end_ms", "intent", "layout_id", "layout_variant", "visual_type", "headline", "highlight", "overlay_ids", "overlay_instances", "material_slots", "animations", "transition"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "start_ms": {"type": "integer", "minimum": 0, "maximum": 600000},
+        "end_ms": {"type": "integer", "minimum": 500, "maximum": 600000},
+        "intent": {"type": "string", "minLength": 1, "maxLength": 240},
+        "layout_id": {"$ref": "#/$defs/id"},
+        "layout_variant": {"$ref": "#/$defs/id"},
+        "visual_type": {"$ref": "#/$defs/id"},
+        "headline": {"$ref": "#/$defs/visibleText"},
+        "highlight": {"$ref": "#/$defs/visibleText"},
+        "overlay_ids": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/id"}},
+        "overlay_instances": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/overlayInstance"}},
+        "material_slots": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/materialSlot"}},
+        "animations": {"type": "array", "maxItems": 8, "items": {"type": "object", "additionalProperties": false, "required": ["target", "preset", "direction", "duration_ms", "delay_ms"], "properties": {"target": {"$ref": "#/$defs/id"}, "preset": {"$ref": "#/$defs/id"}, "direction": {"enum": ["none", "left", "right", "up", "down", "in", "out"]}, "duration_ms": {"type": "integer", "minimum": 50, "maximum": 3000}, "delay_ms": {"type": "integer", "minimum": 0, "maximum": 3000}}}},
+        "transition": {"enum": ["hard_cut", "soft_wipe", "directional_slide", "light_flash", "card_match_cut"]}
       }
     },
     "timeRange": {

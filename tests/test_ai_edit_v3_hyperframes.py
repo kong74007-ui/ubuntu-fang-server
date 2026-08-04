@@ -65,6 +65,21 @@ class _ScriptedRunner:
 
 
 class HyperframesRendererTests(unittest.TestCase):
+    def test_schema_identity_dispatches_by_manifest_version(self):
+        renderer = HyperframesRenderer(
+            renderctl_path=Path("/usr/local/libexec/huangque-ai-edit-v3-renderctl"),
+            spool_root=Path("/var/spool/huangque-ai-edit-v3"),
+            renderer_build_id="sha256:" + "1" * 64,
+            registry_sha256="sha256:" + "2" * 64,
+            schema_sha256="3" * 64,
+            schema_sha256_by_version={"1.0": "3" * 64, "2.0": "4" * 64},
+            command_runner=_Runner(Path("/var/spool/huangque-ai-edit-v3")),
+        )
+        self.assertEqual("3" * 64, renderer.schema_sha256_for_manifest("1.0"))
+        self.assertEqual("4" * 64, renderer.schema_sha256_for_manifest("2.0"))
+        with self.assertRaisesRegex(HyperframesRendererError, "render_manifest_version_unknown"):
+            renderer.schema_sha256_for_manifest("3.0")
+
     def test_spools_fixed_request_polls_and_verifies_result(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

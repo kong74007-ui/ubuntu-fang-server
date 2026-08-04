@@ -146,6 +146,7 @@ _SCHEMA_NAMES = frozenset(
         "director-decision-v1.schema.json",
         "edit-plan-2.0.schema.json",
         "render-manifest-v1.schema.json",
+        "render-manifest-v2.schema.json",
         "quality-verdict-v1.schema.json",
     }
 )
@@ -1078,6 +1079,7 @@ def validate_edit_plan(
         )
     bound_material_ids: set[str] = set()
     for scene_index, scene in enumerate(scenes):
+        visual_v1 = plan.get("visual_program_version") == "1.0"
         if scene["layout_id"] not in layout_ids:
             _raise(
                 "director_capability_unknown",
@@ -1096,7 +1098,16 @@ def validate_edit_plan(
                 f"scenes[{scene_index}].overlay_ids",
                 "overlay is not in the frozen capability registry",
             )
-        valid_targets = set(scene["overlay_ids"]) | {
+        if visual_v1:
+            instances = scene.get("overlay_instances")
+            if not isinstance(instances, list) or [item.get("component_id") for item in instances] != scene["overlay_ids"]:
+                _raise("director_overlay_projection_invalid", f"scenes[{scene_index}].overlay_instances", "overlay instance component IDs must exactly project to overlay_ids")
+            if any(item.get("component_id") not in overlay_ids for item in instances):
+                _raise("director_capability_unknown", f"scenes[{scene_index}].overlay_instances", "overlay instance is not in the frozen capability registry")
+            allowed_variants = timeline.get("layout_variants", {}).get(scene["layout_id"], ()) if isinstance(timeline.get("layout_variants", {}), Mapping) else ()
+            if scene["layout_variant"] not in allowed_variants:
+                _raise("director_layout_variant_unknown", f"scenes[{scene_index}].layout_variant", "layout variant is not in the frozen capability registry")
+        valid_targets = (set(item["instance_id"] for item in scene["overlay_instances"]) if visual_v1 else set(scene["overlay_ids"])) | {
             slot["id"] for slot in scene["material_slots"]
         }
         for animation_index, animation in enumerate(scene["animations"]):
@@ -1498,10 +1509,14 @@ def validate_render_manifest(
     *,
     sandbox_root: Path,
 ) -> dict[str, Any]:
+    version = manifest.get("version") if isinstance(manifest, Mapping) else None
+    schema_name = {"1.0": "render-manifest-v1.schema.json", "2.0": "render-manifest-v2.schema.json"}.get(version)
+    if schema_name is None:
+        _raise("render_manifest_version_unknown", "version", "render manifest version is not supported")
     try:
         _validate_schema(
             manifest,
-            "render-manifest-v1.schema.json",
+            schema_name,
             "render_schema_invalid",
         )
     except ContractError as exc:
@@ -1513,9 +1528,7 @@ def validate_render_manifest(
             ) from exc
         raise
     _reject_control_characters(manifest)
-    if manifest["schema_sha256"] != schema_sha256(
-        "render-manifest-v1.schema.json"
-    ):
+    if manifest["schema_sha256"] != schema_sha256(schema_name):
         _raise(
             "render_schema_hash_mismatch",
             "schema_sha256",
@@ -1553,6 +1566,7 @@ def validate_render_manifest(
             "composition IDs must be unique",
         )
     known_assets = set(asset_ids)
+    visual_manifest = manifest["version"] == "2.0"
     composition_start = 0
     for index, composition in enumerate(manifest["compositions"]):
         if (
@@ -1590,8 +1604,12 @@ def validate_render_manifest(
                 f"compositions[{index}]",
                 "composition references an unknown capability",
             )
+        if visual_manifest:
+            instances = composition.get("overlay_instances")
+            if not isinstance(instances, list) or [item.get("component_id") for item in instances] != composition["overlay_ids"]:
+                _raise("render_overlay_projection_invalid", f"compositions[{index}].overlay_instances", "overlay instance component IDs must exactly project to overlay_ids")
         if any(
-            animation["target"] not in composition["overlay_ids"]
+            animation["target"] not in (set(item["instance_id"] for item in composition["overlay_instances"]) if visual_manifest else composition["overlay_ids"])
             for animation in composition["animations"]
         ):
             _raise(

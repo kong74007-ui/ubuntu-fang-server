@@ -39,6 +39,33 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_visual_program_rejects_missing_real_variant_catalog_before_provider_call(self):
+        from server.content_domains.ai_edit_v3.production import visual_program_capabilities
+
+        with self.assertRaisesRegex(ValueError, "visual_program_capabilities_incomplete"):
+            visual_program_capabilities({"layout_capabilities": ["quote_reversal"]})
+
+    def test_visual_program_gate_zero_keeps_legacy_director_path(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "0"}, clear=False
+        ):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.director = object()
+            root = coordinator._root("job-gate-zero")
+            (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
+            (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "权威字幕", "start_ms": 0, "end_ms": 4000}], "source_segments": [{"id": "segment_01", "text": "权威字幕", "start_ms": 0, "end_ms": 4000, "protected": False, "output_start_ms": None, "output_end_ms": None}], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
+            legacy = SimpleNamespace(value={"version": "2.0"}, provider_request_id="legacy-request")
+            with patch("server.content_domains.ai_edit_v3.production.generate_edit_plan", return_value=legacy) as old_path, patch("server.content_domains.ai_edit_v3.production.generate_director_decision") as visual_path:
+                outcome = coordinator._stage("planning", {"job_id": "job-gate-zero", "owner_id": "alice", "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
+
+        self.assertEqual("resolving_materials", outcome.next_state)
+        old_path.assert_called_once()
+        visual_path.assert_not_called()
+
     def test_scene_budget_adapts_when_twelve_scenes_cannot_hold_all_captions(self):
         from server.content_domains.ai_edit_v3.production import (
             _scene_duration_budget,

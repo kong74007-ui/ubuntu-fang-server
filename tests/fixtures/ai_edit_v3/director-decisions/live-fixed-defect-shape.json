@@ -1,0 +1,8 @@
+{
+  "scene_count": 5,
+  "palette_id": "midnight_gold",
+  "layout_variants": ["balanced_a"],
+  "overlay_ids": ["standard_caption"],
+  "animation_presets": ["subtitle_pop"],
+  "transitions": ["hard_cut"]
+}
