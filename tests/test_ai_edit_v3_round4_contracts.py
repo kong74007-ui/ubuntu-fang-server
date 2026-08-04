@@ -256,6 +256,45 @@ class Round4CrossLanguageContractsTests(unittest.TestCase):
             self.assertIn(f'src="media/{binding["asset_id"]}.png"', scene)
         self.assertNotIn('data-slot="evidence"', scene)
 
+    def test_steps_stack_freezes_only_material_bindings_consumed_by_the_node_layout(self):
+        plan = _compile_plan(
+            layout_id="steps_stack",
+            layout_variant="numbered_cards",
+            bindings=[
+                {"slot_id": "steps", "material_id": "material_steps", "required": False},
+                {"slot_id": "accent", "material_id": "material_accent", "required": False},
+            ],
+            materials=[
+                {"material_id": "material_steps", "semantic": "visual steps reference"},
+                {"material_id": "material_accent", "semantic": "supporting accent image"},
+            ],
+        )
+        self.assertEqual(
+            [("material_steps", "steps"), ("material_accent", "accent")],
+            [(slot["id"], slot["layout_slot_id"]) for slot in plan["scenes"][0]["material_slots"]],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frozen = _freeze_plan_manifest(plan, root)
+            composition = frozen.document["compositions"][0]
+            compiled = _node_compile(frozen.path, root / "project")
+            self.assertEqual(0, compiled.returncode, compiled.stderr)
+            scene = (root / "project" / "compositions" / "composition_001.html").read_text(encoding="utf-8")
+
+        for binding in composition["layout_slot_bindings"]:
+            self.assertIn(
+                f'src="media/{binding["asset_id"]}.png"',
+                scene,
+                f'manifest material binding {binding["slot_id"]} must be consumed by the selected layout',
+            )
+        self.assertEqual(
+            [{"slot_id": "accent", "asset_id": "material_accent"}],
+            composition["layout_slot_bindings"],
+        )
+        self.assertIn('data-slot="steps"', scene)
+        self.assertIn('data-safe-text="Authoritative product method"', scene)
+        self.assertNotIn("material_steps.png", scene)
+
     def test_product_primary_is_required_before_manifest_can_freeze(self):
         evidence_only = _compile_plan(
             layout_id="product_hero",

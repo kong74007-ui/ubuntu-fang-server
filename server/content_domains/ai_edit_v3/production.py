@@ -315,7 +315,7 @@ def _layout_slot_bindings(
     consumed_slots = {
         "speaker_fullscreen": frozenset({"evidence"}),
         "product_hero": frozenset({"primary", "detail"}),
-        "steps_stack": frozenset({"steps", "accent"}),
+        "steps_stack": frozenset({"accent"}),
     }.get(layout_id)
     if consumed_slots is None:
         return []

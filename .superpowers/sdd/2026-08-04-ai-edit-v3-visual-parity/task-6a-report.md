@@ -161,3 +161,32 @@ Focused tests were added before each production repair and failed against the re
 | `git diff --check` | PASS. |
 
 No push, PR, deployment, service restart, external gate, or Task 6b/7/8/PR-C work was performed.
+
+## Fix Round 5
+
+### RED
+
+Added a real cross-language regression for `steps_stack/numbered_cards`: a director decision explicitly bound both `material_steps` and `material_accent`, the decision compiled into an edit plan, production froze the manifest, and Node compiled the frozen manifest into the real composition HTML.
+
+The test failed after successful Node compilation because the manifest declared `{"slot_id":"steps","asset_id":"material_steps"}`, but the rendered DOM contained zero references to `src="media/material_steps.png"`. The same failure output proved that the steps region was populated from the authoritative caption and that `material_accent.png` was rendered. This isolated the mismatch to Python's material-binding declaration rather than the Node content layout.
+
+### GREEN
+
+`steps_stack` keeps `steps` as its required caption-content slot and keeps the existing nonempty steps DOM/fallback behavior. Its production media-consumption set now contains only `accent`, which is the only material binding read by `compile-project-v2.mjs`. Optional context or explicit steps materials remain edit-plan evidence but are not frozen into `layout_slot_bindings`; required unconsumed materials continue to fail closed through the existing `scene_layout_binding_unconsumed` rule. The stale production unit expectation was changed from `steps + accent` to `accent` only.
+
+The cross-language test now verifies that every frozen material binding has its asset path in the selected layout's DOM, that the only steps-stack material binding is `accent`, that caption-derived `data-slot="steps"` remains nonempty, and that the discarded material-steps path never appears.
+
+### Fix Round 5 verification
+
+| Command | Result |
+| --- | --- |
+| focused cross-language steps-stack regression | RED on missing `src="media/material_steps.png"`, then GREEN 1/1. |
+| focused production semantic-binding test | PASS, 1/1. |
+| `npm exec --package=node@22 -- node --test "test/*.test.mjs"` | PASS, 61/61 Node tests. |
+| selected V3 director, production, schema, feature, schema-history, Round 4/5, and service suites | PASS, 222/222 Python tests. |
+| `npm exec --package=node@22 -- node src/write-registry-hash.mjs --check` | PASS, `sha256:94b9c745f37a77d72dc40120be48dc2e7fc18235923707592e3ba740acdece6c`. |
+| `npm exec --package=node@22 -- node scripts/write-manifest-schema-digests.mjs --check` | PASS. |
+| `npm exec --package=node@22 -- node src/release-manifest.mjs --check --release-root .` | PASS; renderer build remains `sha256:df9c90b7abecd4b570b99ed9cf3604c000c8e3c65a48d96d80b7105c9a97c7e8`. |
+| `git diff --check` | PASS. |
+
+No push, PR, deployment, service restart, external gate, or Task 6b/7/8/PR-C work was performed.

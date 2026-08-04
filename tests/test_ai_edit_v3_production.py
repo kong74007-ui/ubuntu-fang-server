@@ -1308,7 +1308,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             _layout_slot_bindings({"layout_id": "speaker_fullscreen", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known),
         )
         self.assertEqual(
-            [{"slot_id": "steps", "asset_id": "context_01"}, {"slot_id": "accent", "asset_id": "decoration_01"}],
+            [{"slot_id": "accent", "asset_id": "decoration_01"}],
             _layout_slot_bindings({"layout_id": "steps_stack", "material_slots": [{"id": "context_01", "purpose": "context", "priority": "optional"}, {"id": "decoration_01", "purpose": "decoration", "priority": "optional"}]}, known),
         )
         with self.assertRaisesRegex(ValueError, "scene_layout_binding_invalid"):
