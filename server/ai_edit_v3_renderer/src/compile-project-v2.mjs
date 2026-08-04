@@ -63,11 +63,13 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
     return {idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays, scene: composition, assets};
   }
   const bindings = assetSlotBindings(composition, assets);
-  const slots = layout.contract.id === "speaker_fullscreen"
+  const slots = ["speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left"].includes(layout.contract.id)
     ? {speaker: sourceSlot(manifest, composition, prefix), evidence: bindings.get("evidence")}
-    : layout.contract.id === "product_hero"
-      ? productSlots(bindings, captions)
-      : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
+    : layout.contract.id === "material_fullscreen_speaker_pip"
+      ? {speaker: sourceSlot(manifest, composition, prefix), ...productSlots(bindings, captions)}
+      : layout.contract.id === "product_hero"
+        ? productSlots(bindings, captions)
+        : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
   return {
     idPrefix: prefix, durationMs, slots, overlays: routeV2Overlays(overlayEntries, composition.overlay_instances),
     designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},

@@ -213,6 +213,44 @@ test("v2 speaker preserves every intersecting source clip in composition order",
   assert.match(speaker, /id="composition_02_speaker_clip_1"[^>]+data-start="2"[^>]+data-duration="2"[^>]+data-playback-start="0\.3"/);
 });
 
+test("v2 speaker-side and material-pip layouts preserve source clips and consume semantic bindings", async () => {
+  const cases = [
+    {layoutId: "speaker_left_info_right", variantId: "card_stack", bindings: [{slot_id: "evidence", asset_id: "evidence_asset"}], expectedSlots: ["speaker", "evidence"]},
+    {layoutId: "speaker_right_evidence_left", variantId: "document_panel", bindings: [{slot_id: "evidence", asset_id: "evidence_asset"}], expectedSlots: ["speaker", "evidence"]},
+    {layoutId: "material_fullscreen_speaker_pip", variantId: "pip_round", bindings: [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "evidence_asset"}], expectedSlots: ["speaker", "primary", "detail"]},
+  ];
+  for (const item of cases) {
+    const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), `v3-${item.layoutId}-`)), "project");
+    const manifest = fixtureManifest("semantic speaker layout");
+    manifest.version = "2.0";
+    manifest.source_video = {path: "media/source.mp4", silent: true};
+    manifest.source_segments = [
+      {id: "segment_01", source_path: "media/source.mp4", source_start_ms: 400, source_end_ms: 2400, output_start_ms: 500, output_end_ms: 2500},
+      {id: "segment_02", source_path: "media/source.mp4", source_start_ms: 900, source_end_ms: 2400, output_start_ms: 2500, output_end_ms: 4000},
+    ];
+    manifest.assets = [
+      {id: "primary_asset", kind: "image", path: "media/primary.png"},
+      {id: "evidence_asset", kind: "image", path: "media/evidence.png"},
+    ];
+    manifest.compositions[0] = {
+      ...manifest.compositions[0], start_ms: 0, end_ms: 4000,
+      layout_id: item.layoutId, layout_variant: item.variantId,
+      asset_ids: item.bindings.map(({asset_id}) => asset_id), layout_slot_bindings: item.bindings,
+      overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}],
+    };
+    await compileProjectV2({manifest, outputRoot});
+    const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+    assert.equal((scene.match(/src="media\/source\.mp4"/gu) ?? []).length, 2, `${item.layoutId} preserves both source intersections`);
+    assert.match(scene, /data-playback-start="0\.4"/u);
+    assert.match(scene, /data-playback-start="0\.9"/u);
+    for (const slot of item.expectedSlots) assert.match(scene, new RegExp(`data-slot="${slot}"`), `${item.layoutId} consumes ${slot}`);
+    for (const {asset_id} of item.bindings) {
+      const asset = manifest.assets.find(({id}) => id === asset_id);
+      assert.match(scene, new RegExp(`src="${asset.path.replaceAll("/", "\\/")}"`), `${item.layoutId} renders bound ${asset_id}`);
+    }
+  }
+});
+
 test("v2 product binds primary only through explicit layout slot bindings", async () => {
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-bindings-")), "project");
   const manifest = fixtureManifest("Product");

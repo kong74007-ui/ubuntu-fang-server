@@ -8,9 +8,12 @@ import * as registry from "../src/registry/index.mjs";
 import {checkRegistryHash} from "../src/write-registry-hash.mjs";
 
 const CASES = Object.freeze([
-  {id: "speaker_fullscreen", variants: ["clean_center", "headline_top", "caption_sidebar"], required: "speaker", optional: "evidence", identitySlots: ["speaker"]},
-  {id: "product_hero", variants: ["center_pedestal", "split_copy", "detail_gallery"], required: "primary", optional: "detail", identitySlots: ["primary"]},
-  {id: "steps_stack", variants: ["vertical_steps", "numbered_cards", "progress_path"], required: "steps", optional: "accent", identitySlots: []},
+  {id: "speaker_fullscreen", variants: ["clean_center", "headline_top", "caption_sidebar"], required: ["speaker"], optional: ["evidence"], identitySlots: ["speaker"]},
+  {id: "speaker_left_info_right", variants: ["card_stack", "number_focus", "image_evidence"], required: ["speaker"], optional: ["evidence"], identitySlots: ["speaker"]},
+  {id: "speaker_right_evidence_left", variants: ["document_panel", "comparison_panel", "quote_evidence"], required: ["speaker"], optional: ["evidence"], identitySlots: ["speaker"]},
+  {id: "material_fullscreen_speaker_pip", variants: ["pip_round", "pip_card", "pip_edge"], required: ["speaker", "primary"], optional: ["detail"], identitySlots: ["speaker", "primary"]},
+  {id: "product_hero", variants: ["center_pedestal", "split_copy", "detail_gallery"], required: ["primary"], optional: ["detail"], identitySlots: ["primary"]},
+  {id: "steps_stack", variants: ["vertical_steps", "numbered_cards", "progress_path"], required: ["steps"], optional: ["accent"], identitySlots: []},
 ]);
 const RATIOS = Object.freeze(["16:9", "9:16"]);
 
@@ -25,8 +28,10 @@ function resolveV2(layoutId, variantId, ratio) {
 }
 
 function requiredSlots(layout) {
-  if (layout.required === "steps") return {steps: {items: ["准备", "执行", "复盘"]}};
-  return {[layout.required]: {id: `${layout.id}_01`, kind: layout.required === "speaker" ? "video" : "image", relativePath: `media/${layout.id}.png`}};
+  return Object.fromEntries(layout.required.map((slot) => {
+    if (slot === "steps") return [slot, {items: ["准备", "执行", "复盘"]}];
+    return [slot, {id: `${layout.id}_${slot}_01`, kind: slot === "speaker" ? "video" : "image", relativePath: `media/${layout.id}-${slot}.${slot === "speaker" ? "mp4" : "png"}`}];
+  }));
 }
 
 function compileCase(layout, variantId, ratio, slots = requiredSlots(layout)) {
@@ -38,7 +43,7 @@ function compileCase(layout, variantId, ratio, slots = requiredSlots(layout)) {
   });
 }
 
-test("layout v2 publishes exactly the three independent representative module contracts", () => {
+test("layout v2 publishes the six speaker/product vertical-slice module contracts", () => {
   const contracts = v2Contracts();
   assert.deepEqual(contracts.map(({id}) => id), CASES.map(({id}) => id));
   assert.deepEqual(registry.getRegistryContract().layouts_v2.map(({id}) => id), CASES.map(({id}) => id).sort());
@@ -49,8 +54,8 @@ test("layout v2 publishes exactly the three independent representative module co
     assert.match(contract.moduleId, new RegExp(`^layouts/${expected.id}@2\\.0\\.0$`));
     assert.deepEqual(contract.variants, expected.variants);
     assert.deepEqual(contract.supportedRatios, RATIOS);
-    assert.deepEqual(contract.requiredSlots, [expected.required]);
-    assert.deepEqual(contract.optionalSlots, [expected.optional]);
+    assert.deepEqual(contract.requiredSlots, expected.required);
+    assert.deepEqual(contract.optionalSlots, expected.optional);
     assert.deepEqual(contract.identitySlots, expected.identitySlots);
     assert.equal(contract.fallback, "no_optional_media");
     for (const ratio of RATIOS) assert.ok(contract.safeAreas[ratio], `${expected.id} declares ${ratio} safe areas`);
@@ -82,8 +87,9 @@ test("registry source manifest sorts slash-normalized paths by Unicode code poin
   assert.deepEqual(registry.getRegistrySourceManifest(root).map((entry) => entry.path), ["nested/a.mjs", "z.mjs", "ä.mjs"]);
 });
 
-test("layout v2 compiles all nine variants for both ratios with auditable structural contracts", () => {
+test("layout v2 compiles all eighteen speaker/product variants for both ratios with auditable structural contracts", () => {
   const signatures = new Map();
+  const geometrySignatures = new Map();
   for (const layout of CASES) for (const ratio of RATIOS) for (const variantId of layout.variants) {
     const compiled = compileCase(layout, variantId, ratio);
     assert.deepEqual(Object.keys(compiled).sort(), ["geometryAudit", "html", "identitySlots", "publicTargets"]);
@@ -111,12 +117,20 @@ test("layout v2 compiles all nine variants for both ratios with auditable struct
       assert.match(compiled.html, new RegExp(`data-v2-region="${region}"`));
       assert.match(compiled.html, new RegExp(`\\[data-v2-region="${region}"\\]\\{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px`));
     }
+    if (["speaker_left_info_right", "speaker_right_evidence_left", "material_fullscreen_speaker_pip"].includes(layout.id)) {
+      const geometryKey = `${layout.id}/${ratio}`;
+      const geometry = JSON.stringify(compiled.geometryAudit.criticalRegions);
+      const siblings = geometrySignatures.get(geometryKey) ?? new Set();
+      assert.equal(siblings.has(geometry), false, `${layout.id}/${ratio}/${variantId} must have variant-specific visible geometry`);
+      siblings.add(geometry);
+      geometrySignatures.set(geometryKey, siblings);
+    }
   }
-  assert.equal(signatures.size, 9);
+  assert.equal(signatures.size, 18);
 });
 
 test("layout v2 emits byte-identical styles for semantically identical token objects", () => {
-  const layout = CASES[1];
+  const layout = CASES.find(({id}) => id === "product_hero");
   const first = compileCase(layout, "center_pedestal", "16:9", requiredSlots(layout));
   const second = resolveV2(layout.id, "center_pedestal", "16:9").compile({
     idPrefix: "v2_product_hero_centerpedestal", durationMs: 3000, slots: requiredSlots(layout),
@@ -129,7 +143,7 @@ test("layout v2 fails closed for required slots and renders a nonblank optional-
   for (const layout of CASES) {
     assert.throws(() => compileCase(layout, layout.variants[0], "16:9", {}), /layout_required_slot_missing/);
     const compiled = compileCase(layout, layout.variants[0], "9:16");
-    assert.match(compiled.html, new RegExp(`data-slot="${layout.optional}"`));
+    for (const optional of layout.optional) assert.match(compiled.html, new RegExp(`data-slot="${optional}"`));
     assert.match(compiled.html, /data-fallback="no_optional_media"/);
     assert.match(compiled.html, /data-fallback-state="rendered"/);
   }
@@ -137,7 +151,7 @@ test("layout v2 fails closed for required slots and renders a nonblank optional-
 
 test("layout v2 visible copy and counter regions are nonempty and geometry-bounded in both ratios", () => {
   for (const ratio of RATIOS) {
-    const product = compileCase(CASES[1], "split_copy", ratio);
+    const product = compileCase(CASES.find(({id}) => id === "product_hero"), "split_copy", ratio);
     const copyBox = product.geometryAudit.criticalRegions.copy;
     assert.ok(copyBox, "split_copy must audit its visible copy region");
     assertBox(copyBox, product.geometryAudit);
@@ -145,7 +159,7 @@ test("layout v2 visible copy and counter regions are nonempty and geometry-bound
     const copy = product.html.match(/<section\b[^>]*data-v2-region="copy"[^>]*>([\s\S]*?)<\/section>/u)?.[1] ?? "";
     assert.match(copy, /<(?:svg|span)\b/u, "split_copy must render authoritative copy content or an explicit graphic fallback");
 
-    const steps = compileCase(CASES[2], "numbered_cards", ratio);
+    const steps = compileCase(CASES.find(({id}) => id === "steps_stack"), "numbered_cards", ratio);
     const counterBox = steps.geometryAudit.criticalRegions.counter;
     assert.ok(counterBox, "numbered_cards must audit its visible counter region");
     assertBox(counterBox, steps.geometryAudit);

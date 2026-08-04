@@ -314,6 +314,9 @@ def _layout_slot_bindings(
     layout_id = str(scene.get("layout_id") or "")
     consumed_slots = {
         "speaker_fullscreen": frozenset({"evidence"}),
+        "speaker_left_info_right": frozenset({"evidence"}),
+        "speaker_right_evidence_left": frozenset({"evidence"}),
+        "material_fullscreen_speaker_pip": frozenset({"primary", "detail"}),
         "product_hero": frozenset({"primary", "detail"}),
         "steps_stack": frozenset({"accent"}),
     }.get(layout_id)
@@ -355,9 +358,22 @@ def _layout_slot_bindings(
             raise ValueError("scene_layout_binding_duplicate")
         seen_slots.add(slot_id)
         bindings.append({"slot_id": slot_id, "asset_id": asset_id})
-    if layout_id == "product_hero" and "primary" not in seen_slots:
+    if layout_id in {"product_hero", "material_fullscreen_speaker_pip"} and "primary" not in seen_slots:
         raise ValueError("scene_layout_required_slot_missing")
-    return bindings
+    slot_order = {"primary": 0, "detail": 1, "evidence": 2, "accent": 3, "steps": 4}
+    return sorted(bindings, key=lambda binding: slot_order[binding["slot_id"]])
+
+
+def _validate_layout_source_requirements(
+    scene: Mapping[str, Any], *, source_video: Mapping[str, Any] | None
+) -> None:
+    if str(scene.get("layout_id") or "") in {
+        "speaker_fullscreen",
+        "speaker_left_info_right",
+        "speaker_right_evidence_left",
+        "material_fullscreen_speaker_pip",
+    } and not isinstance(source_video, Mapping):
+        raise ValueError("scene_layout_required_source_missing")
 
 
 class DashScopeAsr:
@@ -1442,6 +1458,9 @@ class ProductionStageCoordinator:
             ratio = plan["ratio"]
             width, height = ((1920, 1080) if ratio == "16:9" else (1080, 1920))
             visual_program = plan.get("visual_program_version") == "1.0"
+            if visual_program:
+                for scene in plan["scenes"]:
+                    _validate_layout_source_requirements(scene, source_video=source_video)
             manifest = {
                 "version": "2.0" if visual_program else "1.0", "schema_sha256": schema_sha256("render-manifest-v2.schema.json" if visual_program else "render-manifest-v1.schema.json"),
                 "renderer_environment": self._release_environment(),
