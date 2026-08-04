@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import unittest
@@ -39,6 +40,91 @@ class _Qwen:
 
 
 class ProductionDirectorTests(unittest.TestCase):
+    def test_visual_planning_binds_seed_to_persisted_request_sha_and_replays_exactly(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        decision = SimpleNamespace(
+            value={
+                "theme_profile_id": "editorial_clean",
+                "design_intent": {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"},
+            },
+            decision_sha256="b" * 64,
+            provider_request_id="director-1",
+            raw_output_sha256="c" * 64,
+        )
+        capabilities = {
+            "layout_capabilities": ["speaker_fullscreen"],
+            "layout_variants": {"speaker_fullscreen": ["emphasis_b"]},
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["fade"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {},
+            "theme_profile_ids": ["editorial_clean"],
+            "overlay_variants": {}, "overlay_animation_targets": {}, "layout_animation_targets": {},
+        }
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.director = object()
+            coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
+            coordinator._capabilities = lambda _ratio: capabilities
+
+            def planned(job_id, request_sha256):
+                root = coordinator._root(job_id)
+                (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
+                (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative", "start_ms": 0, "end_ms": 4000}], "source_segments": [], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
+                job = {"job_id": job_id, "owner_id": "alice", "request_sha256": request_sha256, "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}
+                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", return_value=decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
+                    coordinator._stage("planning", job, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
+                return json.loads((root / "visual-program.json").read_text(encoding="utf-8"))["variation_seed"]
+
+            first = planned("job-request-a", "1" * 64)
+            second = planned("job-request-b", "2" * 64)
+            replay = planned("job-replay", "1" * 64)
+            replay_again = planned("job-replay", "1" * 64)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, replay)
+        self.assertEqual(replay, replay_again)
+
+    def test_visual_planning_rejects_missing_or_invalid_persisted_request_sha(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        decision = SimpleNamespace(value={"theme_profile_id": "editorial_clean", "design_intent": {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"}}, decision_sha256="b" * 64, provider_request_id="director-1", raw_output_sha256="c" * 64)
+        capabilities = {"layout_capabilities": ["speaker_fullscreen"], "layout_variants": {"speaker_fullscreen": ["emphasis_b"]}, "overlay_capabilities": ["standard_caption"], "animation_capabilities": ["fade"], "transition_capabilities": ["hard_cut"], "theme_capabilities": {}, "theme_profile_ids": ["editorial_clean"], "overlay_variants": {}, "overlay_animation_targets": {}, "layout_animation_targets": {}}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.director = object(); coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64); coordinator._capabilities = lambda _ratio: capabilities
+            for index, request_sha256 in enumerate((None, "not-a-sha")):
+                job_id = f"job-invalid-{index}"; root = coordinator._root(job_id)
+                (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
+                (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative", "start_ms": 0, "end_ms": 4000}], "source_segments": [], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
+                job = {"job_id": job_id, "owner_id": "alice", "request_sha256": request_sha256, "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}
+                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", return_value=decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
+                    with self.assertRaisesRegex(ValueError, "variation_seed_source_invalid"):
+                        coordinator._stage("planning", job, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
+
+    def test_python_frozen_tokens_are_accepted_and_tampering_is_rejected_by_node(self):
+        from server.content_domains.ai_edit_v3.production import _resolve_design_tokens
+
+        renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+        intent = {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"}
+        manifest = {"version": "2.0", "schema_sha256": "schema-v2", "registry_sha256": "registry", "renderer_environment": {"renderer_build_id": "build"}, "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1}, "duration_ms": 4000, "master_audio": {"path": "media/master.wav"}, "source_video": None, "theme_profile_id": "editorial_clean", "design_intent": intent, "variation_seed": "0123456789abcdef", "design_tokens": _resolve_design_tokens("editorial_clean", intent, "0123456789abcdef"), "compositions": [{"id": "scene_1", "start_ms": 0, "end_ms": 4000, "overlay_ids": [], "overlay_instances": []}]}
+        program = "import fs from 'node:fs'; import {validateManifest} from './src/validate-manifest.mjs'; const value=JSON.parse(fs.readFileSync(process.argv.at(-1))); validateManifest(value,{rendererBuildId:'build',registrySha256:'sha256:registry',schemaSha256ByVersion:{'2.0':'schema-v2'}});"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"; path.write_text(json.dumps(manifest), encoding="utf-8")
+            accepted = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
+            manifest["design_tokens"]["--hf-bg"] = "#tampered"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            rejected = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("manifest_design_tokens_mismatch", rejected.stderr)
+
     def test_variation_seed_is_a_stable_16_lowercase_hex_derivation(self):
         from server.content_domains.ai_edit_v3 import production
 

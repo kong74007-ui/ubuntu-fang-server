@@ -1198,7 +1198,7 @@ class ProductionStageCoordinator:
                 visual_capabilities = visual_program_capabilities(capabilities)
                 decision_request = {**director_request, "scene_candidates": [item.__dict__ if hasattr(item, "__dict__") else {slot: getattr(item, slot) for slot in item.__slots__} for item in candidates], "capabilities": visual_capabilities}
                 decision = generate_director_decision(SimpleNamespace(request=decision_request, timeline=timeline, candidates=candidates, capabilities=visual_capabilities, job_id=job_id, deadline_at=context.deadline_at), self.director)
-                variation_seed = derive_variation_seed(normalized["sha256"], decision.decision_sha256, self.renderer.registry_sha256.removeprefix("sha256:"))
+                variation_seed = derive_variation_seed(job.get("request_sha256"), decision.decision_sha256, self.renderer.registry_sha256.removeprefix("sha256:"))
                 plan = compile_edit_plan(decision.value, candidates=candidates, timeline={"duration_ms": timeline.duration_ms, "captions": [{"id": item.id, "start_ms": item.start_ms, "end_ms": item.end_ms, "text": item.text} for item in timeline.captions], "ratio": normalized["ratio"]}, materials=descriptors, capabilities=visual_capabilities, variation_seed=int(variation_seed[:8], 16))
                 _write_json(root / "visual-program.json", {"theme_profile_id": decision.value["theme_profile_id"], "design_intent": decision.value["design_intent"], "variation_seed": variation_seed})
                 generated = ValidatedPlan(plan, provider_request_id=decision.provider_request_id, raw_output_sha256=decision.raw_output_sha256)
