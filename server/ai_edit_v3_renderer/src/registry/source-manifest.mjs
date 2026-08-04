@@ -10,7 +10,7 @@ export function getRegistrySourceManifest(root = REGISTRY_ROOT) {
   return Object.freeze(walk(root).map((file) => Object.freeze({
     path: path.relative(root, file).replaceAll("\\", "/"),
     sha256: createHash("sha256").update(readFileSync(file)).digest("hex"),
-  }))); 
+  })));
 }
 
 export function getRegistrySourceSha256(root = REGISTRY_ROOT) {
