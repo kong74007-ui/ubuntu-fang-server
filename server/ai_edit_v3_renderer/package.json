@@ -8,6 +8,7 @@
     "test": "node --test \"test/*.test.mjs\"",
     "release:lock": "node src/release-manifest.mjs --write --release-root .",
     "release:lock:check": "node src/release-manifest.mjs --check --release-root .",
+    "registry:hash": "node src/write-registry-hash.mjs",
     "hf:check": "hyperframes check",
     "hf:keyframes": "hyperframes keyframes",
     "hf:snapshot": "hyperframes snapshot",

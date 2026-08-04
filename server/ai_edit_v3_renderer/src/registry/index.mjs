@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 
 import {ANIMATION_CONTRACTS} from "./animations.mjs";
 import {compileLayout, LAYOUT_CONTRACTS} from "./layouts.mjs";
+import {getLayoutV2Contracts, LAYOUT_V2_CONTRACTS, resolveLayoutV2} from "./layouts-v2.mjs";
 import {getOverlayContract, OVERLAY_CONTRACTS} from "./overlays.mjs";
 import {resolveTheme as resolveBoundedTheme, THEME_CONTRACT} from "./themes.mjs";
 import {TRANSITION_CONTRACTS} from "./transitions.mjs";
@@ -34,10 +35,11 @@ function normalizeEntries(entries, field) {
   return sorted;
 }
 
-export function createRegistryContract({layouts, overlays, animations, transitions}) {
+export function createRegistryContract({layouts, layoutsV2 = [], overlays, animations, transitions}) {
   return deepFreeze(canonicalize({
     version: REGISTRY_VERSION,
     layouts: normalizeEntries(layouts, "layout"),
+    layouts_v2: normalizeEntries(layoutsV2, "layout_v2"),
     overlays: normalizeEntries(overlays, "overlay"),
     animations: normalizeEntries(animations, "animation"),
     transitions: normalizeEntries(transitions, "transition"),
@@ -47,6 +49,7 @@ export function createRegistryContract({layouts, overlays, animations, transitio
 
 const CONTRACT = createRegistryContract({
   layouts: LAYOUT_CONTRACTS,
+  layoutsV2: LAYOUT_V2_CONTRACTS,
   overlays: OVERLAY_CONTRACTS,
   animations: ANIMATION_CONTRACTS,
   transitions: TRANSITION_CONTRACTS,
@@ -74,6 +77,8 @@ export function resolveLayout(layoutId, variantId, ratio) {
     compile: (input) => compileLayout({layoutId, variantId, ratio, ...input}),
   });
 }
+
+export {getLayoutV2Contracts, resolveLayoutV2};
 
 export function resolveOverlay(overlayId) {
   return getOverlayContract(overlayId);
