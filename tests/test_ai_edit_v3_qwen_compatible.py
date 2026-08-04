@@ -49,6 +49,7 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
         )
         self.assertEqual(request[2]["Authorization"], "Bearer test-key")
         self.assertEqual(request_body["model"], "qwen3.7-max-2026-06-08")
+        self.assertNotIn("response_format", request_body)
         self.assertEqual(
             request_body["messages"],
             [
@@ -82,6 +83,16 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             client.generate_edit_plan("system", "user", timeout_seconds=240)
 
         self.assertEqual(timeouts, [37, 120])
+
+    def test_new_director_decision_method_requests_strict_json_without_changing_legacy(self):
+        bodies = []
+        def recorded(method, url, headers, body, timeout):
+            bodies.append(json.loads(body.decode("utf-8")))
+            return {"id": "decision-1", "choices": [{"message": {"content": "{}"}}], "usage": {}}
+        client = DashScopeCompatibleQwenClient(http_request=recorded)
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            client.generate_director_decision("system", "user")
+        self.assertEqual({"type": "json_object"}, bodies[0]["response_format"])
 
 
 if __name__ == "__main__":

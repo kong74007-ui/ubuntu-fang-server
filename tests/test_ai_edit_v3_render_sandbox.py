@@ -5,6 +5,7 @@ import hashlib
 import importlib.machinery
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -39,11 +40,11 @@ class RenderSandboxStaticTests(unittest.TestCase):
             "KillMode=control-group", "TimeoutStopSec=30", "RuntimeMaxSec=3300",
             "CPUQuota=200%", "MemoryMax=3G", "TasksMax=512", "LimitFSIZE=8G",
             "TemporaryFileSystem=/work:rw,nodev,nosuid,size=8G",
-            "BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/current:/work/release",
+            "BindReadOnlyPaths=/opt/huangque/ai-edit-v3-renderer/releases:/renderer-releases",
             "BindReadOnlyPaths=/var/lib/huangque-ai-edit-v3-render/%i/input:/work/input",
             "BindPaths=/var/lib/huangque-ai-edit-v3-render/%i/output:/work/output",
             "Environment=PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable",
-            "ExecStart=/usr/bin/node /work/release/src/render.mjs --request /work/input/request.json --input-root /work/input/assets --output-root /work/output",
+            "ExecStart=/usr/local/libexec/huangque-ai-edit-v3-renderctl run %i",
         )
         for directive in required:
             with self.subTest(directive=directive):
@@ -51,6 +52,7 @@ class RenderSandboxStaticTests(unittest.TestCase):
         self.assertNotIn("EnvironmentFile", unit)
         self.assertNotIn("API_KEY", unit)
         self.assertNotIn("--no-sandbox", unit)
+        self.assertNotIn("/current:", unit)
 
     def test_worker_sudoers_and_tmpfiles_are_narrow(self):
         worker = WORKER_UNIT.read_text(encoding="utf-8")
@@ -133,6 +135,81 @@ class RenderSandboxStaticTests(unittest.TestCase):
 
 
 class RenderCtlTests(unittest.TestCase):
+    def test_run_command_resolves_exact_content_addressed_release(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            releases = root / "releases"
+            releases.mkdir()
+            source = ROOT / "server/ai_edit_v3_renderer"
+            lock = json.loads((source / "renderer-release.lock.json").read_text(encoding="utf-8"))
+            release = releases / lock["renderer_build_id"].removeprefix("sha256:")
+            shutil.copytree(source, release, ignore=shutil.ignore_patterns("node_modules"))
+            request = root / "request.json"
+            request.write_text(
+                json.dumps({"renderer_build_id": lock["renderer_build_id"]}),
+                encoding="utf-8",
+            )
+
+            command = helper.resolve_render_command(
+                request_path=request,
+                releases_root=releases,
+                node_path=Path("/usr/bin/node"),
+                input_root=Path("/work/input/assets"),
+                output_root=Path("/work/output"),
+            )
+
+            self.assertEqual(command[0], "/usr/bin/node")
+            self.assertEqual(Path(command[1]), release / "src/render.mjs")
+            self.assertNotIn("current", command[1])
+            (release / "src/unlisted-runtime.mjs").write_text("export {};\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "render_release_tree_incomplete"):
+                helper.resolve_render_command(
+                    request_path=request,
+                    releases_root=releases,
+                    node_path=Path("/usr/bin/node"),
+                    input_root=Path("/work/input/assets"),
+                    output_root=Path("/work/output"),
+                )
+
+    def test_run_command_resolves_true_v1_release_through_historical_index(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            releases = root / "releases"
+            historical = releases / "historical" / "legacy-a"
+            historical.parent.mkdir(parents=True)
+            source = ROOT / "server/ai_edit_v3_renderer"
+            shutil.copytree(source, historical, ignore=shutil.ignore_patterns("node_modules"))
+            lock_path = historical / "renderer-release.lock.json"
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock["schema_version"] = 1
+            lock.pop("release_tree_files", None)
+            lock.pop("release_tree_sha256", None)
+            lock["git_commit"] = "a" * 40
+            lock["renderer_build_id"] = helper._canonical_build_id(lock)
+            lock_path.write_text(json.dumps(lock, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            (releases / "historical-release-index.json").write_text(
+                json.dumps(
+                    {"schema_version": 1, "releases": {lock["renderer_build_id"]: "historical/legacy-a"}},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            request = root / "request.json"
+            request.write_text(json.dumps({"renderer_build_id": lock["renderer_build_id"]}), encoding="utf-8")
+
+            command = helper.resolve_render_command(
+                request_path=request,
+                releases_root=releases,
+                node_path=Path("/usr/bin/node"),
+                input_root=Path("/work/input/assets"),
+                output_root=Path("/work/output"),
+            )
+
+            self.assertEqual(Path(command[1]), historical / "src/render.mjs")
+
     def test_instance_id_is_exact_and_rejects_injection(self):
         helper = load_helper()
         for value in ("job_1", "a", "a-b_c", "9" * 64):

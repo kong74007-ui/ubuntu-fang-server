@@ -6,7 +6,8 @@
   "engines": {"node": ">=22 <23"},
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
-    "release:lock": "node src/release-manifest.mjs",
+    "release:lock": "node src/release-manifest.mjs --write --release-root .",
+    "release:lock:check": "node src/release-manifest.mjs --check --release-root .",
     "hf:check": "hyperframes check",
     "hf:keyframes": "hyperframes keyframes",
     "hf:snapshot": "hyperframes snapshot",

@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import {closeSync, fsyncSync, openSync} from "node:fs";
-import {readdir, readFile, rename, stat, writeFile} from "node:fs/promises";
-import {basename, dirname, relative, resolve} from "node:path";
+import {lstat, readdir, readFile, rename, stat, writeFile} from "node:fs/promises";
+import {basename, dirname, isAbsolute, relative, resolve, sep} from "node:path";
 import {spawn} from "node:child_process";
 import {fileURLToPath} from "node:url";
 
@@ -61,9 +61,60 @@ function assertSha(value, code) {
 }
 
 
+function contained(root, path) {
+  const rel = relative(root, path);
+  return rel && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+
+async function collectMjs(root, directory, output) {
+  for (const entry of await readdir(directory, {withFileTypes: true})) {
+    const path = resolve(directory, entry.name);
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink()) throw new Error("renderer_release_symlink_forbidden");
+    if (metadata.isDirectory()) await collectMjs(root, path, output);
+    else if (metadata.isFile() && entry.name.endsWith(".mjs")) output.push(path);
+    else if (!metadata.isFile()) throw new Error("renderer_release_file_invalid");
+  }
+}
+
+
+export async function inspectReleaseTree(releaseRoot) {
+  const root = resolve(releaseRoot);
+  const paths = [];
+  await collectMjs(root, resolve(root, "src"), paths);
+  const fontsRoot = resolve(root, "assets", "fonts");
+  for (const entry of await readdir(fontsRoot, {withFileTypes: true})) {
+    const path = resolve(fontsRoot, entry.name);
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("renderer_release_file_invalid");
+    paths.push(path);
+  }
+  for (const name of ["package.json", "package-lock.json", "hyperframes.json", "registry-sha256.txt"]) {
+    paths.push(resolve(root, name));
+  }
+  const records = [];
+  for (const path of paths) {
+    if (!contained(root, path)) throw new Error("renderer_release_path_invalid");
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error("renderer_release_file_invalid");
+    records.push({
+      relative_path: relative(root, path).replaceAll("\\", "/"),
+      sha256: await hashFile(path),
+      size_bytes: metadata.size,
+    });
+  }
+  records.sort((left, right) => left.relative_path.localeCompare(right.relative_path));
+  if (new Set(records.map((item) => item.relative_path)).size !== records.length) throw new Error("renderer_release_file_duplicate");
+  const digest = createHash("sha256");
+  for (const item of records) digest.update(item.relative_path).update("\0").update(item.sha256);
+  return {release_tree_sha256: digest.digest("hex"), release_tree_files: records};
+}
+
+
 export function validateRendererRelease(release) {
   if (!release || typeof release !== "object" || Array.isArray(release)) throw new Error("renderer_release_invalid");
-  if (release.schema_version !== 1) throw new Error("renderer_schema_version_invalid");
+  if (![1, 2].includes(release.schema_version)) throw new Error("renderer_schema_version_invalid");
   if (typeof release.git_commit !== "string" || !/^[0-9a-f]{40}$/.test(release.git_commit)) throw new Error("renderer_git_commit_invalid");
   assertSha(release.package_lock_sha256, "renderer_package_lock_invalid");
   if (!BUILD_ID.test(release.renderer_build_id || "")) throw new Error("renderer_build_id_invalid");
@@ -79,6 +130,22 @@ export function validateRendererRelease(release) {
   const sorted = [...release.fonts].sort((a, b) => a.relative_path.localeCompare(b.relative_path));
   if (JSON.stringify(sorted) !== JSON.stringify(release.fonts)) throw new Error("renderer_fonts_unsorted");
   for (const font of release.fonts) assertSha(font.sha256, "renderer_font_sha256_invalid");
+  if (release.schema_version === 2) {
+    assertSha(release.release_tree_sha256, "renderer_release_tree_invalid");
+    if (!Array.isArray(release.release_tree_files) || release.release_tree_files.length < 1) throw new Error("renderer_release_tree_invalid");
+    const paths = [];
+    for (const item of release.release_tree_files) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("renderer_release_tree_invalid");
+      const keys = Object.keys(item).sort().join(",");
+      if (keys !== "relative_path,sha256,size_bytes") throw new Error("renderer_release_tree_invalid");
+      if (typeof item.relative_path !== "string" || !item.relative_path || item.relative_path.includes("\\") || item.relative_path.startsWith("/") || item.relative_path.split("/").includes("..")) throw new Error("renderer_release_tree_invalid");
+      assertSha(item.sha256, "renderer_release_tree_invalid");
+      if (!Number.isSafeInteger(item.size_bytes) || item.size_bytes < 0) throw new Error("renderer_release_tree_invalid");
+      paths.push(item.relative_path);
+    }
+    const sortedPaths = [...paths].sort();
+    if (new Set(paths).size !== paths.length || JSON.stringify(paths) !== JSON.stringify(sortedPaths)) throw new Error("renderer_release_tree_invalid");
+  }
   return release;
 }
 
@@ -110,7 +177,7 @@ export async function inspectRendererRelease({
     sha256: await hashFile(path),
   }])));
   const release = {
-    schema_version: 1,
+    schema_version: 2,
     git_commit: gitCommit,
     package_lock_sha256: await hashFile(resolve(root, "package-lock.json")),
     node: versions.node,
@@ -124,6 +191,7 @@ export async function inspectRendererRelease({
     encoder_argv: ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-threads", "2"],
     thread_count: 2,
     fonts,
+    ...await inspectReleaseTree(root),
   };
   release.renderer_build_id = computeRendererBuildId(release);
   return validateRendererRelease(release);
@@ -165,11 +233,53 @@ export async function writeArtifactAttestation({rendererBuildId, archivePath, de
 }
 
 
+export async function refreshRendererReleaseLock(releaseRoot) {
+  const root = resolve(releaseRoot);
+  const current = JSON.parse(await readFile(resolve(root, "renderer-release.lock.json"), "utf8"));
+  const fontsRoot = resolve(root, "assets", "fonts");
+  const fontNames = (await readdir(fontsRoot)).filter((name) => name.endsWith(".woff2")).sort();
+  const release = {
+    ...current,
+    schema_version: 2,
+    package_lock_sha256: await hashFile(resolve(root, "package-lock.json")),
+    fonts: await Promise.all(fontNames.map(async (name) => ({
+      relative_path: `assets/fonts/${name}`,
+      sha256: await hashFile(resolve(fontsRoot, name)),
+    }))),
+    ...await inspectReleaseTree(root),
+  };
+  delete release.release_archive_sha256;
+  release.renderer_build_id = computeRendererBuildId(release);
+  return validateRendererRelease(release);
+}
+
+
+export async function checkRendererReleaseLock(releaseRoot) {
+  const root = resolve(releaseRoot);
+  const expected = await refreshRendererReleaseLock(root);
+  const actual = await readFile(resolve(root, "renderer-release.lock.json"));
+  const canonicalBytes = Buffer.concat([canonicalReleaseBytes(expected), Buffer.from("\n")]);
+  if (!actual.equals(canonicalBytes)) throw new Error("renderer_release_lock_stale");
+  return expected;
+}
+
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = Object.fromEntries(Array.from({length: Math.floor((process.argv.length - 2) / 2)}, (_, index) => {
-    const offset = 2 + index * 2;
-    return [process.argv[offset], process.argv[offset + 1]];
-  }));
+  const raw = process.argv.slice(2);
+  const flags = new Set(raw.filter((value) => value === "--write" || value === "--check"));
+  const paired = raw.filter((value) => !flags.has(value));
+  if (paired.length % 2 !== 0) throw new Error("renderer_release_arguments_invalid");
+  const args = Object.fromEntries(Array.from({length: paired.length / 2}, (_, index) => [paired[index * 2], paired[index * 2 + 1]]));
+  if (flags.size) {
+    if (flags.size !== 1 || !args["--release-root"]) throw new Error("renderer_release_arguments_invalid");
+    if (flags.has("--check")) await checkRendererReleaseLock(args["--release-root"]);
+    else {
+      const release = await refreshRendererReleaseLock(args["--release-root"]);
+      await writeRendererReleaseLock(release, resolve(args["--release-root"], "renderer-release.lock.json"));
+      process.stdout.write(`${release.renderer_build_id}\n`);
+    }
+    process.exit(0);
+  }
   const required = ["--release-root", "--node", "--chromium", "--chromium-version", "--ffmpeg", "--ffprobe", "--git-commit"];
   if (required.some((name) => !args[name])) throw new Error("renderer_release_arguments_invalid");
   const release = await inspectRendererRelease({

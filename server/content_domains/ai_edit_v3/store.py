@@ -139,7 +139,8 @@ _PUBLISH_ACCEPTED_OPERATIONS = frozenset(
 _PUBLISH_AUTHORITY_STATES = frozenset(
     {"publishing", "asset_decision_reconciling", "failed_asset_decision_pending"}
 )
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_SCHEMA_V1_MIGRATION_SHA256 = "ac0f6a45cc1e97976dfbfea95f9112e6ccc38802a3a4899f1b8fd435b09d3387"
 _STAGE_ATTEMPT_STATUSES = (
     "running",
     "completed",
@@ -200,6 +201,11 @@ _SCHEMA_TABLE_COLUMNS = {
         "prompt_version", "request_schema_sha256", "response_schema_sha256", "request_id",
         "redacted_final_output_json", "validation_json", "usage_json", "elapsed_ms",
         "created_at",
+    ),
+    "edit_v3_director_decisions": (
+        "id", "job_id", "version", "model_call_id", "prompt_version",
+        "raw_output_json", "normalized_decision_json", "decision_sha256",
+        "schema_sha256", "candidates_sha256", "created_at",
     ),
     "edit_v3_provider_tasks": (
         "id", "job_id", "stage", "stage_attempt_id", "provider", "capability",
@@ -267,6 +273,10 @@ _SCHEMA_FOREIGN_KEYS = {
     "edit_v3_model_calls": {
         ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
         ("stage_attempt_id", "edit_v3_stage_attempts", "id", "RESTRICT"),
+    },
+    "edit_v3_director_decisions": {
+        ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
+        ("model_call_id", "edit_v3_model_calls", "id", "RESTRICT"),
     },
     "edit_v3_provider_tasks": {
         ("job_id", "edit_v3_jobs", "job_id", "RESTRICT"),
@@ -535,6 +545,24 @@ _CREATE_TABLE_SQL = {
             created_at INTEGER NOT NULL,
             FOREIGN KEY(job_id) REFERENCES edit_v3_jobs(job_id) ON DELETE RESTRICT,
             FOREIGN KEY(stage_attempt_id) REFERENCES edit_v3_stage_attempts(id) ON DELETE RESTRICT
+        )
+    """,
+    "edit_v3_director_decisions": """
+        CREATE TABLE edit_v3_director_decisions(
+            id TEXT PRIMARY KEY CHECK(length(id)>0),
+            job_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version=1),
+            model_call_id TEXT NOT NULL,
+            prompt_version TEXT NOT NULL CHECK(length(prompt_version)>0),
+            raw_output_json TEXT NOT NULL,
+            normalized_decision_json TEXT NOT NULL,
+            decision_sha256 TEXT NOT NULL CHECK(length(decision_sha256)=64 AND decision_sha256 NOT GLOB '*[^0-9a-f]*'),
+            schema_sha256 TEXT NOT NULL CHECK(length(schema_sha256)=64 AND schema_sha256 NOT GLOB '*[^0-9a-f]*'),
+            candidates_sha256 TEXT NOT NULL CHECK(length(candidates_sha256)=64 AND candidates_sha256 NOT GLOB '*[^0-9a-f]*'),
+            created_at INTEGER NOT NULL,
+            UNIQUE(job_id,version),
+            FOREIGN KEY(job_id) REFERENCES edit_v3_jobs(job_id) ON DELETE RESTRICT,
+            FOREIGN KEY(model_call_id) REFERENCES edit_v3_model_calls(id) ON DELETE RESTRICT
         )
     """,
     "edit_v3_provider_tasks": """
@@ -2580,7 +2608,7 @@ def _schema_tables(connection: sqlite3.Connection) -> set[str]:
 def _raise_manifest_mismatch(detail: str) -> None:
     raise StoreMigrationError(
         "v3_schema_manifest_mismatch",
-        f"V3 schema v1 does not match the frozen manifest: {detail}",
+        f"V3 schema v{SCHEMA_VERSION} does not match the frozen manifest: {detail}",
     )
 
 
@@ -2707,17 +2735,36 @@ def _migrate_or_validate(connection: sqlite3.Connection) -> None:
                     "V3 schema metadata must contain exactly singleton id 1",
                 )
             version = int(rows[0][1])
+            migration_sha256 = rows[0][2]
             if version > SCHEMA_VERSION:
                 raise StoreMigrationError(
                     "v3_schema_future_version",
                     "database schema version is newer than this runtime",
                 )
+            if version == 1:
+                if rows[0][2] != _SCHEMA_V1_MIGRATION_SHA256:
+                    raise StoreMigrationError(
+                        "v3_schema_migration_sha_mismatch",
+                        "database schema v1 migration SHA is not trusted",
+                    )
+                expected_v1_tables = set(_SCHEMA_TABLE_COLUMNS) - {"edit_v3_director_decisions"}
+                if tables != expected_v1_tables:
+                    _raise_manifest_mismatch("v1 table set before migration")
+                connection.execute(_CREATE_TABLE_SQL["edit_v3_director_decisions"])
+                now = int(time.time() * 1000)
+                connection.execute(
+                    """UPDATE edit_v3_schema_meta
+                       SET version=?,migration_sha256=?,updated_at=? WHERE id=1""",
+                    (SCHEMA_VERSION, MIGRATION_SHA256, now),
+                )
+                version = SCHEMA_VERSION
+                migration_sha256 = MIGRATION_SHA256
             if version != SCHEMA_VERSION:
                 raise StoreMigrationError(
                     "v3_schema_version_unsupported",
                     "database schema version is not supported",
                 )
-            if rows[0][2] != MIGRATION_SHA256:
+            if migration_sha256 != MIGRATION_SHA256:
                 raise StoreMigrationError(
                     "v3_schema_migration_sha_mismatch",
                     "database migration SHA does not match the frozen migration",
@@ -4588,6 +4635,124 @@ class V3Store:
                     (claim.job_id,),
                 ).fetchone()
             )
+
+        return self._write(write)
+
+    def get_director_decision(self, job_id: str, *, version: int = 1) -> dict[str, Any] | None:
+        job_id = _require_nonblank("job_id", job_id)
+        if version != 1:
+            raise _configuration_error("director_decision_version_invalid", "director decision version is invalid")
+        return self._read(
+            lambda connection: (
+                None
+                if (row := connection.execute(
+                    "SELECT * FROM edit_v3_director_decisions WHERE job_id=? AND version=?",
+                    (job_id, version),
+                ).fetchone()) is None
+                else dict(row)
+            )
+        )
+
+    def save_director_decision(
+        self,
+        claim: LeaseClaim,
+        stage_attempt_id: str,
+        validated_decision: Any,
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """Persist the validated visual decision once and reject divergent replay."""
+
+        claim = _require_claim(claim)
+        job_id = claim.job_id
+        stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+        now_ms = _require_now_ms(now_ms)
+        value = getattr(validated_decision, "value", None)
+        if not isinstance(value, Mapping):
+            raise _configuration_error("director_decision_invalid", "validated decision is unavailable")
+        normalized = canonical_json(value).decode("utf-8")
+        decision_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if getattr(validated_decision, "decision_sha256", None) != decision_sha:
+            raise _configuration_error("director_decision_sha_invalid", "director decision SHA is invalid")
+        raw_output = getattr(validated_decision, "raw_output_json", None)
+        if not isinstance(raw_output, str) or _is_canonical_json_text(raw_output) != 1:
+            raise _configuration_error("director_raw_output_invalid", "director raw output is not canonical JSON")
+        schema_sha = getattr(validated_decision, "schema_sha256", None)
+        candidates_sha = getattr(validated_decision, "candidates_sha256", None)
+        if schema_sha != schema_sha256("director-decision-v1.schema.json"):
+            raise _configuration_error("director_schema_sha_invalid", "director schema SHA is invalid")
+        if not isinstance(candidates_sha, str) or re.fullmatch(r"[0-9a-f]{64}", candidates_sha) is None:
+            raise _configuration_error("director_candidates_sha_invalid", "candidate SHA is invalid")
+        prompt_version = getattr(validated_decision, "prompt_version", None)
+        if not isinstance(prompt_version, str) or not prompt_version:
+            raise _configuration_error("director_prompt_version_invalid", "prompt version is invalid")
+        request_id = getattr(validated_decision, "provider_request_id", None)
+        if request_id is not None and (not isinstance(request_id, str) or not request_id):
+            raise _configuration_error("director_request_id_invalid", "provider request ID is invalid")
+        identity = hashlib.sha256(f"{job_id}:director-decision:1".encode("utf-8")).hexdigest()
+        model_call_id = f"model-{identity[:40]}"
+        decision_id = f"decision-{identity[:40]}"
+
+        def write(connection: sqlite3.Connection) -> dict[str, Any]:
+            if not _lease_owned_tx(connection, claim, now_ms):
+                raise _lease_lost(claim)
+            attempt = connection.execute(
+                """SELECT stage,status,worker_id,fencing_token
+                   FROM edit_v3_stage_attempts WHERE id=? AND job_id=?""",
+                (stage_attempt_id, job_id),
+            ).fetchone()
+            if (
+                attempt is None
+                or attempt["stage"] != "planning"
+                or attempt["status"] != "running"
+                or attempt["worker_id"] != claim.worker_id
+                or attempt["fencing_token"] != claim.fencing_token
+            ):
+                raise StoreConflictError(
+                    "director_attempt_invalid",
+                    "director decision has no active fenced planning attempt",
+                )
+            existing = connection.execute(
+                "SELECT * FROM edit_v3_director_decisions WHERE job_id=? AND version=1",
+                (job_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["decision_sha256"] != decision_sha
+                    or existing["schema_sha256"] != schema_sha
+                    or existing["candidates_sha256"] != candidates_sha
+                    or existing["raw_output_json"] != raw_output
+                ):
+                    raise StoreConflictError("director_decision_conflict", "director decision replay changed")
+                return dict(existing)
+            connection.execute(
+                """INSERT INTO edit_v3_model_calls(
+                       id,job_id,stage_attempt_id,provider,model,purpose,prompt_version,
+                       request_schema_sha256,response_schema_sha256,request_id,
+                       redacted_final_output_json,validation_json,usage_json,elapsed_ms,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    model_call_id, job_id, stage_attempt_id, "dashscope", "qwen3.7-max-2026-06-08",
+                    "director_decision", prompt_version, candidates_sha, schema_sha,
+                    request_id, normalized,
+                    _json_text({"decision_sha256": decision_sha, "status": "valid"}),
+                    None, 0, now_ms,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO edit_v3_director_decisions(
+                       id,job_id,version,model_call_id,prompt_version,raw_output_json,
+                       normalized_decision_json,decision_sha256,schema_sha256,
+                       candidates_sha256,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    decision_id, job_id, 1, model_call_id, prompt_version, raw_output,
+                    normalized, decision_sha, schema_sha, candidates_sha, now_ms,
+                ),
+            )
+            return dict(connection.execute(
+                "SELECT * FROM edit_v3_director_decisions WHERE id=?", (decision_id,)
+            ).fetchone())
 
         return self._write(write)
 

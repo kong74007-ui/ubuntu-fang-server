@@ -52,6 +52,7 @@ class V3EnvironmentManifestTests(unittest.TestCase):
         "AI_EDIT_V3_QUEUE_CAPACITY": "50",
         "AI_EDIT_V3_TEMP_BYTES_LIMIT": "10737418240",
         "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS": "120",
+        "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "0",
     }
     FORBIDDEN_V3_NAMES = {
         "AI_EDIT_V3_OWNER_HMAC_SECRET",
@@ -175,9 +176,20 @@ class FeatureConfigTests(unittest.TestCase):
         self.assertFalse(config.enabled)
         self.assertIsNone(config.db_path)
         self.assertEqual(config.director_timeout_seconds, 120)
+        self.assertFalse(config.visual_program_enabled)
         self.assertEqual(dict(os.environ), before)
         with self.assertRaises(FrozenInstanceError):
             config.enabled = True
+
+    def test_visual_program_gate_is_strict_and_default_off(self):
+        self.assertFalse(load_config({}).visual_program_enabled)
+        env = self.enabled_env()
+        env["AI_EDIT_V3_VISUAL_PROGRAM_ENABLED"] = "1"
+        self.assertTrue(load_config(env).visual_program_enabled)
+        for invalid in ("", "true", " 1", "2"):
+            with self.subTest(invalid=invalid):
+                env["AI_EDIT_V3_VISUAL_PROGRAM_ENABLED"] = invalid
+                self.assert_reason("config_visual_program_invalid", env)
 
     def test_director_timeout_is_part_of_the_frozen_config_contract(self):
         env = self.enabled_env()
@@ -1118,6 +1130,21 @@ class RuntimeContractTests(unittest.TestCase):
             report.items["content_safety"].reason_code,
             "content_safety_not_implemented",
         )
+        self.assertEqual(
+            report.items["visual_program_v1"].reason_code,
+            "visual_program_disabled",
+        )
+
+    def test_visual_program_capability_publishes_enabled_state_without_gating_legacy(self):
+        dependencies, _probes = self.dependencies()
+        env = self.enabled_env()
+        env["AI_EDIT_V3_VISUAL_PROGRAM_ENABLED"] = "1"
+        report = preflight(build_runtime(dependencies, env=env))
+        self.assertEqual(
+            report.items["visual_program_v1"].reason_code,
+            "visual_program_enabled",
+        )
+        self.assertTrue(report.accepts_new_jobs)
 
     def test_environment_variable_without_wiring_is_not_ready(self):
         dependencies, _probes = self.dependencies(director=None)

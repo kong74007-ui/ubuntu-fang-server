@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = ROOT / "server" / "content_domains" / "ai_edit_v3" / "schemas"
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "ai_edit_v3"
 SCHEMA_NAMES = (
+    "director-decision-v1.schema.json",
     "edit-plan-2.0.schema.json",
     "render-manifest-v1.schema.json",
     "quality-verdict-v1.schema.json",
@@ -43,6 +44,15 @@ QUALITY_BLOCKING = {
     "opening_hook_visual_consistency": False,
 }
 EXPECTED_ROOT_FIELDS = {
+    "director-decision-v1.schema.json": {
+        "version",
+        "creative_concept",
+        "narrative_pattern",
+        "theme_profile_id",
+        "design_intent",
+        "scene_directives",
+        "audio_intent",
+    },
     "edit-plan-2.0.schema.json": {
         "version",
         "duration_ms",

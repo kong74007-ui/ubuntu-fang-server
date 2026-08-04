@@ -78,6 +78,7 @@ class HyperframesRendererTests(unittest.TestCase):
             digest = hashlib.sha256(b"video").hexdigest()
             manifest = {
                 "version": "1.0", "renderer_environment": {"renderer_build_id": "sha256:" + "1" * 64, "node_version": "v22.14.0"},
+                "schema_sha256": "3" * 64, "registry_sha256": "2" * 64,
                 "source_video": {"path": "media/source.mp4", "sha256": digest, "size_bytes": 5},
                 "master_audio": None, "assets": [],
             }

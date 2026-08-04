@@ -24,6 +24,7 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_QUEUE_CAPACITY",
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
         "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS",
+        "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED",
     }
 )
 _SECURITY_COMPOUND_MARKERS = frozenset(
@@ -96,6 +97,7 @@ class FeatureConfig:
     queue_capacity: int | None
     temp_bytes_limit: int | None
     director_timeout_seconds: int = 120
+    visual_program_enabled: bool = False
 
 
 CapabilityStatus = Literal[
@@ -288,6 +290,13 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         raise _error("config_enabled_invalid", "AI_EDIT_V3_ENABLED")
     enabled = enabled_text == "1"
 
+    visual_program_text = source.get("AI_EDIT_V3_VISUAL_PROGRAM_ENABLED", "0")
+    if visual_program_text not in {"0", "1"}:
+        raise _error(
+            "config_visual_program_invalid", "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED"
+        )
+    visual_program_enabled = visual_program_text == "1"
+
     db_path = _path(source.get("AI_EDIT_V3_DB_PATH"), "AI_EDIT_V3_DB_PATH")
     v2_db_path = _path(source.get("AI_EDIT_V2_DB"), "AI_EDIT_V2_DB")
     secret_file = _path(
@@ -363,4 +372,5 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         queue_capacity=queue_capacity,
         temp_bytes_limit=temp_bytes_limit,
         director_timeout_seconds=director_timeout_seconds,
+        visual_program_enabled=visual_program_enabled,
     )

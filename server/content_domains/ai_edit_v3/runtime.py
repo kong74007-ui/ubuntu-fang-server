@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
+import json
 import math
 import platform
 import re
@@ -598,6 +600,20 @@ def preflight(
         if config.enabled
         else _missing("feature_disabled", "V3 feature is disabled")
     )
+    items["visual_program_v1"] = _implemented(
+        "V3.1 visual program is enabled"
+        if config.visual_program_enabled
+        else "V3.1 visual program is disabled"
+    )
+    items["visual_program_v1"] = CapabilityItem(
+        status=items["visual_program_v1"].status,
+        reason_code=(
+            "visual_program_enabled"
+            if config.visual_program_enabled
+            else "visual_program_disabled"
+        ),
+        detail=items["visual_program_v1"].detail,
+    )
     items["owner_hmac_reference"] = (
         _ready("owner-HMAC secret file reference is configured")
         if config.owner_hmac_secret_file is not None
@@ -744,6 +760,44 @@ def assert_ready_for_request(
     raise CapabilityUnavailable(reasons)
 
 
+def get_or_generate_director_decision(
+    store: V3Store,
+    claim: LeaseClaim,
+    stage_attempt_id: str,
+    context: Any,
+    provider: Any,
+    *,
+    now_ms: int,
+):
+    """Reuse immutable decision evidence on replay before calling Qwen again."""
+
+    from .director_decision import ValidatedDecision, generate_director_decision
+
+    if not store.lease_owned(claim, now_ms):
+        raise LeaseLost("lease_lost", "director decision lease is no longer owned")
+    existing = store.get_director_decision(claim.job_id)
+    if existing is not None:
+        raw_output = existing["raw_output_json"]
+        return ValidatedDecision(
+            value=json.loads(existing["normalized_decision_json"]),
+            provider_request_id=None,
+            raw_output_json=raw_output,
+            raw_output_sha256=hashlib.sha256(raw_output.encode("utf-8")).hexdigest(),
+            decision_sha256=existing["decision_sha256"],
+            schema_sha256=existing["schema_sha256"],
+            candidates_sha256=existing["candidates_sha256"],
+            prompt_version=existing["prompt_version"],
+        )
+    generated = generate_director_decision(context, provider)
+    store.save_director_decision(
+        claim,
+        stage_attempt_id,
+        generated,
+        now_ms=now_ms,
+    )
+    return generated
+
+
 __all__ = (
     "Clock",
     "LeaseHeartbeat",
@@ -757,5 +811,6 @@ __all__ = (
     "build_runtime",
     "build_phase_b_stage_handlers",
     "build_stage_handlers",
+    "get_or_generate_director_decision",
     "preflight",
 )
