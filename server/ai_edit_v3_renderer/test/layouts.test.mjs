@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {compilePrimitiveLayout} from "../src/registry/layout-primitives.mjs";
 import {compileLayout, getLayoutContract, LAYOUT_CONTRACTS} from "../src/registry/layouts.mjs";
 
 const RATIOS = ["16:9", "9:16"];
@@ -43,6 +44,24 @@ test("layout compiler distinguishes no, one and multiple optional media slots", 
     {id: "two", kind: "image", relativePath: "media/two.png"},
     {id: "three", kind: "image", relativePath: "media/three.png"},
   ]}).match(/class="hf-asset/g) ?? []).length, 3);
+});
+
+test("layout compilers never expose internal placeholder copy", () => {
+  const compiled = [
+    compileLayout({
+      layoutId: "speaker_left_info_right", variantId: "balanced_a", ratio: "9:16",
+      idPrefix: "talking_head", durationMs: 3000, scene: {}, assets: [], overlays: "", hasVideo: true,
+    }),
+    compilePrimitiveLayout({idPrefix: "primitive", durationMs: 3000, hasVideo: true}),
+    compilePrimitiveLayout({idPrefix: "faceless", durationMs: 3000, hasVideo: false}),
+  ].join("\n");
+
+  for (const forbidden of ["主体画面", "主体视频", "智能剪辑画面", "AI 视觉节奏"]) {
+    assert.equal(compiled.includes(forbidden), false, forbidden);
+  }
+  assert.match(compiled, /class="hf-fallback clip"/);
+  assert.match(compiled, /class="hf-speaker-zone clip"/);
+  assert.match(compiled, /class="hf-media clip/);
 });
 
 function overlaps(a, b) {

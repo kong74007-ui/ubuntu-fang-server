@@ -107,7 +107,9 @@ class ProductionDirectorTests(unittest.TestCase):
             {
                 "timeline": {"duration_ms": 18000, "captions": captions, "source_segments": []},
                 "source": {"input_type": "platform_talking_head"},
-                "current_materials": [],
+                "current_materials": [
+                    {"semantic": "Supporting evidence", "purpose": "evidence", "scene_index": 1},
+                ],
                 "generate_missing_material": False,
                 "capabilities": capabilities,
                 "ratio": "9:16",
@@ -131,14 +133,16 @@ class ProductionDirectorTests(unittest.TestCase):
         manifest = {
             "duration_ms": 18000,
             "source_video": {"path": "media/source.mp4", "silent": True},
-            "assets": [],
+            "assets": [{"id": "material_01", "kind": "image"}],
             "compositions": [
                 {
                     "id": f"composition_{index:03d}",
                     "start_ms": scene["start_ms"],
                     "end_ms": scene["end_ms"],
                     "layout_id": scene["layout_id"],
-                    "asset_ids": [],
+                    "asset_ids": [
+                        slot["id"] for slot in scene["material_slots"]
+                    ],
                 }
                 for index, scene in enumerate(plan["scenes"], start=1)
             ],
@@ -528,6 +532,54 @@ class ProductionDirectorTests(unittest.TestCase):
         ):
             self.assertEqual("pass", checks[check_id]["result"], check_id)
 
+    def test_material_free_talking_head_scene_ignores_split_layout_request(self):
+        capabilities = {
+            "layout_capabilities": [
+                "speaker_fullscreen",
+                "speaker_left_info_right",
+                "material_fullscreen_speaker_pip",
+            ],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {"id": "caption_001", "start_ms": 0, "end_ms": 4000, "text": "Opening"},
+            {"id": "caption_002", "start_ms": 4000, "end_ms": 8000, "text": "Evidence"},
+            {"id": "caption_003", "start_ms": 8000, "end_ms": 12000, "text": "Close"},
+        ]
+
+        plan = QwenCompiledDirector._compile(
+            {
+                "timeline": {"duration_ms": 12000, "captions": captions, "source_segments": []},
+                "source": {"input_type": "platform_talking_head"},
+                "current_materials": [],
+                "generate_missing_material": True,
+                "capabilities": capabilities,
+                "ratio": "9:16",
+            },
+            {
+                "layout_sequence": [
+                    "speaker_left_info_right",
+                    "material_fullscreen_speaker_pip",
+                    "speaker_left_info_right",
+                ],
+                "motion_energy": "medium",
+                "visual_focuses": ["software workflow"],
+            },
+        )
+
+        self.assertEqual([], plan["scenes"][0]["material_slots"])
+        self.assertEqual("speaker_fullscreen", plan["scenes"][0]["layout_id"])
+        self.assertTrue(plan["scenes"][1]["material_slots"])
+
     def test_invalid_optional_layout_sequence_keeps_multi_scene_fallback(self):
         class InvalidSequenceQwen(_Qwen):
             def generate_edit_plan(self, system_prompt, user_prompt, *, timeout_seconds=None):
@@ -579,6 +631,93 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_visual_inspector_rejects_material_layout_without_assets(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "composition_001", "start_ms": 0, "end_ms": 6000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "start_ms": 6000, "end_ms": 12000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": [],
+                },
+                {
+                    "id": "composition_003", "start_ms": 12000, "end_ms": 18000,
+                    "layout_id": "material_fullscreen_speaker_pip", "asset_ids": ["material_01"],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=manifest,
+                render_report={},
+            )["checks"]
+        }
+
+        self.assertEqual("fail", checks["material_semantic_identity"]["result"])
+        self.assertTrue(checks["material_semantic_identity"]["repairable"])
+        self.assertEqual(
+            "material_layout_requires_bound_asset_failed",
+            checks["material_semantic_identity"]["reason"],
+        )
+
+    def test_repair_manifest_replaces_material_layout_without_assets(self):
+        from server.content_domains.ai_edit_v3.production import (
+            DeterministicVisualInspector,
+            _repair_render_manifest,
+        )
+
+        manifest = {
+            "duration_ms": 18000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "composition_001", "start_ms": 0, "end_ms": 6000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": [],
+                },
+                {
+                    "id": "composition_002", "start_ms": 6000, "end_ms": 12000,
+                    "layout_id": "speaker_left_info_right", "asset_ids": [],
+                },
+                {
+                    "id": "composition_003", "start_ms": 12000, "end_ms": 18000,
+                    "layout_id": "material_fullscreen_speaker_pip", "asset_ids": ["material_01"],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+                {"id": "caption_003", "start_ms": 12000, "end_ms": 18000, "text": "Three"},
+            ],
+        }
+
+        repaired = _repair_render_manifest(manifest, {"material_semantic_identity"})
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=repaired,
+                render_report={},
+            )["checks"]
+        }
+
+        self.assertEqual("speaker_fullscreen", repaired["compositions"][1]["layout_id"])
+        self.assertEqual([], repaired["compositions"][1]["asset_ids"])
+        self.assertEqual("pass", checks["material_semantic_identity"]["result"])
+
     def test_repair_manifest_changes_the_failed_structure_and_passes_bounded_checks(self):
         from server.content_domains.ai_edit_v3.production import (
             DeterministicVisualInspector,
@@ -1075,7 +1214,11 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
         class Generator:
+            def __init__(self):
+                self.prompts = []
+
             def generate(self, *, output_path, **kwargs):
+                self.prompts.append(kwargs["prompt"])
                 Path(output_path).write_bytes(b"generated-image")
                 return None
 
@@ -1088,7 +1231,8 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             coordinator.store = type("Store", (), {"environment": "test"})()
             coordinator.work_root = Path(directory)
             coordinator.owner_hmac_secret = b"0123456789abcdef"
-            coordinator.image_generator = Generator()
+            generator = Generator()
+            coordinator.image_generator = generator
             coordinator.cos = Cos()
             root = coordinator._root("job-image")
             (root / "materials").mkdir()
@@ -1123,6 +1267,15 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         timeout = probe.call_args.kwargs["timeout_seconds"]
         self.assertGreater(timeout, 0)
         self.assertLessEqual(timeout, 30)
+        prompt = generator.prompts[0].lower()
+        for required_phrase in (
+            "supplemental b-roll or graphic",
+            "no presenter",
+            "no talking head",
+            "no portrait",
+            "no recognizable person",
+        ):
+            self.assertIn(required_phrase, prompt)
 
     def test_queued_stage_enters_media_pipeline(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator

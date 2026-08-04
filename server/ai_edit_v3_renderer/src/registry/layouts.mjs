@@ -47,9 +47,9 @@ export function compileLayout({layoutId, variantId, ratio, scene, assets, idPref
   const optionalAssets = Array.isArray(assets) ? assets.slice(0, 6) : [];
   const media = optionalAssets.map((asset, index) => assetElement({asset, index, prefix, duration})).join("");
   const fallback = optionalAssets.length === 0
-    ? `<div id="${prefix}_fallback" class="hf-fallback clip" data-fallback="no_optional_media" data-start="0" data-duration="${duration}" data-track-index="3"><span>${hasVideo ? "主体画面" : "AI 视觉节奏"}</span></div>`
+    ? `<div id="${prefix}_fallback" class="hf-fallback clip" data-fallback="no_optional_media" data-start="0" data-duration="${duration}" data-track-index="3" aria-hidden="true"></div>`
     : "";
-  const speaker = `<div id="${prefix}_speaker" class="hf-speaker-zone clip" data-start="0" data-duration="${duration}" data-track-index="2"><span>${hasVideo ? "主体视频" : "旁白主线"}</span></div>`;
+  const speaker = `<div id="${prefix}_speaker" class="hf-speaker-zone clip" data-start="0" data-duration="${duration}" data-track-index="2" aria-hidden="true"></div>`;
   const materialCount = optionalAssets.length;
   const materialStyle = materialCount === 1 ? ` style="grid-template-columns:1fr"` : "";
   const frame = `<div id="${prefix}_frame" class="hf-layout-frame hf-layout-${layoutId} hf-variant-${variantId} clip" data-layout-id="${layoutId}" data-layout-variant="${variantId}" data-start="0" data-duration="${duration}" data-track-index="1">${speaker}<div id="${prefix}_materials" class="hf-materials hf-material-count-${materialCount}"${materialStyle}>${media}${fallback}</div></div>`;

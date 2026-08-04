@@ -67,6 +67,20 @@ _NEXT = {
     "staging_delivery": "settling",
 }
 
+_LAYOUTS_REQUIRING_MATERIALS = frozenset({
+    "comparison_split",
+    "cta_offer",
+    "editorial_collage",
+    "material_fullscreen_speaker_pip",
+    "method_timeline",
+    "number_proof",
+    "product_hero",
+    "quote_reversal",
+    "speaker_left_info_right",
+    "speaker_right_evidence_left",
+    "steps_stack",
+})
+
 
 def _sha(path: Path) -> str:
     digest = hashlib.sha256()
@@ -426,11 +440,9 @@ class QwenCompiledDirector:
                 if requested_layout in material_candidates and requested_layout in layouts:
                     scene_layout = requested_layout
             elif has_speaker_video:
-                scene_layout = QwenCompiledDirector._first_supported(
-                    ("speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left"), layouts
-                )
-                if requested_layout in layouts and str(requested_layout).startswith("speaker_"):
-                    scene_layout = requested_layout
+                if "speaker_fullscreen" not in layouts:
+                    raise ValueError("speaker_layout_unavailable")
+                scene_layout = "speaker_fullscreen"
             else:
                 scene_layout = QwenCompiledDirector._first_supported(
                     ("product_hero", "editorial_collage", "number_proof"), layouts
@@ -580,6 +592,7 @@ class DeterministicVisualInspector:
             }
             used_assets: set[str] = set()
             material_binding_valid = len(known_assets) == len(assets)
+            layout_material_compatible = True
             long_material_scene = False
             hidden_speaker_ms = 0
             scene_ranges: list[tuple[int, int]] = []
@@ -612,6 +625,8 @@ class DeterministicVisualInspector:
                 scene_asset_set = set(scene_assets)
                 if len(scene_asset_set) != len(scene_assets) or not scene_asset_set.issubset(known_assets):
                     material_binding_valid = False
+                if layout_id in _LAYOUTS_REQUIRING_MATERIALS and not scene_asset_set:
+                    layout_material_compatible = False
                 used_assets.update(scene_asset_set)
                 if scene_assets and scene_duration > scene_budget_ms:
                     long_material_scene = True
@@ -666,7 +681,17 @@ class DeterministicVisualInspector:
             opening_consistent = scene_rhythm_valid and layout_varied and (
                 not source_video or (bool(layouts) and layouts[0].startswith("speaker_"))
             )
-            material_identity = material_binding_valid and not long_material_scene and scene_rhythm_valid
+            material_identity = (
+                material_binding_valid
+                and layout_material_compatible
+                and not long_material_scene
+                and scene_rhythm_valid
+            )
+            material_identity_reason = (
+                "material_layout_requires_bound_asset"
+                if not layout_material_compatible
+                else "materials_are_bound_to_bounded_requesting_scenes"
+            )
             structural = {
                 "caption_fact_accuracy": (
                     caption_valid and caption_scene_binding_valid,
@@ -682,7 +707,7 @@ class DeterministicVisualInspector:
                 "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
                 "material_semantic_identity": (
                     material_identity,
-                    "materials_are_bound_to_bounded_requesting_scenes",
+                    material_identity_reason,
                 ),
                 "generated_evidence_claim": (
                     all(isinstance(item, Mapping) and item.get("kind") in {"image", "video"} for item in assets),
@@ -846,6 +871,18 @@ def _repair_render_manifest(
     if "face_product_obstruction" in requested:
         for composition in repaired["compositions"]:
             if composition.get("layout_id") in {"product_hero", "number_proof"}:
+                composition["layout_id"] = "speaker_fullscreen"
+                composition["asset_ids"] = []
+
+    if (
+        "material_semantic_identity" in requested
+        and isinstance(repaired.get("source_video"), Mapping)
+    ):
+        for composition in repaired["compositions"]:
+            if (
+                composition.get("layout_id") in _LAYOUTS_REQUIRING_MATERIALS
+                and not composition.get("asset_ids")
+            ):
                 composition["layout_id"] = "speaker_fullscreen"
                 composition["asset_ids"] = []
 
@@ -1123,6 +1160,8 @@ class ProductionStageCoordinator:
                             f"为中文短视频生成一张无文字、无水印、无品牌标识的通用配图。"
                             f"主题：{material_request['semantic']}。"
                             "不得虚构客户、销量、价格、功效或产品包装。"
+                            " Supplemental B-roll or graphic only. No presenter, no talking head, "
+                            "no portrait, no recognizable person or face. No visible text, logo, or watermark."
                         ),
                         ratio=plan["ratio"],
                         output_path=destination,

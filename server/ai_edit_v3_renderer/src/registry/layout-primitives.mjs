@@ -32,8 +32,7 @@ export function seconds(milliseconds) {
 export function mediaSlot({idPrefix, durationMs, kind = "placeholder"}) {
   const prefix = assertSafeId(idPrefix, "id_prefix");
   const duration = seconds(durationMs);
-  const label = kind === "video" ? "主体画面" : "智能剪辑画面";
-  return `<div id="${prefix}_media" class="hf-media clip hf-media-${kind}" data-start="0" data-duration="${duration}" data-track-index="0"><span>${label}</span></div>`;
+  return `<div id="${prefix}_media" class="hf-media clip hf-media-${kind}" data-start="0" data-duration="${duration}" data-track-index="0" aria-hidden="true"></div>`;
 }
 
 export function safeArea({idPrefix, durationMs, children = ""}) {
