@@ -67,7 +67,14 @@ test("layout v2 publishes the complete twelve-layout contract matrix", () => {
     assert.deepEqual(contract.optionalSlots, expected.optional);
     assert.deepEqual(contract.identitySlots, expected.identitySlots);
     assert.equal(contract.fallback, "no_optional_media");
-    for (const ratio of RATIOS) assert.ok(contract.safeAreas[ratio], `${expected.id} declares ${ratio} safe areas`);
+    for (const ratio of RATIOS) {
+      assert.deepEqual(Object.keys(contract.safeAreas[ratio]).sort(), ["center", "left_panel", "lower_third", "right_panel", "subtitle_safe", "title_safe"]);
+      const [width, height] = ratio === "16:9" ? [1920, 1080] : [1080, 1920];
+      for (const [placement, box] of Object.entries(contract.safeAreas[ratio])) {
+        assert.deepEqual(Object.keys(box).sort(), ["height", "width", "x", "y"], `${expected.id}/${ratio}/${placement} geometry contract`);
+        assert.ok(box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0 && box.x + box.width <= width && box.y + box.height <= height);
+      }
+    }
   }
 });
 
@@ -113,8 +120,9 @@ test("layout v2 compiles all thirty-six variants for both ratios with auditable 
     else assert.equal([...signatures.values()].includes(signature), false, `each variant has a distinct DOM structure: ${signature}`);
     signatures.set(variantKey, signature);
     assert.deepEqual(compiled.identitySlots, layout.identitySlots);
-    assert.deepEqual(Object.keys(compiled.publicTargets).sort(), ["root", "safeArea", "slots"]);
-    for (const target of [compiled.publicTargets.root, compiled.publicTargets.safeArea, ...Object.values(compiled.publicTargets.slots)]) {
+    assert.deepEqual(Object.keys(compiled.publicTargets).sort(), ["root", "safeAreas", "slots"]);
+    assert.deepEqual(Object.keys(compiled.publicTargets.safeAreas).sort(), ["center", "left_panel", "lower_third", "right_panel", "subtitle_safe", "title_safe"]);
+    for (const target of [compiled.publicTargets.root, ...Object.values(compiled.publicTargets.safeAreas), ...Object.values(compiled.publicTargets.slots)]) {
       assert.match(target, /^#[a-z][a-z0-9_]*$/u);
       assert.match(compiled.html, new RegExp(`id="${target.slice(1)}"`));
     }

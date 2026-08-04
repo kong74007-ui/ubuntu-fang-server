@@ -95,6 +95,7 @@ export function validateManifest(document, expected) {
         || JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item?.component_id))) {
         throw new Error("manifest_component_projection_invalid");
       }
+      validateOverlayComposition(composition);
       const bindings = composition.layout_slot_bindings;
       if (composition.layout_id === "product_hero" && (!Array.isArray(bindings) || !bindings.some((item) => item?.slot_id === "primary"))) {
         throw new Error("manifest_layout_required_slot_missing");
@@ -119,4 +120,25 @@ export function validateManifest(document, expected) {
     if (!sameJsonValue(document.design_tokens, resolved)) throw new Error("manifest_design_tokens_mismatch");
   }
   return deepCopyFreeze(document);
+}
+
+function validateOverlayComposition(composition) {
+  const placements = new Set(["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]);
+  const references = new Set(["headline", "highlight"]);
+  for (const instance of composition.overlay_instances) {
+    if (!instance || typeof instance !== "object" || Array.isArray(instance)) throw new Error("manifest_overlay_instance_invalid");
+    const allowed = new Set(["instance_id", "component_id", "content_ref", "placement", "variant"]);
+    if (Object.keys(instance).some((key) => !allowed.has(key))) throw new Error("manifest_overlay_instance_invalid");
+    if (!references.has(instance.content_ref)) throw new Error("manifest_overlay_content_ref_invalid");
+    if (!placements.has(instance.placement)) throw new Error("manifest_overlay_placement_invalid");
+  }
+  const content = composition.authoritative_content;
+  if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).length !== 2 || !Object.hasOwn(content, "headline") || !Object.hasOwn(content, "highlight")) {
+    throw new Error("manifest_overlay_content_ref_invalid");
+  }
+  for (const value of Object.values(content)) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 2 || !Object.hasOwn(value, "text") || !Object.hasOwn(value, "source_caption_ids") || typeof value.text !== "string" || !value.text || value.text.length > 4000 || !Array.isArray(value.source_caption_ids) || new Set(value.source_caption_ids).size !== value.source_caption_ids.length || !value.source_caption_ids.every((item) => typeof item === "string" && /^[a-z0-9_]{1,64}$/u.test(item))) {
+      throw new Error("manifest_overlay_content_ref_invalid");
+    }
+  }
 }

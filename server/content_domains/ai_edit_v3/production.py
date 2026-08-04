@@ -409,6 +409,40 @@ def _validate_layout_authoritative_content(
         raise ValueError("scene_layout_authoritative_content_missing")
 
 
+_OVERLAY_UI_LABELS = {
+    "chapter": "章节",
+    "step": "步骤",
+    "category": "分类",
+    "evidence_marker": "证据",
+    "cta_prompt": "行动",
+}
+
+
+def _freeze_overlay_authoritative_content(scene: Mapping[str, Any]) -> dict[str, Any]:
+    """Project validated edit-plan facts into the renderer without markup or URLs."""
+    if not isinstance(scene, Mapping):
+        raise ValueError("scene_overlay_authoritative_content_invalid")
+    frozen: dict[str, Any] = {}
+    for reference in ("headline", "highlight"):
+        value = scene.get(reference)
+        if not isinstance(value, Mapping):
+            raise ValueError("scene_overlay_authoritative_content_invalid")
+        text_kind = value.get("text_kind")
+        if text_kind == "ui_label":
+            if set(value) != {"text_kind", "ui_label_id"} or value.get("ui_label_id") not in _OVERLAY_UI_LABELS:
+                raise ValueError("scene_overlay_authoritative_content_invalid")
+            frozen[reference] = {"text": _OVERLAY_UI_LABELS[str(value["ui_label_id"])], "source_caption_ids": []}
+            continue
+        if text_kind not in {"verbatim", "compressed"} or set(value) != {"text_kind", "text", "source_caption_ids"}:
+            raise ValueError("scene_overlay_authoritative_content_invalid")
+        text = value.get("text")
+        source_caption_ids = value.get("source_caption_ids")
+        if not isinstance(text, str) or not text or len(text) > 4000 or not isinstance(source_caption_ids, list) or not source_caption_ids or not all(isinstance(item, str) and re.fullmatch(r"[a-z0-9_]{1,64}", item) for item in source_caption_ids):
+            raise ValueError("scene_overlay_authoritative_content_invalid")
+        frozen[reference] = {"text": text, "source_caption_ids": list(source_caption_ids)}
+    return frozen
+
+
 class DashScopeAsr:
     def __init__(self, client: DashScopeClient | None = None) -> None:
         self.client = client or DashScopeClient(timeout_seconds=30)
@@ -1506,7 +1540,7 @@ class ProductionStageCoordinator:
                 "source_segments": [{"id": item["id"], "source_path": segment_path, "sha256": segment_sha, "source_start_ms": item["source_start_ms"], "source_end_ms": item["source_end_ms"], "output_start_ms": item["output_start_ms"], "output_end_ms": item["output_end_ms"]} for item in plan["source_segments"]],
                 "master_audio": {"path": "media/master.wav", "sha256": _sha(master_target), "size_bytes": master_target.stat().st_size, "duration_ms": master["duration_ms"], "sample_rate": 48000, "channels": 2},
                 "assets": material_assets,
-                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"], "layout_slot_bindings": _layout_slot_bindings(scene, material_asset_ids)} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
+                "compositions": [{"id": f"composition_{index:03d}", "scene_id": scene["id"], "start_ms": scene["start_ms"], "end_ms": scene["end_ms"], "layout_id": scene["layout_id"], "layout_variant": scene["layout_variant"], "overlay_ids": scene["overlay_ids"], **({"overlay_instances": scene["overlay_instances"], "layout_slot_bindings": _layout_slot_bindings(scene, material_asset_ids), "authoritative_content": _freeze_overlay_authoritative_content(scene)} if visual_program else {}), "animations": scene["animations"], "transition": scene["transition"], "asset_ids": _scene_asset_ids(scene, material_asset_ids)} for index, scene in enumerate(plan["scenes"], 1)],
                 "captions": _render_captions(plan["captions"]),
             }
             if visual_program:

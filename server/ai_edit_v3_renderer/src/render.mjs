@@ -70,7 +70,7 @@ export async function runRenderRequest({requestPath, inputRoot, outputRoot, chro
   const outputs = absolute(outputRoot, "render_output_root_invalid");
   const requestBytes = await readFile(requestFile);
   const request = validateRequest(parseCanonicalJson(requestBytes, {maxBytes: 16 * 1024, maxDepth: 4, maxItems: 32, maxStringChars: 256}));
-  const release = validateRendererRelease(parseCanonicalJson(await readFile(path.join(MODULE_ROOT, "renderer-release.lock.json")), {maxBytes: 64 * 1024, maxDepth: 8, maxItems: 256, maxStringChars: 1024}));
+  const release = validateRendererRelease(parseCanonicalJson(await readFile(path.join(MODULE_ROOT, "renderer-release.lock.json")), {maxBytes: 64 * 1024, maxDepth: 8, maxItems: 1024, maxStringChars: 1024}));
   const registrySha256 = getRegistrySha256();
   if (request.renderer_build_id !== release.renderer_build_id) throw new Error("render_request_release_mismatch");
   if (request.registry_sha256 !== registrySha256) throw new Error("render_request_registry_mismatch");

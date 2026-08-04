@@ -4,6 +4,8 @@ const RATIO_SIZES = Object.freeze({"16:9": Object.freeze([1920, 1080]), "9:16": 
 const SAFE_CSS_VALUE = /^(?:#[0-9a-fA-F]{6}|rgba?\([0-9., ]+\))$/u;
 
 export const V2_RATIOS = Object.freeze(["16:9", "9:16"]);
+export const V2_OVERLAY_PLACEMENTS = Object.freeze(["title_safe", "subtitle_safe", "left_panel", "right_panel", "center", "lower_third"]);
+const V2_OVERLAY_SAFE_AREAS = Object.freeze(Object.fromEntries(V2_RATIOS.map((ratio) => [ratio, freezeBoxes(placementBoxes(ratio))])));
 
 export function createContract({id, moduleId, variants, requiredSlots, optionalSlots, identitySlots}) {
   return Object.freeze({
@@ -16,10 +18,7 @@ export function createContract({id, moduleId, variants, requiredSlots, optionalS
     optionalSlots: Object.freeze([...optionalSlots]),
     identitySlots: Object.freeze([...identitySlots]),
     fallback: "no_optional_media",
-    safeAreas: Object.freeze({
-      "16:9": Object.freeze({title: "landscape_title_safe", captions: "landscape_caption_safe"}),
-      "9:16": Object.freeze({title: "portrait_title_safe", captions: "portrait_caption_safe"}),
-    }),
+    safeAreas: V2_OVERLAY_SAFE_AREAS,
   });
 }
 
@@ -29,8 +28,8 @@ export function assertLayoutInput(contract, {variantId, ratio, idPrefix, duratio
   const prefix = assertSafeId(idPrefix, "id_prefix");
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) throw new Error("layout_slots_invalid");
   for (const slot of contract.requiredSlots) if (!slots[slot]) throw new Error("layout_required_slot_missing");
-  if (typeof overlays !== "string" && (!overlays || typeof overlays !== "object" || Array.isArray(overlays) || !["title", "captions"].every((key) => typeof overlays[key] === "string"))) throw new Error("layout_overlays_invalid");
-  return Object.freeze({prefix, duration: seconds(durationMs), slots, style: styleFromTokens(designTokens), overlays: typeof overlays === "string" ? {title: "", captions: overlays} : overlays});
+  if (typeof overlays !== "string" && (!overlays || typeof overlays !== "object" || Array.isArray(overlays) || Object.keys(overlays).length !== V2_OVERLAY_PLACEMENTS.length || !V2_OVERLAY_PLACEMENTS.every((key) => typeof overlays[key] === "string"))) throw new Error("layout_overlays_invalid");
+  return Object.freeze({prefix, duration: seconds(durationMs), slots, style: styleFromTokens(designTokens), overlays: typeof overlays === "string" ? emptyOverlayHosts(overlays) : overlays});
 }
 
 export function assetOrFallback({prefix, slot, value, duration, trackIndex}) {
@@ -91,17 +90,18 @@ export function proofSlot({prefix, value, duration, trackIndex}) {
 
 export function layoutResult({contract, variantId, ratio, input, structure, body, criticalRegions}) {
   const [width, height] = RATIO_SIZES[ratio];
-  const safeAreas = ratio === "16:9"
-    ? {title: {x: 96, y: 54, width: 1120, height: 176}, captions: {x: 160, y: 804, width: 1600, height: 180}}
-    : {title: {x: 60, y: 84, width: 960, height: 220}, captions: {x: 60, y: 1480, width: 960, height: 280}};
+  const safeAreas = placementBoxes(ratio);
   const root = `${input.prefix}_layout`;
-  const safe = `${input.prefix}_safe`;
-  const titleSafe = `${input.prefix}_safe_title`;
   const publicSlots = Object.fromEntries([...contract.requiredSlots, ...contract.optionalSlots].map((slot) => [slot, `#${input.prefix}_${slot}`]));
-  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}<aside id="${titleSafe}" class="hf-v2-safe-area hf-v2-safe-title clip" data-safe-host="title" data-safe-area="${ratio}" ${clipAttributes(input.duration, 19)}>${input.overlays.title}</aside><aside id="${safe}" class="hf-v2-safe-area hf-v2-safe-captions clip" data-safe-host="captions" data-safe-area="${ratio}" ${clipAttributes(input.duration, 20)}>${input.overlays.captions}</aside><style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
+  const hosts = V2_OVERLAY_PLACEMENTS.map((placement, index) => {
+    const box = safeAreas[placement];
+    const legacyHost = placement === "title_safe" ? "title" : placement === "subtitle_safe" ? "captions" : placement;
+    return `<aside id="${input.prefix}_safe_${placement}" class="hf-v2-safe-area hf-v2-safe-${placement} clip" data-safe-host="${legacyHost}" data-overlay-host="${placement}" data-safe-box="${box.x},${box.y},${box.width},${box.height}" data-safe-area="${ratio}" ${clipAttributes(input.duration, 19 + index)}>${input.overlays[placement]}</aside>`;
+  }).join("");
+  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}${hosts}<style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
   return Object.freeze({
     html,
-    publicTargets: Object.freeze({root: `#${root}`, safeArea: `#${safe}`, slots: Object.freeze(publicSlots)}),
+    publicTargets: Object.freeze({root: `#${root}`, safeAreas: Object.freeze(Object.fromEntries(V2_OVERLAY_PLACEMENTS.map((placement) => [placement, `#${input.prefix}_safe_${placement}`]))), slots: Object.freeze(publicSlots)}),
     identitySlots: contract.identitySlots,
     geometryAudit: Object.freeze({width, height, safeAreas: freezeBoxes(safeAreas), criticalRegions: freezeBoxes(criticalRegions)}),
   });
@@ -128,8 +128,23 @@ function styleFromTokens(tokens) {
 function layoutCss({contract, variantId, ratio, criticalRegions}) {
   const selector = `.hf-v2-layout[data-layout-v2="${contract.id}"][data-layout-variant="${variantId}"][data-layout-ratio="${ratio}"]`;
   const regions = Object.entries(criticalRegions).map(([name, box]) => `${selector} [data-v2-region="${name}"]{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px}`).join("");
-  const safe = ratio === "16:9" ? {title: {x: 96, y: 54, width: 1120, height: 176}, captions: {x: 160, y: 804, width: 1600, height: 180}} : {title: {x: 60, y: 84, width: 960, height: 220}, captions: {x: 60, y: 1480, width: 960, height: 280}};
-  return `${selector}{position:absolute;inset:0;overflow:hidden}${selector} .hf-v2-safe-title{position:absolute;left:${safe.title.x}px;top:${safe.title.y}px;width:${safe.title.width}px;height:${safe.title.height}px;z-index:20}${selector} .hf-v2-safe-captions{position:absolute;left:${safe.captions.x}px;top:${safe.captions.y}px;width:${safe.captions.width}px;height:${safe.captions.height}px;z-index:20}${selector} .hf-v2-slot{width:100%;height:100%}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video,${selector} .hf-v2-speaker>img,${selector} .hf-v2-speaker>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-text-slot,${selector} .hf-v2-proof-slot,${selector} .hf-v2-steps{box-sizing:border-box;color:var(--hf-accent);font-weight:700;line-height:1.25}${selector} .hf-v2-text-slot{display:grid;place-items:center;padding:28px;font-size:${ratio === "9:16" ? 48 : 54}px}${selector} .hf-v2-proof-slot{display:grid;place-items:center;margin:0;padding:24px}${selector} .hf-v2-proof-slot dt{font-size:${ratio === "9:16" ? 30 : 34}px}${selector} .hf-v2-proof-slot dd{margin:0;font-size:${ratio === "9:16" ? 86 : 110}px}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${variantCss(selector, contract.id, variantId, ratio)}${regions}`;
+  const safe = placementBoxes(ratio);
+  const safeCss = Object.entries(safe).map(([placement, box]) => `${selector} .hf-v2-safe-${placement}{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px;z-index:${30 + V2_OVERLAY_PLACEMENTS.indexOf(placement)};overflow:hidden;box-sizing:border-box}`).join("");
+  return `${selector}{position:absolute;inset:0;overflow:hidden}${safeCss}${selector} .hf-v2-slot{width:100%;height:100%}${selector} .hf-v2-slot>img,${selector} .hf-v2-slot>video,${selector} .hf-v2-speaker>img,${selector} .hf-v2-speaker>video{width:100%;height:100%;object-fit:var(--hf-image-fit)}${selector} .hf-v2-text-slot,${selector} .hf-v2-proof-slot,${selector} .hf-v2-steps{box-sizing:border-box;color:var(--hf-accent);font-weight:700;line-height:1.25}${selector} .hf-v2-text-slot{display:grid;place-items:center;padding:28px;font-size:${ratio === "9:16" ? 48 : 54}px}${selector} .hf-v2-proof-slot{display:grid;place-items:center;margin:0;padding:24px}${selector} .hf-v2-proof-slot dt{font-size:${ratio === "9:16" ? 30 : 34}px}${selector} .hf-v2-proof-slot dd{margin:0;font-size:${ratio === "9:16" ? 86 : 110}px}${selector} .hf-v2-fallback{display:grid;place-items:center;background:var(--hf-surface)}${selector} .hf-v2-fallback svg{width:42%;height:42%;fill:none;stroke:var(--hf-accent);stroke-width:6}${overlayComponentCss(selector)}${variantCss(selector, contract.id, variantId, ratio)}${regions}`;
+}
+
+function overlayComponentCss(selector) {
+  return `${selector} .hf-overlay-v2{box-sizing:border-box;width:100%;height:100%;color:var(--hf-text);font-size:var(--hf-overlay-font-size);line-height:var(--hf-overlay-line-height)}${selector} .hf-overlay-v2-headline{display:grid;align-content:center}${selector} .hf-overlay-v2-headline h1{margin:0;font-size:inherit;line-height:inherit}${selector} .hf-overlay-v2-headline [data-public-target="underline"]{display:block;width:34%;height:6px;margin-top:12px;background:var(--hf-accent)}${selector} .hf-overlay-v2-caption{display:grid;place-items:center;text-align:center;padding:12px 22px;background:rgba(7,17,31,.78);border-radius:var(--hf-radius)}${selector} .hf-overlay-v2-caption p,${selector} .hf-overlay-v2-info-card p{margin:0;font-size:inherit;line-height:inherit}${selector} .hf-overlay-v2-info-card{display:grid;grid-template-rows:8px 1fr 6px;gap:16px;padding:22px;background:var(--hf-surface);border:1px solid var(--hf-border);border-radius:var(--hf-radius)}${selector} .hf-overlay-v2-info-card [data-public-target="label"],${selector} .hf-overlay-v2-info-card [data-public-target="accent"]{background:var(--hf-accent)}${selector} .hf-overlay-v2-emphasis{display:grid;place-items:center;position:relative;padding:14px 24px;background:rgba(7,17,31,.86);border:2px solid var(--hf-accent);border-radius:calc(var(--hf-radius) / 2)}${selector} .hf-overlay-v2-emphasis p{margin:0;z-index:1}${selector} .hf-overlay-v2-emphasis mark{position:absolute;left:8%;right:8%;bottom:16%;height:12px;background:var(--hf-accent);opacity:.45}${selector} .hf-overlay-v2-chapter{display:flex;align-items:center;gap:18px;padding:12px 18px;font-weight:700;letter-spacing:.04em}${selector} .hf-overlay-v2-chapter i{display:block;flex:1;height:3px;background:var(--hf-accent)}${selector} .hf-overlay-v2-lower-third{display:grid;grid-template-columns:8px 1fr;grid-template-rows:1fr auto;gap:4px 16px;padding:16px 22px;background:linear-gradient(90deg,var(--hf-surface),transparent)}${selector} .hf-overlay-v2-lower-third [data-public-target="accent"]{grid-row:1/3;background:var(--hf-accent)}${selector} .hf-overlay-v2-lower-third strong{align-self:end}${selector} .hf-overlay-v2-bullets{padding:20px;background:var(--hf-surface);border-radius:var(--hf-radius)}${selector} .hf-overlay-v2-bullets ul{display:grid;gap:14px;margin:0;padding:0;list-style:none}${selector} .hf-overlay-v2-bullets li{display:grid;grid-template-columns:12px 1fr;gap:12px;align-items:start}${selector} .hf-overlay-v2-bullets li:before{content:"";width:10px;height:10px;margin-top:.5em;border-radius:50%;background:var(--hf-accent)}${selector} .hf-overlay-v2-number-proof{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto 1fr;margin:0;padding:22px;background:var(--hf-surface);border-left:8px solid var(--hf-accent)}${selector} .hf-overlay-v2-number-proof dt{grid-column:1/3}${selector} .hf-overlay-v2-number-proof dd{margin:0;align-self:center}${selector} .hf-overlay-v2-number-proof [data-public-target="metric_value"]{font-size:2.4em;font-weight:800;color:var(--hf-accent)}${selector} .hf-overlay-v2-quote{display:grid;grid-template-columns:auto 1fr;grid-template-rows:1fr auto;gap:8px 14px;margin:0;padding:24px;background:var(--hf-surface);border-radius:var(--hf-radius)}${selector} .hf-overlay-v2-quote [data-public-target="accent"]{font-size:3em;line-height:.8;color:var(--hf-accent)}${selector} .hf-overlay-v2-quote p{margin:0}${selector} .hf-overlay-v2-quote footer{grid-column:2;border-top:2px solid var(--hf-accent)}${selector} .hf-overlay-v2-steps{display:grid;grid-template-columns:1fr auto;grid-template-rows:1fr auto;gap:12px;padding:18px;background:var(--hf-surface)}${selector} .hf-overlay-v2-steps ol{display:grid;gap:10px;margin:0;padding:0;list-style:none}${selector} .hf-overlay-v2-steps li{display:grid;grid-template-columns:1fr auto;gap:8px}${selector} .hf-overlay-v2-steps li i{display:grid;place-items:center;width:1.7em;height:1.7em;border-radius:50%;background:var(--hf-accent);color:var(--hf-bg)}${selector} .hf-overlay-v2-product-tag{display:grid;grid-template-columns:1fr auto;grid-template-rows:1fr auto;gap:10px;padding:18px;background:var(--hf-surface);border:1px solid var(--hf-accent);border-radius:calc(var(--hf-radius) / 2)}${selector} .hf-overlay-v2-product-tag [data-public-target="product"]{grid-column:1/3}${selector} .hf-overlay-v2-product-tag [data-public-target="price"]{color:var(--hf-accent);font-weight:800}${selector} .hf-overlay-v2-cta{display:grid;align-content:center;gap:14px;padding:24px;text-align:center;background:radial-gradient(circle at 50% 100%,var(--hf-accent),var(--hf-surface) 55%);border-radius:var(--hf-radius)}${selector} .hf-overlay-v2-cta strong{font-size:1.25em}${selector} .hf-overlay-v2-cta [data-public-target="accent"]{width:42%;height:5px;margin:auto;background:var(--hf-accent)}`;
+}
+
+function emptyOverlayHosts(captions) {
+  return {title_safe: "", subtitle_safe: captions, left_panel: "", right_panel: "", center: "", lower_third: ""};
+}
+
+function placementBoxes(ratio) {
+  return ratio === "16:9"
+    ? {title_safe: {x: 120, y: 45, width: 1680, height: 150}, left_panel: {x: 100, y: 220, width: 500, height: 520}, center: {x: 650, y: 220, width: 620, height: 420}, right_panel: {x: 1320, y: 220, width: 500, height: 520}, lower_third: {x: 650, y: 660, width: 620, height: 140}, subtitle_safe: {x: 300, y: 860, width: 1320, height: 150}}
+    : {title_safe: {x: 60, y: 70, width: 960, height: 180}, left_panel: {x: 60, y: 280, width: 300, height: 900}, center: {x: 390, y: 430, width: 300, height: 600}, right_panel: {x: 720, y: 280, width: 300, height: 900}, lower_third: {x: 190, y: 1250, width: 700, height: 160}, subtitle_safe: {x: 60, y: 1480, width: 960, height: 280}};
 }
 
 function variantCss(selector, layoutId, variantId, ratio) {

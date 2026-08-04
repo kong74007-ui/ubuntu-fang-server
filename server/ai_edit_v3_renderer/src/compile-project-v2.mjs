@@ -2,14 +2,14 @@ import {compileProject, compileSourceVideo, sourceSegmentClips} from "./compile-
 import {resolveLayout, resolveLayoutV2} from "./registry/index.mjs";
 
 const SAFE_HOST_BY_PLACEMENT = Object.freeze({
-  title_safe: "title",
-  safe_top: "title",
-  left_panel: "title",
-  right_panel: "title",
-  center: "title",
-  subtitle_safe: "captions",
-  safe_bottom: "captions",
-  lower_third: "captions",
+  title_safe: "title_safe",
+  safe_top: "title_safe",
+  left_panel: "left_panel",
+  right_panel: "right_panel",
+  center: "center",
+  subtitle_safe: "subtitle_safe",
+  safe_bottom: "subtitle_safe",
+  lower_third: "lower_third",
 });
 
 /**
@@ -84,7 +84,7 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
 }
 
 function routeV2Overlays(entries, instances) {
-  const hosts = {title: "", captions: ""};
+  const hosts = {title_safe: "", subtitle_safe: "", left_panel: "", right_panel: "", center: "", lower_third: ""};
   const byInstance = new Map((entries ?? []).map((entry) => [entry.instanceId, entry]));
   for (const instance of instances ?? []) {
     const host = SAFE_HOST_BY_PLACEMENT[instance.placement ?? "safe_bottom"];

@@ -16,6 +16,10 @@ const validVisualFields = Object.freeze({
     "--hf-motion-distance": "36px", "--hf-image-fit": "cover",
   },
 });
+const authoritativeContent = Object.freeze({
+  headline: Object.freeze({text: "权威标题", source_caption_ids: Object.freeze([])}),
+  highlight: Object.freeze({text: "权威高亮", source_caption_ids: Object.freeze([])}),
+});
 
 
 test("strict parser rejects duplicate nonfinite trailing and prototype keys", () => {
@@ -72,7 +76,7 @@ test("manifest schema identity dispatches v1 and v2 and rejects unknown versions
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"1.0": "schema-v1", "2.0": "schema-v2"}};
   for (const [version, schema] of [["1.0", "schema-v1"], ["2.0", "schema-v2"]]) {
-    const compositions = version === "2.0" ? [{...base.compositions[0], overlay_ids: [], overlay_instances: []}] : base.compositions;
+    const compositions = version === "2.0" ? [{...base.compositions[0], overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}] : base.compositions;
     assert.equal(validateManifest({...base, ...(version === "2.0" ? validVisualFields : {}), compositions, version, schema_sha256: schema}, expected).version, version);
   }
   assert.throws(() => validateManifest({...base, version: "3.0", schema_sha256: "schema-v3"}, expected), /manifest_version_invalid/);
@@ -97,7 +101,7 @@ test("v2 manifest rejects design tokens that do not equal the frozen profile res
     master_audio: {path: "media/master.wav"}, source_video: null,
     theme_profile_id: "editorial_clean", design_intent: {density: "balanced", motion_energy: "medium", image_fit: "cover", decoration_intensity: "medium"}, variation_seed: "0123456789abcdef",
     design_tokens: {"--hf-bg": "#untrusted"},
-    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}],
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
   assert.throws(() => validateManifest(manifest, expected), /manifest_design_tokens_mismatch/);
@@ -109,7 +113,7 @@ test("v2 manifest compares frozen design tokens by value after canonical key ord
     output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
     master_audio: {path: "media/master.wav"}, source_video: null,
     ...validVisualFields, design_tokens: Object.fromEntries(Object.entries(validVisualFields.design_tokens).sort(([left], [right]) => left.localeCompare(right))),
-    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}],
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
   assert.equal(validateManifest(manifest, expected).variation_seed, "0123456789abcdef");
@@ -120,11 +124,37 @@ test("strict parser v2 manifest accepts Python JSON tokens with null prototypes"
     version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
     output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
     master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
-    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}],
   };
   const parsed = parseCanonicalJson(Buffer.from(JSON.stringify(manifest)));
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
   assert.equal(validateManifest(parsed, expected).theme_profile_id, "editorial_clean");
+});
+
+test("strict parser validates frozen overlay facts and rejects executable or unknown projection fields", () => {
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  const manifest = {
+    version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+    master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
+    compositions: [{
+      id: "scene_1", start_ms: 0, end_ms: 4000, layout_id: "speaker_fullscreen",
+      overlay_ids: ["headline_block"], overlay_instances: [{instance_id: "headline_01", component_id: "headline_block", content_ref: "headline", placement: "title_safe"}],
+      authoritative_content: {headline: {text: "品牌 PRODUCT-X 499 元", source_caption_ids: ["caption_01"]}, highlight: {text: "证据 42.5%", source_caption_ids: ["caption_02"]}},
+    }],
+  };
+  assert.equal(validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected).compositions[0].authoritative_content.headline.text, "品牌 PRODUCT-X 499 元");
+  for (const mutate of [
+    (value) => value.compositions[0].overlay_instances[0].content_ref = "invented",
+    (value) => value.compositions[0].overlay_instances[0].placement = "floating",
+    (value) => value.compositions[0].authoritative_content.headline.source_caption_ids = ["caption_01", "caption_01"],
+    (value) => value.compositions[0].overlay_instances[0].html = "<b>unsafe</b>",
+    (value) => value.compositions[0].authoritative_content.headline.url = "https://invalid.example",
+    (value) => value.compositions[0].authoritative_content.headline.extra = "not allowed",
+  ]) {
+    const changed = structuredClone(manifest); mutate(changed);
+    assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(changed))), expected), /manifest_(?:overlay|executable)/);
+  }
 });
 
 test("v2 manifest rejects extra executable design intent fields before token resolution", () => {
@@ -133,7 +163,7 @@ test("v2 manifest rejects extra executable design intent fields before token res
     output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
     master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
     design_intent: {...validVisualFields.design_intent, font_url: "https://fonts.invalid/font.woff2"},
-    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}],
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
   assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected), /manifest_design_intent_invalid/);
@@ -147,7 +177,7 @@ test("v2 manifest rejects URL external-font and animation token values", () => {
       output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
       master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
       design_tokens: {...validVisualFields.design_tokens, "--hf-font": poisoned},
-      compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+      compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: [], authoritative_content: authoritativeContent}],
     };
     assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected), /manifest_visual_value_forbidden/);
   }

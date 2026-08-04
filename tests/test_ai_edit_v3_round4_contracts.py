@@ -17,6 +17,7 @@ from server.content_domains.ai_edit_v3.contracts import (
 from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
 from server.content_domains.ai_edit_v3.director_decision import validate_director_decision
 from server.content_domains.ai_edit_v3.production import (
+    _freeze_overlay_authoritative_content,
     _layout_slot_bindings,
     _render_captions,
     _resolve_design_tokens,
@@ -183,6 +184,7 @@ def _freeze_plan_manifest(
             "layout_variant": scene["layout_variant"],
             "overlay_ids": scene["overlay_ids"],
             "overlay_instances": scene["overlay_instances"],
+            "authoritative_content": _freeze_overlay_authoritative_content(scene),
             "animations": scene["animations"],
             "transition": scene["transition"],
             "asset_ids": _scene_asset_ids(scene, ordered),
@@ -217,10 +219,10 @@ class Round4CrossLanguageContractsTests(unittest.TestCase):
         title = re.search(r'<aside\b[^>]*data-safe-host="title"[^>]*>([\s\S]*?)</aside>', scene).group(1)
         captions = re.search(r'<aside\b[^>]*data-safe-host="captions"[^>]*>([\s\S]*?)</aside>', scene).group(1)
         self.assertIn('id="composition_001_headline_headline_block"', title)
-        self.assertNotIn('id="composition_001_subtitle_caption_1_standard_caption"', title)
-        self.assertIn('id="composition_001_subtitle_caption_1_standard_caption"', captions)
+        self.assertNotIn('id="composition_001_subtitle_standard_caption"', title)
+        self.assertIn('id="composition_001_subtitle_standard_caption"', captions)
         self.assertIn('tl.fromTo("#composition_001_headline_headline_block"', scene)
-        self.assertIn('tl.fromTo("#composition_001_subtitle_caption_1_standard_caption"', scene)
+        self.assertIn('tl.fromTo("#composition_001_subtitle_standard_caption"', scene)
 
     def test_explicit_layout_slots_survive_reordered_assets_and_only_consumed_bindings_emit(self):
         bindings = [

@@ -1,4 +1,16 @@
 import {assertSafeId, assertSafeText, escapeAttribute, seconds} from "./layout-primitives.mjs";
+import {compileOverlayComponent as compileHeadlineBlock} from "./overlays/headline_block.mjs";
+import {compileOverlayComponent as compileInfoCard} from "./overlays/info_card.mjs";
+import {compileOverlayComponent as compileStandardCaption} from "./overlays/standard_caption.mjs";
+import {compileOverlayComponent as compileBulletList} from "./overlays/bullet_list.mjs";
+import {compileOverlayComponent as compileChapterLabel} from "./overlays/chapter_label.mjs";
+import {compileOverlayComponent as compileCtaHold} from "./overlays/cta_hold.mjs";
+import {compileOverlayComponent as compileEmphasisCaption} from "./overlays/emphasis_caption.mjs";
+import {compileOverlayComponent as compileLowerThird} from "./overlays/lower_third.mjs";
+import {compileOverlayComponent as compileNumberProof} from "./overlays/number_proof.mjs";
+import {compileOverlayComponent as compileProductTag} from "./overlays/product_tag.mjs";
+import {compileOverlayComponent as compileQuoteCard} from "./overlays/quote_card.mjs";
+import {compileOverlayComponent as compileStepIndicator} from "./overlays/step_indicator.mjs";
 
 const DEFINITIONS = [
   ["bullet_list", 220, 5, true],
@@ -26,6 +38,20 @@ export const OVERLAY_CONTRACTS = Object.freeze(DEFINITIONS.map(([id, maxChars, m
 })));
 
 const BY_ID = new Map(OVERLAY_CONTRACTS.map((contract) => [contract.id, contract]));
+const V2_COMPILERS = new Map([
+  ["bullet_list", compileBulletList],
+  ["chapter_label", compileChapterLabel],
+  ["cta_hold", compileCtaHold],
+  ["emphasis_caption", compileEmphasisCaption],
+  ["headline_block", compileHeadlineBlock],
+  ["info_card", compileInfoCard],
+  ["lower_third", compileLowerThird],
+  ["number_proof", compileNumberProof],
+  ["product_tag", compileProductTag],
+  ["quote_card", compileQuoteCard],
+  ["standard_caption", compileStandardCaption],
+  ["step_indicator", compileStepIndicator],
+]);
 
 export function getOverlayContract(id) {
   const contract = BY_ID.get(id);
@@ -40,4 +66,10 @@ export function compileOverlay({overlayId, idPrefix, text, durationMs, startMs =
   if (!normalized && contract.optional) return "";
   const safeText = escapeAttribute(normalized || " ");
   return `<div id="${prefix}_${contract.id}" class="hf-overlay hf-overlay-${contract.id} clip" data-overlay-id="${contract.id}" data-safe-text="${safeText}" data-start="${seconds(startMs)}" data-duration="${seconds(durationMs)}" data-track-index="${trackIndex}"><span></span></div>`;
+}
+
+export function compileOverlayV2(context) {
+  const compiler = V2_COMPILERS.get(context?.componentId);
+  if (!compiler) throw new Error("overlay_v2_unavailable");
+  return compiler(context);
 }

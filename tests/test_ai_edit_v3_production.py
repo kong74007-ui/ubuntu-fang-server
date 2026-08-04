@@ -118,7 +118,7 @@ class ProductionDirectorTests(unittest.TestCase):
         for profile in ("editorial_clean", "commercial_energy", "premium_dark", "warm_lifestyle"):
             for intent in intents:
                 for seed in seeds:
-                    manifests.append({"version": "2.0", "schema_sha256": "schema-v2", "registry_sha256": "registry", "renderer_environment": {"renderer_build_id": "build"}, "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1}, "duration_ms": 4000, "master_audio": {"path": "media/master.wav"}, "source_video": None, "theme_profile_id": profile, "design_intent": intent, "variation_seed": seed, "design_tokens": _resolve_design_tokens(profile, intent, seed), "compositions": [{"id": "scene_1", "start_ms": 0, "end_ms": 4000, "overlay_ids": [], "overlay_instances": []}]})
+                    manifests.append({"version": "2.0", "schema_sha256": "schema-v2", "registry_sha256": "registry", "renderer_environment": {"renderer_build_id": "build"}, "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1}, "duration_ms": 4000, "master_audio": {"path": "media/master.wav"}, "source_video": None, "theme_profile_id": profile, "design_intent": intent, "variation_seed": seed, "design_tokens": _resolve_design_tokens(profile, intent, seed), "compositions": [{"id": "scene_1", "start_ms": 0, "end_ms": 4000, "overlay_ids": [], "overlay_instances": [], "authoritative_content": {"headline": {"text": "authoritative headline", "source_caption_ids": []}, "highlight": {"text": "authoritative highlight", "source_caption_ids": []}}}]})
         program = "import fs from 'node:fs'; import {parseCanonicalJson} from './src/parse-canonical-json.mjs'; import {validateManifest} from './src/validate-manifest.mjs'; const values=parseCanonicalJson(fs.readFileSync(process.argv.at(-1))); for (const value of values) validateManifest(value,{rendererBuildId:'build',registrySha256:'sha256:registry',schemaSha256ByVersion:{'2.0':'schema-v2'}});"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifests.json"; path.write_text(json.dumps(manifests), encoding="utf-8")
@@ -129,6 +129,56 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertNotEqual(0, rejected.returncode)
         self.assertIn("manifest_design_tokens_mismatch", rejected.stderr)
+
+    def test_python_frozen_overlay_facts_pass_strict_node_validation_and_real_v2_compile(self):
+        from server.content_domains.ai_edit_v3.contracts import schema_sha256
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_overlay_authoritative_content,
+            _resolve_design_tokens,
+        )
+
+        renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+        registry_probe = subprocess.run(
+            ["node", "--input-type=module", "-e", "import {getRegistrySha256} from './src/registry/index.mjs';process.stdout.write(getRegistrySha256());"],
+            cwd=renderer, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(0, registry_probe.returncode, registry_probe.stderr)
+        registry_sha = registry_probe.stdout.removeprefix("sha256:")
+        intent = {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"}
+        authoritative = _freeze_overlay_authoritative_content({
+            "headline": {"text_kind": "verbatim", "text": "品牌 PRODUCT-X 售价 499 元", "source_caption_ids": ["caption_01"]},
+            "highlight": {"text_kind": "compressed", "text": "证据保持 42.5%", "source_caption_ids": ["caption_01"]},
+        })
+        manifest = {
+            "version": "2.0", "schema_sha256": schema_sha256("render-manifest-v2.schema.json"), "registry_sha256": registry_sha,
+            "renderer_environment": {"renderer_build_id": "build"},
+            "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1},
+            "duration_ms": 4000, "edit_plan_sha256": "a" * 64,
+            "theme": {"palette_id": "midnight_gold", "typography_id": "editorial_sans", "density": "balanced", "motion_energy": "medium", "image_fit": "cover"},
+            "seed": 7, "theme_profile_id": "editorial_clean", "design_intent": intent,
+            "variation_seed": "0123456789abcdef", "design_tokens": _resolve_design_tokens("editorial_clean", intent, "0123456789abcdef"),
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "source_segments": [{"id": "segment_01", "source_path": "media/source.mp4", "source_start_ms": 0, "source_end_ms": 4000, "output_start_ms": 0, "output_end_ms": 4000}],
+            "master_audio": {"path": "media/master.wav"}, "assets": [],
+            "compositions": [{
+                "id": "composition_01", "scene_id": "scene_01", "start_ms": 0, "end_ms": 4000,
+                "layout_id": "speaker_fullscreen", "layout_variant": "clean_center",
+                "overlay_ids": ["info_card", "info_card"],
+                "overlay_instances": [
+                    {"instance_id": "info_left", "component_id": "info_card", "content_ref": "headline", "placement": "left_panel"},
+                    {"instance_id": "info_right", "component_id": "info_card", "content_ref": "highlight", "placement": "right_panel"},
+                ],
+                "authoritative_content": authoritative, "animations": [], "transition": "hard_cut", "asset_ids": [], "layout_slot_bindings": [],
+            }],
+            "captions": [{"id": "caption_01", "start_ms": 0, "end_ms": 4000, "text": "权威字幕"}],
+        }
+        program = """import fs from 'node:fs'; import path from 'node:path'; import {parseCanonicalJson} from './src/parse-canonical-json.mjs'; import {validateManifest} from './src/validate-manifest.mjs'; import {compileProjectV2} from './src/compile-project-v2.mjs'; const manifest=parseCanonicalJson(fs.readFileSync(process.argv.at(-2))); const expected={rendererBuildId:'build',registrySha256:`sha256:${manifest.registry_sha256}`,schemaSha256ByVersion:{'2.0':manifest.schema_sha256}}; const valid=validateManifest(manifest,expected); await compileProjectV2({manifest:valid,outputRoot:process.argv.at(-1)}); const html=fs.readFileSync(path.join(process.argv.at(-1),'compositions','composition_01.html'),'utf8'); if(!html.includes('info_left_info_card')||!html.includes('info_right_info_card')||!html.includes('品牌 PRODUCT-X 售价 499 元')||!html.includes('证据保持 42.5%')) throw new Error('overlay_cross_language_compile_invalid');"""
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "manifest.json"
+            output_path = Path(directory) / "project"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            result = subprocess.run(["node", "--input-type=module", "-e", program, str(manifest_path), str(output_path)], cwd=renderer, capture_output=True, text=True, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_variation_seed_is_a_stable_16_lowercase_hex_derivation(self):
         from server.content_domains.ai_edit_v3 import production
@@ -1277,6 +1327,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
 
     def test_render_compositions_bind_only_scene_requested_materials(self):
         from server.content_domains.ai_edit_v3.production import (
+            _freeze_overlay_authoritative_content,
             _layout_slot_bindings,
             _scene_asset_ids,
             _validate_layout_authoritative_content,
@@ -1366,6 +1417,25 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             _validate_layout_source_requirements({"layout_id": layout_id}, source_video={"path": "media/source.mp4"})
         _validate_layout_source_requirements({"layout_id": "product_hero"}, source_video=None)
         authoritative = [{"id": "caption_001", "start_ms": 0, "end_ms": 2000, "text": "权威文案"}]
+        self.assertEqual(
+            {
+                "headline": {"text": "品牌 PRODUCT-X 售价 499 元", "source_caption_ids": ["caption_001"]},
+                "highlight": {"text": "证据 42.5%", "source_caption_ids": ["caption_002"]},
+            },
+            _freeze_overlay_authoritative_content({
+                "headline": {"text_kind": "verbatim", "text": "品牌 PRODUCT-X 售价 499 元", "source_caption_ids": ["caption_001"]},
+                "highlight": {"text_kind": "compressed", "text": "证据 42.5%", "source_caption_ids": ["caption_002"]},
+            }),
+        )
+        self.assertEqual(
+            {"headline": {"text": "章节", "source_caption_ids": []}, "highlight": {"text": "行动", "source_caption_ids": []}},
+            _freeze_overlay_authoritative_content({
+                "headline": {"text_kind": "ui_label", "ui_label_id": "chapter"},
+                "highlight": {"text_kind": "ui_label", "ui_label_id": "cta_prompt"},
+            }),
+        )
+        with self.assertRaisesRegex(ValueError, "scene_overlay_authoritative_content_invalid"):
+            _freeze_overlay_authoritative_content({"headline": {"text": "safe", "html": "<b>unsafe</b>"}, "highlight": {"text": "safe"}})
         for layout_id in ("number_proof", "quote_reversal", "method_timeline", "cta_offer"):
             scene = {"layout_id": layout_id, "start_ms": 0, "end_ms": 2000}
             _validate_layout_authoritative_content(scene, captions=authoritative)

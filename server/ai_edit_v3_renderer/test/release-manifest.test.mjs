@@ -152,7 +152,7 @@ test("locked release tree is self-contained for v1 and v2 manifest schema valida
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: MANIFEST_SCHEMA_SHA256_BY_VERSION};
   assert.equal(validateManifest({...base, version: "1.0", schema_sha256: MANIFEST_SCHEMA_SHA256_BY_VERSION["1.0"]}, expected).version, "1.0");
-  assert.equal(validateManifest({...base, ...visual, version: "2.0", schema_sha256: MANIFEST_SCHEMA_SHA256_BY_VERSION["2.0"], compositions: [{...base.compositions[0], overlay_ids: [], overlay_instances: []}]}, expected).version, "2.0");
+  assert.equal(validateManifest({...base, ...visual, version: "2.0", schema_sha256: MANIFEST_SCHEMA_SHA256_BY_VERSION["2.0"], compositions: [{...base.compositions[0], overlay_ids: [], overlay_instances: [], authoritative_content: {headline: {text: "authoritative headline", source_caption_ids: []}, highlight: {text: "authoritative highlight", source_caption_ids: []}}}]}, expected).version, "2.0");
 });
 
 
