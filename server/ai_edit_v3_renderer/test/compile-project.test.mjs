@@ -251,6 +251,55 @@ test("v2 speaker-side and material-pip layouts preserve source clips and consume
   }
 });
 
+test("v2 editorial proof method and CTA layouts consume bindings and authoritative captions end to end", async () => {
+  const cases = [
+    {layoutId: "editorial_collage", variantId: "magazine_grid", bindings: [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "detail_asset"}], paths: ["primary.png", "detail.png"], text: "权威编辑文案"},
+    {layoutId: "comparison_split", variantId: "vertical_divide", bindings: [{slot_id: "primary", asset_id: "primary_asset"}, {slot_id: "detail", asset_id: "detail_asset"}], paths: ["primary.png", "detail.png"], text: "权威对比文案"},
+    {layoutId: "number_proof", variantId: "hero_number", bindings: [{slot_id: "evidence", asset_id: "detail_asset"}], paths: ["detail.png"], text: "权威数据 38%"},
+    {layoutId: "quote_reversal", variantId: "diagonal_statement", bindings: [{slot_id: "evidence", asset_id: "detail_asset"}], paths: ["detail.png"], text: "权威观点文案"},
+    {layoutId: "method_timeline", variantId: "horizontal_timeline", bindings: [{slot_id: "accent", asset_id: "detail_asset"}], paths: ["detail.png"], text: "权威方法步骤"},
+    {layoutId: "cta_offer", variantId: "offer_card", bindings: [{slot_id: "accent", asset_id: "detail_asset"}], paths: ["detail.png"], text: "权威行动文案"},
+  ];
+  for (const item of cases) {
+    const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), `v3-${item.layoutId}-e2e-`)), "project");
+    const manifest = fixtureManifest(item.text);
+    manifest.version = "2.0";
+    manifest.assets = [
+      {id: "primary_asset", kind: "image", path: "media/primary.png"},
+      {id: "detail_asset", kind: "image", path: "media/detail.png"},
+    ];
+    manifest.compositions[0] = {
+      ...manifest.compositions[0], layout_id: item.layoutId, layout_variant: item.variantId,
+      asset_ids: item.bindings.map(({asset_id}) => asset_id), layout_slot_bindings: item.bindings,
+      overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}],
+    };
+    await compileProjectV2({manifest, outputRoot});
+    const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+    for (const mediaPath of item.paths) assert.match(scene, new RegExp(`src="media\\/${mediaPath}"`), `${item.layoutId} consumes ${mediaPath}`);
+    if (!["editorial_collage", "comparison_split"].includes(item.layoutId)) assert.match(scene, new RegExp(`data-safe-text="${item.text}"`), `${item.layoutId} renders authoritative caption text`);
+  }
+
+  for (const layoutId of ["number_proof", "quote_reversal", "method_timeline", "cta_offer"]) {
+    const manifest = fixtureManifest("removed");
+    manifest.version = "2.0";
+    manifest.captions = [];
+    manifest.compositions[0] = {...manifest.compositions[0], layout_id: layoutId, layout_variant: {
+      number_proof: "hero_number", quote_reversal: "diagonal_statement", method_timeline: "horizontal_timeline", cta_offer: "offer_card",
+    }[layoutId], overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}]};
+    await assert.rejects(compileProjectV2({manifest, outputRoot: path.join(await mkdtemp(path.join(os.tmpdir(), `v3-${layoutId}-empty-`)), "project")}), /layout_required_slot_missing/);
+  }
+
+  const unconsumed = fixtureManifest("权威行动文案");
+  unconsumed.version = "2.0";
+  unconsumed.assets = [{id: "detail_asset", kind: "image", path: "media/detail.png"}];
+  unconsumed.compositions[0] = {
+    ...unconsumed.compositions[0], layout_id: "cta_offer", layout_variant: "offer_card",
+    asset_ids: ["detail_asset"], layout_slot_bindings: [{slot_id: "evidence", asset_id: "detail_asset"}],
+    overlay_instances: [{instance_id: "caption_01", component_id: "standard_caption"}],
+  };
+  await assert.rejects(compileProjectV2({manifest: unconsumed, outputRoot: path.join(await mkdtemp(path.join(os.tmpdir(), "v3-cta-unconsumed-")), "project")}), /layout_slot_binding_unconsumed/);
+});
+
 test("v2 product binds primary only through explicit layout slot bindings", async () => {
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-bindings-")), "project");
   const manifest = fixtureManifest("Product");

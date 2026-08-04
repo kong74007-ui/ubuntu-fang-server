@@ -67,9 +67,16 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
     ? {speaker: sourceSlot(manifest, composition, prefix), evidence: bindings.get("evidence")}
     : layout.contract.id === "material_fullscreen_speaker_pip"
       ? {speaker: sourceSlot(manifest, composition, prefix), ...productSlots(bindings, captions)}
-      : layout.contract.id === "product_hero"
+      : ["product_hero", "editorial_collage", "comparison_split"].includes(layout.contract.id)
         ? productSlots(bindings, captions)
-        : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
+        : layout.contract.id === "number_proof"
+          ? proofSlots(bindings, captions)
+          : layout.contract.id === "quote_reversal"
+            ? {quote: requiredText(captions), evidence: bindings.get("evidence")}
+            : layout.contract.id === "cta_offer"
+              ? {message: requiredText(captions), accent: bindings.get("accent")}
+              : {steps: requiredSteps(captions), accent: bindings.get("accent")};
+  assertBindingsConsumed(layout.contract.id, bindings);
   return {
     idPrefix: prefix, durationMs, slots, overlays: routeV2Overlays(overlayEntries, composition.overlay_instances),
     designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},
@@ -116,11 +123,47 @@ function requiredBinding(bindings, slot) {
   return asset;
 }
 
+function assertBindingsConsumed(layoutId, bindings) {
+  const slots = {
+    speaker_fullscreen: ["evidence"],
+    speaker_left_info_right: ["evidence"],
+    speaker_right_evidence_left: ["evidence"],
+    material_fullscreen_speaker_pip: ["primary", "detail"],
+    product_hero: ["primary", "detail"],
+    editorial_collage: ["primary", "detail"],
+    comparison_split: ["primary", "detail"],
+    steps_stack: ["accent"],
+    number_proof: ["evidence"],
+    quote_reversal: ["evidence"],
+    method_timeline: ["accent"],
+    cta_offer: ["accent"],
+  }[layoutId];
+  if (!slots || [...bindings.keys()].some((slot) => !slots.includes(slot))) throw new Error("layout_slot_binding_unconsumed");
+}
+
 function productSlots(bindings, captions) {
   const primary = requiredBinding(bindings, "primary");
   const detail = bindings.get("detail");
   if (detail?.id === primary.id) throw new Error("layout_slot_identity_invalid");
   return {primary, detail, copy: captions[0] ? {text: captions[0].text} : undefined};
+}
+
+function requiredText(captions) {
+  const text = captions[0]?.text;
+  return typeof text === "string" && text ? {text} : undefined;
+}
+
+function requiredSteps(captions) {
+  const items = captions.map(({text}) => text).filter((text) => typeof text === "string" && text).slice(0, 6);
+  return items.length ? {items} : undefined;
+}
+
+function proofSlots(bindings, captions) {
+  const authoritative = captions.map(({text}) => text).filter((text) => typeof text === "string" && text);
+  return {
+    proof: authoritative.length ? {label: authoritative[1] ?? authoritative[0], value: authoritative[0]} : undefined,
+    evidence: bindings.get("evidence"),
+  };
 }
 
 function compileV2Source({manifest, composition, prefix, layout}) {

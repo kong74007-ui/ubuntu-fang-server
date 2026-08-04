@@ -1276,7 +1276,12 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertTrue(checks["safe_area_and_text_visibility"]["blocking"])
 
     def test_render_compositions_bind_only_scene_requested_materials(self):
-        from server.content_domains.ai_edit_v3.production import _layout_slot_bindings, _scene_asset_ids, _validate_layout_source_requirements
+        from server.content_domains.ai_edit_v3.production import (
+            _layout_slot_bindings,
+            _scene_asset_ids,
+            _validate_layout_authoritative_content,
+            _validate_layout_source_requirements,
+        )
 
         known = ["evidence_01", "product_01", "context_01", "decoration_01"]
         scenes = [
@@ -1332,11 +1337,42 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "product_01", "purpose": "product", "priority": "optional"}]}, known)
         with self.assertRaisesRegex(ValueError, "scene_layout_binding_duplicate"):
             _layout_slot_bindings({"layout_id": "speaker_fullscreen", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}, {"id": "context_01", "purpose": "evidence", "priority": "optional"}]}, known)
+        for layout_id in ("editorial_collage", "comparison_split"):
+            self.assertEqual(
+                [
+                    {"slot_id": "primary", "asset_id": "product_01"},
+                    {"slot_id": "detail", "asset_id": "context_01"},
+                ],
+                _layout_slot_bindings({"layout_id": layout_id, "material_slots": [
+                    {"id": "context_01", "purpose": "context", "priority": "optional"},
+                    {"id": "product_01", "purpose": "product", "priority": "required"},
+                ]}, known),
+            )
+            with self.assertRaisesRegex(ValueError, "scene_layout_required_slot_missing"):
+                _layout_slot_bindings({"layout_id": layout_id, "material_slots": [],}, known)
+        for layout_id, purpose, slot_id in (
+            ("number_proof", "evidence", "evidence"),
+            ("quote_reversal", "evidence", "evidence"),
+            ("method_timeline", "decoration", "accent"),
+            ("cta_offer", "decoration", "accent"),
+        ):
+            self.assertEqual(
+                [{"slot_id": slot_id, "asset_id": "evidence_01"}],
+                _layout_slot_bindings({"layout_id": layout_id, "material_slots": [{"id": "evidence_01", "purpose": purpose, "priority": "optional"}]}, known),
+            )
         for layout_id in ("speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left", "material_fullscreen_speaker_pip"):
             with self.assertRaisesRegex(ValueError, "scene_layout_required_source_missing"):
                 _validate_layout_source_requirements({"layout_id": layout_id}, source_video=None)
             _validate_layout_source_requirements({"layout_id": layout_id}, source_video={"path": "media/source.mp4"})
         _validate_layout_source_requirements({"layout_id": "product_hero"}, source_video=None)
+        authoritative = [{"id": "caption_001", "start_ms": 0, "end_ms": 2000, "text": "权威文案"}]
+        for layout_id in ("number_proof", "quote_reversal", "method_timeline", "cta_offer"):
+            scene = {"layout_id": layout_id, "start_ms": 0, "end_ms": 2000}
+            _validate_layout_authoritative_content(scene, captions=authoritative)
+            with self.assertRaisesRegex(ValueError, "scene_layout_authoritative_content_missing"):
+                _validate_layout_authoritative_content(scene, captions=[])
+            with self.assertRaisesRegex(ValueError, "scene_layout_authoritative_content_missing"):
+                _validate_layout_authoritative_content(scene, captions=[{"id": "caption_002", "start_ms": 2000, "end_ms": 3000, "text": "其他场景"}])
 
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict

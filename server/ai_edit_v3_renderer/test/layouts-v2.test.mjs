@@ -13,7 +13,13 @@ const CASES = Object.freeze([
   {id: "speaker_right_evidence_left", variants: ["document_panel", "comparison_panel", "quote_evidence"], required: ["speaker"], optional: ["evidence"], identitySlots: ["speaker"]},
   {id: "material_fullscreen_speaker_pip", variants: ["pip_round", "pip_card", "pip_edge"], required: ["speaker", "primary"], optional: ["detail"], identitySlots: ["speaker", "primary"]},
   {id: "product_hero", variants: ["center_pedestal", "split_copy", "detail_gallery"], required: ["primary"], optional: ["detail"], identitySlots: ["primary"]},
+  {id: "editorial_collage", variants: ["magazine_grid", "layered_cards", "film_strip"], required: ["primary"], optional: ["detail"], identitySlots: ["primary"]},
+  {id: "comparison_split", variants: ["vertical_divide", "before_after_slider", "score_compare"], required: ["primary"], optional: ["detail"], identitySlots: ["primary"]},
   {id: "steps_stack", variants: ["vertical_steps", "numbered_cards", "progress_path"], required: ["steps"], optional: ["accent"], identitySlots: []},
+  {id: "number_proof", variants: ["hero_number", "metric_grid", "chart_callout"], required: ["proof"], optional: ["evidence"], identitySlots: []},
+  {id: "quote_reversal", variants: ["diagonal_statement", "strike_reveal", "question_answer"], required: ["quote"], optional: ["evidence"], identitySlots: []},
+  {id: "method_timeline", variants: ["horizontal_timeline", "vertical_milestones", "chapter_route"], required: ["steps"], optional: ["accent"], identitySlots: []},
+  {id: "cta_offer", variants: ["offer_card", "qr_placeholder", "action_steps"], required: ["message"], optional: ["accent"], identitySlots: []},
 ]);
 const RATIOS = Object.freeze(["16:9", "9:16"]);
 
@@ -30,6 +36,9 @@ function resolveV2(layoutId, variantId, ratio) {
 function requiredSlots(layout) {
   return Object.fromEntries(layout.required.map((slot) => {
     if (slot === "steps") return [slot, {items: ["准备", "执行", "复盘"]}];
+    if (slot === "proof") return [slot, {label: "增长率", value: "38%"}];
+    if (slot === "quote") return [slot, {text: "真正的增长来自长期价值"}];
+    if (slot === "message") return [slot, {text: "立即预约体验"}];
     return [slot, {id: `${layout.id}_${slot}_01`, kind: slot === "speaker" ? "video" : "image", relativePath: `media/${layout.id}-${slot}.${slot === "speaker" ? "mp4" : "png"}`}];
   }));
 }
@@ -43,7 +52,7 @@ function compileCase(layout, variantId, ratio, slots = requiredSlots(layout)) {
   });
 }
 
-test("layout v2 publishes the six speaker/product vertical-slice module contracts", () => {
+test("layout v2 publishes the complete twelve-layout contract matrix", () => {
   const contracts = v2Contracts();
   assert.deepEqual(contracts.map(({id}) => id), CASES.map(({id}) => id));
   assert.deepEqual(registry.getRegistryContract().layouts_v2.map(({id}) => id), CASES.map(({id}) => id).sort());
@@ -87,7 +96,7 @@ test("registry source manifest sorts slash-normalized paths by Unicode code poin
   assert.deepEqual(registry.getRegistrySourceManifest(root).map((entry) => entry.path), ["nested/a.mjs", "z.mjs", "ä.mjs"]);
 });
 
-test("layout v2 compiles all eighteen speaker/product variants for both ratios with auditable structural contracts", () => {
+test("layout v2 compiles all thirty-six variants for both ratios with auditable structural contracts", () => {
   const signatures = new Map();
   const geometrySignatures = new Map();
   for (const layout of CASES) for (const ratio of RATIOS) for (const variantId of layout.variants) {
@@ -117,7 +126,7 @@ test("layout v2 compiles all eighteen speaker/product variants for both ratios w
       assert.match(compiled.html, new RegExp(`data-v2-region="${region}"`));
       assert.match(compiled.html, new RegExp(`\\[data-v2-region="${region}"\\]\\{position:absolute;left:${box.x}px;top:${box.y}px;width:${box.width}px;height:${box.height}px`));
     }
-    if (["speaker_left_info_right", "speaker_right_evidence_left", "material_fullscreen_speaker_pip"].includes(layout.id)) {
+    if (!["speaker_fullscreen", "product_hero", "steps_stack"].includes(layout.id)) {
       const geometryKey = `${layout.id}/${ratio}`;
       const geometry = JSON.stringify(compiled.geometryAudit.criticalRegions);
       const siblings = geometrySignatures.get(geometryKey) ?? new Set();
@@ -126,7 +135,7 @@ test("layout v2 compiles all eighteen speaker/product variants for both ratios w
       geometrySignatures.set(geometryKey, siblings);
     }
   }
-  assert.equal(signatures.size, 18);
+  assert.equal(signatures.size, 36);
 });
 
 test("layout v2 emits byte-identical styles for semantically identical token objects", () => {
@@ -169,9 +178,35 @@ test("layout v2 visible copy and counter regions are nonempty and geometry-bound
   }
 });
 
+test("layout v2 unit-two visible regions contain authoritative content or an explicit graphic fallback", () => {
+  const unitTwo = CASES.filter(({id}) => ["editorial_collage", "comparison_split", "number_proof", "quote_reversal", "method_timeline", "cta_offer"].includes(id));
+  for (const layout of unitTwo) for (const ratio of RATIOS) for (const variantId of layout.variants) {
+    const compiled = compileCase(layout, variantId, ratio);
+    for (const region of Object.keys(compiled.geometryAudit.criticalRegions)) {
+      const body = regionBody(compiled.html, region);
+      assert.match(body, /<(?:img|video|svg|span|ol|ul|strong|b)\b/u, `${layout.id}/${variantId}/${ratio}/${region} must render content or a graphic fallback`);
+    }
+    const markup = compiled.html.split("<style", 1)[0];
+    assert.doesNotMatch(markup, /data-v2-region="[^"]+"[^>]*>\s*<\/[^>]+>/u, `${layout.id}/${variantId}/${ratio} cannot publish an empty visible region`);
+  }
+});
+
+test("cta offer requires and renders the caller-supplied authoritative message", () => {
+  const layout = CASES.find(({id}) => id === "cta_offer");
+  assert.throws(() => compileCase(layout, "offer_card", "16:9", {}), /layout_required_slot_missing/);
+  const compiled = compileCase(layout, "offer_card", "9:16", {message: {text: "权威 CTA 文案"}});
+  assert.match(compiled.html, /data-safe-text="权威 CTA 文案"[^>]*><span><\/span>/u);
+  assert.doesNotMatch(compiled.html, /立即购买|点击下单|默认优惠/u);
+});
+
 function assertBox(box, audit) {
   assert.ok(box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0);
   assert.ok(box.x + box.width <= audit.width && box.y + box.height <= audit.height);
+}
+
+function regionBody(html, region) {
+  const pattern = new RegExp(`<([a-z][a-z0-9-]*)\\b[^>]*data-v2-region="${region}"[^>]*>([\\s\\S]*?)<\\/\\1>`, "u");
+  return html.match(pattern)?.[2] ?? "";
 }
 
 function treeSignature(html) {

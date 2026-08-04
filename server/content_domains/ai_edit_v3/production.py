@@ -318,7 +318,13 @@ def _layout_slot_bindings(
         "speaker_right_evidence_left": frozenset({"evidence"}),
         "material_fullscreen_speaker_pip": frozenset({"primary", "detail"}),
         "product_hero": frozenset({"primary", "detail"}),
+        "editorial_collage": frozenset({"primary", "detail"}),
+        "comparison_split": frozenset({"primary", "detail"}),
         "steps_stack": frozenset({"accent"}),
+        "number_proof": frozenset({"evidence"}),
+        "quote_reversal": frozenset({"evidence"}),
+        "method_timeline": frozenset({"accent"}),
+        "cta_offer": frozenset({"accent"}),
     }.get(layout_id)
     if consumed_slots is None:
         return []
@@ -358,7 +364,7 @@ def _layout_slot_bindings(
             raise ValueError("scene_layout_binding_duplicate")
         seen_slots.add(slot_id)
         bindings.append({"slot_id": slot_id, "asset_id": asset_id})
-    if layout_id in {"product_hero", "material_fullscreen_speaker_pip"} and "primary" not in seen_slots:
+    if layout_id in {"product_hero", "material_fullscreen_speaker_pip", "editorial_collage", "comparison_split"} and "primary" not in seen_slots:
         raise ValueError("scene_layout_required_slot_missing")
     slot_order = {"primary": 0, "detail": 1, "evidence": 2, "accent": 3, "steps": 4}
     return sorted(bindings, key=lambda binding: slot_order[binding["slot_id"]])
@@ -374,6 +380,33 @@ def _validate_layout_source_requirements(
         "material_fullscreen_speaker_pip",
     } and not isinstance(source_video, Mapping):
         raise ValueError("scene_layout_required_source_missing")
+
+
+def _validate_layout_authoritative_content(
+    scene: Mapping[str, Any], *, captions: list[Mapping[str, Any]]
+) -> None:
+    if str(scene.get("layout_id") or "") not in {
+        "number_proof",
+        "quote_reversal",
+        "method_timeline",
+        "cta_offer",
+    }:
+        return
+    start_ms = scene.get("start_ms")
+    end_ms = scene.get("end_ms")
+    if not isinstance(start_ms, int) or not isinstance(end_ms, int) or end_ms <= start_ms:
+        raise ValueError("scene_layout_authoritative_content_missing")
+    if not any(
+        isinstance(caption, Mapping)
+        and isinstance(caption.get("text"), str)
+        and bool(caption["text"])
+        and isinstance(caption.get("start_ms"), int)
+        and isinstance(caption.get("end_ms"), int)
+        and caption["start_ms"] < end_ms
+        and caption["end_ms"] > start_ms
+        for caption in captions
+    ):
+        raise ValueError("scene_layout_authoritative_content_missing")
 
 
 class DashScopeAsr:
@@ -1461,6 +1494,7 @@ class ProductionStageCoordinator:
             if visual_program:
                 for scene in plan["scenes"]:
                     _validate_layout_source_requirements(scene, source_video=source_video)
+                    _validate_layout_authoritative_content(scene, captions=plan["captions"])
             manifest = {
                 "version": "2.0" if visual_program else "1.0", "schema_sha256": schema_sha256("render-manifest-v2.schema.json" if visual_program else "render-manifest-v1.schema.json"),
                 "renderer_environment": self._release_environment(),
