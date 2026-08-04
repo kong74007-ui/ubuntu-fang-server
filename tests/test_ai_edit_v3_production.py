@@ -112,14 +112,19 @@ class ProductionDirectorTests(unittest.TestCase):
         from server.content_domains.ai_edit_v3.production import _resolve_design_tokens
 
         renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-        intent = {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"}
-        manifest = {"version": "2.0", "schema_sha256": "schema-v2", "registry_sha256": "registry", "renderer_environment": {"renderer_build_id": "build"}, "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1}, "duration_ms": 4000, "master_audio": {"path": "media/master.wav"}, "source_video": None, "theme_profile_id": "editorial_clean", "design_intent": intent, "variation_seed": "0123456789abcdef", "design_tokens": _resolve_design_tokens("editorial_clean", intent, "0123456789abcdef"), "compositions": [{"id": "scene_1", "start_ms": 0, "end_ms": 4000, "overlay_ids": [], "overlay_instances": []}]}
-        program = "import fs from 'node:fs'; import {validateManifest} from './src/validate-manifest.mjs'; const value=JSON.parse(fs.readFileSync(process.argv.at(-1))); validateManifest(value,{rendererBuildId:'build',registrySha256:'sha256:registry',schemaSha256ByVersion:{'2.0':'schema-v2'}});"
+        intents = ({"density": "minimal", "motion_energy": "low", "image_fit": "contain", "decoration_intensity": "low"}, {"density": "balanced", "motion_energy": "medium", "image_fit": "cover", "decoration_intensity": "medium"}, {"density": "dense", "motion_energy": "high", "image_fit": "smart_crop", "decoration_intensity": "high"})
+        seeds = ("0123456789abcdef", "0000000000000000", "fedcba9876543210")
+        manifests = []
+        for profile in ("editorial_clean", "commercial_energy", "premium_dark", "warm_lifestyle"):
+            for intent in intents:
+                for seed in seeds:
+                    manifests.append({"version": "2.0", "schema_sha256": "schema-v2", "registry_sha256": "registry", "renderer_environment": {"renderer_build_id": "build"}, "output_spec": {"ratio": "9:16", "width": 1080, "height": 1920, "fps_num": 30, "fps_den": 1}, "duration_ms": 4000, "master_audio": {"path": "media/master.wav"}, "source_video": None, "theme_profile_id": profile, "design_intent": intent, "variation_seed": seed, "design_tokens": _resolve_design_tokens(profile, intent, seed), "compositions": [{"id": "scene_1", "start_ms": 0, "end_ms": 4000, "overlay_ids": [], "overlay_instances": []}]})
+        program = "import fs from 'node:fs'; import {parseCanonicalJson} from './src/parse-canonical-json.mjs'; import {validateManifest} from './src/validate-manifest.mjs'; const values=parseCanonicalJson(fs.readFileSync(process.argv.at(-1))); for (const value of values) validateManifest(value,{rendererBuildId:'build',registrySha256:'sha256:registry',schemaSha256ByVersion:{'2.0':'schema-v2'}});"
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "manifest.json"; path.write_text(json.dumps(manifest), encoding="utf-8")
+            path = Path(directory) / "manifests.json"; path.write_text(json.dumps(manifests), encoding="utf-8")
             accepted = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
-            manifest["design_tokens"]["--hf-bg"] = "#tampered"
-            path.write_text(json.dumps(manifest), encoding="utf-8")
+            manifests[0]["design_tokens"]["--hf-bg"] = "#tampered"
+            path.write_text(json.dumps(manifests), encoding="utf-8")
             rejected = subprocess.run(["node", "--input-type=module", "-e", program, str(path)], cwd=renderer, capture_output=True, text=True, check=False)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertNotEqual(0, rejected.returncode)

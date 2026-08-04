@@ -1,8 +1,13 @@
-import {isDeepStrictEqual} from "node:util";
-
 import {resolveTheme} from "./registry/index.mjs";
 
 const FORBIDDEN = new Set(["html", "css", "javascript", "script", "expression", "plugin", "url", "output_path", "command", "env", "systemd_property"]);
+const DESIGN_INTENT_VALUES = Object.freeze({
+  density: new Set(["minimal", "balanced", "dense"]),
+  motion_energy: new Set(["low", "medium", "high"]),
+  image_fit: new Set(["contain", "cover", "smart_crop"]),
+  decoration_intensity: new Set(["low", "medium", "high"]),
+});
+const VISUAL_VALUE_FORBIDDEN = /(?:https?:)?\/\/|url\s*\(|@font-face|\banimation\b/i;
 
 
 function inspect(value) {
@@ -12,6 +17,42 @@ function inspect(value) {
     if (FORBIDDEN.has(key.toLowerCase())) throw new Error("manifest_executable_field_forbidden");
     inspect(child);
   }
+}
+
+function sameJsonValue(left, right) {
+  if (typeof left !== typeof right) return false;
+  if (left === null || right === null) return left === right;
+  if (typeof left === "number") return Number.isFinite(left) && Number.isFinite(right) && left === right;
+  if (typeof left === "string" || typeof left === "boolean") return left === right;
+  if (typeof left !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
+}
+
+function validateDesignIntent(intent) {
+  if (!intent || typeof intent !== "object" || Array.isArray(intent)) throw new Error("manifest_design_intent_invalid");
+  const keys = Object.keys(intent);
+  if (keys.length !== Object.keys(DESIGN_INTENT_VALUES).length || keys.some((key) => !Object.hasOwn(DESIGN_INTENT_VALUES, key))) {
+    throw new Error("manifest_design_intent_invalid");
+  }
+  for (const [key, values] of Object.entries(DESIGN_INTENT_VALUES)) {
+    if (typeof intent[key] !== "string" || !values.has(intent[key]) || VISUAL_VALUE_FORBIDDEN.test(intent[key])) throw new Error("manifest_design_intent_invalid");
+  }
+}
+
+function validateVisualValues(value) {
+  if (typeof value === "string") {
+    if (VISUAL_VALUE_FORBIDDEN.test(value)) throw new Error("manifest_visual_value_forbidden");
+    return;
+  }
+  if (Array.isArray(value)) { for (const item of value) validateVisualValues(item); return; }
+  if (value && typeof value === "object") for (const item of Object.values(value)) validateVisualValues(item);
 }
 
 
@@ -60,13 +101,18 @@ export function validateManifest(document, expected) {
   if (document.version === "2.0") {
     let resolved;
     try {
+      validateDesignIntent(document.design_intent);
+      validateVisualValues(document.design_tokens);
       resolved = resolveTheme({
         profileId: document.theme_profile_id,
         intent: document.design_intent,
         variationSeed: document.variation_seed,
       });
-    } catch { throw new Error("manifest_design_tokens_mismatch"); }
-    if (!isDeepStrictEqual(document.design_tokens, resolved)) throw new Error("manifest_design_tokens_mismatch");
+    } catch (error) {
+      if (error?.message === "manifest_design_intent_invalid" || error?.message === "manifest_visual_value_forbidden") throw error;
+      throw new Error("manifest_design_tokens_mismatch");
+    }
+    if (!sameJsonValue(document.design_tokens, resolved)) throw new Error("manifest_design_tokens_mismatch");
   }
   return deepCopyFreeze(document);
 }

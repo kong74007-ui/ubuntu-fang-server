@@ -114,3 +114,41 @@ test("v2 manifest compares frozen design tokens by value after canonical key ord
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
   assert.equal(validateManifest(manifest, expected).variation_seed, "0123456789abcdef");
 });
+
+test("strict parser v2 manifest accepts Python JSON tokens with null prototypes", () => {
+  const manifest = {
+    version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+    master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+  };
+  const parsed = parseCanonicalJson(Buffer.from(JSON.stringify(manifest)));
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  assert.equal(validateManifest(parsed, expected).theme_profile_id, "editorial_clean");
+});
+
+test("v2 manifest rejects extra executable design intent fields before token resolution", () => {
+  const manifest = {
+    version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+    master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
+    design_intent: {...validVisualFields.design_intent, font_url: "https://fonts.invalid/font.woff2"},
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+  };
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected), /manifest_design_intent_invalid/);
+});
+
+test("v2 manifest rejects URL external-font and animation token values", () => {
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  for (const poisoned of ["https://fonts.invalid/font.woff2", "url(https://fonts.invalid/font.woff2)", "@font-face", "animation: spin 1s"]) {
+    const manifest = {
+      version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+      output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+      master_audio: {path: "media/master.wav"}, source_video: null, ...validVisualFields,
+      design_tokens: {...validVisualFields.design_tokens, "--hf-font": poisoned},
+      compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}],
+    };
+    assert.throws(() => validateManifest(parseCanonicalJson(Buffer.from(JSON.stringify(manifest))), expected), /manifest_visual_value_forbidden/);
+  }
+});
