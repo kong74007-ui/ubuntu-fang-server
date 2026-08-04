@@ -15,7 +15,10 @@ test("fourteen finite deterministic animation presets stay inside scene bounds",
     assert(audit.startMs >= 0 && audit.endMs <= 2000 && audit.endMs > audit.startMs);
     assert(timeline.calls.length >= 1);
     assert.doesNotMatch(JSON.stringify(timeline.calls), /repeat|random|yoyo/i);
-    assert.doesNotMatch(compileAnimationScript({...audit, target: "#scene_overlay"}), /eval|Function|setTimeout|repeat\s*:/);
+    assert.doesNotMatch(compileAnimationScript({
+      ...audit, target: "#scene_overlay",
+      ...(audit.operations ? {windowStartMs: 0, compositionDurationMs: 2000} : {}),
+    }), /eval|Function|setTimeout|repeat\s*:/);
   }
 });
 

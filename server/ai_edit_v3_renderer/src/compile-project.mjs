@@ -150,21 +150,69 @@ function compileScene({manifest, composition, theme, layoutResolver = resolveLay
         delayMs: animation.delay_ms,
       }];
     return targets.map(({target, windowStartMs, windowDurationMs, delayMs}) => {
+      const semanticTargets = manifest.version === "2.0" ? animationSemanticTargets(overlayEntry, animation.preset) : {};
+      target = semanticTargets.target ?? target;
       assertUniqueAnimationTarget(body, target);
+      for (const childTarget of semanticTargets.childTargets ?? []) assertUniqueAnimationTarget(body, childTarget);
       const audit = applyAnimation({
-        timeline, preset: animation.preset, target,
-        params: {durationMs: animation.duration_ms, delayMs},
+        timeline, preset: animation.preset, target, direction: animation.direction, operationVersion: manifest.version,
+        childTargets: semanticTargets.childTargets,
+        params: {durationMs: animation.duration_ms, delayMs, ...semanticTargets.params},
         sceneDurationMs: windowDurationMs, fps,
       });
-      return compileAnimationScript({...audit, target, startMs: audit.startMs + windowStartMs});
+      return compileAnimationScript({
+        ...audit, target, startMs: audit.startMs + windowStartMs,
+        ...(manifest.version === "2.0" ? {windowStartMs, compositionDurationMs: durationMs} : {}),
+      });
     });
   }).join("");
   const transitionAudit = applyTransition({
     timeline, transition: composition.transition, outgoing: `#${prefix}_background`, incoming: `#${rootId}`,
-    boundaryMs: 0, sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
+    operationVersion: manifest.version, boundaryMs: 0, sceneDurationMs: durationMs, fps: manifest.output_spec.fps_num / manifest.output_spec.fps_den,
   });
   const transitionScript = compileTransitionScript({...transitionAudit, outgoing: `#${prefix}_background`, incoming: `#${rootId}`});
   return `<template id="${prefix}_template"><div id="${rootId}" data-composition-id="${prefix}" data-width="${width}" data-height="${height}" data-start="0" data-duration="${duration}" style="${variables}">${body}${sourceVideo}</div><style>#${rootId}{position:relative;overflow:hidden;color:var(--hf-text);font-family:var(--hf-font)}#${rootId} .hf-background{position:absolute;inset:0;z-index:0;background:linear-gradient(145deg,var(--hf-bg),var(--hf-surface))}#${rootId} .hf-source-video{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--hf-image-fit);z-index:1}#${rootId} .hf-layout-frame{position:absolute;inset:5%;z-index:2;display:grid;gap:var(--hf-gap)}#${rootId} .hf-speaker-zone,#${rootId} .hf-materials{display:grid;place-items:center;position:relative;overflow:hidden;border:1px solid var(--hf-border);border-radius:var(--hf-radius);background:rgba(23,42,66,.14);box-shadow:var(--hf-shadow)}#${rootId} .hf-materials{background:var(--hf-surface-strong)}#${rootId} .hf-speaker-zone span{display:${manifest.source_video ? "none" : "block"}}#${rootId} .hf-speaker-zone span,#${rootId} .hf-fallback span{color:var(--hf-muted);font-size:34px}#${rootId} .hf-materials{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px}#${rootId} .hf-material-count-1{grid-template-columns:1fr}#${rootId} .hf-asset{width:100%;height:100%;min-height:0;object-fit:var(--hf-image-fit);border-radius:18px}#${rootId} .hf-fallback{display:grid;place-items:center;width:100%;height:100%}#${rootId} .hf-layout-speaker_fullscreen{grid-template-columns:1fr}#${rootId} .hf-layout-speaker_fullscreen .hf-materials{display:none}#${rootId} .hf-layout-speaker_left_info_right{grid-template-columns:1.15fr .85fr}#${rootId} .hf-layout-speaker_right_evidence_left{grid-template-columns:.85fr 1.15fr}#${rootId} .hf-layout-speaker_right_evidence_left .hf-speaker-zone{order:2}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-materials,#${rootId} .hf-layout-product_hero .hf-materials{position:absolute;inset:0}#${rootId} .hf-layout-material_fullscreen_speaker_pip .hf-speaker-zone{position:absolute;right:3%;bottom:4%;width:28%;height:34%;z-index:2}#${rootId} .hf-layout-product_hero .hf-speaker-zone{display:none}#${rootId} .hf-layout-editorial_collage{grid-template-columns:.75fr 1.25fr}#${rootId} .hf-layout-editorial_collage .hf-materials{grid-template-columns:repeat(2,1fr)}#${rootId} .hf-layout-comparison_split{grid-template-columns:1fr 1fr}#${rootId} .hf-layout-steps_stack,#${rootId} .hf-layout-method_timeline{grid-template-rows:.55fr 1.45fr}#${rootId} .hf-layout-number_proof .hf-speaker-zone{display:none}#${rootId} .hf-layout-number_proof .hf-materials{font-size:96px}#${rootId} .hf-layout-quote_reversal{transform:rotate(-1deg);inset:9% 7%}#${rootId} .hf-layout-cta_offer{inset:12%;transform:scale(.94)}#${rootId} .hf-variant-emphasis_b .hf-speaker-zone{border-width:3px}#${rootId} .hf-safe-area{position:absolute;inset:8% 7%;z-index:20;display:flex;flex-direction:column;justify-content:flex-end;gap:var(--hf-gap)}#${rootId} .hf-overlay{max-width:88%;padding:18px 28px;border:1px solid var(--hf-border);border-radius:20px;background:rgba(7,17,31,.82);font-size:40px;font-weight:700;line-height:1.28;box-shadow:var(--hf-shadow)}#${rootId} .hf-overlay-standard_caption{align-self:center;text-align:center;font-size:34px}</style><script>(()=>{const root=document.querySelector('#${rootId}');for(const node of root.querySelectorAll('[data-safe-text]'))node.querySelector('span').textContent=node.dataset.safeText;const tl=gsap.timeline({paused:true});tl.set(root,{autoAlpha:1},0);${transitionScript}${animationScript}window.__timelines=window.__timelines||{};window.__timelines["${prefix}"] = tl;})();</script></template>`;
+}
+
+function animationSemanticTargets(entry, preset) {
+  if (!entry || typeof entry.html !== "string") return {};
+  const targets = extractPublicTargets(entry.html);
+  if (preset === "count_up") {
+    const metric = targets.filter((item) => item.name === "metric_value");
+    if (metric.length !== 1) throw new Error("animation_numeric_target_invalid");
+    const match = metric[0].safeText?.match(/-?\d+(?:\.\d+)?/u);
+    if (!match) throw new Error("animation_numeric_target_invalid");
+    const precision = match[0].split(".")[1]?.length ?? 0;
+    const scaledDigits = match[0].replace("-", "").replace(".", "");
+    const scaled = Number(`${match[0].startsWith("-") ? "-" : ""}${scaledDigits}`);
+    if (precision > 6 || !Number.isSafeInteger(scaled)) throw new Error("animation_numeric_target_invalid");
+    return {target: `#${metric[0].id}`, params: {numericStart: 0, numericStartToken: "0", numericEnd: Number(match[0]), numericEndToken: match[0], numericPrecision: precision, numericPrefix: "", numericSuffix: ""}};
+  }
+  if (preset === "stagger") {
+    const publicTarget = Object.freeze({bullet_list: "bullets", step_indicator: "steps"})[entry.componentId];
+    if (!publicTarget) throw new Error("animation_child_targets_invalid");
+    const children = targets.filter((item) => item.name === publicTarget).map((item) => `#${item.id}`);
+    if (children.length === 0) throw new Error("animation_child_targets_invalid");
+    return {childTargets: children};
+  }
+  return {};
+}
+
+function extractPublicTargets(html) {
+  const targets = [];
+  for (const match of html.matchAll(/<[^>]+>/gu)) {
+    const tag = match[0];
+    const id = attribute(tag, "id");
+    const name = attribute(tag, "data-public-target");
+    if (!id || !name) continue;
+    targets.push({id, name, safeText: attribute(tag, "data-safe-text")});
+  }
+  return targets;
+}
+
+function attribute(tag, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return tag.match(new RegExp(`\\s${escaped}="([^"]*)"`, "u"))?.[1];
 }
 
 function assertUniqueAnimationTarget(html, selector) {

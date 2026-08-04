@@ -33,7 +33,7 @@ const REMAINING_OVERLAYS = Object.freeze([
   Object.freeze({componentId: "bullet_list", targets: ["root", "items", "bullets"], tags: ["section", "ul", "li"]}),
   Object.freeze({componentId: "number_proof", targets: ["root", "metric_value", "unit", "label"], tags: ["dl", "dt", "dd"]}),
   Object.freeze({componentId: "quote_card", targets: ["root", "quote", "accent", "attribution"], tags: ["blockquote", "p", "footer"]}),
-  Object.freeze({componentId: "step_indicator", targets: ["root", "progress", "current", "total"], tags: ["nav", "ol", "li"]}),
+  Object.freeze({componentId: "step_indicator", targets: ["root", "progress", "steps", "current", "total"], tags: ["nav", "ol", "li"]}),
   Object.freeze({componentId: "product_tag", targets: ["root", "product", "label", "price"], tags: ["aside", "strong", "span"]}),
   Object.freeze({componentId: "cta_hold", targets: ["root", "action", "support", "accent"], tags: ["section", "strong", "small"]}),
 ]);
