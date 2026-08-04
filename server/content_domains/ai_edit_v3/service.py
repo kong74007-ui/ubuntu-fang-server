@@ -29,6 +29,7 @@ from .contracts import (
 )
 from .feature import CapabilityReport
 from .delivery import ObjectKeyError, build_object_key as _delivery_build_object_key
+from .runtime import schema_hash_is_accepted
 from .store import StoreConflictError, StoreError, V3Store
 
 
@@ -2057,6 +2058,12 @@ class EditV3Service:
         if row is None:
             raise ServiceError(
                 "plan_not_ready", "director plan is not ready", status=409
+            )
+        if not schema_hash_is_accepted(
+            "edit-plan-2.0.schema.json", str(row["schema_sha256"])
+        ):
+            raise ServiceError(
+                "plan_schema_unsupported", "stored plan schema is unsupported", status=503
             )
         try:
             plan = parse_strict_json(

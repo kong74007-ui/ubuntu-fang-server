@@ -44,6 +44,13 @@ export function validateManifest(document, expected) {
     ids.add(composition.id);
     if (composition.start_ms !== cursor || !Number.isInteger(composition.end_ms) || composition.end_ms <= cursor) throw new Error("manifest_composition_timeline_invalid");
     cursor = composition.end_ms;
+    if (document.version === "2.0") {
+      const instances = composition.overlay_instances;
+      if (!Array.isArray(composition.overlay_ids) || !Array.isArray(instances)
+        || JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item?.component_id))) {
+        throw new Error("manifest_component_projection_invalid");
+      }
+    }
   }
   if (cursor !== document.duration_ms) throw new Error("manifest_composition_timeline_invalid");
   return deepCopyFreeze(document);

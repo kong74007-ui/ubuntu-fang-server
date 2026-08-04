@@ -4,6 +4,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 
 import {compileProject} from "./compile-project.mjs";
+import {compileProjectV2} from "./compile-project-v2.mjs";
 import {parseCanonicalJson} from "./parse-canonical-json.mjs";
 import {getRegistrySha256} from "./registry/index.mjs";
 import {validateRendererRelease} from "./release-manifest.mjs";
@@ -15,6 +16,10 @@ import {validateManifest} from "./validate-manifest.mjs";
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHA256 = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^sha256:[0-9a-f]{64}$/;
+export const MANIFEST_SCHEMA_SHA256_BY_VERSION = Object.freeze({
+  "1.0": "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
+  "2.0": "cf689a538efa369cfff5a11c17800f8c32cec0dccbe78be54de9019362bcf751",
+});
 
 function hash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 
@@ -77,15 +82,16 @@ export async function runRenderRequest({requestPath, inputRoot, outputRoot, chro
   const manifest = validateManifest(parseCanonicalJson(manifestBytes, {maxBytes: 512 * 1024, maxDepth: 24, maxItems: 5000, maxStringChars: 4000}), {
     rendererBuildId: release.renderer_build_id,
     registrySha256,
-    schemaSha256: request.schema_sha256,
-    schemaSha256ByVersion: {"1.0": request.schema_sha256, "2.0": "de674b53f0864bdeca3192e96d0fe05d8364ba4761341bf158efb1df2bd907fd"},
+    schemaSha256ByVersion: MANIFEST_SCHEMA_SHA256_BY_VERSION,
   });
-  selectManifestCompiler(manifest.version);
+  if (request.schema_sha256 !== MANIFEST_SCHEMA_SHA256_BY_VERSION[manifest.version]) throw new Error("render_request_schema_mismatch");
   const verifiedFiles = await verifyInputFiles({manifest, inputRoot: inputs});
   try {
     await mkdir(outputs, {recursive: true});
     const projectRoot = path.join(outputs, "project");
-    const compiledProject = await compileProject({manifest, outputRoot: projectRoot});
+    const compiledProject = manifest.version === "2.0"
+      ? await compileProjectV2({manifest, outputRoot: projectRoot})
+      : await compileProject({manifest, outputRoot: projectRoot});
     await Promise.all(verifiedFiles.map((item) => copyVerifiedFile(item, projectRoot)));
     const outputPath = path.join(outputs, "silent.mp4");
     const execution = await renderHyperframes({

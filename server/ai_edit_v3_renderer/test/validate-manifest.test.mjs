@@ -62,8 +62,20 @@ test("manifest schema identity dispatches v1 and v2 and rejects unknown versions
   };
   const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"1.0": "schema-v1", "2.0": "schema-v2"}};
   for (const [version, schema] of [["1.0", "schema-v1"], ["2.0", "schema-v2"]]) {
-    assert.equal(validateManifest({...base, version, schema_sha256: schema}, expected).version, version);
+    const compositions = version === "2.0" ? [{...base.compositions[0], overlay_ids: [], overlay_instances: []}] : base.compositions;
+    assert.equal(validateManifest({...base, compositions, version, schema_sha256: schema}, expected).version, version);
   }
   assert.throws(() => validateManifest({...base, version: "3.0", schema_sha256: "schema-v3"}, expected), /manifest_version_invalid/);
   assert.throws(() => validateManifest({...base, version: "2.0", schema_sha256: "schema-v1"}, expected), /manifest_schema_mismatch/);
+});
+
+test("v2 manifest rejects an overlay id projection that disagrees with instances", () => {
+  const base = {
+    version: "2.0", schema_sha256: "schema-v2", registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1}, duration_ms: 4000,
+    master_audio: {path: "media/master.wav"}, source_video: null,
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: ["headline_block"], overlay_instances: [{instance_id: "headline_01", component_id: "info_card"}]}],
+  };
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: {"2.0": "schema-v2"}};
+  assert.throws(() => validateManifest(base, expected), /manifest_component_projection_invalid/);
 });

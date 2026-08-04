@@ -27,6 +27,7 @@ SCHEMA_NAMES = (
     "director-decision-v1.schema.json",
     "edit-plan-2.0.schema.json",
     "render-manifest-v1.schema.json",
+    "render-manifest-v2.schema.json",
     "quality-verdict-v1.schema.json",
 )
 QUALITY_BLOCKING = {
@@ -83,6 +84,11 @@ EXPECTED_ROOT_FIELDS = {
         "assets",
         "compositions",
         "captions",
+    },
+    "render-manifest-v2.schema.json": {
+        "version", "schema_sha256", "renderer_environment", "output_spec",
+        "duration_ms", "edit_plan_sha256", "registry_sha256", "theme", "seed",
+        "source_video", "source_segments", "master_audio", "assets", "compositions", "captions",
     },
 }
 
@@ -226,6 +232,7 @@ class SchemaMetaTests(unittest.TestCase):
     def test_manifest_and_quality_fixtures_record_the_schema_hash(self):
         for name in (
             "render-manifest-v1.schema.json",
+            "render-manifest-v2.schema.json",
             "quality-verdict-v1.schema.json",
         ):
             with self.subTest(name=name):

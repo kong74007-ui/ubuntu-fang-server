@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {compileProject} from "../src/compile-project.mjs";
+import {compileProjectV2} from "../src/compile-project-v2.mjs";
 import {getRegistrySha256} from "../src/registry/index.mjs";
 
 test("compiler emits standalone HyperFrames roots and safe template scenes", async () => {
@@ -31,6 +32,18 @@ test("compiler emits standalone HyperFrames roots and safe template scenes", asy
   assert.match(scene, /class="hf-background clip"/);
   assert.equal(new Set([...`${index}${scene}`.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1])).size,
     [...`${index}${scene}`.matchAll(/\sid="([^"]+)"/g)].length);
+});
+
+test("v2 compiler consumes overlay instances and maps instance animation targets", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-")), "project");
+  const manifest = fixtureManifest("v2 component scene");
+  manifest.version = "2.0";
+  manifest.compositions[0].overlay_instances = [{instance_id: "headline_01", component_id: "headline_block"}];
+  manifest.compositions[0].overlay_ids = ["headline_block"];
+  manifest.compositions[0].animations = [{target: "headline_01", preset: "fade", direction: "none", duration_ms: 400, delay_ms: 0}];
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  assert.match(scene, /composition_01_headline_block/);
 });
 
 test("compiler treats hostile model text as data and rejects bidi controls", async () => {

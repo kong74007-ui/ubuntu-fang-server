@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {mkdtemp, mkdir, readFile, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,12 +7,28 @@ import test from "node:test";
 
 import {buildRenderReport} from "../src/report.mjs";
 import {buildRenderCommand, renderHyperframes} from "../src/render-hyperframes.mjs";
-import {selectManifestCompiler} from "../src/render.mjs";
+import {runRenderRequest, selectManifestCompiler} from "../src/render.mjs";
+import {getRegistrySha256} from "../src/registry/index.mjs";
 
 test("render dispatches manifest v1 and v2 before compilation", () => {
   assert.equal(selectManifestCompiler("1.0"), "legacy");
   assert.equal(selectManifestCompiler("2.0"), "component");
   assert.throws(() => selectManifestCompiler("3.0"), /render_manifest_version_unknown/);
+});
+
+test("render entry rejects a request and v2 manifest that agree on an untrusted schema hash", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "v3-request-schema-"));
+  const inputRoot = path.join(root, "input");
+  await mkdir(inputRoot);
+  const release = JSON.parse(await readFile(new URL("../renderer-release.lock.json", import.meta.url), "utf8"));
+  const badSchema = "0".repeat(64);
+  const manifest = {version: "2.0", schema_sha256: badSchema, registry_sha256: getRegistrySha256().slice(7), renderer_environment: {renderer_build_id: release.renderer_build_id}, output_spec: {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1}, duration_ms: 4000, source_video: null, compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000, overlay_ids: [], overlay_instances: []}]};
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  await writeFile(path.join(inputRoot, "render-manifest.json"), bytes);
+  const request = {manifest_path: "render-manifest.json", manifest_sha256: createHash("sha256").update(bytes).digest("hex"), registry_sha256: getRegistrySha256(), renderer_build_id: release.renderer_build_id, schema_sha256: badSchema, version: "1.0"};
+  const requestPath = path.join(root, "request.json");
+  await writeFile(requestPath, JSON.stringify(request));
+  await assert.rejects(runRenderRequest({requestPath, inputRoot, outputRoot: path.join(root, "output"), commandRunner: async () => { throw new Error("compiler_must_not_run"); }}), /manifest_schema_mismatch/);
 });
 
 test("render command is fixed, silent, strict and does not inherit provider secrets", async () => {
