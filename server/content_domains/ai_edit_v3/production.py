@@ -312,6 +312,13 @@ def _layout_slot_bindings(
     """Emit deterministic V2 semantic bindings from the scene's frozen slots."""
 
     layout_id = str(scene.get("layout_id") or "")
+    consumed_slots = {
+        "speaker_fullscreen": frozenset({"evidence"}),
+        "product_hero": frozenset({"primary", "detail"}),
+        "steps_stack": frozenset({"steps", "accent"}),
+    }.get(layout_id)
+    if consumed_slots is None:
+        return []
     known = set(known_asset_ids)
     bindings: list[dict[str, str]] = []
     seen_slots: set[str] = set()
@@ -321,9 +328,14 @@ def _layout_slot_bindings(
         asset_id = raw.get("id")
         purpose = raw.get("purpose")
         priority = raw.get("priority")
+        explicit_slot = raw.get("layout_slot_id")
         if not isinstance(asset_id, str) or asset_id not in known or priority not in {"required", "optional"}:
             raise ValueError("scene_layout_binding_invalid")
-        if purpose == "product":
+        if explicit_slot is not None:
+            if explicit_slot not in {"primary", "detail", "evidence", "accent", "steps"}:
+                raise ValueError("scene_layout_binding_invalid")
+            slot_id = explicit_slot
+        elif purpose == "product":
             if priority != "required":
                 raise ValueError("scene_layout_binding_invalid")
             slot_id = "primary"
@@ -335,10 +347,16 @@ def _layout_slot_bindings(
             slot_id = "accent"
         else:
             raise ValueError("scene_layout_binding_invalid")
+        if slot_id not in consumed_slots:
+            if priority == "required":
+                raise ValueError("scene_layout_binding_unconsumed")
+            continue
         if slot_id in seen_slots:
             raise ValueError("scene_layout_binding_duplicate")
         seen_slots.add(slot_id)
         bindings.append({"slot_id": slot_id, "asset_id": asset_id})
+    if layout_id == "product_hero" and "primary" not in seen_slots:
+        raise ValueError("scene_layout_required_slot_missing")
     return bindings
 
 

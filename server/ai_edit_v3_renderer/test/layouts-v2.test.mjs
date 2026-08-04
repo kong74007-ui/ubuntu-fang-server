@@ -135,6 +135,26 @@ test("layout v2 fails closed for required slots and renders a nonblank optional-
   }
 });
 
+test("layout v2 visible copy and counter regions are nonempty and geometry-bounded in both ratios", () => {
+  for (const ratio of RATIOS) {
+    const product = compileCase(CASES[1], "split_copy", ratio);
+    const copyBox = product.geometryAudit.criticalRegions.copy;
+    assert.ok(copyBox, "split_copy must audit its visible copy region");
+    assertBox(copyBox, product.geometryAudit);
+    assert.ok(copyBox.width * copyBox.height / (product.geometryAudit.width * product.geometryAudit.height) <= 0.25);
+    const copy = product.html.match(/<section\b[^>]*data-v2-region="copy"[^>]*>([\s\S]*?)<\/section>/u)?.[1] ?? "";
+    assert.match(copy, /<(?:svg|span)\b/u, "split_copy must render authoritative copy content or an explicit graphic fallback");
+
+    const steps = compileCase(CASES[2], "numbered_cards", ratio);
+    const counterBox = steps.geometryAudit.criticalRegions.counter;
+    assert.ok(counterBox, "numbered_cards must audit its visible counter region");
+    assertBox(counterBox, steps.geometryAudit);
+    assert.ok(counterBox.width * counterBox.height / (steps.geometryAudit.width * steps.geometryAudit.height) <= 0.25);
+    const counter = steps.html.match(/<header\b[^>]*data-v2-region="counter"[^>]*>[\s\S]*?<\/header>/u)?.[0] ?? "";
+    assert.match(counter, /data-safe-text="3"[^>]*><span><\/span>/u, "numbered_cards must expose a deterministic hydrated step count");
+  }
+});
+
 function assertBox(box, audit) {
   assert.ok(box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0);
   assert.ok(box.x + box.width <= audit.width && box.y + box.height <= audit.height);

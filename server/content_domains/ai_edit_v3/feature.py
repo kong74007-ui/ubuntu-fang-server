@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -132,6 +132,8 @@ class CapabilityReport:
     allows_existing_reads: bool
     accepts_uploads: bool
     accepts_new_jobs: bool
+    current_schema_hashes: Mapping[str, str] = field(default_factory=dict)
+    historical_schema_hashes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.items, Mapping) or any(
@@ -147,6 +149,17 @@ class CapabilityReport:
             for name, value in self.runtime_versions.items()
         ):
             raise ValueError("runtime_versions_invalid")
+        if not isinstance(self.current_schema_hashes, Mapping) or any(
+            not isinstance(name, str) or not name or not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for name, value in self.current_schema_hashes.items()
+        ):
+            raise ValueError("current_schema_hashes_invalid")
+        if not isinstance(self.historical_schema_hashes, Mapping) or any(
+            not isinstance(name, str) or not name or not isinstance(values, (list, tuple)) or not values
+            or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in values)
+            for name, values in self.historical_schema_hashes.items()
+        ):
+            raise ValueError("historical_schema_hashes_invalid")
         booleans = (
             self.allows_existing_reads,
             self.accepts_uploads,
@@ -160,6 +173,8 @@ class CapabilityReport:
             "runtime_versions",
             MappingProxyType(dict(self.runtime_versions)),
         )
+        object.__setattr__(self, "current_schema_hashes", MappingProxyType(dict(self.current_schema_hashes)))
+        object.__setattr__(self, "historical_schema_hashes", MappingProxyType({name: tuple(values) for name, values in self.historical_schema_hashes.items()}))
 
 
 class CapabilityUnavailable(RuntimeError):

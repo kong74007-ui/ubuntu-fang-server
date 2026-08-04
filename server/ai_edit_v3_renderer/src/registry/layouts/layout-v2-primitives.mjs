@@ -68,6 +68,14 @@ export function stepsSlot({prefix, value, duration, trackIndex}) {
   return `<ol id="${prefix}_steps" class="hf-v2-steps clip" data-slot="steps" data-v2-region="steps" ${clipAttributes(duration, trackIndex)}>${items}</ol>`;
 }
 
+export function copySlot(value) {
+  const text = value?.text;
+  if (typeof text === "string" && text) {
+    return `<div class="hf-v2-copy-text" data-safe-text="${escapeAttribute(assertSafeText(text, {maxChars: 240, maxLines: 3}))}"><span></span></div>`;
+  }
+  return `<svg class="hf-v2-copy-fallback" data-fallback="copy_graphic" data-fallback-state="rendered" viewBox="0 0 160 90" aria-hidden="true" focusable="false"><rect x="8" y="8" width="144" height="74" rx="12"></rect><path d="M28 32h78M28 48h104M28 64h62"></path></svg>`;
+}
+
 export function layoutResult({contract, variantId, ratio, input, structure, body, criticalRegions}) {
   const [width, height] = RATIO_SIZES[ratio];
   const safeAreas = ratio === "16:9"

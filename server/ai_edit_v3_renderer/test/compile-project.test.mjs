@@ -111,6 +111,38 @@ test("v2 routes title and caption overlays into distinct audited safe-area hosts
   assert.doesNotMatch(scene.match(/data-safe-host="title"[\s\S]*?<\/aside>/u)?.[0] ?? "", /standard_caption/);
 });
 
+test("v2 safe hosts bind repeated component DOM to the exact overlay instance", async () => {
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-repeated-safe-hosts-")), "project");
+  const manifest = fixtureManifest("Repeated headline instances");
+  manifest.version = "2.0";
+  manifest.output_spec = {ratio: "16:9", width: 1920, height: 1080, fps_num: 30, fps_den: 1};
+  manifest.source_video = {path: "media/source.mp4", silent: true};
+  manifest.source_segments = [{id: "segment_01", source_path: "media/source.mp4", source_start_ms: 0, source_end_ms: 4000, output_start_ms: 0, output_end_ms: 4000}];
+  manifest.compositions[0] = {...manifest.compositions[0], layout_id: "speaker_fullscreen", layout_variant: "headline_top", overlay_ids: ["headline_block", "headline_block"], overlay_instances: [
+    {instance_id: "headline_top", component_id: "headline_block", placement: "safe_top"},
+    {instance_id: "headline_bottom", component_id: "headline_block", placement: "safe_bottom"},
+  ], animations: [
+    {target: "headline_top", preset: "fade", direction: "none", duration_ms: 400, delay_ms: 0},
+    {target: "headline_bottom", preset: "scale", direction: "none", duration_ms: 400, delay_ms: 50},
+  ]};
+
+  await compileProjectV2({manifest, outputRoot});
+  const scene = await readFile(path.join(outputRoot, "compositions", "composition_01.html"), "utf8");
+  const hosts = Object.fromEntries([...scene.matchAll(/<aside\b[^>]*data-safe-host="(title|captions)"[^>]*>([\s\S]*?)<\/aside>/gu)]
+    .map((match) => [match[1], match[2]]));
+  const topId = "composition_01_headline_top_headline_block";
+  const bottomId = "composition_01_headline_bottom_headline_block";
+
+  assert.equal((scene.match(new RegExp(`\\sid="${topId}"`, "gu")) ?? []).length, 1);
+  assert.equal((scene.match(new RegExp(`\\sid="${bottomId}"`, "gu")) ?? []).length, 1);
+  assert.match(hosts.title, new RegExp(`id="${topId}"`, "u"));
+  assert.doesNotMatch(hosts.title, new RegExp(`id="${bottomId}"`, "u"));
+  assert.match(hosts.captions, new RegExp(`id="${bottomId}"`, "u"));
+  assert.doesNotMatch(hosts.captions, new RegExp(`id="${topId}"`, "u"));
+  assert.match(scene, new RegExp(`tl\\.fromTo\\("#${topId}"`, "u"));
+  assert.match(scene, new RegExp(`tl\\.fromTo\\("#${bottomId}"`, "u"));
+});
+
 test("v2 compiler hydrates compiled steps text from parent safe-text nodes", async () => {
   const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-compile-v2-steps-")), "project");
   const manifest = fixtureManifest("Prepare");

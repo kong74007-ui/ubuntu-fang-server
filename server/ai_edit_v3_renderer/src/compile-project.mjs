@@ -77,12 +77,12 @@ function compileScene({manifest, composition, theme, layoutResolver = resolveLay
     ? composition.overlay_instances.map(({instance_id, component_id}) => ({instanceId: instance_id, componentId: component_id}))
     : composition.overlay_ids.map((componentId) => ({instanceId: componentId, componentId}));
   const overlayByTarget = new Map(overlayBindings.map((binding) => [binding.instanceId, binding]));
-  const overlays = overlayBindings.map(({instanceId, componentId}, index) => {
+  const overlayEntries = overlayBindings.map(({instanceId, componentId}, index) => {
     resolveOverlay(componentId);
     const overlayContract = getOverlayContract(componentId);
     const idPrefix = manifest.version === "2.0" ? `${prefix}_${instanceId}` : prefix;
     if (componentId === "standard_caption") {
-      return captions.map((caption, captionIndex) => compileOverlay({
+      const html = captions.map((caption, captionIndex) => compileOverlay({
         overlayId: componentId,
         idPrefix: `${idPrefix}_caption_${captionIndex + 1}`,
         text: caption.text,
@@ -90,23 +90,26 @@ function compileScene({manifest, composition, theme, layoutResolver = resolveLay
         durationMs: caption.endMs - caption.startMs,
         trackIndex: index + 21 + captionIndex,
       })).join("");
+      return Object.freeze({instanceId, componentId, html});
     }
     const overlayText = [...captions.map((caption) => caption.text).join(" ")].slice(0, overlayContract.maxChars).join("");
-    return compileOverlay({
+    const html = compileOverlay({
       overlayId: componentId,
       idPrefix,
       text: overlayText,
       durationMs,
       trackIndex: index + 21,
     });
-  }).join("");
+    return Object.freeze({instanceId, componentId, html});
+  });
+  const overlays = overlayEntries.map(({html}) => html).join("");
   const assetById = new Map((manifest.assets ?? []).map((asset) => [asset.id, asset]));
   const assets = (composition.asset_ids ?? []).map((assetId) => {
     const asset = assetById.get(assetId);
     if (!asset) throw new Error("composition_asset_unknown");
     return {id: asset.id, kind: asset.kind, relativePath: asset.path};
   });
-  const layoutOutput = layout.compile(buildLayoutInput({manifest, composition, prefix, durationMs, overlays, scene: composition, assets, captions, theme, layout}));
+  const layoutOutput = layout.compile(buildLayoutInput({manifest, composition, prefix, durationMs, overlays, overlayEntries, scene: composition, assets, captions, theme, layout}));
   const body = typeof layoutOutput === "string" ? layoutOutput : layoutOutput?.html;
   if (typeof body !== "string") throw new Error("layout_compile_invalid");
   const sourceVideo = compileSource({manifest, composition, prefix, layout});

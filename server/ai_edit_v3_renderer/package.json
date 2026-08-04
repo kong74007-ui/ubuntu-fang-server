@@ -10,6 +10,8 @@
     "release:lock:check": "node src/release-manifest.mjs --check --release-root .",
     "registry:hash": "node src/write-registry-hash.mjs",
     "registry:hash:check": "node src/write-registry-hash.mjs --check",
+    "manifest-schema:write": "node scripts/write-manifest-schema-digests.mjs",
+    "manifest-schema:check": "node scripts/write-manifest-schema-digests.mjs --check",
     "hf:check": "hyperframes check",
     "hf:keyframes": "hyperframes keyframes",
     "hf:snapshot": "hyperframes snapshot",

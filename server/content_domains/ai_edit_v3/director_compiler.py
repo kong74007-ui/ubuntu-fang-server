@@ -60,11 +60,14 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
         headline=_visible(directive.get("headline"),caption_by_id); highlight=_visible(directive.get("highlight"),caption_by_id)
         if headline["text_kind"]=="ui_label" and highlight["text_kind"]=="ui_label": headline=_visible({"text_kind":"verbatim","source_caption_ids":list(candidate.get("caption_ids",()))},caption_by_id)
         slots=[]
-        for source in [*directive.get("material_bindings",()),*directive.get("material_slot_directives",())]:
+        sources = [*( (source, True) for source in directive.get("material_bindings",()) ), *( (source, False) for source in directive.get("material_slot_directives",()) )]
+        for source, explicit_layout_slot in sources:
             if not isinstance(source,Mapping) or not isinstance(source.get("slot_id"),str): raise ValueError("director_material_slot_invalid")
-            mid=source["slot_id"]; bound=material_by_id.get(str(source.get("material_id")),{})
+            mid=str(source.get("material_id")) if explicit_layout_slot else source["slot_id"]; bound=material_by_id.get(str(source.get("material_id")),{})
             semantic=str(source.get("semantic") or bound.get("semantic") or "source-bound visual")[:240]; purpose=source.get("purpose") or "context"; priority=source.get("priority") or ("required" if source.get("required") else "optional"); ratio=source.get("ratio") or "auto"
-            slot={"id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"start_ms":start,"end_ms":end}; slots.append(slot); requests.append({"request_id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"time_range":{"start_ms":start,"end_ms":end}})
+            slot={"id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"start_ms":start,"end_ms":end}
+            if explicit_layout_slot: slot["layout_slot_id"]=source["slot_id"]
+            slots.append(slot); requests.append({"request_id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"time_range":{"start_ms":start,"end_ms":end}})
         scenes.append({"id":f"scene_{index:02d}","start_ms":start,"end_ms":end,"intent":str(candidate.get("authoritative_text") or "authoritative scene")[:240],"layout_id":layout,"layout_variant":variant,"visual_type":"director_program","headline":headline,"highlight":highlight,"overlay_ids":[item["component_id"] for item in instances],"overlay_instances":instances,"material_slots":slots,"animations":anim,"transition":transition})
         arcs.append({"id":f"arc_{index:02d}","role":_ARC.get(directive.get("narrative_role"),"problem"),"start_ms":start,"end_ms":end,"summary":str(candidate.get("authoritative_text") or "authoritative scene")[:240]})
         for event_index,event in enumerate(directive.get("sound_events",()),1):

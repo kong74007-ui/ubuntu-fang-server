@@ -61,7 +61,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["slot_id", "material_id", "required"],
       "properties": {
-        "slot_id": {"$ref": "#/$defs/identifier"},
+        "slot_id": {"enum": ["primary", "detail", "evidence", "accent", "steps"]},
         "material_id": {"$ref": "#/$defs/identifier"},
         "required": {"type": "boolean"}
       }

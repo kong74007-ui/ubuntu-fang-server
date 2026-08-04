@@ -46,6 +46,7 @@ _SCHEMA_HASHES = MappingProxyType({
 _HISTORICAL_SCHEMA_HASHES = MappingProxyType({
     "edit-plan-2.0.schema.json": frozenset({
         "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
+        "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c",
     }),
     "render-manifest-v1.schema.json": frozenset({
         "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
@@ -743,6 +744,8 @@ def preflight(
     return CapabilityReport(
         items=items,
         runtime_versions=versions,
+        current_schema_hashes=_SCHEMA_HASHES,
+        historical_schema_hashes={name: tuple(sorted(values)) for name, values in _HISTORICAL_SCHEMA_HASHES.items()},
         allows_existing_reads=True,
         accepts_uploads=enabled_and_common and _is_ready(items, ("cos",)),
         accepts_new_jobs=enabled_and_common and _is_ready(items, request),

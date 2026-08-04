@@ -95,6 +95,10 @@ export function validateManifest(document, expected) {
         || JSON.stringify(composition.overlay_ids) !== JSON.stringify(instances.map((item) => item?.component_id))) {
         throw new Error("manifest_component_projection_invalid");
       }
+      const bindings = composition.layout_slot_bindings;
+      if (composition.layout_id === "product_hero" && (!Array.isArray(bindings) || !bindings.some((item) => item?.slot_id === "primary"))) {
+        throw new Error("manifest_layout_required_slot_missing");
+      }
     }
   }
   if (cursor !== document.duration_ms) throw new Error("manifest_composition_timeline_invalid");

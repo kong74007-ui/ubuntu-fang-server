@@ -283,7 +283,7 @@ class SchemaMetaTests(unittest.TestCase):
 
         self.assertEqual(
             digest,
-            "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c",
+            "d1665a6a777702c15175538a49ca73b3418d76d3ca873634513adc9cff03fc87",
         )
         Draft202012Validator(
             load_schema("edit-plan-2.0.schema.json")

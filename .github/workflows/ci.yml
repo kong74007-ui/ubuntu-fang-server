@@ -81,6 +81,10 @@ jobs:
         working-directory: server/ai_edit_v3_renderer
         run: npm test
 
+      - name: 校验 AI Edit V3 renderer manifest schema digests
+        working-directory: server/ai_edit_v3_renderer
+        run: npm run manifest-schema:check
+
       - name: 校验 AI Edit V3 renderer release lock
         working-directory: server/ai_edit_v3_renderer
         run: npm run release:lock:check

@@ -1291,10 +1291,8 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                {"slot_id": "evidence", "asset_id": "evidence_01"},
                 {"slot_id": "primary", "asset_id": "product_01"},
                 {"slot_id": "detail", "asset_id": "context_01"},
-                {"slot_id": "accent", "asset_id": "decoration_01"},
             ],
             _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [
                 {"id": "evidence_01", "purpose": "evidence", "priority": "optional"},
@@ -1303,10 +1301,8 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
                 {"id": "decoration_01", "purpose": "decoration", "priority": "optional"},
             ]}, known),
         )
-        self.assertEqual(
-            [{"slot_id": "evidence", "asset_id": "evidence_01"}],
-            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known),
-        )
+        with self.assertRaisesRegex(ValueError, "scene_layout_required_slot_missing"):
+            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known)
         self.assertEqual(
             [{"slot_id": "evidence", "asset_id": "evidence_01"}],
             _layout_slot_bindings({"layout_id": "speaker_fullscreen", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}]}, known),
@@ -1318,7 +1314,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scene_layout_binding_invalid"):
             _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "product_01", "purpose": "product", "priority": "optional"}]}, known)
         with self.assertRaisesRegex(ValueError, "scene_layout_binding_duplicate"):
-            _layout_slot_bindings({"layout_id": "product_hero", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}, {"id": "context_01", "purpose": "evidence", "priority": "optional"}]}, known)
+            _layout_slot_bindings({"layout_id": "speaker_fullscreen", "material_slots": [{"id": "evidence_01", "purpose": "evidence", "priority": "optional"}, {"id": "context_01", "purpose": "evidence", "priority": "optional"}]}, known)
 
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict

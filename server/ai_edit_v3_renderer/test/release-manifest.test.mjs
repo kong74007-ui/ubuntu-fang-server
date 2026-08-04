@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import {spawn} from "node:child_process";
 import {cp, mkdtemp, mkdir, readFile, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {dirname, join} from "node:path";
+import {fileURLToPath, pathToFileURL} from "node:url";
 import test from "node:test";
 
 import {
@@ -119,3 +121,62 @@ test("release identity covers every allowlisted runtime input", async () => {
   assert.match(baseline.release_tree_sha256, /^[0-9a-f]{64}$/);
   assert.ok(!baseline.release_tree_files.some((item) => item.relative_path === "renderer-release.lock.json"));
 });
+
+
+test("locked release tree is self-contained for v1 and v2 manifest schema validation", async () => {
+  const rendererRoot = fileURLToPath(new URL("..", import.meta.url));
+  const lock = JSON.parse(await readFile(join(rendererRoot, "renderer-release.lock.json"), "utf8"));
+  const releaseRoot = await mkdtemp(join(tmpdir(), "v3-independent-release-"));
+  for (const item of lock.release_tree_files) {
+    const destination = join(releaseRoot, item.relative_path);
+    await mkdir(dirname(destination), {recursive: true});
+    await cp(join(rendererRoot, item.relative_path), destination);
+  }
+
+  const cacheBust = `?independent=${Date.now()}`;
+  const {MANIFEST_SCHEMA_SHA256_BY_VERSION} = await import(`${pathToFileURL(join(releaseRoot, "src", "manifest-schema-digests.mjs")).href}${cacheBust}`);
+  const {validateManifest} = await import(`${pathToFileURL(join(releaseRoot, "src", "validate-manifest.mjs")).href}${cacheBust}`);
+  const base = {
+    registry_sha256: "registry", renderer_environment: {renderer_build_id: "build"},
+    output_spec: {ratio: "9:16", width: 1080, height: 1920, fps_num: 30, fps_den: 1},
+    duration_ms: 4000, master_audio: {path: "media/master.wav"}, source_video: null,
+    compositions: [{id: "scene_1", start_ms: 0, end_ms: 4000}],
+  };
+  const visual = {
+    theme_profile_id: "editorial_clean", design_intent: {density: "balanced", motion_energy: "medium", image_fit: "cover", decoration_intensity: "medium"}, variation_seed: "0123456789abcdef",
+    design_tokens: {
+      "--hf-theme-profile": "editorial_clean", "--hf-bg": "#f7f4ed", "--hf-surface": "#ffffff", "--hf-text": "#17212b", "--hf-accent": "#315b8a",
+      "--hf-font": "\"Noto Sans SC\", sans-serif", "--hf-type-scale": "0.960", "--hf-gap": "28px", "--hf-radius": "26px", "--hf-border": "rgba(49,91,138,.28)",
+      "--hf-shadow": "0 18px 48px rgba(23,33,43,.14)", "--hf-texture": "none", "--hf-density": "balanced", "--hf-motion-distance": "36px", "--hf-image-fit": "cover",
+    },
+  };
+  const expected = {rendererBuildId: "build", registrySha256: "sha256:registry", schemaSha256ByVersion: MANIFEST_SCHEMA_SHA256_BY_VERSION};
+  assert.equal(validateManifest({...base, version: "1.0", schema_sha256: MANIFEST_SCHEMA_SHA256_BY_VERSION["1.0"]}, expected).version, "1.0");
+  assert.equal(validateManifest({...base, ...visual, version: "2.0", schema_sha256: MANIFEST_SCHEMA_SHA256_BY_VERSION["2.0"], compositions: [{...base.compositions[0], overlay_ids: [], overlay_instances: []}]}, expected).version, "2.0");
+});
+
+
+test("manifest schema digest generator checks authoritative schema bytes and rejects stale output", async () => {
+  const rendererRoot = fileURLToPath(new URL("..", import.meta.url));
+  const script = join(rendererRoot, "scripts", "write-manifest-schema-digests.mjs");
+  const current = await runNode(script, ["--check"]);
+  assert.equal(current.code, 0, current.stderr);
+
+  const stale = join(await mkdtemp(join(tmpdir(), "v3-stale-schema-digests-")), "manifest-schema-digests.mjs");
+  await writeFile(stale, "export const MANIFEST_SCHEMA_SHA256_BY_VERSION = {};\n", "utf8");
+  const rejected = await runNode(script, ["--check", "--output", stale]);
+  assert.notEqual(rejected.code, 0);
+  assert.match(rejected.stderr, /manifest_schema_digests_stale/);
+});
+
+
+function runNode(script, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [script, ...args], {stdio: ["ignore", "pipe", "pipe"]});
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("close", (code) => resolve({code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8")}));
+  });
+}

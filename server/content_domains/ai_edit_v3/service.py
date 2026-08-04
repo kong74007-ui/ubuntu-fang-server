@@ -1897,6 +1897,8 @@ class EditV3Service:
             return {
                 "items": {},
                 "runtime_versions": {},
+                "current_schema_hashes": {},
+                "historical_schema_hashes": {},
                 "allows_existing_reads": True,
                 "accepts_uploads": False,
                 "accepts_new_jobs": False,
@@ -1912,6 +1914,8 @@ class EditV3Service:
                 for name, item in report.items.items()
             },
             "runtime_versions": dict(report.runtime_versions),
+            "current_schema_hashes": dict(report.current_schema_hashes),
+            "historical_schema_hashes": {name: list(values) for name, values in report.historical_schema_hashes.items()},
             "allows_existing_reads": report.allows_existing_reads,
             "accepts_uploads": self._accepts_uploads(report),
             "accepts_new_jobs": self._accepts_new_jobs(report),

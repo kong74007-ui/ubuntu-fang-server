@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import server.content_domains.ai_edit_v3.store as store_module
-from server.content_domains.ai_edit_v3.contracts import LeaseClaim
+from server.content_domains.ai_edit_v3.contracts import LeaseClaim, schema_sha256
 from server.content_domains.ai_edit_v3.feature import (
     CapabilityItem,
     CapabilityReport,
@@ -1301,13 +1301,35 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(report.runtime_versions["jsonschema"], "4.26.0")
         self.assertIn("python", report.runtime_versions)
         self.assertIn("sqlite", report.runtime_versions)
+        current = {
+            name: schema_sha256(name)
+            for name in (
+                "director-decision-v1.schema.json",
+                "edit-plan-2.0.schema.json",
+                "render-manifest-v1.schema.json",
+                "render-manifest-v2.schema.json",
+                "quality-verdict-v1.schema.json",
+            )
+        }
+        self.assertEqual(current, dict(report.current_schema_hashes))
+        self.assertEqual(
+            (
+                "1dfc64bdfe8bee1a37d2ceb8eb7d6f52f2c2e3df1f80be9919d42a788ec6627c",
+                "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
+            ),
+            report.historical_schema_hashes["edit-plan-2.0.schema.json"],
+        )
+        self.assertEqual(
+            ("eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",),
+            report.historical_schema_hashes["render-manifest-v1.schema.json"],
+        )
         self.assertEqual(
             report.runtime_versions["edit-plan-2.0.schema.json"],
-            "b96c059fa2e4ef7d91cd48278b474d61a34606f1cbce6963c3b65fa66f7d046c",
+            current["edit-plan-2.0.schema.json"],
         )
         self.assertEqual(
             report.runtime_versions["render-manifest-v1.schema.json"],
-            "eb1f656712ff94bbac31e9d8824d878795110597bca0141814839020f9e2cbc0",
+            current["render-manifest-v1.schema.json"],
         )
         self.assertEqual(
             report.runtime_versions["quality-verdict-v1.schema.json"],

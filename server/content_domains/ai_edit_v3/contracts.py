@@ -1608,6 +1608,14 @@ def validate_render_manifest(
             instances = composition.get("overlay_instances")
             if not isinstance(instances, list) or [item.get("component_id") for item in instances] != composition["overlay_ids"]:
                 _raise("render_overlay_projection_invalid", f"compositions[{index}].overlay_instances", "overlay instance component IDs must exactly project to overlay_ids")
+            layout_bindings = composition.get("layout_slot_bindings")
+            slot_ids = [item.get("slot_id") for item in layout_bindings] if isinstance(layout_bindings, list) else []
+            if composition["layout_id"] == "product_hero" and "primary" not in slot_ids:
+                _raise("render_layout_required_slot_missing", f"compositions[{index}].layout_slot_bindings", "product hero requires a primary layout slot")
+            if len(slot_ids) != len(set(slot_ids)):
+                _raise("render_layout_slot_duplicate", f"compositions[{index}].layout_slot_bindings", "layout slot IDs must be unique")
+            if any(item.get("asset_id") not in composition["asset_ids"] for item in layout_bindings):
+                _raise("render_reference_unknown", f"compositions[{index}].layout_slot_bindings", "layout slot asset is absent from the composition")
         if any(
             animation["target"] not in (set(item["instance_id"] for item in composition["overlay_instances"]) if visual_manifest else composition["overlay_ids"])
             for animation in composition["animations"]

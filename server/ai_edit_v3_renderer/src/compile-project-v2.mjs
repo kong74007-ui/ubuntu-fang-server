@@ -1,6 +1,17 @@
 import {compileProject, compileSourceVideo, sourceSegmentClips} from "./compile-project.mjs";
 import {resolveLayout, resolveLayoutV2} from "./registry/index.mjs";
 
+const SAFE_HOST_BY_PLACEMENT = Object.freeze({
+  title_safe: "title",
+  safe_top: "title",
+  left_panel: "title",
+  right_panel: "title",
+  center: "title",
+  subtitle_safe: "captions",
+  safe_bottom: "captions",
+  lower_third: "captions",
+});
+
 /**
  * V2 binds model-facing instance identifiers to the renderer's stable component
  * identifiers before handing the immutable legacy compiler its projection.
@@ -47,7 +58,7 @@ function resolveV2OrLegacyLayout(layoutId, variantId, ratio) {
   }
 }
 
-function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays, assets, captions, theme, layout}) {
+function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays, overlayEntries, assets, captions, theme, layout}) {
   if (layout.contract.version !== "2.0.0") {
     return {idPrefix: prefix, durationMs, hasVideo: Boolean(manifest.source_video), overlays, scene: composition, assets};
   }
@@ -55,22 +66,23 @@ function buildV2LayoutInput({manifest, composition, prefix, durationMs, overlays
   const slots = layout.contract.id === "speaker_fullscreen"
     ? {speaker: sourceSlot(manifest, composition, prefix), evidence: bindings.get("evidence")}
     : layout.contract.id === "product_hero"
-      ? productSlots(bindings)
+      ? productSlots(bindings, captions)
       : {steps: {items: captions.map(({text}) => text).slice(0, 6)}, accent: bindings.get("accent")};
   return {
-    idPrefix: prefix, durationMs, slots, overlays: routeV2Overlays(overlays, composition.overlay_instances),
+    idPrefix: prefix, durationMs, slots, overlays: routeV2Overlays(overlayEntries, composition.overlay_instances),
     designTokens: {"--hf-accent": theme["--hf-accent"], "--hf-surface": theme["--hf-surface"]},
   };
 }
 
-function routeV2Overlays(overlays, instances) {
+function routeV2Overlays(entries, instances) {
   const hosts = {title: "", captions: ""};
+  const byInstance = new Map((entries ?? []).map((entry) => [entry.instanceId, entry]));
   for (const instance of instances ?? []) {
-    const placement = instance.placement ?? "safe_bottom";
-    const host = placement === "safe_top" ? "title" : placement === "safe_bottom" ? "captions" : null;
+    const host = SAFE_HOST_BY_PLACEMENT[instance.placement ?? "safe_bottom"];
     if (!host) throw new Error("manifest_overlay_placement_invalid");
-    const escaped = instance.component_id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    hosts[host] += [...overlays.matchAll(new RegExp(`<div\\b(?=[^>]*data-overlay-id="${escaped}")[\\s\\S]*?<\\/div>`, "gu"))].map((match) => match[0]).join("");
+    const entry = byInstance.get(instance.instance_id);
+    if (!entry || entry.componentId !== instance.component_id || typeof entry.html !== "string") throw new Error("manifest_component_projection_invalid");
+    hosts[host] += entry.html;
   }
   return hosts;
 }
@@ -102,11 +114,11 @@ function requiredBinding(bindings, slot) {
   return asset;
 }
 
-function productSlots(bindings) {
+function productSlots(bindings, captions) {
   const primary = requiredBinding(bindings, "primary");
   const detail = bindings.get("detail");
   if (detail?.id === primary.id) throw new Error("layout_slot_identity_invalid");
-  return {primary, detail};
+  return {primary, detail, copy: captions[0] ? {text: captions[0].text} : undefined};
 }
 
 function compileV2Source({manifest, composition, prefix, layout}) {
