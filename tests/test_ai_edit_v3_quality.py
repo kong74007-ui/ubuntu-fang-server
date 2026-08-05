@@ -194,6 +194,134 @@ class BlockingQualityTests(unittest.TestCase):
         self.assertEqual((), report.repairable_ids)
         self.assertFalse(report.can_repair)
 
+    def test_short_safe_area_failure_does_not_enter_unexecutable_repair(self):
+        self.manifest["compositions"] = [
+            {
+                "id": "composition_001", "scene_id": "scene_01",
+                "start_ms": 0, "end_ms": 2000,
+            },
+            {
+                "id": "composition_002", "scene_id": "scene_02",
+                "start_ms": 2000, "end_ms": 4000,
+            },
+        ]
+        safe_area = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "safe_area_and_text_visibility"
+        )
+        safe_area.update({"result": "fail", "repairable": True})
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertFalse(report.can_repair)
+        self.assertEqual((), report.repair_directives)
+
+    def test_repair_directive_maps_executable_face_fallback_to_exact_scene(self):
+        self.manifest["source_video"] = {"path": "media/source.mp4", "silent": True}
+        self.manifest["assets"][0]["kind"] = "image"
+        self.manifest["captions"] = [
+            {"id": "caption_01", "text": "One", "start_ms": 0, "end_ms": 2000},
+            {"id": "caption_02", "text": "Two", "start_ms": 2000, "end_ms": 4000},
+        ]
+        self.manifest["compositions"] = [
+            {
+                "id": "composition_001", "scene_id": "scene_01",
+                "start_ms": 0, "end_ms": 2000,
+                "layout_id": "product_hero", "asset_ids": ["asset_1"],
+            },
+            {
+                "id": "composition_002", "scene_id": "scene_02",
+                "start_ms": 2000, "end_ms": 4000,
+                "layout_id": "speaker_fullscreen", "asset_ids": [],
+            },
+        ]
+        face = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "face_product_obstruction"
+        )
+        face.update({"result": "fail", "repairable": True})
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertTrue(report.can_repair)
+        self.assertEqual(({
+            "scene_id": "scene_01",
+            "reason_code": "face_product_obstruction",
+            "allowed_action": "speaker_fallback",
+        },), tuple(dict(item) for item in report.repair_directives))
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_repair_instruction,
+            _repair_render_manifest,
+        )
+        instruction = _freeze_repair_instruction(
+            self.manifest,
+            report.repair_directives,
+        )
+        repaired = _repair_render_manifest(self.manifest, instruction)
+        self.assertEqual("speaker_fullscreen", repaired["compositions"][0]["layout_id"])
+
+    def test_audio_only_scene_cannot_enter_speaker_fallback_repair(self):
+        self.manifest["compositions"] = [{
+            "id": "composition_001", "scene_id": "scene_01",
+            "start_ms": 0, "end_ms": 4000,
+            "layout_id": "product_hero", "asset_ids": ["asset_1"],
+        }]
+        face = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "face_product_obstruction"
+        )
+        face.update({"result": "fail", "repairable": True})
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.can_repair)
+        self.assertEqual((), report.repair_directives)
+
+    def test_repair_is_forbidden_when_failure_cannot_map_to_a_scene(self):
+        safe_area = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "safe_area_and_text_visibility"
+        )
+        safe_area.update({"result": "fail", "repairable": True})
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.can_repair)
+        self.assertEqual((), report.repair_directives)
+
 
 if __name__ == "__main__":
     unittest.main()

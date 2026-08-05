@@ -1233,7 +1233,6 @@ class DeterministicVisualInspector:
                 if not layout_shows_speaker(layout_id):
                     hidden_speaker_ms += scene_duration
             scene_flow_valid = scene_flow_valid and expected_start == duration
-            material_binding_valid = material_binding_valid and used_assets == known_assets
             caption_ids = []
             caption_valid = True
             caption_scene_binding_valid = scene_flow_valid
@@ -1597,7 +1596,7 @@ def _composition_split_boundaries(
 
 def _repair_render_manifest(
     manifest: Mapping[str, Any],
-    repairable_ids: set[str] | frozenset[str],
+    repairable_ids: set[str] | frozenset[str] | Mapping[str, Any],
 ) -> dict[str, Any]:
     """Apply bounded structural repairs instead of rerendering identical input."""
 
@@ -1605,13 +1604,18 @@ def _repair_render_manifest(
     compositions = repaired.get("compositions")
     if not isinstance(compositions, list) or not compositions:
         raise ValueError("repair_manifest_invalid")
-    requested = frozenset(repairable_ids)
     supported_ids = {
         "safe_area_and_text_visibility",
         "face_product_obstruction",
         "material_semantic_identity",
         "opening_hook_visual_consistency",
     }
+    strict_targets: dict[str, frozenset[str]] | None = None
+    if isinstance(repairable_ids, Mapping):
+        strict_targets = _validate_repair_instruction(manifest, repairable_ids)
+        requested = frozenset(strict_targets)
+    else:
+        requested = frozenset(repairable_ids)
     if requested - supported_ids:
         raise ValueError("repair_manifest_unsupported")
     captions = list(repaired.get("captions") or ())
@@ -1635,6 +1639,13 @@ def _repair_render_manifest(
             if not isinstance(raw, Mapping):
                 raise ValueError("repair_manifest_invalid")
             composition = copy.deepcopy(dict(raw))
+            if (
+                strict_targets is not None
+                and str(composition.get("scene_id") or "")
+                not in strict_targets.get("safe_area_and_text_visibility", frozenset())
+            ):
+                bounded.append(composition)
+                continue
             start = composition.get("start_ms")
             end = composition.get("end_ms")
             if (
@@ -1678,31 +1689,47 @@ def _repair_render_manifest(
     if (
         "opening_hook_visual_consistency" in requested
         and isinstance(repaired.get("source_video"), Mapping)
+        and (
+            strict_targets is None
+            or str(repaired["compositions"][0].get("scene_id") or "")
+            in strict_targets.get("opening_hook_visual_consistency", frozenset())
+        )
         and not str(repaired["compositions"][0].get("layout_id", "")).startswith("speaker_")
     ):
-        repaired["compositions"][0]["layout_id"] = "speaker_fullscreen"
-        repaired["compositions"][0]["asset_ids"] = []
+        _apply_speaker_fallback(repaired["compositions"][0])
 
     if "face_product_obstruction" in requested:
         for composition in repaired["compositions"]:
+            if (
+                strict_targets is not None
+                and str(composition.get("scene_id") or "")
+                not in strict_targets.get("face_product_obstruction", frozenset())
+            ):
+                continue
             if composition.get("layout_id") in {"product_hero", "number_proof"}:
-                composition["layout_id"] = "speaker_fullscreen"
-                composition["asset_ids"] = []
+                _apply_speaker_fallback(composition)
 
     if (
         "material_semantic_identity" in requested
         and isinstance(repaired.get("source_video"), Mapping)
     ):
         for composition in repaired["compositions"]:
-            if (
-                composition.get("layout_id") in _LAYOUTS_REQUIRING_MATERIALS
-                and not composition.get("asset_ids")
-            ):
-                composition["layout_id"] = "speaker_fullscreen"
-                composition["asset_ids"] = []
+            if strict_targets is not None:
+                targeted = str(composition.get("scene_id") or "") in strict_targets.get(
+                    "material_semantic_identity", frozenset()
+                )
+            else:
+                targeted = (
+                    composition.get("layout_id") in _LAYOUTS_REQUIRING_MATERIALS
+                    and not composition.get("asset_ids")
+                )
+            if targeted:
+                _apply_speaker_fallback(composition)
 
     if repaired == dict(manifest):
         raise ValueError("repair_manifest_unchanged")
+    if strict_targets is not None:
+        _assert_repair_scope(manifest, repaired, strict_targets)
     verdict = DeterministicVisualInspector().inspect(
         manifest=repaired,
         render_report={},
@@ -1722,6 +1749,176 @@ def _repair_render_manifest(
     if any(results.get(check_id) != "pass" for check_id in required_preflight):
         raise ValueError("repair_manifest_unresolved")
     return repaired
+
+
+def _apply_speaker_fallback(composition: dict[str, Any]) -> None:
+    composition["layout_id"] = "speaker_fullscreen"
+    composition["asset_ids"] = []
+    if "layout_variant" in composition:
+        composition["layout_variant"] = "clean_center"
+    if "layout_slot_bindings" in composition:
+        composition["layout_slot_bindings"] = []
+
+
+_REPAIR_ACTION_BY_REASON = {
+    "safe_area_and_text_visibility": "split_scene",
+    "face_product_obstruction": "speaker_fallback",
+    "material_semantic_identity": "speaker_fallback",
+    "opening_hook_visual_consistency": "speaker_fallback",
+}
+_REPAIR_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _freeze_repair_instruction(
+    manifest: Mapping[str, Any],
+    directives: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    compositions = manifest.get("compositions")
+    if not isinstance(compositions, list):
+        raise ValueError("repair_instruction_invalid")
+    scene_id_values = [
+        item.get("scene_id") for item in compositions if isinstance(item, Mapping)
+    ]
+    if (
+        len(scene_id_values) != len(compositions)
+        or any(
+            not isinstance(scene_id, str) or _REPAIR_ID.fullmatch(scene_id) is None
+            for scene_id in scene_id_values
+        )
+        or len(set(scene_id_values)) != len(scene_id_values)
+    ):
+        raise ValueError("repair_instruction_invalid")
+    scene_ids = set(scene_id_values)
+    normalized: list[dict[str, str]] = []
+    identities: set[tuple[str, str]] = set()
+    if not isinstance(directives, (list, tuple)) or not directives:
+        raise ValueError("repair_instruction_invalid")
+    for item in directives:
+        if not isinstance(item, Mapping) or set(item) != {
+            "scene_id", "reason_code", "allowed_action"
+        }:
+            raise ValueError("repair_instruction_invalid")
+        scene_id = item.get("scene_id")
+        reason_code = item.get("reason_code")
+        allowed_action = item.get("allowed_action")
+        if (
+            not isinstance(scene_id, str) or _REPAIR_ID.fullmatch(scene_id) is None
+            or scene_id not in scene_ids
+            or not isinstance(reason_code, str)
+            or _REPAIR_ACTION_BY_REASON.get(reason_code) != allowed_action
+            or (scene_id, reason_code) in identities
+        ):
+            raise ValueError("repair_instruction_invalid")
+        identities.add((scene_id, reason_code))
+        normalized.append({
+            "scene_id": scene_id,
+            "reason_code": reason_code,
+            "allowed_action": allowed_action,
+        })
+    body = {
+        "version": "1.0",
+        "source_manifest_sha256": hashlib.sha256(canonical_json(manifest)).hexdigest(),
+        "directives": sorted(
+            normalized,
+            key=lambda value: (value["scene_id"], value["reason_code"]),
+        ),
+    }
+    return {
+        **body,
+        "instruction_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+    }
+
+
+def _validate_repair_instruction(
+    manifest: Mapping[str, Any],
+    instruction: Mapping[str, Any],
+) -> dict[str, frozenset[str]]:
+    if set(instruction) != {
+        "version", "source_manifest_sha256", "directives", "instruction_sha256"
+    }:
+        raise ValueError("repair_instruction_invalid")
+    body = {key: copy.deepcopy(instruction[key]) for key in (
+        "version", "source_manifest_sha256", "directives"
+    )}
+    actual_sha = hashlib.sha256(canonical_json(body)).hexdigest()
+    if instruction.get("instruction_sha256") != actual_sha:
+        raise ValueError("repair_instruction_sha_invalid")
+    if (
+        instruction.get("version") != "1.0"
+        or instruction.get("source_manifest_sha256")
+        != hashlib.sha256(canonical_json(manifest)).hexdigest()
+    ):
+        raise ValueError("repair_instruction_source_invalid")
+    frozen = _freeze_repair_instruction(manifest, body["directives"])
+    if frozen != dict(instruction):
+        raise ValueError("repair_instruction_invalid")
+    targets: dict[str, set[str]] = {}
+    for item in body["directives"]:
+        targets.setdefault(item["reason_code"], set()).add(item["scene_id"])
+    return {reason: frozenset(scene_ids) for reason, scene_ids in targets.items()}
+
+
+def _assert_repair_scope(
+    original: Mapping[str, Any],
+    repaired: Mapping[str, Any],
+    targets: Mapping[str, frozenset[str]],
+) -> None:
+    if {
+        key: value for key, value in original.items() if key != "compositions"
+    } != {
+        key: value for key, value in repaired.items() if key != "compositions"
+    }:
+        raise ValueError("repair_manifest_scope_invalid")
+    target_scene_ids = frozenset(
+        scene_id for scene_ids in targets.values() for scene_id in scene_ids
+    )
+    original_non_targets = [
+        item for item in original.get("compositions", ())
+        if isinstance(item, Mapping) and item.get("scene_id") not in target_scene_ids
+    ]
+    repaired_non_targets = [
+        item for item in repaired.get("compositions", ())
+        if isinstance(item, Mapping) and item.get("scene_id") not in target_scene_ids
+    ]
+    if original_non_targets != repaired_non_targets:
+        raise ValueError("repair_manifest_scope_invalid")
+
+
+def _quality_repair_payload(
+    manifest: Mapping[str, Any],
+    quality: Any,
+) -> dict[str, Any]:
+    if getattr(quality, "can_repair", False) is not True:
+        return {
+            "can_repair": False,
+            "repair_instruction": None,
+            "repair_instruction_sha256": None,
+        }
+    instruction = _freeze_repair_instruction(
+        manifest,
+        getattr(quality, "repair_directives", ()),
+    )
+    return {
+        "can_repair": True,
+        "repair_instruction": instruction,
+        "repair_instruction_sha256": instruction["instruction_sha256"],
+    }
+
+
+def _repair_instruction_from_quality(
+    manifest: Mapping[str, Any],
+    quality_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    instruction = quality_payload.get("repair_instruction")
+    if (
+        quality_payload.get("can_repair") is not True
+        or not isinstance(instruction, Mapping)
+        or quality_payload.get("repair_instruction_sha256")
+        != instruction.get("instruction_sha256")
+    ):
+        raise ValueError("repair_quality_invalid")
+    _validate_repair_instruction(manifest, instruction)
+    return copy.deepcopy(dict(instruction))
 
 
 class ProductionStageCoordinator:
@@ -2413,14 +2610,13 @@ class ProductionStageCoordinator:
                 })
             if attempt > 1:
                 previous_quality = _json(root / f"quality-{attempt - 1}.json")
-                repairable_ids = previous_quality.get("repairable_ids")
-                if not isinstance(repairable_ids, list) or not all(
-                    isinstance(item, str) for item in repairable_ids
-                ):
-                    raise ValueError("repair_quality_invalid")
+                repair_instruction = _repair_instruction_from_quality(
+                    manifest,
+                    previous_quality,
+                )
                 manifest = _repair_render_manifest(
                     manifest,
-                    set(repairable_ids),
+                    repair_instruction,
                 )
             frozen = freeze_render_manifest(
                 manifest, input_root / "render-manifest.json", sandbox_root=input_root,
@@ -2477,7 +2673,8 @@ class ProductionStageCoordinator:
                 snapshot_inputs=snapshot_inputs,
                 deadline_at=context.deadline_at,
             )
-            payload = {"passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "can_repair": quality.can_repair, "report_sha256": quality.report_sha256, "final_relpath": final_path.relative_to(root).as_posix(), "final": {"relative_path": mux.relative_path, "sha256": mux.sha256, "duration_ms": mux.duration_ms, "video_codec": mux.video_codec, "audio_codec": mux.audio_codec, "width": mux.width, "height": mux.height, "fps_num": mux.fps_num, "fps_den": mux.fps_den, "sample_rate": mux.sample_rate, "channels": mux.channels, "audit": dict(mux.audit)}}
+            repair_payload = _quality_repair_payload(manifest, quality)
+            payload = {"passed": quality.passed, "repairable_ids": list(quality.repairable_ids), **repair_payload, "report_sha256": quality.report_sha256, "final_relpath": final_path.relative_to(root).as_posix(), "final": {"relative_path": mux.relative_path, "sha256": mux.sha256, "duration_ms": mux.duration_ms, "video_codec": mux.video_codec, "audio_codec": mux.audio_codec, "width": mux.width, "height": mux.height, "fps_num": mux.fps_num, "fps_den": mux.fps_den, "sample_rate": mux.sample_rate, "channels": mux.channels, "audit": dict(mux.audit)}}
             digest = _write_json(root / f"quality-{attempt}.json", payload)
             if quality.passed:
                 next_state = "staging_delivery"
@@ -2485,7 +2682,7 @@ class ProductionStageCoordinator:
                 next_state = "repair_planning"
             else:
                 next_state = "failed"
-            return StageOutcome(next_state, {"quality_sha256": digest, "passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "can_repair": quality.can_repair}, input_sha)
+            return StageOutcome(next_state, {"quality_sha256": digest, "passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "can_repair": quality.can_repair, "repair_instruction_sha256": repair_payload["repair_instruction_sha256"]}, input_sha)
         if name == "staging_delivery":
             attempt = self._render_attempt(job)
             quality = _json(root / f"quality-{attempt}.json")

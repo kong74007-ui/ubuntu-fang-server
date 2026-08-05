@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, Sequence
 
 from .contracts import ContractError, validate_quality_verdict
+from .director_candidates import _scene_duration_budget
 from .media import FinalMux
 
 
@@ -29,6 +30,12 @@ _BLOCKING = MappingProxyType({
 _REPAIRABLE = frozenset({
     "safe_area_and_text_visibility", "face_product_obstruction",
     "material_semantic_identity", "opening_hook_visual_consistency",
+})
+_REPAIR_ACTIONS = MappingProxyType({
+    "safe_area_and_text_visibility": "split_scene",
+    "face_product_obstruction": "speaker_fallback",
+    "material_semantic_identity": "speaker_fallback",
+    "opening_hook_visual_consistency": "speaker_fallback",
 })
 
 
@@ -76,6 +83,7 @@ class QualityReport:
     findings: tuple[QualityFinding, ...]
     repairable_ids: tuple[str, ...]
     can_repair: bool
+    repair_directives: tuple[Mapping[str, str], ...]
     report_sha256: str
 
 
@@ -239,6 +247,114 @@ def _assert_snapshot_files_unchanged(values: Sequence[Mapping[str, Any]]) -> Non
             raise ValueError("quality_snapshot_evidence_changed")
 
 
+def _derive_repair_directives(
+    manifest: Mapping[str, Any],
+    failures: Sequence[QualityFinding],
+) -> tuple[Mapping[str, str], ...] | None:
+    compositions = manifest.get("compositions")
+    duration_ms = manifest.get("duration_ms")
+    if not isinstance(compositions, list) or not compositions:
+        return None
+    scenes: list[tuple[str, int, int]] = []
+    scene_by_id: dict[str, Mapping[str, Any]] = {}
+    scene_ids: set[str] = set()
+    for item in compositions:
+        if not isinstance(item, Mapping):
+            return None
+        scene_id = item.get("scene_id")
+        start_ms = item.get("start_ms")
+        end_ms = item.get("end_ms")
+        if (
+            not isinstance(scene_id, str) or not scene_id or scene_id in scene_ids
+            or isinstance(start_ms, bool) or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool) or not isinstance(end_ms, int)
+            or not 0 <= start_ms < end_ms
+        ):
+            return None
+        scene_ids.add(scene_id)
+        scenes.append((scene_id, start_ms, end_ms))
+        scene_by_id[scene_id] = item
+    try:
+        scene_budget_ms = _scene_duration_budget(
+            manifest.get("captions"),
+            duration_ms=duration_ms,
+        )
+    except (TypeError, ValueError):
+        return None
+    directives: set[tuple[str, str, str]] = set()
+    for failure in failures:
+        action = _REPAIR_ACTIONS.get(failure.check_id)
+        if not isinstance(action, str) or not failure.evidence:
+            return None
+        matched_failure = False
+        for evidence in failure.evidence:
+            timestamp_ms = evidence.get("timestamp_ms")
+            if isinstance(timestamp_ms, bool) or not isinstance(timestamp_ms, int):
+                return None
+            matches = [
+                scene_id for scene_id, start_ms, end_ms in scenes
+                if start_ms <= timestamp_ms < end_ms
+                or timestamp_ms == duration_ms == end_ms
+            ]
+            if len(matches) != 1:
+                return None
+            scene = scene_by_id[matches[0]]
+            if not _repair_action_executable(
+                manifest,
+                scene,
+                failure.check_id,
+                scene_budget_ms,
+                first_scene_id=scenes[0][0],
+            ):
+                return None
+            directives.add((matches[0], failure.check_id, action))
+            matched_failure = True
+        if not matched_failure:
+            return None
+    return tuple(
+        MappingProxyType({
+            "scene_id": scene_id,
+            "reason_code": reason_code,
+            "allowed_action": action,
+        })
+        for scene_id, reason_code, action in sorted(directives)
+    )
+
+
+def _repair_action_executable(
+    manifest: Mapping[str, Any],
+    scene: Mapping[str, Any],
+    reason_code: str,
+    scene_budget_ms: int,
+    *,
+    first_scene_id: str,
+) -> bool:
+    if reason_code == "safe_area_and_text_visibility":
+        return int(scene["end_ms"]) - int(scene["start_ms"]) > scene_budget_ms
+    if not isinstance(manifest.get("source_video"), Mapping):
+        return False
+    layout_id = scene.get("layout_id")
+    if reason_code == "face_product_obstruction":
+        return layout_id in {"product_hero", "number_proof"}
+    if reason_code == "opening_hook_visual_consistency":
+        return (
+            scene.get("scene_id") == first_scene_id
+            and isinstance(layout_id, str)
+            and not layout_id.startswith("speaker_")
+        )
+    if reason_code == "material_semantic_identity":
+        return (
+            layout_id != "speaker_fullscreen"
+            or bool(scene.get("asset_ids"))
+            or bool(scene.get("layout_slot_bindings"))
+            or (
+                "layout_variant" in scene
+                and scene.get("layout_variant") != "clean_center"
+            )
+        )
+    return False
+
+
 def run_blocking_quality(
     final_mux: FinalMux,
     manifest: Mapping[str, Any],
@@ -306,14 +422,20 @@ def run_blocking_quality(
     blocking_failures = tuple(
         item for item in frozen if item.blocking and item.status != "pass"
     )
-    can_repair = bool(blocking_failures) and all(
+    structurally_repairable = bool(blocking_failures) and all(
         item.status == "fail" and item.repairable for item in blocking_failures
     )
+    repair_directives = (
+        _derive_repair_directives(manifest, blocking_failures)
+        if structurally_repairable else None
+    )
+    can_repair = bool(repair_directives)
     return QualityReport(
         passed,
         frozen,
         repairable_ids,
         can_repair,
+        repair_directives or (),
         hashlib.sha256(_canonical_findings(frozen)).hexdigest(),
     )
 

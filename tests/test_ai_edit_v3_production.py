@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import os
@@ -1303,6 +1304,197 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual("speaker_fullscreen", repaired["compositions"][1]["layout_id"])
         self.assertEqual([], repaired["compositions"][1]["asset_ids"])
         self.assertEqual("pass", checks["material_semantic_identity"]["result"])
+
+    def test_frozen_repair_instruction_changes_only_the_target_scene(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_repair_instruction,
+            _repair_render_manifest,
+        )
+
+        manifest = {
+            "duration_ms": 12000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [
+                {
+                    "id": "composition_001", "scene_id": "scene_01",
+                    "start_ms": 0, "end_ms": 6000,
+                    "layout_id": "speaker_fullscreen", "asset_ids": ["material_01"],
+                },
+                {
+                    "id": "composition_002", "scene_id": "scene_02",
+                    "start_ms": 6000, "end_ms": 12000,
+                    "layout_id": "product_hero", "asset_ids": ["material_01"],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 6000, "text": "One"},
+                {"id": "caption_002", "start_ms": 6000, "end_ms": 12000, "text": "Two"},
+            ],
+            "renderer_environment": {"renderer_build_id": "sha256:" + "1" * 64},
+            "variation_seed": "0123456789abcdef",
+        }
+        instruction = _freeze_repair_instruction(manifest, ({
+            "scene_id": "scene_02",
+            "reason_code": "material_semantic_identity",
+            "allowed_action": "speaker_fallback",
+        },))
+
+        repaired = _repair_render_manifest(manifest, instruction)
+
+        self.assertRegex(instruction["instruction_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(manifest["compositions"][0], repaired["compositions"][0])
+        self.assertEqual("speaker_fullscreen", repaired["compositions"][1]["layout_id"])
+        self.assertEqual([], repaired["compositions"][1]["asset_ids"])
+        for protected in (
+            "duration_ms", "source_video", "assets", "captions",
+            "renderer_environment", "variation_seed",
+        ):
+            self.assertEqual(manifest[protected], repaired[protected], protected)
+
+    def test_repair_instruction_rejects_tampered_sha_unknown_scene_or_action(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_repair_instruction,
+            _repair_render_manifest,
+        )
+
+        manifest = {
+            "duration_ms": 6000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [{
+                "id": "composition_001", "scene_id": "scene_01",
+                "start_ms": 0, "end_ms": 6000,
+                "layout_id": "speaker_fullscreen", "asset_ids": [],
+            }],
+            "captions": [{
+                "id": "caption_001", "start_ms": 0, "end_ms": 6000,
+                "text": "One",
+            }],
+        }
+        valid = _freeze_repair_instruction(manifest, ({
+            "scene_id": "scene_01",
+            "reason_code": "face_product_obstruction",
+            "allowed_action": "speaker_fallback",
+        },))
+        tampered = copy.deepcopy(valid)
+        tampered["directives"][0]["scene_id"] = "scene_02"
+        with self.assertRaisesRegex(ValueError, "repair_instruction_sha_invalid"):
+            _repair_render_manifest(manifest, tampered)
+
+        for directive in (
+            {"scene_id": "scene_02", "reason_code": "face_product_obstruction", "allowed_action": "speaker_fallback"},
+            {"scene_id": "scene_01", "reason_code": "face_product_obstruction", "allowed_action": "https://evil.invalid"},
+        ):
+            with self.subTest(directive=directive):
+                with self.assertRaisesRegex(ValueError, "repair_instruction_invalid"):
+                    _freeze_repair_instruction(manifest, (directive,))
+
+    def test_quality_repair_payload_persists_and_reloads_only_frozen_instruction(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _quality_repair_payload,
+            _repair_instruction_from_quality,
+        )
+
+        manifest = {
+            "duration_ms": 6000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [{
+                "id": "composition_001", "scene_id": "scene_01",
+                "start_ms": 0, "end_ms": 6000,
+                "layout_id": "product_hero", "asset_ids": [],
+            }],
+            "captions": [{
+                "id": "caption_001", "start_ms": 0, "end_ms": 6000,
+                "text": "One",
+            }],
+        }
+        quality = SimpleNamespace(
+            can_repair=True,
+            repair_directives=({
+                "scene_id": "scene_01",
+                "reason_code": "face_product_obstruction",
+                "allowed_action": "speaker_fallback",
+            },),
+        )
+
+        payload = _quality_repair_payload(manifest, quality)
+        loaded = _repair_instruction_from_quality(manifest, payload)
+
+        self.assertEqual(payload["repair_instruction_sha256"], loaded["instruction_sha256"])
+        self.assertEqual("scene_01", loaded["directives"][0]["scene_id"])
+        with self.assertRaisesRegex(ValueError, "repair_quality_invalid"):
+            _repair_instruction_from_quality(manifest, {
+                "can_repair": True,
+                "repairable_ids": ["face_product_obstruction"],
+            })
+
+    def test_repair_instruction_rejects_ambiguous_duplicate_scene_identity(self):
+        from server.content_domains.ai_edit_v3.production import _freeze_repair_instruction
+
+        manifest = {
+            "duration_ms": 6000,
+            "compositions": [
+                {"id": "composition_001", "scene_id": "scene_01", "start_ms": 0, "end_ms": 3000},
+                {"id": "composition_002", "scene_id": "scene_01", "start_ms": 3000, "end_ms": 6000},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "repair_instruction_invalid"):
+            _freeze_repair_instruction(manifest, ({
+                "scene_id": "scene_01",
+                "reason_code": "face_product_obstruction",
+                "allowed_action": "speaker_fallback",
+            },))
+
+    def test_v2_speaker_fallback_clears_slot_bindings_and_refreezes_with_orphan_asset(self):
+        from server.content_domains.ai_edit_v3.contracts import freeze_render_manifest
+        from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_repair_instruction,
+            _repair_render_manifest,
+        )
+
+        repository = Path(__file__).resolve().parents[1]
+        manifest = json.loads((
+            repository / "tests/fixtures/ai_edit_v3/valid-render-manifest-v2.json"
+        ).read_text(encoding="utf-8"))
+        scene = manifest["compositions"][0]
+        scene.update({
+            "layout_id": "product_hero",
+            "layout_variant": "center_pedestal",
+            "asset_ids": ["asset_01"],
+            "layout_slot_bindings": [{"slot_id": "primary", "asset_id": "asset_01"}],
+        })
+        instruction = _freeze_repair_instruction(manifest, ({
+            "scene_id": "scene_01",
+            "reason_code": "face_product_obstruction",
+            "allowed_action": "speaker_fallback",
+        },))
+
+        repaired = _repair_render_manifest(manifest, instruction)
+
+        self.assertEqual("speaker_fullscreen", repaired["compositions"][0]["layout_id"])
+        self.assertEqual("clean_center", repaired["compositions"][0]["layout_variant"])
+        self.assertEqual([], repaired["compositions"][0]["asset_ids"])
+        self.assertEqual([], repaired["compositions"][0]["layout_slot_bindings"])
+        self.assertEqual(manifest["assets"], repaired["assets"])
+        with tempfile.TemporaryDirectory() as folder:
+            sandbox = Path(folder)
+            media = sandbox / "media"
+            media.mkdir()
+            (media / "source.mp4").write_bytes(b"video")
+            (media / "master.wav").write_bytes(b"audio")
+            (media / "image.png").write_bytes(b"image")
+            frozen = freeze_render_manifest(
+                repaired,
+                sandbox / "render-manifest.json",
+                sandbox_root=sandbox,
+                overlay_placement_catalog=load_overlay_placement_catalog(
+                    repository / "server/ai_edit_v3_renderer"
+                ),
+            )
+        self.assertRegex(frozen.sha256, r"^[0-9a-f]{64}$")
 
     def test_repair_manifest_changes_the_failed_structure_and_passes_bounded_checks(self):
         from server.content_domains.ai_edit_v3.production import (
