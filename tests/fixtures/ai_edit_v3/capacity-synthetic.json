@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "profile": "parallel-5",
+  "host": {
+    "vcpu": 8,
+    "ram_gib": 16,
+    "temp_gib": 80,
+    "pipeline_concurrency": 5,
+    "render_slots": 2
+  },
+  "expected_status": "ready",
+  "measured": {
+    "numerator": 5,
+    "denominator": 5
+  },
+  "tasks": [
+    {"queue_wait_ms": 1000, "end_to_end_ms": 900000, "stage_ms": {"director": 10000, "render": 200000}, "cpu_peak_percent": 61, "ram_peak_mib": 2100, "disk_peak_mib": 3100, "render_slot_occupancy": 2, "backpressure_events": 0, "timeout_events": 0, "sandbox_limit_events": 0, "crash_count": 0, "cross_lineage_reads": 0, "duplicate_calls": 0, "billing_corruptions": 0},
+    {"queue_wait_ms": 2000, "end_to_end_ms": 1050000, "stage_ms": {"director": 11000, "render": 220000}, "cpu_peak_percent": 63, "ram_peak_mib": 2200, "disk_peak_mib": 3200, "render_slot_occupancy": 2, "backpressure_events": 1, "timeout_events": 0, "sandbox_limit_events": 0, "crash_count": 0, "cross_lineage_reads": 0, "duplicate_calls": 0, "billing_corruptions": 0},
+    {"queue_wait_ms": 3000, "end_to_end_ms": 1200000, "stage_ms": {"director": 12000, "render": 240000}, "cpu_peak_percent": 65, "ram_peak_mib": 2300, "disk_peak_mib": 3300, "render_slot_occupancy": 2, "backpressure_events": 0, "timeout_events": 0, "sandbox_limit_events": 0, "crash_count": 0, "cross_lineage_reads": 0, "duplicate_calls": 0, "billing_corruptions": 0},
+    {"queue_wait_ms": 4000, "end_to_end_ms": 1350000, "stage_ms": {"director": 13000, "render": 260000}, "cpu_peak_percent": 67, "ram_peak_mib": 2400, "disk_peak_mib": 3400, "render_slot_occupancy": 2, "backpressure_events": 1, "timeout_events": 0, "sandbox_limit_events": 0, "crash_count": 0, "cross_lineage_reads": 0, "duplicate_calls": 0, "billing_corruptions": 0},
+    {"queue_wait_ms": 5000, "end_to_end_ms": 1500000, "stage_ms": {"director": 14000, "render": 280000}, "cpu_peak_percent": 69, "ram_peak_mib": 2500, "disk_peak_mib": 3500, "render_slot_occupancy": 2, "backpressure_events": 0, "timeout_events": 0, "sandbox_limit_events": 0, "crash_count": 0, "cross_lineage_reads": 0, "duplicate_calls": 0, "billing_corruptions": 0}
+  ]
+}
