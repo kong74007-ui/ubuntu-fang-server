@@ -1,0 +1,524 @@
+{
+  "version": "3.1",
+  "authorization_ref": "acceptance-approved-corpus-v1",
+  "cases": [
+    {
+      "case_id": "case_01",
+      "input_type": "platform_talking_head",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "talking_head_kind": "platform_avatar",
+      "subject_alias": "speaker_heygen_a",
+      "background_alias": "background_neutral_room_a",
+      "content_category": "commercial",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_01/source",
+        "sha256": "1fc70f5b80ec7f61d96099386c383e964d9eba1deb25dd8b9a4c741aacc5259d",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 123927,
+        "owner_alias": "acceptance_owner_a",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_02",
+      "input_type": "platform_talking_head",
+      "creation_mode": "style_prompt",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": "冷静专业的商业诊断，信息密度适中",
+      "talking_head_kind": "platform_avatar",
+      "subject_alias": "speaker_close_female_a",
+      "background_alias": "background_indoor_closeup_a",
+      "content_category": "knowledge",
+      "risk_tags": [
+        "complete_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_02/source",
+        "sha256": "c7b7e6b3434ef6e81e00780ad9001fb112a5dd76080de7ddfa514fa69b97b1b9",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 28652,
+        "owner_alias": "acceptance_owner_a",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": [
+        {
+          "alias": "bindings/case_02/material_01",
+          "sha256": "592f448c973be52701ef89ebcd04142550c842a24a4815c370bae6f80463bff9",
+          "media_type": "image/jpeg",
+          "intrinsic_ratio": "16:9",
+          "semantic_status": "matched",
+          "duration_ms": 0,
+          "owner_alias": "acceptance_owner_a",
+          "authorization_ref": "acceptance-approved-corpus-v1"
+        }
+      ]
+    },
+    {
+      "case_id": "case_03",
+      "input_type": "platform_talking_head",
+      "creation_mode": "template_reference",
+      "ratio": "9:16",
+      "template_id": "commercial-diagnostic-portrait-v1",
+      "style_prompt": null,
+      "talking_head_kind": "platform_avatar",
+      "subject_alias": "speaker_female_koubo_a",
+      "background_alias": "background_studio_portrait_a",
+      "content_category": "product",
+      "risk_tags": [
+        "incomplete_images",
+        "unrelated_person_material"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_03/source",
+        "sha256": "a198c64c157280c33c50cf36303d8f15e4d2e45c1ddf363787912bf408160717",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 55520,
+        "owner_alias": "acceptance_owner_a",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": [
+        {
+          "alias": "bindings/case_03/material_01",
+          "sha256": "c45da263ea8c219cd15864fdb5348f1b43e4286c63783854b4ca7c139978f978",
+          "media_type": "image/jpeg",
+          "intrinsic_ratio": "9:16",
+          "semantic_status": "partial",
+          "contains_person": true,
+          "person_role": "unrelated_person",
+          "duration_ms": 0,
+          "owner_alias": "acceptance_owner_a",
+          "authorization_ref": "acceptance-approved-corpus-v1"
+        }
+      ]
+    },
+    {
+      "case_id": "case_04",
+      "input_type": "uploaded_video",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "talking_head_kind": "uploaded_real_person",
+      "subject_alias": "speaker_education_male_a",
+      "background_alias": "background_education_room_a",
+      "content_category": "franchise",
+      "risk_tags": [
+        "ratio_mismatch"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_04/source",
+        "sha256": "50b29f5cfae463145eb1db0a3a31b31cf96d954f5481877ad91e791c20450754",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 78423,
+        "owner_alias": "acceptance_owner_b",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": [
+        {
+          "alias": "bindings/case_04/material_01",
+          "sha256": "1816fbaadd49019d8b039fc2139a44c34dda4ee0538d90bedef0fea25f3bd981",
+          "media_type": "image/jpeg",
+          "intrinsic_ratio": "16:9",
+          "semantic_status": "matched",
+          "contains_person": false,
+          "person_role": "none",
+          "duration_ms": 0,
+          "owner_alias": "acceptance_owner_b",
+          "authorization_ref": "acceptance-approved-corpus-v1"
+        }
+      ]
+    },
+    {
+      "case_id": "case_05",
+      "input_type": "uploaded_video",
+      "creation_mode": "style_prompt",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": "高能招商短片，强调证据和行动号召",
+      "talking_head_kind": "uploaded_real_person",
+      "subject_alias": "speaker_jianghu_male_a",
+      "background_alias": "background_office_dark_a",
+      "content_category": "store",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_05/source",
+        "sha256": "640c1d4c43f4fb57a2080bb3320a263a838074c2e47d1d5d23870c7ad1ceeadf",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 26626,
+        "owner_alias": "acceptance_owner_b",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_06",
+      "input_type": "uploaded_video",
+      "creation_mode": "template_reference",
+      "ratio": "9:16",
+      "template_id": "commercial-diagnostic-portrait-v1",
+      "style_prompt": null,
+      "talking_head_kind": "uploaded_real_person",
+      "subject_alias": "speaker_liu_yunran_a",
+      "background_alias": "background_purple_studio_a",
+      "content_category": "commercial",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_06/source",
+        "sha256": "cf3804883cef485ab87eb607a4029013127f7ee66efc6f42da67bb638e60020a",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 103880,
+        "owner_alias": "acceptance_owner_b",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_07",
+      "input_type": "existing_audio",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "content_category": "knowledge",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_07/source",
+        "sha256": "2ec7ad2b4baf603f892eb6d43110fb24e7923988a55f35f03b6ee13cfaad2ba7",
+        "media_type": "audio/wav",
+        "duration_ms": 26197,
+        "owner_alias": "acceptance_owner_c",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_08",
+      "input_type": "existing_audio",
+      "creation_mode": "style_prompt",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": "温暖可信的知识分享，适量图解",
+      "content_category": "product",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_08/source",
+        "sha256": "5824b839adfa238a87f0b32c071820e0a6540095bd9972eaabea848f1d2c16aa",
+        "media_type": "audio/wav",
+        "duration_ms": 26197,
+        "owner_alias": "acceptance_owner_c",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_09",
+      "input_type": "existing_audio",
+      "creation_mode": "template_reference",
+      "ratio": "16:9",
+      "template_id": "editorial-explainer-landscape-v1",
+      "style_prompt": null,
+      "content_category": "franchise",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_09/source",
+        "sha256": "99ceb4085ce22f08e0e48c36de939f2dc147efe6b29fb13dbb6637bcb82366c1",
+        "media_type": "audio/wav",
+        "duration_ms": 27911,
+        "owner_alias": "acceptance_owner_c",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_10",
+      "input_type": "uploaded_audio",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "content_category": "store",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_10/source",
+        "sha256": "f49a34186c27f3260daccad53510512590eed98ee980193c02f609591e21e838",
+        "media_type": "audio/wav",
+        "duration_ms": 19976,
+        "owner_alias": "acceptance_owner_d",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_11",
+      "input_type": "uploaded_audio",
+      "creation_mode": "style_prompt",
+      "ratio": "16:9",
+      "template_id": null,
+      "style_prompt": "纪录片式品牌叙事，克制有层次",
+      "content_category": "commercial",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_11/source",
+        "sha256": "d31f00fa0bfa48cc817e2a6ebf39b1d7f9158d544b874f12083a645806f84565",
+        "media_type": "audio/wav",
+        "duration_ms": 20000,
+        "owner_alias": "acceptance_owner_d",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_12",
+      "input_type": "uploaded_audio",
+      "creation_mode": "template_reference",
+      "ratio": "9:16",
+      "template_id": "editorial-explainer-portrait-v1",
+      "style_prompt": null,
+      "content_category": "knowledge",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_12/source",
+        "sha256": "3050e53b71f2161a653088f488425b5acb223d1085440c7a87d8b7a849f663b5",
+        "media_type": "audio/wav",
+        "duration_ms": 17791,
+        "owner_alias": "acceptance_owner_d",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_13",
+      "input_type": "script_to_audio_video",
+      "creation_mode": "ai_auto",
+      "ratio": "16:9",
+      "template_id": null,
+      "style_prompt": null,
+      "content_category": "product",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_13/source",
+        "sha256": "e1ab67741e5f6fb7819bcdcff613634aa3e7d97f04e1b0f31a82d7e963869199",
+        "media_type": "text/plain",
+        "duration_ms": 30000,
+        "owner_alias": "acceptance_owner_e",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_14",
+      "input_type": "script_to_audio_video",
+      "creation_mode": "style_prompt",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": "轻快实用的门店运营拆解",
+      "content_category": "franchise",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_14/source",
+        "sha256": "56ca2ea8d479fe75a05decc49f809eeb1e4766fcfcbd16938906e3c11964d422",
+        "media_type": "text/plain",
+        "duration_ms": 35000,
+        "owner_alias": "acceptance_owner_e",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_15",
+      "input_type": "script_to_audio_video",
+      "creation_mode": "template_reference",
+      "ratio": "16:9",
+      "template_id": "commercial-diagnostic-landscape-v1",
+      "style_prompt": null,
+      "content_category": "store",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_15/source",
+        "sha256": "a57227273cb40b1da69157e2de0cfe4b1d3ce00929cf486643d41ac9e6b5d41a",
+        "media_type": "text/plain",
+        "duration_ms": 44000,
+        "owner_alias": "acceptance_owner_e",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_16",
+      "input_type": "platform_talking_head",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "talking_head_kind": "platform_avatar",
+      "subject_alias": "speaker_meiye_a",
+      "background_alias": "background_meiye_studio_a",
+      "content_category": "commercial",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_16/source",
+        "sha256": "03ce33bb808b03a75500b5b9c38e37cf7b735f66008a542376392919ecd0c83f",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 47480,
+        "owner_alias": "acceptance_owner_a",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_17",
+      "input_type": "platform_talking_head",
+      "creation_mode": "style_prompt",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": "高级发布会风格，强节奏但保持可信",
+      "talking_head_kind": "platform_avatar",
+      "subject_alias": "speaker_showroom_male_a",
+      "background_alias": "background_showroom_a",
+      "content_category": "knowledge",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_17/source",
+        "sha256": "90518f3319cf14ec4060061a7f92a99795eb918acc1d132ba4653c931037fda2",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 5042,
+        "owner_alias": "acceptance_owner_a",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_18",
+      "input_type": "uploaded_video",
+      "creation_mode": "ai_auto",
+      "ratio": "9:16",
+      "template_id": null,
+      "style_prompt": null,
+      "talking_head_kind": "uploaded_real_person",
+      "subject_alias": "speaker_ai_agent_a",
+      "background_alias": "background_ai_agent_room_a",
+      "content_category": "product",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_18/source",
+        "sha256": "7e3da30b7e0a799d3e21f3f462fbd699f2f764c0fb20e18786d6a011ef9f6980",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 77996,
+        "owner_alias": "acceptance_owner_b",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_19",
+      "input_type": "uploaded_video",
+      "creation_mode": "template_reference",
+      "ratio": "9:16",
+      "template_id": "editorial-explainer-portrait-v1",
+      "style_prompt": null,
+      "talking_head_kind": "uploaded_real_person",
+      "subject_alias": "speaker_meiye_a",
+      "background_alias": "background_meiye_home_a",
+      "content_category": "franchise",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_19/source",
+        "sha256": "0d83029abad691a36cabc766e0388009a0a2ae118ce7accc095e59335242084f",
+        "media_type": "video/mp4",
+        "intrinsic_ratio": "9:16",
+        "duration_ms": 44920,
+        "owner_alias": "acceptance_owner_b",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    },
+    {
+      "case_id": "case_20",
+      "input_type": "existing_audio",
+      "creation_mode": "template_reference",
+      "ratio": "16:9",
+      "template_id": "editorial-explainer-landscape-v1",
+      "style_prompt": null,
+      "content_category": "store",
+      "risk_tags": [
+        "no_images"
+      ],
+      "authorization_ref": "acceptance-approved-corpus-v1",
+      "source": {
+        "alias": "bindings/case_20/source",
+        "sha256": "393bdf1ff109257606445347736b42ddc442e10ca45fc1b4d9126dcc2d744b83",
+        "media_type": "audio/wav",
+        "duration_ms": 44908,
+        "owner_alias": "acceptance_owner_c",
+        "authorization_ref": "acceptance-approved-corpus-v1"
+      },
+      "materials": []
+    }
+  ]
+}
