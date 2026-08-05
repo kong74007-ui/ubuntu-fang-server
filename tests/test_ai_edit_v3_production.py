@@ -1817,6 +1817,98 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual("fail", checks["material_semantic_identity"]["result"])
         self.assertEqual("fail", checks["opening_hook_visual_consistency"]["result"])
 
+    def test_visual_inspector_blocks_three_identical_adjacent_scene_structures(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        layouts = [
+            ("speaker_fullscreen", "clean_center"),
+            ("speaker_fullscreen", "clean_center"),
+            ("speaker_fullscreen", "clean_center"),
+            ("speaker_left_info_right", "speaker_focus"),
+        ]
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [{
+                "id": f"composition_{index:03d}", "scene_id": f"scene_{index:02d}",
+                "start_ms": (index - 1) * 6000, "end_ms": index * 6000,
+                "layout_id": layout_id, "layout_variant": variant,
+                "asset_ids": [],
+            } for index, (layout_id, variant) in enumerate(layouts, 1)],
+            "captions": [{
+                "id": f"caption_{index:03d}", "start_ms": (index - 1) * 6000,
+                "end_ms": index * 6000, "text": f"Point {index}",
+            } for index in range(1, 5)],
+        }
+
+        checks = {item["check_id"]: item for item in DeterministicVisualInspector().inspect(
+            manifest=manifest, render_report={},
+        )["checks"]}
+
+        self.assertEqual("fail", checks["safe_area_and_text_visibility"]["result"])
+        self.assertIn("adjacent_scene_structure", checks["safe_area_and_text_visibility"]["reason"])
+        self.assertFalse(checks["safe_area_and_text_visibility"]["repairable"])
+
+    def test_visual_inspector_collapses_safe_split_parts_of_one_logical_scene(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": f"composition_001_r{part:02d}", "scene_id": "scene_01",
+                    "start_ms": (part - 1) * 6000, "end_ms": part * 6000,
+                    "layout_id": "speaker_fullscreen", "layout_variant": "clean_center",
+                    "asset_ids": [],
+                } for part in range(1, 4)
+            ] + [{
+                "id": "composition_002", "scene_id": "scene_02",
+                "start_ms": 18000, "end_ms": 24000,
+                "layout_id": "speaker_left_info_right", "layout_variant": "speaker_focus",
+                "asset_ids": [],
+            }],
+            "captions": [{
+                "id": f"caption_{index:03d}", "start_ms": (index - 1) * 6000,
+                "end_ms": index * 6000, "text": f"Point {index}",
+            } for index in range(1, 5)],
+        }
+
+        checks = {item["check_id"]: item for item in DeterministicVisualInspector().inspect(
+            manifest=manifest, render_report={},
+        )["checks"]}
+
+        self.assertEqual("pass", checks["safe_area_and_text_visibility"]["result"])
+
+    def test_visual_inspector_accepts_same_layout_with_real_structural_variants(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        variants = ["clean_center", "headline_top", "caption_sidebar", "clean_center"]
+        manifest = {
+            "duration_ms": 24000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [{
+                "id": f"composition_{index:03d}", "scene_id": f"scene_{index:02d}",
+                "start_ms": (index - 1) * 6000, "end_ms": index * 6000,
+                "layout_id": "speaker_fullscreen", "layout_variant": variant,
+                "asset_ids": [],
+            } for index, variant in enumerate(variants, 1)],
+            "captions": [{
+                "id": f"caption_{index:03d}", "start_ms": (index - 1) * 6000,
+                "end_ms": index * 6000, "text": f"Point {index}",
+            } for index in range(1, 5)],
+        }
+
+        checks = {item["check_id"]: item for item in DeterministicVisualInspector().inspect(
+            manifest=manifest, render_report={},
+        )["checks"]}
+
+        self.assertEqual("pass", checks["safe_area_and_text_visibility"]["result"])
+        self.assertEqual("pass", checks["opening_hook_visual_consistency"]["result"])
+
     def test_visual_inspector_accepts_varied_scene_bound_talking_head_manifest(self):
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
 

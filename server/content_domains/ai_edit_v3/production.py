@@ -1186,6 +1186,8 @@ class DeterministicVisualInspector:
             scene_flow_valid = True
             max_scene_ms = 0
             layouts = []
+            structure_signatures: list[tuple[str, str, tuple[str, ...]]] = []
+            structure_scene_ids: list[str] = []
             known_assets = {
                 item.get("id") for item in assets
                 if isinstance(item, Mapping) and isinstance(item.get("id"), str)
@@ -1222,6 +1224,23 @@ class DeterministicVisualInspector:
                 scene_duration = end - start
                 max_scene_ms = max(max_scene_ms, scene_duration)
                 layouts.append(layout_id)
+                overlay_instances = composition.get("overlay_instances")
+                component_ids = tuple(sorted(
+                    str(instance.get("component_id"))
+                    for instance in overlay_instances
+                    if isinstance(instance, Mapping)
+                    and isinstance(instance.get("component_id"), str)
+                )) if isinstance(overlay_instances, list) else ()
+                structure_signatures.append((
+                    layout_id,
+                    str(composition.get("layout_variant") or ""),
+                    component_ids,
+                ))
+                structure_scene_ids.append(str(
+                    composition.get("scene_id")
+                    or composition.get("id")
+                    or f"composition@{len(structure_scene_ids)}"
+                ))
                 scene_asset_set = set(scene_assets)
                 if len(scene_asset_set) != len(scene_assets) or not scene_asset_set.issubset(known_assets):
                     material_binding_valid = False
@@ -1267,7 +1286,38 @@ class DeterministicVisualInspector:
                     or (len(compositions) >= 3 and max_scene_ms <= scene_budget_ms)
                 )
             )
-            layout_varied = not requires_scene_rhythm or len(set(layouts)) >= 2
+            longest_identical_run = 0
+            current_identical_run = 0
+            previous_signature: tuple[str, str, tuple[str, ...]] | None = None
+            logical_structure_signatures: list[tuple[str, str, tuple[str, ...]]] = []
+            previous_scene_id: str | None = None
+            for scene_id, signature in zip(structure_scene_ids, structure_signatures):
+                if scene_id == previous_scene_id:
+                    continue
+                logical_structure_signatures.append(signature)
+                previous_scene_id = scene_id
+            for signature in logical_structure_signatures:
+                current_identical_run = (
+                    current_identical_run + 1
+                    if signature == previous_signature else 1
+                )
+                longest_identical_run = max(
+                    longest_identical_run,
+                    current_identical_run,
+                )
+                previous_signature = signature
+            structure_diverse = (
+                not requires_scene_rhythm
+                or (
+                    len(set(logical_structure_signatures)) >= 2
+                    and longest_identical_run <= 2
+                )
+            )
+            structure_reason = (
+                "adjacent_scene_structure_repetition"
+                if longest_identical_run > 2
+                else "scene_structure_diversity"
+            )
             source_video = isinstance(manifest.get("source_video"), Mapping)
             face_visible = (
                 not source_video
@@ -1277,7 +1327,7 @@ class DeterministicVisualInspector:
                     and layout_shows_speaker(layouts[0])
                 )
             )
-            opening_consistent = scene_rhythm_valid and layout_varied and (
+            opening_consistent = scene_rhythm_valid and structure_diverse and (
                 not source_video or (bool(layouts) and layout_shows_speaker(layouts[0]))
             )
             material_identity = (
@@ -1300,8 +1350,11 @@ class DeterministicVisualInspector:
                     caption_valid
                     and caption_scene_binding_valid
                     and scene_rhythm_valid
-                    and layout_varied,
-                    "captions_are_timed_per_bounded_varied_scene",
+                    and structure_diverse,
+                    (
+                        "captions_are_timed_per_bounded_varied_scene"
+                        if structure_diverse else structure_reason
+                    ),
                 ),
                 "face_product_obstruction": (face_visible, "speaker_visibility_budget_valid"),
                 "material_semantic_identity": (
@@ -1320,10 +1373,17 @@ class DeterministicVisualInspector:
             for check_id in blocking:
                 if check_id in structural:
                     passed, reason = structural[check_id]
+                    structure_failure = (
+                        check_id == "safe_area_and_text_visibility"
+                        and reason in {
+                            "adjacent_scene_structure_repetition",
+                            "scene_structure_diversity",
+                        }
+                    )
                     results[check_id] = (
                         "pass" if passed else "fail",
                         reason if passed else f"{reason}_failed",
-                        not passed and check_id in {
+                        not passed and not structure_failure and check_id in {
                             "safe_area_and_text_visibility", "face_product_obstruction",
                             "material_semantic_identity", "opening_hook_visual_consistency",
                         },
