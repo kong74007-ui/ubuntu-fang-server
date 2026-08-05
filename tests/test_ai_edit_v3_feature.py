@@ -163,6 +163,7 @@ class FeatureConfigTests(unittest.TestCase):
             "AI_EDIT_V3_WORKER_CONCURRENCY": "2",
             "AI_EDIT_V3_QUEUE_CAPACITY": "8",
             "AI_EDIT_V3_TEMP_BYTES_LIMIT": "1048576",
+            "AI_EDIT_V3_DEPLOYED_SHA": "a" * 40,
         }
 
     def assert_reason(self, reason_code: str, env: dict[str, str]) -> None:
@@ -225,8 +226,28 @@ class FeatureConfigTests(unittest.TestCase):
         self.assertEqual(config.worker_concurrency, 2)
         self.assertEqual(config.queue_capacity, 8)
         self.assertEqual(config.temp_bytes_limit, 1048576)
+        self.assertEqual(config.deployed_sha, "a" * 40)
         self.assertEqual(config.owner_hmac_secret_file, self.root / "owner-hmac.secret")
         self.assertNotIn("secret=b", repr(config).lower())
+
+    def test_enabled_test_config_requires_deployed_sha(self):
+        env = self.enabled_env()
+        del env["AI_EDIT_V3_DEPLOYED_SHA"]
+        self.assert_reason("config_required", env)
+
+    def test_deployed_sha_is_strict_lowercase_hex(self):
+        for value in ("A" * 40, "a" * 39, "g" * 40, " a" * 20, "a" * 40 + " "):
+            with self.subTest(value=value):
+                env = self.enabled_env()
+                env["AI_EDIT_V3_DEPLOYED_SHA"] = value
+                self.assert_reason("config_deployed_sha_invalid", env)
+
+    def test_disabled_and_production_configs_do_not_require_deployed_sha(self):
+        self.assertIsNone(load_config({}).deployed_sha)
+        production = self.enabled_env()
+        production["AI_EDIT_V3_ENVIRONMENT"] = "production"
+        del production["AI_EDIT_V3_DEPLOYED_SHA"]
+        self.assertIsNone(load_config(production).deployed_sha)
 
     def test_enabled_flag_is_strict_and_rejects_bool_like_or_whitespace(self):
         for value in ("true", "false", "yes", "01", " 1", "1 ", ""):
@@ -953,6 +974,7 @@ class RuntimeContractTests(unittest.TestCase):
             "AI_EDIT_V3_WORKER_CONCURRENCY": "2",
             "AI_EDIT_V3_QUEUE_CAPACITY": "8",
             "AI_EDIT_V3_TEMP_BYTES_LIMIT": "1048576",
+            "AI_EDIT_V3_DEPLOYED_SHA": "a" * 40,
         }
 
     def dependencies(

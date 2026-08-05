@@ -5,7 +5,13 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.ai_edit_v3_acceptance import main
+from scripts.ai_edit_v3_acceptance import (
+    HttpRealRunApi,
+    RealRunConfig,
+    RealRunUnavailable,
+    main,
+    run_real_acceptance,
+)
 
 from server.content_domains.ai_edit_v3.acceptance_export import (
     CaseCheckpoint,
@@ -64,7 +70,462 @@ class EvidenceFakeApi:
         return True
 
 
+class FakeRealRunApi:
+    def __init__(self, **capability_overrides) -> None:
+        self.upload_calls: list[str] = []
+        self._capabilities = {
+            "deployed_sha": "a" * 40,
+            "environment": "test",
+            "v3_enabled": True,
+            "providers_ready": True,
+            "accepts_uploads": True,
+            "accepts_new_jobs": True,
+            "active_v3_jobs": 0,
+        }
+        self._capabilities.update(capability_overrides)
+
+    def capabilities(self) -> dict[str, object]:
+        return dict(self._capabilities)
+
+    def upload_authorized_sources(self, *args) -> None:
+        self.upload_calls.append("upload")
+
+
 class AcceptanceRunnerTests(unittest.TestCase):
+    def test_http_real_api_normalizes_only_nested_acceptance_contract(self) -> None:
+        class Response:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode("utf-8")
+
+            def read(self, size=-1):
+                value, self.payload = self.payload[:size], self.payload[size:]
+                return value
+
+            def close(self):
+                pass
+
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append((request, timeout))
+                return Response({
+                    "items": {"ignored": "raw"},
+                    "acceptance": {
+                        "environment": "test",
+                        "deployed_sha": "a" * 40,
+                        "active_v3_jobs": 0,
+                        "v3_enabled": True,
+                        "providers_ready": True,
+                        "accepts_uploads": True,
+                        "accepts_new_jobs": True,
+                    },
+                })
+
+        opener = Opener()
+        session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            bindings = Path(folder) / "bindings.json"
+            bindings.write_text('{"version":"1.0","sources":[]}', encoding="utf-8")
+            api = HttpRealRunApi(
+                base_url="https://test.example",
+                session=session,
+                bindings_path=bindings,
+                opener=opener,
+            )
+            capabilities = api.capabilities()
+
+        self.assertEqual(capabilities["deployed_sha"], "a" * 40)
+        self.assertNotIn("items", capabilities)
+        request, timeout = opener.requests[0]
+        self.assertEqual(request.full_url, "https://test.example/api/v3/edit/capabilities")
+        self.assertEqual(timeout, 15)
+        self.assertEqual(request.get_header("Authorization"), "Bearer session-secret")
+        self.assertNotIn("session-secret", repr(api))
+
+    def test_http_real_api_rejects_unsafe_origin_and_invalid_capability_body(self) -> None:
+        session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            bindings = Path(folder) / "bindings.json"
+            bindings.write_text('{"version":"1.0","sources":[]}', encoding="utf-8")
+            for base_url in (
+                "http://test.example",
+                "https://user@test.example",
+                "https://test.example/path",
+                "https://test.example?query=1",
+                "https://test.example/#fragment",
+            ):
+                with self.subTest(base_url=base_url):
+                    with self.assertRaises(RealRunUnavailable):
+                        HttpRealRunApi(
+                            base_url=base_url,
+                            session=session,
+                            bindings_path=bindings,
+                        )
+
+            class OversizedResponse:
+                status = 200
+
+                def read(self, size=-1):
+                    return b"x" * size
+
+                def close(self):
+                    pass
+
+            class OversizedOpener:
+                def open(self, request, timeout):
+                    return OversizedResponse()
+
+            api = HttpRealRunApi(
+                base_url="https://test.example",
+                session=session,
+                bindings_path=bindings,
+                opener=OversizedOpener(),
+            )
+            with self.assertRaises(RealRunUnavailable):
+                api.capabilities()
+
+    def test_http_real_api_uploads_authorized_hash_once_and_reuses_upload_id(self) -> None:
+        class Response:
+            def __init__(self, status, payload=None):
+                self.status = status
+                self.payload = (
+                    b"" if payload is None else json.dumps(payload).encode("utf-8")
+                )
+
+            def read(self, size=-1):
+                value, self.payload = self.payload[:size], self.payload[size:]
+                return value
+
+            def close(self):
+                pass
+
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append((request, timeout))
+                if request.get_method() == "PUT":
+                    return Response(200)
+                if request.full_url.endswith("/complete"):
+                    return Response(200, {"upload_id": "upload-1"})
+                return Response(201, {
+                    "upload_id": "upload-1",
+                    "put_url": "https://cos.example/upload?signed=opaque",
+                })
+
+        session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.mp3"
+            source.write_bytes(b"authorized-audio")
+            bindings = Path(folder) / "bindings.json"
+            bindings.write_text(json.dumps({
+                "version": "1.0",
+                "sources": [{
+                    "case_id": "case_01",
+                    "alias": "bindings/case_01/source",
+                    "owner_alias": "owner_a",
+                    "authorization_ref": "approval-test-only",
+                    "path": str(source.resolve()),
+                    "sha256": __import__("hashlib").sha256(source.read_bytes()).hexdigest(),
+                    "upload_type": "main_audio",
+                    "content_type": "audio/mpeg",
+                }],
+            }), encoding="utf-8")
+            matrix = Path(folder) / "matrix.json"
+            matrix.write_text(json.dumps({
+                "version": "3.1",
+                "authorization_ref": "approval-test-only",
+                "cases": [{
+                    "case_id": "case_01",
+                    "authorization_ref": "approval-test-only",
+                    "source": {
+                        "alias": "bindings/case_01/source",
+                        "sha256": __import__("hashlib").sha256(source.read_bytes()).hexdigest(),
+                        "media_type": "audio/mpeg",
+                        "owner_alias": "owner_a",
+                        "authorization_ref": "approval-test-only",
+                    },
+                }],
+            }), encoding="utf-8")
+            opener = Opener()
+            api = HttpRealRunApi(
+                base_url="https://test.example",
+                session=session,
+                bindings_path=bindings,
+                opener=opener,
+            )
+
+            api.upload_authorized_sources(matrix, "approval-test-only", None)
+            upload = api.upload_source({
+                "case_id": "case_01",
+                "source": {"owner_alias": "owner_a"},
+            })
+            with self.assertRaises(RealRunUnavailable):
+                api.upload_authorized_sources(matrix, "approval-test-only", None)
+
+        self.assertEqual(upload, {"upload_id": "upload-1", "owner_alias": "owner_a"})
+        self.assertEqual([item[0].get_method() for item in opener.requests], ["POST", "PUT", "POST"])
+        self.assertIsNone(opener.requests[1][0].get_header("Cookie"))
+
+    def test_http_real_api_rejects_tampered_binding_before_network(self) -> None:
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append(request)
+                raise AssertionError("network must not be reached")
+
+        session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.mp3"
+            source.write_bytes(b"tampered")
+            bindings = Path(folder) / "bindings.json"
+            bindings.write_text(json.dumps({
+                "version": "1.0",
+                "sources": [{
+                    "case_id": "case_01", "alias": "bindings/case_01/source",
+                    "owner_alias": "owner_a", "authorization_ref": "approval-test-only",
+                    "path": str(source.resolve()), "sha256": "a" * 64,
+                    "upload_type": "main_audio", "content_type": "audio/mpeg",
+                }],
+            }), encoding="utf-8")
+            matrix = Path(folder) / "matrix.json"
+            matrix.write_text(json.dumps({
+                "authorization_ref": "approval-test-only",
+                "cases": [{
+                    "case_id": "case_01",
+                    "authorization_ref": "approval-test-only",
+                    "source": {
+                        "alias": "bindings/case_01/source",
+                        "sha256": "b" * 64,
+                        "media_type": "audio/mpeg",
+                        "owner_alias": "owner_a",
+                        "authorization_ref": "approval-test-only",
+                    },
+                }],
+            }), encoding="utf-8")
+            opener = Opener()
+            api = HttpRealRunApi(
+                base_url="https://test.example", session=session,
+                bindings_path=bindings, opener=opener,
+            )
+            with self.assertRaises(RealRunUnavailable):
+                api.upload_authorized_sources(matrix, "approval-test-only", None)
+        self.assertEqual(opener.requests, [])
+
+    def test_http_real_api_rejects_binding_authority_drift_before_network(self) -> None:
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append(request)
+                raise AssertionError("network must not be reached")
+
+        session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.mp3"
+            source.write_bytes(b"authorized-audio")
+            digest = __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+            base_binding = {
+                "case_id": "case_01",
+                "alias": "bindings/case_01/source",
+                "owner_alias": "owner_a",
+                "authorization_ref": "approval-test-only",
+                "path": str(source.resolve()),
+                "sha256": digest,
+                "upload_type": "main_audio",
+                "content_type": "audio/mpeg",
+            }
+            base_matrix = {
+                "authorization_ref": "approval-test-only",
+                "cases": [{
+                    "case_id": "case_01",
+                    "authorization_ref": "approval-test-only",
+                    "source": {
+                        "alias": "bindings/case_01/source",
+                        "sha256": digest,
+                        "media_type": "audio/mpeg",
+                        "owner_alias": "owner_a",
+                        "authorization_ref": "approval-test-only",
+                    },
+                }],
+            }
+            scenarios = {
+                "wrong_owner": ([{**base_binding, "owner_alias": "owner_b"}], base_matrix, "approval-test-only"),
+                "missing_case": ([], base_matrix, "approval-test-only"),
+                "extra_case": ([base_binding, {**base_binding, "case_id": "case_02"}], base_matrix, "approval-test-only"),
+                "authorization_mismatch": ([base_binding], base_matrix, "different-approval"),
+            }
+            for name, (sources, matrix_payload, authority) in scenarios.items():
+                with self.subTest(name=name):
+                    bindings = Path(folder) / f"bindings-{name}.json"
+                    bindings.write_text(json.dumps({
+                        "version": "1.0", "sources": sources,
+                    }), encoding="utf-8")
+                    matrix = Path(folder) / f"matrix-{name}.json"
+                    matrix.write_text(json.dumps(matrix_payload), encoding="utf-8")
+                    opener = Opener()
+                    api = HttpRealRunApi(
+                        base_url="https://test.example", session=session,
+                        bindings_path=bindings, opener=opener,
+                    )
+                    with self.assertRaises(RealRunUnavailable):
+                        api.upload_authorized_sources(matrix, authority, None)
+                    self.assertEqual(opener.requests, [])
+
+    def test_real_runner_refuses_every_preflight_mismatch_before_upload(self) -> None:
+        scenarios = (
+            (RealRunConfig("a" * 40, "production", "approval"), {}, "environment_not_test"),
+            (RealRunConfig("a" * 40, "test", ""), {}, "authorization_missing"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"environment": "production"}, "deployed_environment_mismatch"),
+            (RealRunConfig("b" * 40, "test", "approval"), {}, "deployed_sha_mismatch"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"active_v3_jobs": 1}, "active_v3_jobs"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"v3_enabled": False}, "v3_not_enabled"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"providers_ready": False}, "providers_not_ready"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"accepts_uploads": False}, "uploads_not_ready"),
+            (RealRunConfig("a" * 40, "test", "approval"), {"accepts_new_jobs": False}, "new_jobs_not_ready"),
+        )
+        for config, overrides, reason in scenarios:
+            with self.subTest(reason=reason):
+                api = FakeRealRunApi(**overrides)
+                result = run_real_acceptance(api, config)
+                self.assertEqual((result.exit_code, result.reason), (2, reason))
+                self.assertEqual(api.upload_calls, [])
+
+    def test_test_environment_cli_preflights_then_uploads_and_executes_once(self) -> None:
+        api = FakeRealRunApi()
+        matrix = Path(__file__).parent / "fixtures/ai_edit_v3/acceptance-20.json"
+        with patch.dict(os.environ, {
+            "AI_EDIT_V3_EXPECTED_SHA": "a" * 40,
+            "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "approval-test-only",
+        }, clear=False), patch(
+            "scripts.ai_edit_v3_acceptance.build_real_run_api", return_value=api,
+        ), patch(
+            "scripts.ai_edit_v3_acceptance.execute_preflighted_cases", return_value=0,
+        ) as execute:
+            exit_code = main([
+                "run", "--environment", "test", "--matrix", str(matrix),
+                "--run-id", "00000000-0000-4000-8000-000000000001",
+                "--concurrency", "1",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(api.upload_calls, ["upload"])
+        execute.assert_called_once()
+        self.assertIs(execute.call_args.args[0], api)
+
+    def test_test_environment_sha_mismatch_never_uploads_or_executes(self) -> None:
+        api = FakeRealRunApi(deployed_sha="b" * 40)
+        matrix = Path(__file__).parent / "fixtures/ai_edit_v3/acceptance-20.json"
+        with patch.dict(os.environ, {
+            "AI_EDIT_V3_EXPECTED_SHA": "a" * 40,
+            "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "approval-test-only",
+        }, clear=False), patch(
+            "scripts.ai_edit_v3_acceptance.build_real_run_api", return_value=api,
+        ), patch("scripts.ai_edit_v3_acceptance.execute_preflighted_cases") as execute:
+            exit_code = main([
+                "run", "--environment", "test", "--matrix", str(matrix),
+                "--run-id", "00000000-0000-4000-8000-000000000001",
+                "--concurrency", "1",
+            ])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(api.upload_calls, [])
+        execute.assert_not_called()
+
+    def test_capability_transport_or_shape_failure_is_exit_two_before_upload(self) -> None:
+        class BrokenApi(FakeRealRunApi):
+            def __init__(self, response=None, error=None) -> None:
+                super().__init__()
+                self.response = response
+                self.error = error
+
+            def capabilities(self):
+                if self.error is not None:
+                    raise self.error
+                return self.response
+
+        config = RealRunConfig("a" * 40, "test", "approval")
+        scenarios = (
+            (BrokenApi(error=RealRunUnavailable("adapter unavailable")), "capabilities_unavailable"),
+            (BrokenApi(error=OSError("network down")), "capabilities_unavailable"),
+            (BrokenApi(error=ValueError("invalid json")), "capabilities_unavailable"),
+            (BrokenApi(response=None), "capabilities_invalid"),
+            (BrokenApi(response=[]), "capabilities_invalid"),
+        )
+        for api, reason in scenarios:
+            with self.subTest(reason=reason, response=api.response):
+                result = run_real_acceptance(api, config)
+                self.assertEqual((result.exit_code, result.reason), (2, reason))
+                self.assertEqual(api.upload_calls, [])
+
+    def test_current_deployed_capability_contract_fails_closed_without_upload(self) -> None:
+        api = FakeRealRunApi()
+        api._capabilities = {
+            "items": {}, "runtime_versions": {}, "current_schema_hashes": {},
+            "historical_schema_hashes": {}, "allows_existing_reads": True,
+            "accepts_uploads": True, "accepts_new_jobs": True,
+            "feature_enabled": True,
+        }
+        result = run_real_acceptance(
+            api, RealRunConfig("a" * 40, "test", "approval"),
+        )
+        self.assertEqual((result.exit_code, result.reason), (2, "deployed_environment_mismatch"))
+        self.assertEqual(api.upload_calls, [])
+
+    def test_authorized_source_upload_failure_stops_before_case_execution(self) -> None:
+        class UploadFailureApi(FakeRealRunApi):
+            def upload_authorized_sources(self, *args) -> None:
+                raise OSError("upload unavailable")
+
+        result = run_real_acceptance(
+            UploadFailureApi(), RealRunConfig("a" * 40, "test", "approval"),
+        )
+        self.assertEqual(
+            (result.exit_code, result.reason),
+            (2, "authorized_source_upload_failed"),
+        )
+
+        class AdapterUploadFailureApi(FakeRealRunApi):
+            def upload_authorized_sources(self, *args) -> None:
+                raise RealRunUnavailable("binding unavailable")
+
+        adapter_result = run_real_acceptance(
+            AdapterUploadFailureApi(), RealRunConfig("a" * 40, "test", "approval"),
+        )
+        self.assertEqual(
+            (adapter_result.exit_code, adapter_result.reason),
+            (2, "authorized_source_upload_failed"),
+        )
+
+    def test_configured_authority_without_real_adapter_fails_closed(self) -> None:
+        with patch.dict(os.environ, {
+            "AI_EDIT_V3_EXPECTED_SHA": "a" * 40,
+            "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "approval-test-only",
+        }, clear=False):
+            exit_code = main([
+                "run", "--environment", "test", "--matrix", "matrix.json",
+                "--run-id", "00000000-0000-4000-8000-000000000001",
+                "--concurrency", "1",
+            ])
+        self.assertEqual(exit_code, 2)
     def test_restart_uses_persisted_job_and_idempotency_key(self) -> None:
         api = FakeV3Api()
         checkpoint = CaseCheckpoint(

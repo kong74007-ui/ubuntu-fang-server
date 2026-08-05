@@ -58,6 +58,15 @@ _MAX_MATERIAL_IMAGES = 10
 _MIN_MEDIA_DURATION_MS = 3_000
 _MAX_MEDIA_DURATION_MS = 600_000
 _QUOTE_TTL_MS = 900_000
+_ACCEPTANCE_PROVIDER_ITEMS = (
+    "tts",
+    "asr",
+    "director",
+    "image_generator",
+    "audio_generator",
+    "renderer",
+)
+_DEPLOYED_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _AUTHORITY_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 _ABSOLUTE_WINDOWS_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)")
@@ -629,6 +638,8 @@ class EditV3Service:
         | Callable[[], CapabilityReport]
         | None = None,
         result_signer: Callable[[str, int, str | None], str] | None = None,
+        deployed_sha: str | None = None,
+        acceptance_provider_identities: Mapping[str, str] | None = None,
     ) -> None:
         if not isinstance(store, V3Store):
             raise TypeError("store_invalid")
@@ -646,6 +657,18 @@ class EditV3Service:
         )
         self._capability_report_source = capability_report
         self._result_signer = result_signer
+        if deployed_sha is not None and _DEPLOYED_SHA.fullmatch(deployed_sha) is None:
+            raise ValueError("deployed_sha_invalid")
+        self.deployed_sha = deployed_sha
+        identities = dict(acceptance_provider_identities or {})
+        if any(
+            not isinstance(name, str)
+            or not isinstance(identity, str)
+            or not identity
+            for name, identity in identities.items()
+        ):
+            raise ValueError("acceptance_provider_identities_invalid")
+        self._acceptance_provider_identities = MappingProxyType(identities)
 
     def now(self) -> int:
         return _require_now(self._clock())
@@ -659,6 +682,20 @@ class EditV3Service:
         except Exception:
             return None
         return report if isinstance(report, CapabilityReport) else None
+
+    def _acceptance_providers_ready(
+        self, report: CapabilityReport | None
+    ) -> bool:
+        if report is None:
+            return False
+        identities = self._acceptance_provider_identities
+        return all(
+            report.items.get(name) is not None
+            and report.items[name].status == "configured_and_wired"
+            and isinstance(identities.get(name), str)
+            and identities[name].casefold() != "placeholder"
+            for name in _ACCEPTANCE_PROVIDER_ITEMS
+        )
 
     def _owner_secret_ready(self) -> bool:
         secret = self.owner_hmac_secret
@@ -1894,7 +1931,7 @@ class EditV3Service:
         _require_owner(owner)
         report = self._capability_report()
         if report is None:
-            return {
+            response = {
                 "items": {},
                 "runtime_versions": {},
                 "current_schema_hashes": {},
@@ -1904,23 +1941,38 @@ class EditV3Service:
                 "accepts_new_jobs": False,
                 "feature_enabled": self.enabled,
             }
-        return {
-            "items": {
-                name: {
-                    "status": item.status,
-                    "reason_code": item.reason_code,
-                    "detail": item.detail,
-                }
-                for name, item in report.items.items()
-            },
-            "runtime_versions": dict(report.runtime_versions),
-            "current_schema_hashes": dict(report.current_schema_hashes),
-            "historical_schema_hashes": {name: list(values) for name, values in report.historical_schema_hashes.items()},
-            "allows_existing_reads": report.allows_existing_reads,
-            "accepts_uploads": self._accepts_uploads(report),
-            "accepts_new_jobs": self._accepts_new_jobs(report),
-            "feature_enabled": self.enabled,
-        }
+        else:
+            response = {
+                "items": {
+                    name: {
+                        "status": item.status,
+                        "reason_code": item.reason_code,
+                        "detail": item.detail,
+                    }
+                    for name, item in report.items.items()
+                },
+                "runtime_versions": dict(report.runtime_versions),
+                "current_schema_hashes": dict(report.current_schema_hashes),
+                "historical_schema_hashes": {
+                    name: list(values)
+                    for name, values in report.historical_schema_hashes.items()
+                },
+                "allows_existing_reads": report.allows_existing_reads,
+                "accepts_uploads": self._accepts_uploads(report),
+                "accepts_new_jobs": self._accepts_new_jobs(report),
+                "feature_enabled": self.enabled,
+            }
+        if self.environment == "test":
+            response["acceptance"] = {
+                "environment": "test",
+                "deployed_sha": self.deployed_sha,
+                "active_v3_jobs": self.store.count_active_jobs(),
+                "v3_enabled": self.enabled,
+                "providers_ready": self._acceptance_providers_ready(report),
+                "accepts_uploads": self._accepts_uploads(report),
+                "accepts_new_jobs": self._accepts_new_jobs(report),
+            }
+        return response
 
     def _catalog_list(
         self,

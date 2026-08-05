@@ -32,7 +32,11 @@ from server.content_domains.ai_edit_v3.store import (
     open_store,
     resolve_db_path,
 )
-from server.content_domains.ai_edit_v3.contracts import canonical_json, request_fingerprint
+from server.content_domains.ai_edit_v3.contracts import (
+    TERMINAL_STATES,
+    canonical_json,
+    request_fingerprint,
+)
 
 
 EXPECTED_TABLE_COLUMNS = {
@@ -5083,6 +5087,24 @@ class V3LeaseTests(unittest.TestCase):
             )
         finally:
             connection.close()
+
+    def test_count_active_jobs_is_zero_for_empty_store(self):
+        self.assertEqual(self.store.count_active_jobs(), 0)
+
+    def test_count_active_jobs_excludes_every_terminal_state(self):
+        for index, state in enumerate(
+            ("queued", "normalizing", "rendering", "settling"), start=1
+        ):
+            self.seed_job(f"active-{index}", state=state)
+        for index, state in enumerate(sorted(TERMINAL_STATES), start=1):
+            self.seed_job(f"terminal-{index}", state=state)
+
+        self.assertEqual(self.store.count_active_jobs(), 4)
+
+    def test_count_active_jobs_is_zero_for_terminal_only_store(self):
+        for index, state in enumerate(sorted(TERMINAL_STATES), start=1):
+            self.seed_job(f"terminal-{index}", state=state)
+        self.assertEqual(self.store.count_active_jobs(), 0)
 
     def protected_snapshot(self, job_id):
         connection = self.store._connect()

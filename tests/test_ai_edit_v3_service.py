@@ -61,6 +61,27 @@ def ready_capability_report(**overrides):
     return CapabilityReport(**values)
 
 
+ACCEPTANCE_PROVIDER_NAMES = (
+    "tts",
+    "asr",
+    "director",
+    "image_generator",
+    "audio_generator",
+    "renderer",
+)
+
+
+def acceptance_capability_report(**item_overrides):
+    items = {
+        name: CapabilityItem(
+            "configured_and_wired", "capability_ready", "ready"
+        )
+        for name in ACCEPTANCE_PROVIDER_NAMES
+    }
+    items.update(item_overrides)
+    return ready_capability_report(items=items)
+
+
 class FakeUploadObjectStore:
     def __init__(self):
         self.presign_calls = []
@@ -1717,6 +1738,85 @@ class V3ApplicationServiceTests(unittest.TestCase):
             self.assertFalse(service().get_capabilities("alice")["accepts_new_jobs"])
         finally:
             self.store.list_published_pricing_versions = original
+
+    def test_test_capabilities_include_authoritative_acceptance_preflight(self):
+        service = EditV3Service(
+            self.store,
+            object_store=self.objects,
+            upload_inspector=self.inspector,
+            owner_hmac_secret=b"task-nine-test-secret",
+            enabled=True,
+            source_catalog=self.catalog,
+            capacity_gate=self.capacity,
+            capability_report=acceptance_capability_report(),
+            deployed_sha="a" * 40,
+            acceptance_provider_identities={
+                name: f"real-{name}" for name in ACCEPTANCE_PROVIDER_NAMES
+            },
+        )
+
+        self.assertEqual(
+            service.get_capabilities("alice")["acceptance"],
+            {
+                "environment": "test",
+                "deployed_sha": "a" * 40,
+                "active_v3_jobs": 0,
+                "v3_enabled": True,
+                "providers_ready": True,
+                "accepts_uploads": True,
+                "accepts_new_jobs": True,
+            },
+        )
+
+    def test_acceptance_provider_readiness_rejects_each_bad_status_and_placeholder(self):
+        identities = {
+            name: f"real-{name}" for name in ACCEPTANCE_PROVIDER_NAMES
+        }
+        for name in ACCEPTANCE_PROVIDER_NAMES:
+            with self.subTest(name=name, failure="status"):
+                service = EditV3Service(
+                    self.store,
+                    enabled=True,
+                    capability_report=acceptance_capability_report(**{
+                        name: CapabilityItem(
+                            "implemented", "capability_implemented", "not wired"
+                        )
+                    }),
+                    deployed_sha="a" * 40,
+                    acceptance_provider_identities=identities,
+                )
+                self.assertFalse(
+                    service.get_capabilities("alice")["acceptance"]["providers_ready"]
+                )
+            with self.subTest(name=name, failure="placeholder"):
+                bad_identities = dict(identities)
+                bad_identities[name] = "placeholder"
+                service = EditV3Service(
+                    self.store,
+                    enabled=True,
+                    capability_report=acceptance_capability_report(),
+                    deployed_sha="a" * 40,
+                    acceptance_provider_identities=bad_identities,
+                )
+                self.assertFalse(
+                    service.get_capabilities("alice")["acceptance"]["providers_ready"]
+                )
+
+    def test_production_capabilities_do_not_expose_acceptance_metadata(self):
+        production_store = V3Store(
+            self.store.db_path,
+            v2_db_path=self.v2,
+            environment="production",
+        )
+        service = EditV3Service(
+            production_store,
+            enabled=True,
+            capability_report=acceptance_capability_report(),
+            acceptance_provider_identities={
+                name: f"real-{name}" for name in ACCEPTANCE_PROVIDER_NAMES
+            },
+        )
+        self.assertNotIn("acceptance", service.get_capabilities("alice"))
 
     def test_foreign_or_missing_quote_is_404_before_authority_drift_checks(self):
         request = {

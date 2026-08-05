@@ -446,6 +446,15 @@ def _build():
         capacity_gate=capacity,
         capability_report=lambda: preflight(runtime),
         result_signer=lambda key, expires, download: cos.presign_get(key, expires=expires),
+        deployed_sha=getattr(config, "deployed_sha", None),
+        acceptance_provider_identities={
+            "tts": "placeholder",
+            "asr": "dashscope-asr",
+            "director": "qwen-compiled-director",
+            "image_generator": "openai-image",
+            "audio_generator": "elevenlabs-audio",
+            "renderer": "hyperframes",
+        },
     )
     service.platform_catalog = catalog
     return runtime, service

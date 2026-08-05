@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from jsonschema import Draft202012Validator
 
@@ -20,6 +24,7 @@ from server.content_domains.ai_edit_v3.acceptance_export import (
     run_cases,
     verify_case_evidence,
     write_json_exclusive,
+    load_test_session,
 )
 from server.content_domains.ai_edit_v3.acceptance_verify import (
     CaseEvidence as MachineCaseEvidence,
@@ -279,7 +284,10 @@ def validate_matrix(path: Path) -> MatrixReport:
 
 
 def execute_local_fake_run(args: argparse.Namespace) -> int:
-    matrix_report = validate_matrix(args.matrix)
+    try:
+        matrix_report = validate_matrix(args.matrix)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return 4
     if not matrix_report.passed or args.concurrency < 1 or args.concurrency > 10:
         return 4
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", args.run_id):
@@ -432,14 +440,411 @@ class _LocalFixtureApi:
         return playback_url.startswith("https://playback.invalid/")
 
 
-def build_real_run_api() -> Any:
-    raise RuntimeError("real_test_api_not_enabled_before_phase_e_task_7")
+class RealRunUnavailable(RuntimeError):
+    pass
+
+
+class _FileBody:
+    def __init__(self, path: Path, *, chunk_size: int = 1024 * 1024) -> None:
+        self.path = path
+        self.chunk_size = chunk_size
+
+    def __iter__(self):
+        with self.path.open("rb") as handle:
+            while chunk := handle.read(self.chunk_size):
+                yield chunk
+
+
+class HttpRealRunApi:
+    _MAX_JSON_BYTES = 1024 * 1024
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        session: Any,
+        bindings_path: Path,
+        opener: Any | None = None,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise RealRunUnavailable("test_base_url_invalid")
+        if not isinstance(bindings_path, Path) or not bindings_path.is_file():
+            raise RealRunUnavailable("asset_bindings_missing")
+        reveal = getattr(session, "reveal", None)
+        if not callable(reveal) or not str(reveal()).strip():
+            raise RealRunUnavailable("test_session_missing")
+        self._origin = urllib.parse.urlunsplit(
+            ("https", parsed.netloc, "", "", "")
+        ).rstrip("/")
+        self._session = session
+        self._bindings_path = bindings_path.resolve()
+        self._opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
+        )
+        self._authorized_uploads: dict[str, dict[str, str]] = {}
+
+    def __repr__(self) -> str:
+        return (
+            f"HttpRealRunApi(origin={self._origin!r}, "
+            f"session=[REDACTED], bindings_path={self._bindings_path!r})"
+        )
+
+    def _json_get(self, path: str) -> Mapping[str, Any]:
+        return self._json_request("GET", path, None, expected_statuses=(200,))
+
+    def _json_request(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None,
+        *,
+        expected_statuses: tuple[int, ...],
+    ) -> Mapping[str, Any]:
+        data = None
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._session.reveal()}",
+        }
+        if body is not None:
+            data = json.dumps(
+                dict(body),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            self._origin + path,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            response = self._opener.open(request, timeout=15)
+            try:
+                status = int(getattr(response, "status", 0))
+                if status not in expected_statuses:
+                    raise RealRunUnavailable("test_api_http_error")
+                raw = response.read(self._MAX_JSON_BYTES + 1)
+            finally:
+                response.close()
+        except RealRunUnavailable:
+            raise
+        except Exception as exc:
+            raise RealRunUnavailable("test_api_unavailable") from exc
+        if not isinstance(raw, bytes) or len(raw) > self._MAX_JSON_BYTES:
+            raise RealRunUnavailable("capabilities_response_too_large")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RealRunUnavailable("capabilities_json_invalid") from exc
+        if not isinstance(payload, Mapping):
+            raise RealRunUnavailable("capabilities_shape_invalid")
+        return payload
+
+    def capabilities(self) -> dict[str, object]:
+        payload = self._json_get("/api/v3/edit/capabilities")
+        acceptance = payload.get("acceptance")
+        if not isinstance(acceptance, Mapping):
+            raise RealRunUnavailable("acceptance_capabilities_missing")
+        return dict(acceptance)
+
+    def upload_authorized_sources(
+        self,
+        matrix_path: Path | None = None,
+        authorization_ref: str = "",
+        subset: str | None = None,
+    ) -> None:
+        if self._authorized_uploads:
+            raise RealRunUnavailable("authorized_upload_phase_replayed")
+        if matrix_path is None:
+            raise RealRunUnavailable("acceptance_matrix_missing")
+        sources = self._load_authorized_sources(
+            matrix_path, authorization_ref=authorization_ref, subset=subset
+        )
+        uploaded: dict[str, dict[str, str]] = {}
+        for source in sources:
+            path = Path(source["path"])
+            created = self._json_request(
+                "POST",
+                "/api/v3/edit/uploads",
+                {
+                    "upload_type": source["upload_type"],
+                    "filename": path.name,
+                    "content_type": source["content_type"],
+                    "size_bytes": path.stat().st_size,
+                },
+                expected_statuses=(201,),
+            )
+            upload_id = created.get("upload_id")
+            put_url = created.get("put_url")
+            if not isinstance(upload_id, str) or not upload_id:
+                raise RealRunUnavailable("upload_id_invalid")
+            if not isinstance(put_url, str) or not self._safe_signed_upload_url(put_url):
+                raise RealRunUnavailable("put_url_invalid")
+            self._put_file(put_url, path, source["content_type"])
+            completed = self._json_request(
+                "POST",
+                f"/api/v3/edit/uploads/{urllib.parse.quote(upload_id, safe='')}/complete",
+                {},
+                expected_statuses=(200,),
+            )
+            if completed.get("upload_id") != upload_id:
+                raise RealRunUnavailable("upload_completion_invalid")
+            uploaded[source["case_id"]] = {
+                "upload_id": upload_id,
+                "owner_alias": source["owner_alias"],
+            }
+        self._authorized_uploads = uploaded
+
+    def upload_source(self, case: Mapping[str, Any]) -> Mapping[str, Any]:
+        case_id = case.get("case_id")
+        source = case.get("source")
+        if not isinstance(case_id, str) or not isinstance(source, Mapping):
+            raise RealRunUnavailable("acceptance_case_invalid")
+        uploaded = self._authorized_uploads.get(case_id)
+        if uploaded is None or uploaded["owner_alias"] != source.get("owner_alias"):
+            raise RealRunUnavailable("authorized_upload_binding_missing")
+        return dict(uploaded)
+
+    @staticmethod
+    def _safe_signed_upload_url(value: str) -> bool:
+        parsed = urllib.parse.urlsplit(value)
+        return bool(
+            parsed.scheme == "https"
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+        )
+
+    def _put_file(self, url: str, path: Path, content_type: str) -> None:
+        size = path.stat().st_size
+        request = urllib.request.Request(
+            url,
+            data=_FileBody(path),
+            headers={
+                "Content-Type": content_type,
+                "Content-Length": str(size),
+            },
+            method="PUT",
+        )
+        try:
+            response = self._opener.open(request, timeout=120)
+            try:
+                status = int(getattr(response, "status", 0))
+                response.read(64 * 1024 + 1)
+            finally:
+                response.close()
+        except Exception as exc:
+            raise RealRunUnavailable("authorized_upload_failed") from exc
+        if not 200 <= status < 300:
+            raise RealRunUnavailable("authorized_upload_failed")
+
+    def _load_authorized_sources(
+        self,
+        matrix_path: Path,
+        *,
+        authorization_ref: str,
+        subset: str | None,
+    ) -> tuple[dict[str, str], ...]:
+        try:
+            payload = json.loads(self._bindings_path.read_text(encoding="utf-8"))
+            matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RealRunUnavailable("asset_bindings_invalid") from exc
+        if (
+            not isinstance(matrix, Mapping)
+            or matrix.get("authorization_ref") != authorization_ref
+            or not isinstance(matrix.get("cases"), list)
+        ):
+            raise RealRunUnavailable("acceptance_authorization_mismatch")
+        cases = list(matrix["cases"])
+        if subset == "parallel-5":
+            cases = cases[:5]
+        elif subset == "stress-10":
+            cases = cases[:10]
+        elif subset is not None:
+            raise RealRunUnavailable("acceptance_subset_invalid")
+        expected: dict[str, Mapping[str, Any]] = {}
+        for case in cases:
+            if not isinstance(case, Mapping) or not isinstance(case.get("source"), Mapping):
+                raise RealRunUnavailable("acceptance_matrix_invalid")
+            case_id = case.get("case_id")
+            if not isinstance(case_id, str) or case_id in expected:
+                raise RealRunUnavailable("acceptance_matrix_invalid")
+            if (
+                case.get("authorization_ref") != authorization_ref
+                or case["source"].get("authorization_ref") != authorization_ref
+            ):
+                raise RealRunUnavailable("acceptance_authorization_mismatch")
+            expected[case_id] = case["source"]
+        if (
+            not isinstance(payload, Mapping)
+            or set(payload) != {"version", "sources"}
+            or payload.get("version") != "1.0"
+            or not isinstance(payload.get("sources"), list)
+            or not 1 <= len(payload["sources"]) <= 20
+        ):
+            raise RealRunUnavailable("asset_bindings_invalid")
+        result: list[dict[str, str]] = []
+        seen: set[str] = set()
+        fields = {
+            "case_id", "alias", "owner_alias", "authorization_ref", "path",
+            "sha256", "upload_type", "content_type",
+        }
+        for raw in payload["sources"]:
+            if not isinstance(raw, Mapping) or set(raw) != fields:
+                raise RealRunUnavailable("asset_binding_invalid")
+            source = {name: raw[name] for name in fields}
+            if any(not isinstance(value, str) or not value for value in source.values()):
+                raise RealRunUnavailable("asset_binding_invalid")
+            case_id = source["case_id"]
+            frozen = expected.get(case_id)
+            path = Path(source["path"])
+            if (
+                case_id in seen
+                or frozen is None
+                or not re.fullmatch(r"case_[0-9]{2}", case_id)
+                or not SAFE_ALIAS.fullmatch(source["owner_alias"])
+                or source["alias"] != frozen.get("alias")
+                or source["owner_alias"] != frozen.get("owner_alias")
+                or source["authorization_ref"] != authorization_ref
+                or source["sha256"] != frozen.get("sha256")
+                or source["content_type"] != frozen.get("media_type")
+                or source["upload_type"] not in {"main_video", "main_audio"}
+                or source["upload_type"]
+                != ("main_video" if str(frozen.get("media_type", "")).startswith("video/") else "main_audio")
+                or source["content_type"]
+                not in {"video/mp4", "audio/mpeg", "audio/wav", "audio/mp4"}
+                or not path.is_absolute()
+                or not path.is_file()
+                or not SHA256.fullmatch(source["sha256"])
+                or _sha256_file(path) != source["sha256"]
+            ):
+                raise RealRunUnavailable("asset_binding_invalid")
+            seen.add(case_id)
+            result.append(source)
+        if seen != set(expected):
+            raise RealRunUnavailable("asset_binding_case_set_mismatch")
+        return tuple(result)
+
+
+def build_real_run_api() -> HttpRealRunApi:
+    base_url = os.environ.get("AI_EDIT_V3_TEST_BASE_URL", "").strip()
+    bindings_text = os.environ.get("AI_EDIT_V3_ASSET_BINDINGS", "").strip()
+    if not base_url or not bindings_text:
+        raise RealRunUnavailable("real_test_api_not_configured")
+    bindings = Path(bindings_text)
+    if not bindings.is_file():
+        raise RealRunUnavailable("real_test_api_not_configured")
+    try:
+        session = load_test_session(os.environ, getpass.getpass)
+    except (EOFError, KeyboardInterrupt, ValueError) as exc:
+        raise RealRunUnavailable("test_session_missing") from exc
+    return HttpRealRunApi(
+        base_url=base_url,
+        session=session,
+        bindings_path=bindings,
+    )
+
+
+class RealRunApi(Protocol):
+    def capabilities(self) -> dict[str, object]: ...
+    def upload_authorized_sources(
+        self, matrix_path: Path | None, authorization_ref: str, subset: str | None
+    ) -> None: ...
+
+
+@dataclass(frozen=True)
+class RealRunConfig:
+    expected_sha: str
+    environment: str
+    authorization_ref: str
+    matrix_path: Path | None = None
+    subset: str | None = None
+
+
+@dataclass(frozen=True)
+class RealRunResult:
+    exit_code: int
+    reason: str
+
+
+def run_real_acceptance(api: RealRunApi, config: RealRunConfig) -> RealRunResult:
+    if config.environment != "test":
+        return RealRunResult(2, "environment_not_test")
+    if not config.authorization_ref.strip():
+        return RealRunResult(2, "authorization_missing")
+    try:
+        capabilities = api.capabilities()
+    except (RealRunUnavailable, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return RealRunResult(2, "capabilities_unavailable")
+    if not isinstance(capabilities, Mapping):
+        return RealRunResult(2, "capabilities_invalid")
+    if capabilities.get("environment") != "test":
+        return RealRunResult(2, "deployed_environment_mismatch")
+    if capabilities.get("deployed_sha") != config.expected_sha:
+        return RealRunResult(2, "deployed_sha_mismatch")
+    active_jobs = capabilities.get("active_v3_jobs")
+    if isinstance(active_jobs, bool) or active_jobs != 0:
+        return RealRunResult(2, "active_v3_jobs")
+    if capabilities.get("v3_enabled") is not True:
+        return RealRunResult(2, "v3_not_enabled")
+    if capabilities.get("providers_ready") is not True:
+        return RealRunResult(2, "providers_not_ready")
+    if capabilities.get("accepts_uploads") is not True:
+        return RealRunResult(2, "uploads_not_ready")
+    if capabilities.get("accepts_new_jobs") is not True:
+        return RealRunResult(2, "new_jobs_not_ready")
+    try:
+        api.upload_authorized_sources(
+            config.matrix_path, config.authorization_ref, config.subset
+        )
+    except (RealRunUnavailable, OSError, TypeError, ValueError):
+        return RealRunResult(2, "authorized_source_upload_failed")
+    return RealRunResult(0, "preflight_passed")
 
 
 def execute_run_command(args: argparse.Namespace) -> int:
-    if args.environment != "local-fake":
+    if args.environment == "local-fake":
+        return execute_local_fake_run(args)
+    expected_sha = os.environ.get("AI_EDIT_V3_EXPECTED_SHA", "").strip()
+    authorization_ref = os.environ.get(
+        "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF", "",
+    ).strip()
+    if not expected_sha or not authorization_ref:
         return 2
-    return execute_local_fake_run(args)
+    try:
+        matrix_report = validate_matrix(args.matrix)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return 2
+    if not matrix_report.passed:
+        return 2
+    try:
+        api = build_real_run_api()
+    except RealRunUnavailable:
+        return 2
+    result = run_real_acceptance(api, RealRunConfig(
+        expected_sha=expected_sha,
+        environment=args.environment,
+        authorization_ref=authorization_ref,
+        matrix_path=args.matrix,
+        subset=args.subset,
+    ))
+    if result.exit_code != 0:
+        return result.exit_code
+    return execute_preflighted_cases(api, args)
 
 
 def execute_verify_command(args: argparse.Namespace) -> int:

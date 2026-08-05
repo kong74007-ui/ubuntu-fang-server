@@ -4588,6 +4588,19 @@ class V3Store:
         finally:
             connection.close()
 
+    def count_active_jobs(self) -> int:
+        terminal = tuple(sorted(TERMINAL_STATES))
+        placeholders = ",".join("?" for _ in terminal)
+        return self._read(
+            lambda connection: int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM edit_v3_jobs WHERE environment=? "
+                    f"AND state NOT IN ({placeholders})",
+                    (self.environment, *terminal),
+                ).fetchone()[0]
+            )
+        )
+
     @staticmethod
     def _same_values(
         row: sqlite3.Row,

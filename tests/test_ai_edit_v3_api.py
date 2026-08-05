@@ -201,6 +201,27 @@ class V3ApiDispatchTests(unittest.TestCase):
                 self.assertEqual(handler.response_json()["route"], expected_call)
                 self.assertEqual(self.service.calls[0][0], expected_call)
 
+    def test_capabilities_serializes_test_acceptance_contract(self):
+        acceptance = {
+            "environment": "test",
+            "deployed_sha": "a" * 40,
+            "active_v3_jobs": 0,
+            "v3_enabled": True,
+            "providers_ready": False,
+            "accepts_uploads": True,
+            "accepts_new_jobs": False,
+        }
+        self.service.get_capabilities = lambda owner: {
+            "items": {},
+            "acceptance": dict(acceptance),
+        }
+
+        handled, handler = self.call("GET", "/api/v3/edit/capabilities")
+
+        self.assertTrue(handled)
+        self.assertEqual(handler.statuses, [200])
+        self.assertEqual(handler.response_json()["acceptance"], acceptance)
+
     def test_non_v3_is_unhandled_and_unknown_v3_is_one_404_response(self):
         handled, handler = self.call("GET", "/api/v2/edit/jobs")
         self.assertFalse(handled)

@@ -25,6 +25,7 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
         "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS",
         "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED",
+        "AI_EDIT_V3_DEPLOYED_SHA",
     }
 )
 _SECURITY_COMPOUND_MARKERS = frozenset(
@@ -98,6 +99,7 @@ class FeatureConfig:
     temp_bytes_limit: int | None
     director_timeout_seconds: int = 120
     visual_program_enabled: bool = False
+    deployed_sha: str | None = None
 
 
 CapabilityStatus = Literal[
@@ -327,6 +329,15 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
     if environment is not None and environment not in {"test", "production"}:
         raise _error("config_environment_invalid", "AI_EDIT_V3_ENVIRONMENT")
 
+    deployed_sha = source.get("AI_EDIT_V3_DEPLOYED_SHA")
+    if (
+        deployed_sha is not None
+        and re.fullmatch(r"[0-9a-f]{40}", deployed_sha) is None
+    ):
+        raise _error("config_deployed_sha_invalid", "AI_EDIT_V3_DEPLOYED_SHA")
+    if enabled and environment == "test":
+        _required(deployed_sha, "AI_EDIT_V3_DEPLOYED_SHA", True)
+
     worker_concurrency = _integer(
         source.get("AI_EDIT_V3_WORKER_CONCURRENCY"),
         "AI_EDIT_V3_WORKER_CONCURRENCY",
@@ -388,4 +399,5 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         temp_bytes_limit=temp_bytes_limit,
         director_timeout_seconds=director_timeout_seconds,
         visual_program_enabled=visual_program_enabled,
+        deployed_sha=deployed_sha,
     )
