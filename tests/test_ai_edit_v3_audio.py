@@ -150,6 +150,14 @@ class AudioPlanTests(unittest.TestCase):
             compile_audio_plan(_edit_plan(cues + [{**cues[1], "id": "fade_03", "start_ms": 400, "end_ms": 700}]), _timeline())
         with self.assertRaisesRegex(AudioPlanError, "volume_fade_target_invalid"):
             compile_audio_plan(_edit_plan([{**cues[1], "target": "not_declared"}]), _timeline())
+        with self.assertRaisesRegex(AudioPlanError, "volume_fade_target_range_invalid"):
+            compile_audio_plan(
+                _edit_plan([
+                    cues[0],
+                    {**cues[2], "start_ms": 0, "end_ms": 300},
+                ]),
+                _timeline(),
+            )
 
 
 class AudioGenerationTests(unittest.TestCase):

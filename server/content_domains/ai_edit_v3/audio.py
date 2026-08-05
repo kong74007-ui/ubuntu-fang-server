@@ -12,6 +12,7 @@ import re
 import time
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
+from .contracts import canonical_json
 from .media import MediaProcessError, probe_media, run_media_process
 from .providers.base import DefinitiveNotAccepted, ProviderResult, SubmissionUnknown
 from .providers.elevenlabs import AudioGenerator, MusicGenerationRequest, SfxGenerationRequest
@@ -22,6 +23,9 @@ _ID = re.compile(r"[a-z0-9_]{1,64}\Z")
 _PROTECTED_FACT = re.compile(r"\d|品牌|产品|价格|售价|元|折|型号|不能|不是|不含")
 _SFX_ROLES = frozenset({"reversal", "number", "method", "transition", "cta"})
 _MASTER_TRUE_PEAK_TARGET_DBTP = -1.5
+_PROVIDER_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_AUDIO_USAGE_KEYS = frozenset({"credits", "characters"})
 
 
 class AudioPlanError(ValueError):
@@ -46,6 +50,8 @@ class PrivateCos(Protocol):
         private: bool,
         if_absent: bool,
     ) -> Mapping[str, Any]: ...
+
+    def download_file(self, key: str, destination: str | Path) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +165,7 @@ def compile_audio_plan(
     ids: set[str] = set()
     sfx: list[SfxGenerationRequest] = []
     sfx_ids: set[str] = set()
+    sfx_ranges: dict[str, TimeRange] = {}
     bgm_descriptions: list[str] = []
     raw_fades: list[Mapping[str, Any]] = []
     for raw in cues:
@@ -193,6 +200,7 @@ def compile_audio_plan(
             if any(_ranges_overlap(cue_range, item) for item in protected):
                 raise AudioPlanError("sfx_protected_overlap")
             sfx_ids.add(cue_id)
+            sfx_ranges[cue_id] = cue_range
             sfx.append(
                 SfxGenerationRequest(
                     description.strip(),
@@ -217,6 +225,10 @@ def compile_audio_plan(
         start = int(raw["start_ms"])
         end = int(raw["end_ms"])
         interval = TimeRange(start, end)
+        if target != "bgm":
+            target_range = sfx_ranges[str(target)]
+            if start < target_range.start_ms or end > target_range.end_ms:
+                raise AudioPlanError("volume_fade_target_range_invalid")
         if any(_ranges_overlap(interval, other) for other in by_target.setdefault(str(target), [])):
             raise AudioPlanError("volume_fade_overlap")
         by_target[str(target)].append(interval)
@@ -314,14 +326,86 @@ def _generate_one(
                 return generator.generate_music(request, output_path=path, idempotency_key=operation, deadline_at=deadline_at)  # type: ignore[arg-type]
             return generator.generate_sfx(request, output_path=path, idempotency_key=operation, deadline_at=deadline_at)  # type: ignore[arg-type]
         except SubmissionUnknown:
-            raise AudioGenerationError(f"{kind}_submission_unknown") from None
+            raise
         except DefinitiveNotAccepted as exc:
             last = exc
             continue
         except (OSError, TimeoutError, ValueError) as exc:
             last = exc
             continue
+    if isinstance(last, DefinitiveNotAccepted):
+        raise last
     raise AudioGenerationError(f"{kind}_generation_failed") from last
+
+
+def _validate_audio_receipt(
+    value: object,
+    *,
+    cue_id: str,
+    kind: Literal["bgm", "sfx"],
+    object_key: str,
+    model: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise AudioGenerationError("audio_receipt_invalid")
+    exact_keys = {
+        "request_id", "cue_id", "kind", "object_key", "sha256",
+        "duration_ms", "sample_rate", "channels", "provider_request_id",
+        "usage", "model",
+    }
+    if set(value) != exact_keys:
+        raise AudioGenerationError("audio_receipt_invalid")
+    request_id = value.get("request_id")
+    provider_request_id = value.get("provider_request_id")
+    usage = value.get("usage")
+    duration_ms = value.get("duration_ms")
+    sample_rate = value.get("sample_rate")
+    channels = value.get("channels")
+    digest = value.get("sha256")
+    if (
+        value.get("cue_id") != cue_id
+        or value.get("kind") != kind
+        or value.get("object_key") != object_key
+        or value.get("model") != model
+        or not isinstance(request_id, str)
+        or _PROVIDER_IDENTIFIER.fullmatch(request_id) is None
+        or provider_request_id != request_id
+        or not isinstance(digest, str)
+        or _SHA256.fullmatch(digest) is None
+        or isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or duration_ms <= 0
+        or sample_rate != 48_000
+        or isinstance(sample_rate, bool)
+        or channels != 2
+        or isinstance(channels, bool)
+        or not isinstance(usage, Mapping)
+        or not set(usage).issubset(_AUDIO_USAGE_KEYS)
+    ):
+        raise AudioGenerationError("audio_receipt_invalid")
+    normalized_usage: dict[str, int | float] = {}
+    for name, amount in usage.items():
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount)
+            or amount < 0
+        ):
+            raise AudioGenerationError("audio_receipt_invalid")
+        normalized_usage[str(name)] = amount
+    return {
+        "request_id": request_id,
+        "cue_id": cue_id,
+        "kind": kind,
+        "object_key": object_key,
+        "sha256": digest,
+        "duration_ms": duration_ms,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "provider_request_id": provider_request_id,
+        "usage": normalized_usage,
+        "model": model,
+    }
 
 
 def generate_task_audio(
@@ -331,6 +415,8 @@ def generate_task_audio(
     cos: PrivateCos,
     output_root: Path,
     context: Any,
+    *,
+    provider_once: Any | None = None,
 ) -> tuple[GeneratedAudioAsset, ...]:
     job_id = _safe_job_id(job_id)
     if not isinstance(plan, AudioGenerationPlan):
@@ -353,9 +439,48 @@ def generate_task_audio(
         context.assert_active()
         provider_path = task_root / f".{cue_id}.provider-audio"
         path = task_root / f"{cue_id}.wav"
-        try:
-            result = _generate_one(kind=kind, cue_id=cue_id, request=request, generator=generator, path=provider_path, key=job_id, deadline_at=float(deadline_at))
-            expected = plan.duration_ms if kind == "bgm" else request.duration_ms
+        operation_key = (
+            f"ai-edit-v3:{job_id}:audio:bgm"
+            if kind == "bgm"
+            else f"ai-edit-v3:{job_id}:audio:sfx:{cue_id}"
+        )
+        request_document = {
+            "version": "audio-generation-v1",
+            "kind": kind,
+            "cue_id": cue_id,
+            "prompt": request.prompt,
+            "duration_ms": request.duration_ms,
+            "model": "music_v2" if kind == "bgm" else "eleven_text_to_sound_v2",
+            **(
+                {
+                    "required": request.required,
+                    "start_ms": request.start_ms,
+                    "end_ms": request.end_ms,
+                }
+                if isinstance(request, SfxGenerationRequest)
+                else {}
+            ),
+        }
+        request_sha256 = hashlib.sha256(canonical_json(request_document)).hexdigest()
+        generated_request_id = "generated-" + hashlib.sha256(
+            f"{operation_key}:{request_sha256}".encode("utf-8")
+        ).hexdigest()
+        expected = plan.duration_ms if kind == "bgm" else request.duration_ms
+        environment = getattr(cos, "environment", "test")
+        if environment not in {"test", "production"}:
+            raise AudioGenerationError("audio_environment_invalid")
+        object_key = f"{environment}/ai-edit-v3/{job_id}/audio/{cue_id}.wav"
+
+        def produce() -> Mapping[str, Any]:
+            result = _generate_one(
+                kind=kind,
+                cue_id=cue_id,
+                request=request,
+                generator=generator,
+                path=provider_path,
+                key=job_id,
+                deadline_at=float(deadline_at),
+            )
             provider_sha = hashlib.sha256(provider_path.read_bytes()).hexdigest()
             payload_sha = result.payload.get("sha256")
             if payload_sha is not None and payload_sha != provider_sha:
@@ -367,11 +492,69 @@ def generate_task_audio(
                 deadline_at=float(deadline_at),
             )
             duration_ms, sample_rate, channels, digest = _audio_probe(path, expected)
-            environment = getattr(cos, "environment", "test")
-            if environment not in {"test", "production"}:
-                raise AudioGenerationError("audio_environment_invalid")
-            object_key = f"{environment}/ai-edit-v3/{job_id}/audio/{cue_id}.wav"
+            receipt = _validate_audio_receipt({
+                "request_id": result.request_id or generated_request_id,
+                "cue_id": cue_id,
+                "kind": kind,
+                "object_key": object_key,
+                "sha256": digest,
+                "duration_ms": duration_ms,
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "provider_request_id": result.request_id or generated_request_id,
+                "usage": dict(result.usage),
+                "model": request_document["model"],
+            }, cue_id=cue_id, kind=kind, object_key=object_key, model=request_document["model"])
             cos.put_file(path, object_key, "audio/wav", private=True, if_absent=True)
+            return receipt
+
+        try:
+            receipt = (
+                provider_once(
+                    provider="elevenlabs",
+                    capability=kind,
+                    operation_key=operation_key,
+                    request_sha256=request_sha256,
+                    call=produce,
+                )
+                if provider_once is not None
+                else produce()
+            )
+            receipt = _validate_audio_receipt(
+                receipt,
+                cue_id=cue_id,
+                kind=kind,
+                object_key=object_key,
+                model=request_document["model"],
+            )
+            def verified_local_asset() -> tuple[int, int, int, str] | None:
+                if not path.is_file():
+                    return None
+                try:
+                    probed = _audio_probe(path, expected)
+                except AudioGenerationError:
+                    return None
+                if (
+                    probed[3] != receipt["sha256"]
+                    or probed[0] != receipt["duration_ms"]
+                    or probed[1] != receipt["sample_rate"]
+                    or probed[2] != receipt["channels"]
+                ):
+                    return None
+                return probed
+
+            verified = verified_local_asset()
+            if verified is None:
+                download = getattr(cos, "download_file", None)
+                if not callable(download):
+                    raise AudioGenerationError("audio_receipt_restore_unavailable")
+                path.unlink(missing_ok=True)
+                download(object_key, path)
+                verified = verified_local_asset()
+            if verified is None:
+                path.unlink(missing_ok=True)
+                raise AudioGenerationError("audio_receipt_asset_mismatch")
+            duration_ms, sample_rate, channels, digest = verified
             assets.append(
                 GeneratedAudioAsset(
                     cue_id=cue_id,
@@ -382,15 +565,17 @@ def generate_task_audio(
                     duration_ms=duration_ms,
                     sample_rate=sample_rate,
                     channels=channels,
-                    provider_request_id=result.request_id or f"{result.provider}-{cue_id}",
-                    usage=dict(result.usage),
+                    provider_request_id=str(receipt["provider_request_id"]),
+                    usage=dict(receipt["usage"]),
                 )
             )
-        except AudioGenerationError:
+        except DefinitiveNotAccepted as exc:
             if required:
-                raise
+                raise AudioGenerationError(f"{kind}_generation_failed") from exc
             if path.exists():
                 path.unlink()
+        except AudioGenerationError:
+            raise
         finally:
             provider_path.unlink(missing_ok=True)
     context.assert_active()
@@ -471,6 +656,122 @@ def _run(argv: Sequence[str], deadline_at: float, maximum: float = 120) -> tuple
     return result.stdout, result.stderr
 
 
+def _fade_expression(
+    fades: Sequence[VolumeFade],
+    *,
+    target: str,
+    offset_ms: int,
+    duration_ms: int,
+) -> str | None:
+    selected = [fade for fade in fades if fade.target == target]
+    if not selected:
+        return None
+    ordered = sorted(selected, key=lambda item: (item.start_ms, item.end_ms))
+    expression = f"pow(10,({ordered[-1].to_db:.3f})/20)"
+    for fade in reversed(ordered):
+        start_ms = fade.start_ms - offset_ms
+        end_ms = fade.end_ms - offset_ms
+        if start_ms < 0 or end_ms > duration_ms or end_ms <= start_ms:
+            raise AudioGenerationError("volume_fade_target_range_invalid")
+        start = start_ms / 1000
+        end = end_ms / 1000
+        span = end - start
+        delta = fade.to_db - fade.from_db
+        gain = (
+            f"pow(10,({fade.from_db:.3f}+({delta:.3f})*"
+            f"(t-{start:.3f})/{span:.3f})/20)"
+        )
+        before_gain = f"pow(10,({fade.from_db:.3f})/20)"
+        expression = (
+            f"if(lt(t,{start:.3f}),{before_gain},"
+            f"if(between(t,{start:.3f},{end:.3f}),{gain},{expression}))"
+        )
+    return expression
+
+
+def _build_mix_filter_graph(
+    source_segments: Sequence[SourceSegment],
+    plan: AudioGenerationPlan,
+    ordered_sfx: Sequence[GeneratedAudioAsset],
+) -> tuple[list[str], list[str]]:
+    seconds = plan.duration_ms / 1000
+    filters: list[str] = []
+    voice_labels: list[str] = []
+    for index, segment in enumerate(source_segments):
+        label = f"voice_{index}"
+        filters.append(
+            f"[0:a]atrim=start={segment.start_ms / 1000:.3f}:"
+            f"end={segment.end_ms / 1000:.3f},asetpts=PTS-STARTPTS[{label}]"
+        )
+        voice_labels.append(f"[{label}]")
+    filters.append(
+        f"{''.join(voice_labels)}concat=n={len(voice_labels)}:v=0:a=1,"
+        "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
+        f"apad,atrim=duration={seconds:.3f}[voice_base]"
+    )
+    voice_split_labels = ["[voice_mix]", "[voice_bgm]"] + [
+        f"[voice_sfx_{offset}]" for offset in range(2, 2 + len(ordered_sfx))
+    ]
+    filters.append(
+        f"[voice_base]asplit={len(voice_split_labels)}{''.join(voice_split_labels)}"
+    )
+    filters.append(
+        "[1:a]aloop=loop=-1:size=2147483647,"
+        f"atrim=duration={seconds:.3f},aresample=48000,"
+        "aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.12[bgm_base]"
+    )
+    bgm_expression = _fade_expression(
+        plan.volume_fades,
+        target="bgm",
+        offset_ms=0,
+        duration_ms=plan.duration_ms,
+    )
+    filters.append(
+        f"[bgm_base]volume=eval=frame:volume='{bgm_expression}'[bgm_automated]"
+        if bgm_expression is not None
+        else "[bgm_base]anull[bgm_automated]"
+    )
+    filters.append(
+        "[bgm_automated][voice_bgm]"
+        "sidechaincompress=threshold=0.015:ratio=12:attack=10:release=250[bgm_ducked]"
+    )
+    mix_labels = ["[voice_mix]", "[bgm_ducked]"]
+    expected_sfx = {item.cue_id: item for item in plan.sfx}
+    for offset, asset in enumerate(ordered_sfx, start=2):
+        request = expected_sfx[asset.cue_id]
+        base_label = f"sfx_{offset}_base"
+        automated_label = f"sfx_{offset}_automated"
+        delayed_label = f"sfx_{offset}_delayed"
+        label = f"sfx_{offset}"
+        filters.append(
+            f"[{offset}:a]atrim=duration={request.duration_ms / 1000:.3f},"
+            "asetpts=PTS-STARTPTS,aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            f"volume=0.32[{base_label}]"
+        )
+        expression = _fade_expression(
+            plan.volume_fades,
+            target=asset.cue_id,
+            offset_ms=request.start_ms,
+            duration_ms=request.duration_ms,
+        )
+        filters.append(
+            f"[{base_label}]volume=eval=frame:volume='{expression}'[{automated_label}]"
+            if expression is not None
+            else f"[{base_label}]anull[{automated_label}]"
+        )
+        filters.append(
+            f"[{automated_label}]adelay={request.start_ms}|{request.start_ms}[{delayed_label}]"
+        )
+        filters.append(
+            f"[{delayed_label}][voice_sfx_{offset}]"
+            "sidechaincompress=threshold=0.020:ratio=8:attack=5:release=120"
+            f"[{label}]"
+        )
+        mix_labels.append(f"[{label}]")
+    return filters, mix_labels
+
+
 def build_master_audio(
     voice_source: Path,
     source_segments: Sequence[SourceSegment],
@@ -520,23 +821,11 @@ def build_master_audio(
         if item.exists():
             item.unlink()
     seconds = plan.duration_ms / 1000
-    filters: list[str] = []
-    voice_labels: list[str] = []
-    for index, segment in enumerate(source_segments):
-        label = f"voice_{index}"
-        filters.append(f"[0:a]atrim=start={segment.start_ms / 1000:.3f}:end={segment.end_ms / 1000:.3f},asetpts=PTS-STARTPTS[{label}]")
-        voice_labels.append(f"[{label}]")
-    filters.append(f"{''.join(voice_labels)}concat=n={len(voice_labels)}:v=0:a=1,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={seconds:.3f}[voice_base]")
-    filters.append("[voice_base]asplit=2[voice_mix][voice_sidechain]")
-    filters.append(f"[1:a]aloop=loop=-1:size=2147483647,atrim=duration={seconds:.3f},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.12[bgm_base]")
-    filters.append("[bgm_base][voice_sidechain]sidechaincompress=threshold=0.015:ratio=12:attack=10:release=250[bgm_ducked]")
-    mix_labels = ["[voice_mix]", "[bgm_ducked]"]
-    for offset, asset in enumerate(ordered_sfx, start=2):
-        request = expected_sfx[asset.cue_id]
-        start_ms = request.start_ms
-        label = f"sfx_{offset}"
-        filters.append(f"[{offset}:a]atrim=duration={request.duration_ms / 1000:.3f},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.32,adelay={start_ms}|{start_ms}[{label}]")
-        mix_labels.append(f"[{label}]")
+    filters, mix_labels = _build_mix_filter_graph(
+        source_segments,
+        plan,
+        ordered_sfx,
+    )
     filters.append(f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:duration=longest:normalize=0,atrim=duration={seconds:.3f}[master]")
     command = ["ffmpeg", "-hide_banner", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", os.fspath(voice), "-i", os.fspath(bgm_path)]
     for path in input_paths[2:]:

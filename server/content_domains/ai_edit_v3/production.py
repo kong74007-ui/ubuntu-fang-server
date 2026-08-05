@@ -56,7 +56,7 @@ from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_m
 from .materials import MaterialError, bind_scene_materials, validate_generated_material_review
 from .overlay_catalog import load_overlay_placement_catalog, overlay_budget_index
 from .providers.asr import normalize_asr_result
-from .providers.base import ProviderResult
+from .providers.base import DefinitiveNotAccepted, ProviderResult
 from .providers.qwen_compatible import DashScopeCompatibleQwenClient
 from .quality import run_blocking_quality
 from .renderers import RenderRequest
@@ -1311,8 +1311,8 @@ def invoke_provider_once(
 
     if not callable(call):
         raise ValueError("provider_call_invalid")
-    def completed_result(task: Any) -> Mapping[str, Any] | None:
-        if not isinstance(task, Mapping) or task.get("status") != "completed":
+    def frozen_result(task: Any, expected_status: str) -> Mapping[str, Any] | None:
+        if not isinstance(task, Mapping) or task.get("status") != expected_status:
             return None
         raw = task.get("result_json", task.get("result"))
         if isinstance(raw, str):
@@ -1324,12 +1324,41 @@ def invoke_provider_once(
             raise ValueError("provider_receipt_invalid")
         return dict(raw)
 
+    def replay_terminal(task: Any) -> Mapping[str, Any] | None:
+        completed = frozen_result(task, "completed")
+        if completed is not None:
+            return completed
+        failed = frozen_result(task, "failed")
+        if failed is not None:
+            if set(failed) != {"request_id", "reason_code"}:
+                raise ValueError("provider_receipt_invalid")
+            reason_code = failed.get("reason_code")
+            if not isinstance(reason_code, str):
+                raise ValueError("provider_receipt_invalid")
+            raise DefinitiveNotAccepted(reason_code)
+        return None
+
+    def validate_immutable_intent(task: Any) -> None:
+        if task is None:
+            return
+        if not isinstance(task, Mapping):
+            raise ValueError("provider_receipt_invalid")
+        expected = {
+            "stage": stage,
+            "provider": provider,
+            "capability": capability,
+            "request_sha256": request_sha256,
+        }
+        if any(task.get(name) != value for name, value in expected.items()):
+            raise ValueError("provider_intent_conflict")
+
     existing = store.get_provider_task_for_claim(
         context.claim,
         operation_key,
         now_ms,
     )
-    replay = completed_result(existing)
+    validate_immutable_intent(existing)
+    replay = replay_terminal(existing)
     if replay is not None:
         return replay
     if existing is not None and existing.get("status") != "intent_recorded":
@@ -1360,12 +1389,27 @@ def invoke_provider_once(
             operation_key,
             now_ms,
         )
-        replay = completed_result(existing)
+        validate_immutable_intent(existing)
+        replay = replay_terminal(existing)
         if replay is not None:
             return replay
         raise ValueError("provider_receipt_pending")
 
-    result = call()
+    try:
+        result = call()
+    except DefinitiveNotAccepted as exc:
+        external_id = "failure-" + hashlib.sha256(
+            f"{operation_key}:{exc.reason_code}".encode("utf-8")
+        ).hexdigest()
+        store.bind_provider_result(
+            context.claim,
+            operation_key,
+            external_id,
+            "failed",
+            {"request_id": external_id, "reason_code": exc.reason_code},
+            now_ms,
+        )
+        raise
     if isinstance(result, ProviderResult):
         external_id = result.request_id
         payload: Any = result.payload.get("content", result.payload)
@@ -2083,7 +2127,33 @@ class ProductionStageCoordinator:
                 _timeline_from_json(_json(root / "timeline.json"))
             )
             audio_plan = compile_audio_plan(plan, timeline)
-            generated = generate_task_audio(job_id, audio_plan, self.audio_generator, self.cos, root, context)
+            receipt_methods = (
+                "record_provider_intent",
+                "get_provider_task_for_claim",
+                "claim_provider_submission",
+                "bind_provider_result",
+            )
+            provider_once = None
+            if hasattr(context, "claim") and hasattr(context, "stage_attempt_id") and all(
+                callable(getattr(self.store, method, None)) for method in receipt_methods
+            ):
+                def provider_once(**kwargs: Any) -> Mapping[str, Any]:
+                    return invoke_provider_once(
+                        store=self.store,
+                        context=context,
+                        stage="generating_audio",
+                        now_ms=round(time.time() * 1000),
+                        **kwargs,
+                    )
+            generated = generate_task_audio(
+                job_id,
+                audio_plan,
+                self.audio_generator,
+                self.cos,
+                root,
+                context,
+                provider_once=provider_once,
+            )
             values = [
                 {
                     "cue_id": item.cue_id, "kind": item.kind, "relative_path": item.relative_path,

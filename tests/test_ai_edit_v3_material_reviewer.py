@@ -160,6 +160,10 @@ class MaterialReviewerTests(unittest.TestCase):
         self.assertTrue(callable(invoke_once), "real-store provider receipt helper is required")
         completed = {
             "status": "completed",
+            "stage": "generating_images",
+            "provider": "dashscope",
+            "capability": "material_review",
+            "request_sha256": "b" * 64,
             "external_id": "review-request-1",
             "result_json": json.dumps({
                 "result": "pass",
@@ -235,12 +239,19 @@ class MaterialReviewerTests(unittest.TestCase):
 
             def record_provider_intent(self, *args):
                 self.intent_calls.append(args)
-                self.task = {"status": "intent_recorded"}
+                self.task = {
+                    "status": "intent_recorded",
+                    "stage": args[1],
+                    "provider": args[3],
+                    "capability": args[4],
+                    "request_sha256": args[6],
+                }
                 return self.task
 
             def bind_provider_result(self, *args):
                 self.bind_calls.append(args)
                 self.task = {
+                    **self.task,
                     "status": "completed",
                     "external_id": args[2],
                     "result_json": json.dumps(args[4]),
@@ -288,6 +299,10 @@ class MaterialReviewerTests(unittest.TestCase):
                 self.task = {
                     "status": "intent_recorded",
                     "stage_attempt_id": "stage-attempt-1",
+                    "stage": "generating_images",
+                    "provider": "dashscope",
+                    "capability": "material_review",
+                    "request_sha256": "b" * 64,
                 }
                 self.claim_calls = []
                 self.intent_calls = []
@@ -300,6 +315,10 @@ class MaterialReviewerTests(unittest.TestCase):
                 self.task = {
                     "status": "intent_recorded",
                     "stage_attempt_id": args[2],
+                    "stage": args[1],
+                    "provider": args[3],
+                    "capability": args[4],
+                    "request_sha256": args[6],
                 }
                 return self.task
 
@@ -307,11 +326,12 @@ class MaterialReviewerTests(unittest.TestCase):
                 if self.task["stage_attempt_id"] != args[2]:
                     raise ValueError("provider_attempt_mismatch")
                 self.claim_calls.append(args)
-                self.task = {"status": "submitting"}
+                self.task = {**self.task, "status": "submitting"}
                 return True
 
             def bind_provider_result(self, *args):
                 self.task = {
+                    **self.task,
                     "status": "completed",
                     "external_id": args[2],
                     "result_json": json.dumps(args[4]),
