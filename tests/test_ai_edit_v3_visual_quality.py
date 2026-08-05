@@ -15,18 +15,19 @@ class VisualQualityEvidenceTests(unittest.TestCase):
 
         with TemporaryDirectory() as folder:
             output_root = Path(folder)
-            snapshot = output_root / "snapshots" / "frame-001.png"
+            snapshot = output_root / "snapshots" / "frame-00-at-0.5s.png"
             snapshot.parent.mkdir()
             with snapshot.open("wb") as output:
                 output.seek(33 * 1024 * 1024)
                 output.write(b"x")
-            render = {"snapshots": ["snapshots/frame-001.png"]}
+            render = {"snapshots": ["snapshots/frame-00-at-0.5s.png"]}
             report = {
                 "snapshots": [
                     {
-                        "path": "frame-001.png",
+                        "path": "frame-00-at-0.5s.png",
                         "size_bytes": 1,
                         "sha256": "0" * 64,
+                        "timestamp_ms": 500,
                     }
                 ]
             }
@@ -54,17 +55,18 @@ class VisualQualityEvidenceTests(unittest.TestCase):
 
         with TemporaryDirectory() as folder:
             output_root = Path(folder)
-            snapshot = output_root / "snapshots" / "frame-001.png"
+            snapshot = output_root / "snapshots" / "frame-00-at-0.5s.png"
             snapshot.parent.mkdir()
             snapshot.write_bytes(b"png-fixture")
             digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
-            render = {"snapshots": ["snapshots/frame-001.png"]}
+            render = {"snapshots": ["snapshots/frame-00-at-0.5s.png"]}
             report = {
                 "snapshots": [
                     {
-                        "path": "frame-001.png",
+                        "path": "frame-00-at-0.5s.png",
                         "size_bytes": snapshot.stat().st_size,
                         "sha256": digest,
+                        "timestamp_ms": 500,
                     }
                 ]
             }
@@ -78,7 +80,7 @@ class VisualQualityEvidenceTests(unittest.TestCase):
 
         self.assertEqual(1, len(evidence))
         self.assertEqual(digest, evidence[0]["frame_sha256"])
-        self.assertEqual(0, evidence[0]["timestamp_ms"])
+        self.assertEqual(500, evidence[0]["timestamp_ms"])
         self.assertEqual(snapshot.resolve(), evidence[0]["local_path"])
 
     def test_snapshot_inputs_fail_closed_on_missing_escape_or_hash_mismatch(self):
@@ -88,25 +90,26 @@ class VisualQualityEvidenceTests(unittest.TestCase):
 
         with TemporaryDirectory() as folder:
             output_root = Path(folder)
-            snapshot = output_root / "snapshots" / "frame-001.png"
+            snapshot = output_root / "snapshots" / "frame-00-at-0.5s.png"
             snapshot.parent.mkdir()
             snapshot.write_bytes(b"png-fixture")
             digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
             valid_report = {
                 "snapshots": [
                     {
-                        "path": "frame-001.png",
+                        "path": "frame-00-at-0.5s.png",
                         "size_bytes": snapshot.stat().st_size,
                         "sha256": digest,
+                        "timestamp_ms": 500,
                     }
                 ]
             }
 
             cases = (
                 ({"snapshots": []}, valid_report),
-                ({"snapshots": ["../frame-001.png"]}, valid_report),
+                ({"snapshots": ["../frame-00-at-0.5s.png"]}, valid_report),
                 (
-                    {"snapshots": ["snapshots/frame-001.png"]},
+                    {"snapshots": ["snapshots/frame-00-at-0.5s.png"]},
                     {
                         "snapshots": [
                             {

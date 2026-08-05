@@ -69,7 +69,7 @@ test("render command is fixed, silent, strict and does not inherit provider secr
 test("render report binds verified inputs, output, frames and snapshots", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "v3-report-"));
   const output = path.join(root, "silent.mp4");
-  const snapshot = path.join(root, "frame.png");
+  const snapshot = path.join(root, "frame-00-at-0.5s.png");
   await writeFile(output, Buffer.from("video"));
   await writeFile(snapshot, Buffer.from("png"));
   const report = await buildRenderReport({
@@ -85,5 +85,6 @@ test("render report binds verified inputs, output, frames and snapshots", async 
   assert.equal(report.output.sha256, "b".repeat(64));
   assert.deepEqual(report.verified_inputs, [{path: "media/source.mp4", size_bytes: 5, sha256: "a".repeat(64)}]);
   assert.equal(report.snapshots[0].sha256, "f".repeat(64));
+  assert.equal(report.snapshots[0].timestamp_ms, 500);
   assert.equal(JSON.parse(await readFile(output.replace(/\.mp4$/, ".report.json"), "utf8")).status, "done");
 });

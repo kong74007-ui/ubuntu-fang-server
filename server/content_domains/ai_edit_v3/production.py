@@ -513,15 +513,23 @@ def _verified_snapshot_inputs(
     ):
         raise ValueError("quality_snapshot_evidence_invalid")
     evidence: list[dict[str, Any]] = []
-    denominator = max(1, len(render_items) - 1)
-    for index, (relative, item) in enumerate(zip(render_items, report_items)):
+    for relative, item in zip(render_items, report_items):
         if not isinstance(item, Mapping) or set(item) != {
-            "path", "size_bytes", "sha256"
+            "path", "size_bytes", "sha256", "timestamp_ms"
         }:
             raise ValueError("quality_snapshot_evidence_invalid")
         name = item.get("path")
         size = item.get("size_bytes")
         digest = item.get("sha256")
+        timestamp_ms = item.get("timestamp_ms")
+        timestamp_match = re.fullmatch(
+            r"frame-\d+-at-(\d+(?:\.\d+)?)s\.png",
+            name if isinstance(name, str) else "",
+        )
+        filename_timestamp_ms = (
+            round(float(timestamp_match.group(1)) * 1000)
+            if timestamp_match is not None else None
+        )
         expected_relative = f"snapshots/{name}" if isinstance(name, str) else ""
         candidate = root / relative
         if (
@@ -533,6 +541,10 @@ def _verified_snapshot_inputs(
             or not 1 <= size <= 32 * 1024 * 1024
             or not isinstance(digest, str)
             or _VARIATION_SHA256.fullmatch(digest) is None
+            or isinstance(timestamp_ms, bool)
+            or not isinstance(timestamp_ms, int)
+            or not 0 <= timestamp_ms <= duration_ms
+            or timestamp_ms != filename_timestamp_ms
             or candidate.is_symlink()
             or not candidate.is_file()
         ):
@@ -574,9 +586,6 @@ def _verified_snapshot_inputs(
             raise ValueError("quality_snapshot_evidence_invalid") from exc
         if total != size or hasher.hexdigest() != digest:
             raise ValueError("quality_snapshot_evidence_invalid")
-        timestamp_ms = 0 if len(render_items) == 1 else round(
-            index * duration_ms / denominator
-        )
         evidence.append({
             "local_path": resolved,
             "frame_sha256": digest,
