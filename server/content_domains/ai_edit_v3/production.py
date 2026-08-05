@@ -3575,6 +3575,155 @@ class ProductionStageCoordinator:
     def run_stage(self, name: str, job: Mapping[str, Any], context: Any) -> StageOutcome:
         return self._stage(name, job, context)
 
+    def read(self, owner: str, job: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Assemble a test-only acceptance snapshot from frozen local authority."""
+
+        if (
+            self.store.environment != "test"
+            or not isinstance(owner, str)
+            or job.get("owner_id") != owner
+        ):
+            raise FileNotFoundError("acceptance_evidence_not_found")
+        job_id = str(job.get("job_id", ""))
+        summary = self.store.acceptance_execution_summary(owner, job_id)
+        if not isinstance(summary, Mapping):
+            raise FileNotFoundError("acceptance_evidence_not_found")
+        authoritative_job = summary.get("job")
+        if not isinstance(authoritative_job, Mapping):
+            raise ValueError("acceptance_evidence_job_invalid")
+        held = int(authoritative_job.get("confirmed_preheld_total") or 0)
+        refunded = int(authoritative_job.get("confirmed_refunded_total") or 0)
+        state = str(authoritative_job.get("state"))
+        settlement_state = {
+            "completed": "settled",
+            "refunded": "refunded",
+            "prehold_absent": "prehold_absent",
+            "failed_reconciliation_pending": "reconciliation_pending",
+            "failed_asset_decision_pending": "asset_decision_pending",
+        }.get(state)
+        if settlement_state is None:
+            raise FileNotFoundError("acceptance_evidence_not_ready")
+        latest_attempt_ids = summary.get("latest_attempt_ids")
+        attempt_id = None
+        if isinstance(latest_attempt_ids, Mapping):
+            attempt_id = latest_attempt_ids.get("rendering")
+            if attempt_id is None and latest_attempt_ids:
+                attempt_id = next(reversed(tuple(latest_attempt_ids.values())))
+        if state != "completed":
+            return {
+                "normalized_request_sha256": str(authoritative_job["request_sha256"]),
+                "attempt_id": attempt_id,
+                "stage_timings_ms": dict(summary.get("stage_timings_ms") or {}),
+                "plan_schema_sha256": None,
+                "material_decisions": [],
+                "provider_usage": list(summary.get("provider_evidence") or ()),
+                "audio_evidence": {},
+                "renderer_build_id": None,
+                "render_manifest_sha256": None,
+                "qc": {},
+                "settlement": {
+                    "state": settlement_state,
+                    "charged_points": max(0, held - refunded),
+                    "refunded_points": refunded,
+                },
+                "publication_generation": summary.get("publication_generation"),
+                "asset_id": authoritative_job.get("asset_id"),
+                "stable_cos_key": authoritative_job.get("delivery_object_key"),
+                "output_sha256": None,
+            }
+        root = self._root(job_id)
+        attempt = self._render_attempt(authoritative_job)
+        required_paths = {
+            "plan": root / "plan.json",
+            "materials": root / "materials.json",
+            "master": root / "master.json",
+            "compile": root / f"compile-{attempt}.json",
+            "quality": root / f"quality-{attempt}.json",
+        }
+        if any(not path.is_file() for path in required_paths.values()):
+            raise FileNotFoundError("acceptance_evidence_not_ready")
+        plan = _json(required_paths["plan"])
+        materials = _json(required_paths["materials"])
+        master = _json(required_paths["master"])
+        compiled = _json(required_paths["compile"])
+        quality = _json(required_paths["quality"])
+        manifest_path = root / str(compiled["input_root"]) / "render-manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError("acceptance_evidence_not_ready")
+        manifest = _json(manifest_path)
+        final = quality.get("final")
+        if not isinstance(final, Mapping):
+            raise ValueError("acceptance_evidence_final_invalid")
+
+        material_decisions = []
+        for item in materials.get("items", ()):
+            if not isinstance(item, Mapping):
+                raise ValueError("acceptance_evidence_material_invalid")
+            material_decisions.append({
+                "material_id": str(item.get("material_id", "")),
+                "source": str(item.get("source", "uploaded")),
+                "sha256": str(item.get("sha256", "")),
+                "decision": "selected",
+            })
+        provider_usage = list(summary.get("provider_evidence") or ())
+        generated_audio_path = root / "generated-audio.json"
+        if generated_audio_path.is_file():
+            for item in _json(generated_audio_path).get("items", ()):
+                if not isinstance(item, Mapping):
+                    continue
+                provider_usage.append({
+                    "stage": "generating_audio",
+                    "provider": "elevenlabs",
+                    "capability": str(item.get("kind", "audio")),
+                    "request_id": item.get("provider_request_id"),
+                    "usage": dict(item.get("usage") or {}),
+                })
+        voice_path = root / "voice-source.json"
+        if voice_path.is_file():
+            voice = _json(voice_path)
+            provider_usage.append({
+                "stage": "generating_voice",
+                "provider": "website-cosyvoice",
+                "capability": "tts",
+                "request_id": voice.get("provider_request_id"),
+                "usage": {},
+            })
+
+        renderer_environment = manifest.get("renderer_environment")
+        renderer_build_id = (
+            renderer_environment.get("renderer_build_id")
+            if isinstance(renderer_environment, Mapping)
+            else None
+        )
+        return {
+            "normalized_request_sha256": str(authoritative_job["request_sha256"]),
+            "attempt_id": attempt_id,
+            "stage_timings_ms": dict(summary.get("stage_timings_ms") or {}),
+            "plan_schema_sha256": schema_sha256("edit-plan-2.0.schema.json"),
+            "material_decisions": material_decisions,
+            "provider_usage": provider_usage,
+            "audio_evidence": {
+                "dialogue_sha256": str(master["sha256"]),
+                "peak_dbfs": float(master["true_peak_dbtp"]),
+                "lufs": float(master["integrated_lufs"]),
+            },
+            "renderer_build_id": renderer_build_id,
+            "render_manifest_sha256": str(compiled["manifest_sha256"]),
+            "qc": {
+                "passed": bool(quality.get("passed")),
+                "report_sha256": str(quality["report_sha256"]),
+            },
+            "settlement": {
+                "state": settlement_state,
+                "charged_points": max(0, held - refunded),
+                "refunded_points": refunded,
+            },
+            "publication_generation": summary.get("publication_generation"),
+            "asset_id": authoritative_job.get("asset_id"),
+            "stable_cos_key": authoritative_job.get("delivery_object_key"),
+            "output_sha256": str(final["sha256"]),
+        }
+
 
 class CapabilityPlaceholder:
     def __init__(self, name: str, *, available: bool = True) -> None:

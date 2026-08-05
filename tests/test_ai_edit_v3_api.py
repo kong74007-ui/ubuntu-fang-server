@@ -100,6 +100,9 @@ class StubService:
     def get_result(self, owner, job_id):
         return self._result("job-result", owner, job_id)
 
+    def get_acceptance_evidence(self, owner, job_id):
+        return self._result("job-acceptance-evidence", owner, job_id)
+
     def retry_job(self, owner, job_id, idempotency_key, *, now):
         return self._result("job-retry", owner, job_id, idempotency_key, now=now)
 
@@ -179,6 +182,10 @@ class V3ApiDispatchTests(unittest.TestCase):
             ("GET", "/api/v3/edit/jobs/job-1", None, {}, "job-detail", 200),
             ("GET", "/api/v3/edit/jobs/job-1/plan", None, {}, "job-plan", 200),
             ("GET", "/api/v3/edit/jobs/job-1/result", None, {}, "job-result", 200),
+            (
+                "GET", "/api/v3/edit/jobs/job-1/acceptance-evidence", None, {},
+                "job-acceptance-evidence", 200,
+            ),
             (
                 "POST",
                 "/api/v3/edit/jobs/job-1/retry",

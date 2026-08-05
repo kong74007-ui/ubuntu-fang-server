@@ -640,6 +640,7 @@ class EditV3Service:
         result_signer: Callable[[str, int, str | None], str] | None = None,
         deployed_sha: str | None = None,
         acceptance_provider_identities: Mapping[str, str] | None = None,
+        acceptance_evidence_reader: Any | None = None,
     ) -> None:
         if not isinstance(store, V3Store):
             raise TypeError("store_invalid")
@@ -669,6 +670,7 @@ class EditV3Service:
         ):
             raise ValueError("acceptance_provider_identities_invalid")
         self._acceptance_provider_identities = MappingProxyType(identities)
+        self._acceptance_evidence_reader = acceptance_evidence_reader
 
     def now(self) -> int:
         return _require_now(self._clock())
@@ -2176,4 +2178,116 @@ class EditV3Service:
             "job_id": job_id,
             "state": job["state"],
             "result": public_result,
+        }
+
+    def get_acceptance_evidence(self, owner: str, job_id: str) -> dict[str, Any]:
+        owner = _require_owner(owner)
+        job_id = _require_identifier("job_id", job_id)
+        if self.environment != "test":
+            raise ServiceError("not_found", "resource was not found", status=404)
+        job = self.store.get_job_for_owner(
+            owner, job_id, environment=self.environment
+        )
+        if job is None:
+            raise ServiceError("not_found", "resource was not found", status=404)
+        reader = getattr(self._acceptance_evidence_reader, "read", None)
+        if not callable(reader):
+            raise ServiceError(
+                "acceptance_evidence_unavailable",
+                "acceptance evidence is unavailable",
+                status=503,
+            )
+        try:
+            evidence = reader(owner, dict(job))
+        except FileNotFoundError as exc:
+            raise ServiceError(
+                "acceptance_evidence_not_ready",
+                "acceptance evidence is not ready",
+                status=409,
+            ) from exc
+        except Exception as exc:
+            raise ServiceError(
+                "acceptance_evidence_unavailable",
+                "acceptance evidence is unavailable",
+                status=503,
+            ) from exc
+        required = {
+            "normalized_request_sha256", "attempt_id", "stage_timings_ms",
+            "plan_schema_sha256", "material_decisions", "provider_usage",
+            "audio_evidence", "renderer_build_id", "render_manifest_sha256",
+            "qc", "settlement", "publication_generation", "asset_id",
+            "stable_cos_key", "output_sha256",
+        }
+        if not isinstance(evidence, Mapping) or set(evidence) != required:
+            raise ServiceError(
+                "acceptance_evidence_invalid",
+                "acceptance evidence is invalid",
+                status=503,
+            )
+        def unsafe_acceptance_value(value: Any, field_name: str | None = None) -> bool:
+            if isinstance(value, Mapping):
+                return any(
+                    not isinstance(key, str)
+                    or any(marker in key.lower() for marker in (
+                        "access_key", "api_key", "authorization", "cookie",
+                        "credential", "local_path", "password", "private_key",
+                        "secret", "session", "signed", "token", "url",
+                    ))
+                    or unsafe_acceptance_value(item, key)
+                    for key, item in value.items()
+                )
+            if isinstance(value, (list, tuple)):
+                return any(unsafe_acceptance_value(item, field_name) for item in value)
+            if not isinstance(value, str):
+                return False
+            if field_name == "stable_cos_key":
+                return not (
+                    value.startswith(f"{self.environment}/ai-edit-v3/")
+                    and not _is_absolute_local_path(value)
+                    and "\\" not in value
+                    and "?" not in value
+                    and "#" not in value
+                    and all(part not in {"", ".", ".."} for part in value.split("/"))
+                )
+            return bool(
+                _has_control_or_surrogate(value)
+                or _is_absolute_local_path(value)
+                or "\\" in value
+                or "://" in value
+                or _QUERY_SECRET_VALUE.search(value) is not None
+            )
+        if unsafe_acceptance_value(evidence):
+            raise ServiceError(
+                "acceptance_evidence_invalid",
+                "acceptance evidence is invalid",
+                status=503,
+            )
+        try:
+            serialized = json.dumps(
+                dict(evidence), ensure_ascii=False, allow_nan=False,
+                separators=(",", ":"), sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ServiceError(
+                "acceptance_evidence_invalid",
+                "acceptance evidence is invalid",
+                status=503,
+            ) from exc
+        if (
+            evidence.get("normalized_request_sha256") != job["request_sha256"]
+            or re.search(
+                r"https?://|bearer\s|(?:token|secret|session|cookie|credential|authorization)[=:]",
+                serialized,
+                re.I,
+            )
+        ):
+            raise ServiceError(
+                "acceptance_evidence_invalid",
+                "acceptance evidence is invalid",
+                status=503,
+            )
+        return {
+            "job_id": job_id,
+            "state": job["state"],
+            "evidence": json.loads(serialized),
         }

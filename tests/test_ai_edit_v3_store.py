@@ -5693,6 +5693,30 @@ class V3LeaseTests(unittest.TestCase):
             recovered["result_json"],
         )
 
+    def test_acceptance_execution_summary_is_owner_scoped_and_uses_finished_attempts(self):
+        self.seed_job("job-acceptance-summary")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim, "queued", "a" * 64, 101_000
+        )
+        self.store.finish_stage_attempt(
+            claim, attempt["id"], "completed", 101_125
+        )
+        self.assertTrue(self.store.release_lease(claim, 101_200))
+
+        summary = self.store.acceptance_execution_summary(
+            "alice", "job-acceptance-summary"
+        )
+
+        self.assertEqual(125, summary["stage_timings_ms"]["queued"])
+        self.assertEqual(attempt["id"], summary["latest_attempt_ids"]["queued"])
+        self.assertEqual("price-v1", summary["job"]["pricing_version"])
+        self.assertIsNone(
+            self.store.acceptance_execution_summary(
+                "mallory", "job-acceptance-summary"
+            )
+        )
+
     def test_provider_submission_claim_has_one_winner(self):
         self.seed_job("job-provider-claim")
         claim = self.store.claim_next_job("worker-a", 30, 100_000)

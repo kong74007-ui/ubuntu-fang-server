@@ -5333,6 +5333,71 @@ class V3Store:
             )
         )
 
+    def acceptance_execution_summary(
+        self,
+        owner: str,
+        job_id: str,
+    ) -> dict[str, Any] | None:
+        owner = _require_nonblank("owner", owner)
+        job_id = _require_nonblank("job_id", job_id)
+
+        def read(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            job = connection.execute(
+                """SELECT j.*,q.pricing_version,q.max_points
+                   FROM edit_v3_jobs AS j
+                   JOIN edit_v3_quotes AS q ON q.quote_id=j.quote_id
+                   WHERE j.environment=? AND j.owner_id=? AND j.job_id=?""",
+                (self.environment, owner, job_id),
+            ).fetchone()
+            if job is None:
+                return None
+            attempts = tuple(connection.execute(
+                """SELECT id,stage,attempt,started_at,finished_at,status
+                   FROM edit_v3_stage_attempts
+                   WHERE job_id=? ORDER BY started_at,id""",
+                (job_id,),
+            ))
+            timings: dict[str, int] = {}
+            latest_attempt_ids: dict[str, str] = {}
+            for attempt in attempts:
+                if attempt["finished_at"] is None:
+                    continue
+                duration = max(0, int(attempt["finished_at"]) - int(attempt["started_at"]))
+                stage = str(attempt["stage"])
+                timings[stage] = timings.get(stage, 0) + duration
+                latest_attempt_ids[stage] = str(attempt["id"])
+            provider_evidence: list[dict[str, Any]] = []
+            for checkpoint in connection.execute(
+                "SELECT stage,output_json FROM edit_v3_checkpoints WHERE job_id=? ORDER BY created_at,id",
+                (job_id,),
+            ):
+                try:
+                    output = json.loads(checkpoint["output_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                evidence = output.get("provider_evidence") if isinstance(output, Mapping) else None
+                if isinstance(evidence, Mapping):
+                    provider_evidence.append({
+                        "stage": str(checkpoint["stage"]),
+                        "provider": evidence.get("provider"),
+                        "capability": evidence.get("capability"),
+                        "usage": dict(evidence.get("usage") or {}),
+                        "elapsed_ms": evidence.get("elapsed_ms"),
+                    })
+            publication_generation = connection.execute(
+                "SELECT MAX(publish_generation) FROM edit_v3_publish_intents WHERE job_id=?",
+                (job_id,),
+            ).fetchone()[0]
+            return {
+                "job": dict(job),
+                "stage_timings_ms": timings,
+                "latest_attempt_ids": latest_attempt_ids,
+                "provider_evidence": provider_evidence,
+                "publication_generation": publication_generation,
+            }
+
+        return self._read(read)
+
     def insert_pricing_version(
         self,
         version: str,

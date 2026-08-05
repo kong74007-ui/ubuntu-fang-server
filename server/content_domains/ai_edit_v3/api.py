@@ -20,6 +20,9 @@ _PLATFORM_PREVIEW = re.compile(r"/api/v3/edit/platform-assets/([^/]+)/preview\Z"
 _JOB_DETAIL = re.compile(r"/api/v3/edit/jobs/([^/]+)\Z")
 _JOB_PLAN = re.compile(r"/api/v3/edit/jobs/([^/]+)/plan\Z")
 _JOB_RESULT = re.compile(r"/api/v3/edit/jobs/([^/]+)/result\Z")
+_JOB_ACCEPTANCE_EVIDENCE = re.compile(
+    r"/api/v3/edit/jobs/([^/]+)/acceptance-evidence\Z"
+)
 _JOB_RETRY = re.compile(r"/api/v3/edit/jobs/([^/]+)/retry\Z")
 
 
@@ -127,7 +130,7 @@ _define_errors(
     "job",
 )
 _define_errors(
-    ("plan_not_ready", "result_not_ready"),
+    ("plan_not_ready", "result_not_ready", "acceptance_evidence_not_ready"),
     409,
     "任务结果尚未准备完成",
     "job",
@@ -184,6 +187,8 @@ _define_errors(
         "quote_storage_invalid",
         "quote_identity_invalid",
         "result_storage_invalid",
+        "acceptance_evidence_unavailable",
+        "acceptance_evidence_invalid",
         "service_unavailable",
         "upload_presign_unavailable",
         "upload_storage_failed",
@@ -343,6 +348,7 @@ def _route(path: str) -> tuple[str, tuple[str, ...], frozenset[str]] | None:
         (_UPLOAD_COMPLETE, "upload-complete", frozenset({"POST"})),
         (_JOB_PLAN, "job-plan", frozenset({"GET"})),
         (_JOB_RESULT, "job-result", frozenset({"GET"})),
+        (_JOB_ACCEPTANCE_EVIDENCE, "job-acceptance-evidence", frozenset({"GET"})),
         (_JOB_RETRY, "job-retry", frozenset({"POST"})),
         (_JOB_DETAIL, "job-detail", frozenset({"GET"})),
     ):
@@ -474,6 +480,9 @@ def dispatch(
             status = 200
         elif name == "job-result":
             result = service.get_result(owner, arguments[0])
+            status = 200
+        elif name == "job-acceptance-evidence":
+            result = service.get_acceptance_evidence(owner, arguments[0])
             status = 200
         elif name == "job-retry":
             body = _read_json(handler)

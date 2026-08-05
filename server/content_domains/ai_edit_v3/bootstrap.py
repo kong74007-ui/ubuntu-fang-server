@@ -537,6 +537,7 @@ def _build():
             "audio_generator": "elevenlabs-audio",
             "renderer": "hyperframes",
         },
+        acceptance_evidence_reader=coordinator,
     )
     service.platform_catalog = catalog
     return runtime, service

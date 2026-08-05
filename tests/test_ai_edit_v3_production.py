@@ -1452,6 +1452,107 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             self.assertTrue(first_bytes.startswith(b"\xff\xd8"))
             self.assertLessEqual(len(first_bytes), 256 * 1024)
 
+    def test_acceptance_reader_builds_refunded_snapshot_without_render_artifacts(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        job = {
+            "job_id": "job-refunded-1", "owner_id": "alice",
+            "request_sha256": "1" * 64, "repair_count": 0,
+            "state": "refunded", "confirmed_preheld_total": 30,
+            "confirmed_refunded_total": 30, "asset_id": None,
+            "delivery_object_key": None,
+        }
+
+        class Store:
+            environment = "test"
+
+            def acceptance_execution_summary(self, owner, job_id):
+                return {
+                    "job": dict(job), "stage_timings_ms": {"planning": 10},
+                    "latest_attempt_ids": {"planning": "stage-plan-1"},
+                    "provider_evidence": [], "publication_generation": None,
+                }
+
+        with tempfile.TemporaryDirectory() as folder:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.store = Store()
+            coordinator.work_root = Path(folder) / "work"
+            evidence = coordinator.read("alice", job)
+
+        self.assertEqual("refunded", evidence["settlement"]["state"])
+        self.assertEqual(30, evidence["settlement"]["refunded_points"])
+        self.assertEqual({}, evidence["qc"])
+        self.assertIsNone(evidence["output_sha256"])
+
+    def test_acceptance_reader_builds_completed_snapshot_from_frozen_artifacts(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        with tempfile.TemporaryDirectory() as folder:
+            job = {
+                "job_id": "job-acceptance-1", "owner_id": "alice",
+                "request_sha256": "1" * 64, "repair_count": 0,
+                "state": "completed", "confirmed_preheld_total": 30,
+                "confirmed_refunded_total": 6, "asset_id": "asset-1",
+                "delivery_object_key": (
+                    "test/ai-edit-v3/owner/job-acceptance-1/delivery/final.mp4"
+                ),
+            }
+
+            class Store:
+                environment = "test"
+
+                def acceptance_execution_summary(self, owner, job_id):
+                    return {
+                        "job": dict(job),
+                        "stage_timings_ms": {"planning": 10, "rendering": 20},
+                        "latest_attempt_ids": {"rendering": "stage-render-1"},
+                        "provider_evidence": [{
+                            "stage": "planning", "provider": "qwen",
+                            "capability": "director", "usage": {"tokens": 10},
+                            "elapsed_ms": 5,
+                        }],
+                        "publication_generation": 1,
+                    }
+
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.store = Store()
+            coordinator.work_root = Path(folder) / "work"
+            root = coordinator._root(job["job_id"])
+            (root / "render-1/input").mkdir(parents=True)
+
+            def write(path, payload):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            write(root / "plan.json", {"version": "2.0"})
+            write(root / "materials.json", {"items": [{
+                "material_id": "material-1", "sha256": "2" * 64,
+                "source": "uploaded",
+            }]})
+            write(root / "master.json", {
+                "sha256": "3" * 64, "true_peak_dbtp": -1.2,
+                "integrated_lufs": -16.0,
+            })
+            write(root / "compile-1.json", {
+                "input_root": "render-1/input", "manifest_sha256": "4" * 64,
+            })
+            write(root / "render-1/input/render-manifest.json", {
+                "renderer_environment": {"renderer_build_id": "sha256:" + "5" * 64},
+            })
+            write(root / "quality-1.json", {
+                "passed": True, "report_sha256": "6" * 64,
+                "final": {"sha256": "7" * 64},
+            })
+
+            evidence = coordinator.read("alice", job)
+
+            self.assertEqual("stage-render-1", evidence["attempt_id"])
+            self.assertEqual(24, evidence["settlement"]["charged_points"])
+            self.assertEqual(6, evidence["settlement"]["refunded_points"])
+            self.assertEqual("4" * 64, evidence["render_manifest_sha256"])
+            self.assertEqual("7" * 64, evidence["output_sha256"])
+            self.assertEqual("material-1", evidence["material_decisions"][0]["material_id"])
+
     def test_script_tts_retries_cos_persistence_without_provider_resubmit(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
         from server.content_domains.ai_edit_v3.providers import SubmissionUnknown

@@ -1818,6 +1818,112 @@ class V3ApplicationServiceTests(unittest.TestCase):
         )
         self.assertNotIn("acceptance", service.get_capabilities("alice"))
 
+    def test_acceptance_evidence_is_test_only_owner_scoped_and_reader_backed(self):
+        class Reader:
+            def __init__(self):
+                self.calls = []
+                self.leaked_path = None
+                self.leaked_key = None
+                self.nonfinite = False
+                self.stable_key = "test/ai-edit-v3/owner/job/delivery/final.mp4"
+
+            def read(self, owner, job):
+                self.calls.append((owner, job["job_id"]))
+                evidence = {
+                    "normalized_request_sha256": job["request_sha256"],
+                    "attempt_id": "attempt-final",
+                    "stage_timings_ms": {"planning": 10},
+                    "plan_schema_sha256": "a" * 64,
+                    "material_decisions": [],
+                    "provider_usage": [],
+                    "audio_evidence": {"dialogue_sha256": "b" * 64},
+                    "renderer_build_id": "sha256:" + "c" * 64,
+                    "render_manifest_sha256": "d" * 64,
+                    "qc": {"passed": True, "report_sha256": "e" * 64},
+                    "settlement": {
+                        "state": "settled", "charged_points": 1,
+                        "refunded_points": 0,
+                    },
+                    "publication_generation": 1,
+                    "asset_id": "asset-final",
+                    "stable_cos_key": self.stable_key,
+                    "output_sha256": "f" * 64,
+                }
+                if self.leaked_path is not None:
+                    evidence["provider_usage"] = [{"debug_path": self.leaked_path}]
+                if self.nonfinite:
+                    evidence["provider_usage"] = [{"usage": {"seconds": float("nan")}}]
+                if self.leaked_key is not None:
+                    evidence["provider_usage"] = [{"api_key": self.leaked_key}]
+                return evidence
+
+        reader = Reader()
+        service = EditV3Service(
+            self.store,
+            object_store=self.objects,
+            upload_inspector=self.inspector,
+            owner_hmac_secret=b"task-nine-test-secret",
+            enabled=True,
+            id_factory=SequentialIds(),
+            source_catalog=self.catalog,
+            capacity_gate=self.capacity,
+            capability_report=ready_capability_report(),
+            acceptance_evidence_reader=reader,
+        )
+        request = self.request()
+        quote = service.quote("alice", request, now=20_000)
+        job = service.create_job(
+            "alice", request, quote["quote_id"], "acceptance-evidence-1",
+            now=20_001,
+        )
+
+        result = service.get_acceptance_evidence("alice", job["job_id"])
+
+        self.assertEqual(job["job_id"], result["job_id"])
+        self.assertEqual("attempt-final", result["evidence"]["attempt_id"])
+        self.assertEqual([("alice", job["job_id"])], reader.calls)
+        reader.leaked_path = r"C:\private\acceptance\source.mp4"
+        with self.assertRaises(ServiceError) as leaked:
+            service.get_acceptance_evidence("alice", job["job_id"])
+        self.assertEqual("acceptance_evidence_invalid", leaked.exception.error_code)
+        reader.leaked_path = None
+        reader.nonfinite = True
+        with self.assertRaises(ServiceError) as nonfinite:
+            service.get_acceptance_evidence("alice", job["job_id"])
+        self.assertEqual("acceptance_evidence_invalid", nonfinite.exception.error_code)
+        reader.nonfinite = False
+        reader.leaked_key = "private-provider-key"
+        with self.assertRaises(ServiceError) as leaked_key:
+            service.get_acceptance_evidence("alice", job["job_id"])
+        self.assertEqual("acceptance_evidence_invalid", leaked_key.exception.error_code)
+        reader.leaked_key = None
+        reader.stable_key = "production/ai-edit-v3/owner/job/delivery/final.mp4"
+        with self.assertRaises(ServiceError) as wrong_environment:
+            service.get_acceptance_evidence("alice", job["job_id"])
+        self.assertEqual("acceptance_evidence_invalid", wrong_environment.exception.error_code)
+        reader.stable_key = "test/ai-edit-v3/owner/job/delivery/final.mp4"
+        with self.assertRaises(ServiceError) as foreign:
+            service.get_acceptance_evidence("bob", job["job_id"])
+        self.assertEqual(404, foreign.exception.status)
+        self.assertEqual(
+            [("alice", job["job_id"])] * 5,
+            reader.calls,
+        )
+
+        production_store = V3Store(
+            self.store.db_path,
+            v2_db_path=self.v2,
+            environment="production",
+        )
+        production = EditV3Service(
+            production_store,
+            acceptance_evidence_reader=reader,
+        )
+        with self.assertRaises(ServiceError) as hidden:
+            production.get_acceptance_evidence("alice", job["job_id"])
+        self.assertEqual(404, hidden.exception.status)
+        self.assertEqual([("alice", job["job_id"])] * 5, reader.calls)
+
     def test_foreign_or_missing_quote_is_404_before_authority_drift_checks(self):
         request = {
             "input_type": "platform_talking_head",
