@@ -688,13 +688,14 @@ class HttpRealRunApi:
                 or case["source"].get("authorization_ref") != authorization_ref
             ):
                 raise RealRunUnavailable("acceptance_authorization_mismatch")
-            expected[case_id] = case["source"]
+            if case.get("input_type") in {"uploaded_video", "uploaded_audio"}:
+                expected[case_id] = case["source"]
         if (
             not isinstance(payload, Mapping)
             or set(payload) != {"version", "sources"}
             or payload.get("version") != "1.0"
             or not isinstance(payload.get("sources"), list)
-            or not 1 <= len(payload["sources"]) <= 20
+            or not 0 <= len(payload["sources"]) <= 20
         ):
             raise RealRunUnavailable("asset_bindings_invalid")
         result: list[dict[str, str]] = []

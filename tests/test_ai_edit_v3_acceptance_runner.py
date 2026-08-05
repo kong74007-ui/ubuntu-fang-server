@@ -248,6 +248,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 "authorization_ref": "approval-test-only",
                 "cases": [{
                     "case_id": "case_01",
+                    "input_type": "uploaded_audio",
                     "authorization_ref": "approval-test-only",
                     "source": {
                         "alias": "bindings/case_01/source",
@@ -308,6 +309,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 "authorization_ref": "approval-test-only",
                 "cases": [{
                     "case_id": "case_01",
+                    "input_type": "uploaded_audio",
                     "authorization_ref": "approval-test-only",
                     "source": {
                         "alias": "bindings/case_01/source",
@@ -357,6 +359,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 "authorization_ref": "approval-test-only",
                 "cases": [{
                     "case_id": "case_01",
+                    "input_type": "uploaded_audio",
                     "authorization_ref": "approval-test-only",
                     "source": {
                         "alias": "bindings/case_01/source",
