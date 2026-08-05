@@ -33,6 +33,10 @@ from server.content_domains.ai_edit_v3.acceptance_verify import (
     probe_final_output,
     verify_quality_evidence,
 )
+from server.content_domains.ai_edit_v3.contracts import (
+    normalize_job_request,
+    request_fingerprint,
+)
 
 
 INPUT_TYPES = (
@@ -331,7 +335,7 @@ def execute_local_fake_run(args: argparse.Namespace) -> int:
             "concurrency": args.concurrency,
             "subset": args.subset,
             "case_ids": [case["case_id"] for case in cases],
-            "case_source_sha256": {
+            "case_request_sha256": {
                 case["case_id"]: case["source"]["sha256"] for case in cases
             },
         }
@@ -424,7 +428,7 @@ class _LocalFixtureApi:
         return dict(self.response["quote"])
 
     def create_job(self, idempotency_key: str) -> str:
-        if not idempotency_key.endswith(f"/{self.case_id}"):
+        if not idempotency_key.endswith(f":{self.case_id}"):
             raise ValueError("idempotency_key_mismatch")
         if idempotency_key in self.created_idempotency_keys:
             raise ValueError("duplicate_idempotency_key")
@@ -432,7 +436,13 @@ class _LocalFixtureApi:
         return str(self.response["job_id"])
 
     def get_job(self, job_id: str) -> dict[str, str]:
-        return {"job_id": job_id, "status": str(self.response["status"])}
+        status = str(self.response["status"])
+        if (
+            status == "failed"
+            and self.response.get("settlement", {}).get("state") == "prehold_absent"
+        ):
+            status = "prehold_absent"
+        return {"job_id": job_id, "status": status}
 
     def get_result(self, job_id: str) -> Mapping[str, Any]:
         return json.loads(json.dumps(self.response))
@@ -696,6 +706,7 @@ class HttpRealRunApi:
         *,
         expected_statuses: tuple[int, ...],
         session: TestSession | None = None,
+        idempotency_key: str | None = None,
     ) -> Mapping[str, Any]:
         data = None
         headers = {
@@ -711,6 +722,10 @@ class HttpRealRunApi:
                 sort_keys=True,
             ).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        if idempotency_key is not None:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", idempotency_key):
+                raise RealRunUnavailable("idempotency_key_invalid")
+            headers["Idempotency-Key"] = idempotency_key
         request = urllib.request.Request(
             self._origin + path,
             data=data,
@@ -763,50 +778,13 @@ class HttpRealRunApi:
             ).get("version")
         except (OSError, AttributeError, json.JSONDecodeError) as exc:
             raise RealRunUnavailable("asset_bindings_invalid") from exc
-        if binding_version == "2.0":
-            self._prepare_authorized_cases_v2(
-                matrix_path,
-                authorization_ref=authorization_ref,
-                subset=subset,
-            )
-            return
-        sources = self._load_authorized_sources(
-            matrix_path, authorization_ref=authorization_ref, subset=subset
+        if binding_version != "2.0":
+            raise RealRunUnavailable("asset_bindings_version_unsupported")
+        self._prepare_authorized_cases_v2(
+            matrix_path,
+            authorization_ref=authorization_ref,
+            subset=subset,
         )
-        uploaded: dict[str, dict[str, str]] = {}
-        for source in sources:
-            path = Path(source["path"])
-            created = self._json_request(
-                "POST",
-                "/api/v3/edit/uploads",
-                {
-                    "upload_type": source["upload_type"],
-                    "filename": path.name,
-                    "content_type": source["content_type"],
-                    "size_bytes": path.stat().st_size,
-                },
-                expected_statuses=(201,),
-            )
-            upload_id = created.get("upload_id")
-            put_url = created.get("put_url")
-            if not isinstance(upload_id, str) or not upload_id:
-                raise RealRunUnavailable("upload_id_invalid")
-            if not isinstance(put_url, str) or not self._safe_signed_upload_url(put_url):
-                raise RealRunUnavailable("put_url_invalid")
-            self._put_file(put_url, path, source["content_type"])
-            completed = self._json_request(
-                "POST",
-                f"/api/v3/edit/uploads/{urllib.parse.quote(upload_id, safe='')}/complete",
-                {},
-                expected_statuses=(200,),
-            )
-            if completed.get("upload_id") != upload_id:
-                raise RealRunUnavailable("upload_completion_invalid")
-            uploaded[source["case_id"]] = {
-                "upload_id": upload_id,
-                "owner_alias": source["owner_alias"],
-            }
-        self._authorized_uploads = uploaded
 
     def _upload_bound_file(
         self,
@@ -992,6 +970,16 @@ class HttpRealRunApi:
             raise RealRunUnavailable("authorized_upload_binding_missing")
         return dict(uploaded)
 
+    def for_case(self, case: Mapping[str, Any]) -> "HttpCaseApi":
+        case_id = case.get("case_id")
+        authority = self._authorized_cases.get(str(case_id))
+        if authority is None:
+            raise RealRunUnavailable("authorized_case_binding_missing")
+        return HttpCaseApi(self, case, authority)
+
+    def expected_request_sha256(self, case: Mapping[str, Any]) -> str:
+        return self.for_case(case).expected_request_sha256(case)
+
     @staticmethod
     def _safe_signed_upload_url(value: str) -> bool:
         parsed = urllib.parse.urlsplit(value)
@@ -1114,6 +1102,188 @@ class HttpRealRunApi:
         if seen != set(expected):
             raise RealRunUnavailable("asset_binding_case_set_mismatch")
         return tuple(result)
+
+
+class HttpCaseApi:
+    """Immutable, owner-scoped real API surface for one acceptance case."""
+
+    def __init__(
+        self,
+        transport: HttpRealRunApi,
+        case: Mapping[str, Any],
+        authority: Mapping[str, Any],
+    ) -> None:
+        self._transport = transport
+        self._case = dict(case)
+        self._authority = dict(authority)
+        self._session = authority["session"]
+        self._request: dict[str, Any] | None = None
+        self._quote_id: str | None = None
+
+    def upload_source(self, case: Mapping[str, Any]) -> Mapping[str, Any]:
+        if case.get("case_id") != self._case.get("case_id"):
+            raise RealRunUnavailable("acceptance_case_mismatch")
+        return {
+            "upload_id": f"authority-{self._case['case_id']}",
+            "owner_alias": self._authority["owner_alias"],
+        }
+
+    def _build_request(self) -> dict[str, Any]:
+        input_type = str(self._case["input_type"])
+        request = {
+            "input_type": input_type,
+            **dict(self._authority["source_fields"]),
+            "ratio": (
+                "auto"
+                if input_type in {"platform_talking_head", "uploaded_video"}
+                else str(self._case["ratio"])
+            ),
+            "creation_mode": str(self._case["creation_mode"]),
+            "material_asset_ids": list(self._authority["material_asset_ids"]),
+        }
+        if request["creation_mode"] == "style_prompt":
+            request["style_prompt"] = str(self._case["style_prompt"])
+        elif request["creation_mode"] == "template_reference":
+            request["template_id"] = str(self._case["template_id"])
+        return request
+
+    def expected_request_sha256(self, case: Mapping[str, Any]) -> str:
+        if case.get("case_id") != self._case.get("case_id"):
+            raise RealRunUnavailable("acceptance_case_mismatch")
+        return request_fingerprint(normalize_job_request(self._build_request()))
+
+    def quote(
+        self,
+        case: Mapping[str, Any],
+        upload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if (
+            case.get("case_id") != self._case.get("case_id")
+            or upload.get("owner_alias") != self._authority["owner_alias"]
+        ):
+            raise RealRunUnavailable("owner_scope_mismatch")
+        request = self._build_request()
+        quote = self._transport._json_request(
+            "POST", "/api/v3/edit/quote", request,
+            expected_statuses=(201,), session=self._session,
+        )
+        quote_id = quote.get("quote_id")
+        pricing_version = quote.get("pricing_version")
+        held_points = quote.get("max_points")
+        expected_request_sha256 = self.expected_request_sha256(case)
+        if (
+            not isinstance(quote_id, str)
+            or not quote_id
+            or not isinstance(pricing_version, str)
+            or not pricing_version
+            or isinstance(held_points, bool)
+            or not isinstance(held_points, int)
+            or held_points < 0
+            or quote.get("request_sha256") != expected_request_sha256
+        ):
+            raise RealRunUnavailable("quote_response_invalid")
+        self._request = request
+        self._quote_id = quote_id
+        return {
+            "quote_id": quote_id,
+            "pricing_version": pricing_version,
+            "held_points": held_points,
+        }
+
+    def create_job(self, idempotency_key: str) -> str:
+        if self._request is None or self._quote_id is None:
+            raise RealRunUnavailable("quote_required")
+        created = self._transport._json_request(
+            "POST",
+            "/api/v3/edit/jobs",
+            {**self._request, "quote_id": self._quote_id},
+            expected_statuses=(202,),
+            session=self._session,
+            idempotency_key=idempotency_key,
+        )
+        job_id = created.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            raise RealRunUnavailable("job_id_invalid")
+        return job_id
+
+    def get_job(self, job_id: str) -> dict[str, str]:
+        payload = self._transport._json_request(
+            "GET",
+            f"/api/v3/edit/jobs/{urllib.parse.quote(job_id, safe='')}",
+            None,
+            expected_statuses=(200,),
+            session=self._session,
+        )
+        if payload.get("job_id") != job_id or not isinstance(payload.get("state"), str):
+            raise RealRunUnavailable("job_response_invalid")
+        state = str(payload["state"])
+        return {
+            "job_id": job_id,
+            "status": "failed" if state == "prehold_absent" else state,
+        }
+
+    def get_result(self, job_id: str) -> Mapping[str, Any]:
+        evidence_payload = self._transport._json_request(
+            "GET",
+            f"/api/v3/edit/jobs/{urllib.parse.quote(job_id, safe='')}/acceptance-evidence",
+            None,
+            expected_statuses=(200,),
+            session=self._session,
+        )
+        evidence = evidence_payload.get("evidence")
+        state = evidence_payload.get("state")
+        if (
+            evidence_payload.get("job_id") != job_id
+            or not isinstance(evidence, Mapping)
+            or not isinstance(state, str)
+        ):
+            raise RealRunUnavailable("acceptance_evidence_invalid")
+        merged = {
+            "status": "failed" if state == "prehold_absent" else state,
+            **dict(evidence),
+        }
+        if state == "completed":
+            result_payload = self._transport._json_request(
+                "GET",
+                f"/api/v3/edit/jobs/{urllib.parse.quote(job_id, safe='')}/result",
+                None,
+                expected_statuses=(200,),
+                session=self._session,
+            )
+            result = result_payload.get("result")
+            if result_payload.get("job_id") != job_id or not isinstance(result, Mapping):
+                raise RealRunUnavailable("acceptance_evidence_invalid")
+            playback_url = result.get("play_url")
+            if isinstance(playback_url, str):
+                merged["playback_url"] = playback_url
+        return merged
+
+    def verify_range(self, playback_url: str) -> bool:
+        if not self._transport._safe_signed_upload_url(playback_url):
+            return False
+        request = urllib.request.Request(
+            playback_url,
+            headers={"Range": "bytes=0-0"},
+            method="GET",
+        )
+        try:
+            response = self._transport._opener.open(request, timeout=15)
+            try:
+                status = int(getattr(response, "status", 0))
+                content_range = response.headers.get("Content-Range", "")
+                content_length = response.headers.get("Content-Length")
+                body = response.read(2)
+            finally:
+                response.close()
+        except Exception:
+            return False
+        match = re.fullmatch(r"bytes 0-0/([1-9][0-9]*)", content_range)
+        return bool(
+            status == 206
+            and match is not None
+            and len(body) == 1
+            and (content_length is None or content_length == "1")
+        )
 
 
 def build_real_run_api() -> HttpRealRunApi:
@@ -1258,13 +1428,13 @@ def execute_verify_command(args: argparse.Namespace) -> int:
         if not verdict.passed or summary.get("evidence_sha256") != _sha256_file(evidence_path):
             return 4
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        expected_key = f"acceptance/{report.get('run_id')}/{expected_case_id}"
+        expected_key = f"acceptance:{report.get('run_id')}:{expected_case_id}"
         if (
             evidence.get("case_id") != expected_case_id
             or evidence.get("idempotency_key") != expected_key
             or evidence.get("status") != summary.get("status")
             or evidence.get("normalized_request_sha256")
-            != manifest.get("case_source_sha256", {}).get(expected_case_id)
+            != manifest.get("case_request_sha256", {}).get(expected_case_id)
             or summary.get("normalized_request_sha256")
             != evidence.get("normalized_request_sha256")
         ):
@@ -1278,8 +1448,97 @@ def execute_verify_command(args: argparse.Namespace) -> int:
 
 
 def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
-    # Task 7 supplies the authorized test-environment implementation.
-    return 2
+    if (
+        args.environment != "test"
+        or args.concurrency < 1
+        or args.concurrency > 10
+        or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", args.run_id)
+    ):
+        return 4
+    expected_sha = os.environ.get("AI_EDIT_V3_EXPECTED_SHA", "").strip()
+    authorization_ref = os.environ.get(
+        "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF", "",
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or not authorization_ref:
+        return 4
+    output_root = Path(os.environ.get(
+        "AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT",
+        "server/content_out/ai-edit-v3-acceptance",
+    ))
+    run_dir = output_root / args.run_id
+    try:
+        document = json.loads(args.matrix.read_text(encoding="utf-8"))
+        if (
+            not isinstance(document, Mapping)
+            or document.get("authorization_ref") != authorization_ref
+            or not isinstance(document.get("cases"), list)
+        ):
+            return 4
+        cases = list(document["cases"])
+        if args.subset == "parallel-5":
+            cases = cases[:5]
+        elif args.subset == "stress-10":
+            cases = cases[:10]
+        elif args.subset is not None:
+            return 4
+        root = Path(__file__).resolve().parents[1]
+        manifest = {
+            "version": "1.0",
+            "run_id": args.run_id,
+            "environment": "test",
+            "commit_sha": expected_sha,
+            "matrix_sha256": _sha256_file(args.matrix),
+            "schema_sha256": _sha256_file(
+                args.matrix.with_name("acceptance-20.schema.json")
+            ),
+            "template_registry_sha256": _sha256_file(
+                root / "server/content_domains/ai_edit_v3/catalog/templates-v1.json"
+            ),
+            "renderer_release_sha256": _sha256_file(
+                root / "server/ai_edit_v3_renderer/renderer-release.lock.json"
+            ),
+            "concurrency": args.concurrency,
+            "subset": args.subset,
+            "case_ids": [case["case_id"] for case in cases],
+            "case_request_sha256": {
+                case["case_id"]: api.expected_request_sha256(case) for case in cases
+            },
+        }
+        manifest_path = run_dir / "run-manifest.json"
+        report_path = run_dir / "report.json"
+        if run_dir.exists():
+            if report_path.exists():
+                return 4
+            persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if persisted != manifest:
+                return 4
+        else:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            write_json_exclusive(manifest_path, manifest)
+
+        summary = run_cases(
+            AcceptanceConfig(args.run_id, run_dir, api.for_case),
+            RunManifest(tuple(cases)),
+            concurrency=args.concurrency,
+        )
+        if summary.result_code == 4:
+            return 4
+        completed = all(
+            item["status"] == "completed" for item in summary.case_results
+        )
+        report = {
+            "version": "1.0",
+            "run_id": args.run_id,
+            "environment": "test",
+            "status": "completed" if completed else "failed",
+            "case_count": len(cases),
+            "case_statuses": list(summary.case_results),
+            "manifest_sha256": _sha256_file(manifest_path),
+        }
+        write_json_exclusive(report_path, report)
+        return summary.result_code
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return 4
 
 
 def execute_machine_verify_command(args: argparse.Namespace) -> int:

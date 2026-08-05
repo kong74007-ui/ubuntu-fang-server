@@ -2,27 +2,34 @@ import unittest
 import tempfile
 import json
 import os
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.ai_edit_v3_acceptance import (
+    HttpCaseApi,
     HttpRealRunApi,
     RealRunConfig,
     RealRunUnavailable,
     load_authorized_bindings,
+    execute_preflighted_cases,
     main,
     run_real_acceptance,
 )
 
 from server.content_domains.ai_edit_v3.acceptance_export import (
+    AcceptanceConfig,
     CaseCheckpoint,
     collect_case_evidence,
     load_test_session,
+    RunManifest,
+    run_cases,
     resume_or_create_case,
     terminal_result_code,
     verify_case_evidence,
     write_json_exclusive,
 )
+from server.content_domains.ai_edit_v3.contracts import normalize_job_request, request_fingerprint
 
 
 class FakeV3Api:
@@ -59,7 +66,13 @@ class EvidenceFakeApi:
 
     def get_job(self, job_id: str) -> dict:
         self.operations.append("poll")
-        return {"job_id": job_id, "status": self.response["status"]}
+        status = self.response["status"]
+        if (
+            status == "failed"
+            and self.response.get("settlement", {}).get("state") == "prehold_absent"
+        ):
+            status = "prehold_absent"
+        return {"job_id": job_id, "status": status}
 
     def get_result(self, job_id: str) -> dict:
         self.operations.append("result")
@@ -93,6 +106,225 @@ class FakeRealRunApi:
 
 
 class AcceptanceRunnerTests(unittest.TestCase):
+    def test_execute_preflighted_cases_writes_real_immutable_report_without_reupload(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        matrix_path = root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        fixture = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-responses/completed.json"
+        ).read_text(encoding="utf-8"))
+
+        class Api:
+            def __init__(self):
+                self.case_ids = []
+
+            def for_case(self, case):
+                self.case_ids.append(case["case_id"])
+                response = json.loads(json.dumps(fixture))
+                response["job_id"] = "job-real-" + case["case_id"]
+                response["normalized_request_sha256"] = case["source"]["sha256"]
+                return EvidenceFakeApi(response)
+
+            def expected_request_sha256(self, case):
+                return case["source"]["sha256"]
+
+        args = type("Args", (), {
+            "matrix": matrix_path, "run_id": "real-run-01", "concurrency": 5,
+            "subset": "parallel-5", "environment": "test",
+        })()
+        api = Api()
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
+            "AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT": folder,
+            "AI_EDIT_V3_EXPECTED_SHA": "a" * 40,
+            "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "acceptance-approved-corpus-v1",
+        }, clear=False):
+            result = execute_preflighted_cases(api, args)
+            run_dir = Path(folder) / "real-run-01"
+            self.assertEqual(0, result, list(run_dir.rglob("*")) if run_dir.exists() else [])
+            report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+            manifest = json.loads((run_dir / "run-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertCountEqual(
+            [case["case_id"] for case in matrix["cases"][:5]], api.case_ids
+        )
+        self.assertEqual(5, len(api.case_ids))
+        self.assertEqual("test", manifest["environment"])
+        self.assertEqual("a" * 40, manifest["commit_sha"])
+        self.assertEqual("completed", report["status"])
+        self.assertEqual(5, report["case_count"])
+
+    def test_run_cases_honors_requested_concurrency(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        response = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-responses/completed.json"
+        ).read_text(encoding="utf-8"))
+        matrix = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        ).read_text(encoding="utf-8"))
+        cases = matrix["cases"][:2]
+        barrier = threading.Barrier(2, timeout=2)
+
+        class ConcurrentApi(EvidenceFakeApi):
+            def get_job(self, job_id):
+                self.operations.append("poll")
+                barrier.wait()
+                return {"job_id": job_id, "status": "completed"}
+
+        def factory(case):
+            payload = json.loads(json.dumps(response))
+            payload["job_id"] = "job-" + case["case_id"]
+            payload["normalized_request_sha256"] = case["source"]["sha256"]
+            return ConcurrentApi(payload)
+
+        with tempfile.TemporaryDirectory() as folder:
+            summary = run_cases(
+                AcceptanceConfig("parallel-run", Path(folder), factory),
+                RunManifest(tuple(cases)), concurrency=2,
+            )
+
+        self.assertEqual(0, summary.result_code)
+        self.assertEqual(["case_01", "case_02"], [item["case_id"] for item in summary.case_results])
+
+    def test_http_case_api_uses_frozen_request_owner_session_and_test_evidence(self) -> None:
+        class RangeResponse:
+            status = 206
+            headers = {"Content-Range": "bytes 0-0/123"}
+
+            def read(self, size=-1):
+                return b"x"
+
+            def close(self):
+                pass
+
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append((request, timeout))
+                return RangeResponse()
+
+        class Transport:
+            _safe_signed_upload_url = staticmethod(HttpRealRunApi._safe_signed_upload_url)
+
+            def __init__(self):
+                self.calls = []
+                self._opener = Opener()
+                self.request_sha256 = None
+
+            def _json_request(
+                self, method, path, payload, *, expected_statuses, session,
+                idempotency_key=None,
+            ):
+                self.calls.append((method, path, payload, expected_statuses, session, idempotency_key))
+                if path.endswith("/quote"):
+                    self.request_sha256 = request_fingerprint(normalize_job_request(payload))
+                    return {
+                        "quote_id": "quote-owned-1", "pricing_version": "pricing-v1",
+                        "max_points": 30, "request_sha256": self.request_sha256,
+                    }
+                if path.endswith("/jobs"):
+                    return {"job_id": "job-owned-1"}
+                if path.endswith("/result"):
+                    return {
+                        "job_id": "job-owned-1",
+                        "result": {"play_url": "https://cos.example/final.mp4?token=opaque"},
+                    }
+                if path.endswith("/acceptance-evidence"):
+                    return {
+                        "job_id": "job-owned-1", "state": "completed",
+                        "evidence": {"normalized_request_sha256": self.request_sha256},
+                    }
+                return {"job_id": "job-owned-1", "state": "completed"}
+
+        session = load_test_session({"AI_EDIT_V3_TEST_SESSION": "owner-session"}, lambda _: "")
+        transport = Transport()
+        case = {
+            "case_id": "case_01", "input_type": "uploaded_audio", "ratio": "9:16",
+            "creation_mode": "style_prompt", "style_prompt": "高级商业纪实",
+        }
+        client = HttpCaseApi(transport, case, {
+            "owner_alias": "owner_a", "session": session,
+            "source_fields": {"source_upload_id": "upload-owned-1"},
+            "material_asset_ids": ("material-owned-1",),
+        })
+
+        upload = client.upload_source(case)
+        quote = client.quote(case, upload)
+        job_id = client.create_job("acceptance:run-01:case_01")
+        state = client.get_job(job_id)
+        result = client.get_result(job_id)
+
+        self.assertEqual(30, quote["held_points"])
+        self.assertEqual("completed", state["status"])
+        self.assertEqual("completed", result["status"])
+        self.assertTrue(client.verify_range(result["playback_url"]))
+        quote_body = transport.calls[0][2]
+        create_body = transport.calls[1][2]
+        self.assertEqual({**quote_body, "quote_id": "quote-owned-1"}, create_body)
+        self.assertEqual("9:16", quote_body["ratio"])
+        self.assertEqual(["material-owned-1"], quote_body["material_asset_ids"])
+        self.assertEqual("Bearer owner-session", "Bearer " + transport.calls[0][4].reveal())
+        self.assertEqual("acceptance:run-01:case_01", transport.calls[1][5])
+        self.assertEqual(
+            ["/api/v3/edit/jobs/job-owned-1/acceptance-evidence",
+             "/api/v3/edit/jobs/job-owned-1/result"],
+            [transport.calls[3][1], transport.calls[4][1]],
+        )
+
+    def test_http_case_api_normalizes_prehold_absent_without_public_result(self) -> None:
+        class Transport:
+            def __init__(self):
+                self.paths = []
+
+            def _json_request(self, method, path, payload, **kwargs):
+                self.paths.append(path)
+                if path.endswith("/acceptance-evidence"):
+                    return {
+                        "job_id": "job-failed-1", "state": "prehold_absent",
+                        "evidence": {"normalized_request_sha256": "a" * 64},
+                    }
+                raise AssertionError("failed jobs must not request public result")
+
+        client = object.__new__(HttpCaseApi)
+        client._transport = Transport()
+        client._session = load_test_session(
+            {"AI_EDIT_V3_TEST_SESSION": "owner-session"}, lambda _: ""
+        )
+
+        result = client.get_result("job-failed-1")
+
+        self.assertEqual("failed", result["status"])
+        self.assertNotIn("playback_url", result)
+        self.assertEqual(
+            ["/api/v3/edit/jobs/job-failed-1/acceptance-evidence"],
+            client._transport.paths,
+        )
+
+    def test_http_case_api_rejects_malformed_or_empty_range_response(self) -> None:
+        class Response:
+            status = 206
+            headers = {"Content-Range": "bytes 0-0/garbage", "Content-Length": "0"}
+
+            def read(self, size=-1):
+                return b""
+
+            def close(self):
+                pass
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+
+        transport = type("Transport", (), {
+            "_safe_signed_upload_url": staticmethod(HttpRealRunApi._safe_signed_upload_url),
+            "_opener": Opener(),
+        })()
+        client = object.__new__(HttpCaseApi)
+        client._transport = transport
+
+        self.assertFalse(client.verify_range("https://cos.example/final.mp4?token=opaque"))
+
     def test_bindings_v2_loads_owner_sessions_without_persisting_values(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -492,35 +724,14 @@ class AcceptanceRunnerTests(unittest.TestCase):
             with self.assertRaises(RealRunUnavailable):
                 api.capabilities()
 
-    def test_http_real_api_uploads_authorized_hash_once_and_reuses_upload_id(self) -> None:
-        class Response:
-            def __init__(self, status, payload=None):
-                self.status = status
-                self.payload = (
-                    b"" if payload is None else json.dumps(payload).encode("utf-8")
-                )
-
-            def read(self, size=-1):
-                value, self.payload = self.payload[:size], self.payload[size:]
-                return value
-
-            def close(self):
-                pass
-
+    def test_http_real_api_rejects_legacy_binding_version_before_network(self) -> None:
         class Opener:
             def __init__(self):
                 self.requests = []
 
             def open(self, request, timeout):
                 self.requests.append((request, timeout))
-                if request.get_method() == "PUT":
-                    return Response(200)
-                if request.full_url.endswith("/complete"):
-                    return Response(200, {"upload_id": "upload-1"})
-                return Response(201, {
-                    "upload_id": "upload-1",
-                    "put_url": "https://cos.example/upload?signed=opaque",
-                })
+                raise AssertionError("legacy bindings must fail before network")
 
         session = load_test_session(
             {"AI_EDIT_V3_TEST_SESSION": "session-secret"}, lambda _: ""
@@ -567,17 +778,10 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 opener=opener,
             )
 
-            api.upload_authorized_sources(matrix, "approval-test-only", None)
-            upload = api.upload_source({
-                "case_id": "case_01",
-                "source": {"owner_alias": "owner_a"},
-            })
             with self.assertRaises(RealRunUnavailable):
                 api.upload_authorized_sources(matrix, "approval-test-only", None)
 
-        self.assertEqual(upload, {"upload_id": "upload-1", "owner_alias": "owner_a"})
-        self.assertEqual([item[0].get_method() for item in opener.requests], ["POST", "PUT", "POST"])
-        self.assertIsNone(opener.requests[1][0].get_header("Cookie"))
+        self.assertEqual([], opener.requests)
 
     def test_http_real_api_rejects_tampered_binding_before_network(self) -> None:
         class Opener:
@@ -833,14 +1037,14 @@ class AcceptanceRunnerTests(unittest.TestCase):
         api = FakeV3Api()
         checkpoint = CaseCheckpoint(
             case_id="case_01",
-            idempotency_key="acceptance/run-01/case-01",
+            idempotency_key="acceptance:run-01:case-01",
             job_id="job-17",
         )
 
         resumed = resume_or_create_case(checkpoint, api)
 
         self.assertEqual(resumed.job_id, "job-17")
-        self.assertEqual(resumed.idempotency_key, "acceptance/run-01/case-01")
+        self.assertEqual(resumed.idempotency_key, "acceptance:run-01:case-01")
         self.assertEqual(api.created_idempotency_keys, [])
         self.assertEqual(api.fetched_job_ids, ["job-17"])
 
@@ -909,9 +1113,80 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertNotIn("token=fake-signed-value", persisted)
         self.assertEqual("https://playback.invalid/final.mp4?token=fake-signed-value", api.range_url)
         self.assertEqual(
-            ["upload", "quote", "create:acceptance/local-fake/case_01", "poll", "result", "range"],
+            ["upload", "quote", "create:acceptance:local-fake:case_01", "poll", "result", "range"],
             api.operations[:6],
         )
+
+    def test_collect_case_evidence_polls_with_backoff_and_monotonic_deadline(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        response = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-responses/completed.json"
+        ).read_text(encoding="utf-8"))
+        matrix = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        ).read_text(encoding="utf-8"))
+        response["normalized_request_sha256"] = matrix["cases"][0]["source"]["sha256"]
+
+        class PollingApi(EvidenceFakeApi):
+            def __init__(self, payload):
+                super().__init__(payload)
+                self.states = iter(("queued", "failed", "rendering", "completed"))
+
+            def get_job(self, job_id):
+                self.operations.append("poll")
+                return {"job_id": job_id, "status": next(self.states)}
+
+        now = [100.0]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        with tempfile.TemporaryDirectory() as folder:
+            collect_case_evidence(
+                PollingApi(response), matrix["cases"][0], Path(folder) / "case_01",
+                clock=lambda: now[0], sleep=sleep, poll_timeout_seconds=60,
+            )
+
+        self.assertEqual([2.0, 3.0, 4.5], sleeps)
+
+    def test_run_cases_strictly_rejects_new_or_existing_invalid_evidence(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        response = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-responses/completed.json"
+        ).read_text(encoding="utf-8"))
+        matrix = json.loads((
+            root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        ).read_text(encoding="utf-8"))
+        case = matrix["cases"][0]
+        response["normalized_request_sha256"] = case["source"]["sha256"]
+
+        class InvalidRangeApi(EvidenceFakeApi):
+            def verify_range(self, playback_url):
+                return False
+
+        with tempfile.TemporaryDirectory() as folder:
+            run_dir = Path(folder)
+            summary = run_cases(
+                AcceptanceConfig(
+                    "strict-run", run_dir,
+                    lambda _case: InvalidRangeApi(json.loads(json.dumps(response))),
+                ),
+                RunManifest((case,)), concurrency=1,
+            )
+            self.assertEqual(4, summary.result_code)
+            evidence_path = run_dir / "case_01/evidence.json"
+            self.assertTrue(evidence_path.exists())
+
+            payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            payload["quote"] = {}
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            resumed = run_cases(
+                AcceptanceConfig("strict-run", run_dir, lambda _case: None),
+                RunManifest((case,)), concurrency=1,
+            )
+            self.assertEqual(4, resumed.result_code)
 
     def test_collect_resumes_persisted_checkpoint_without_upload_quote_or_create(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -928,14 +1203,14 @@ class AcceptanceRunnerTests(unittest.TestCase):
             case_dir.mkdir()
             (case_dir / "checkpoint.json").write_text(json.dumps({
                 "case_id": "case_01",
-                "idempotency_key": "acceptance/local-fake/case_01",
+                "idempotency_key": "acceptance:local-fake:case_01",
                 "job_id": "job-local-01",
                 "normalized_request_sha256": matrix["cases"][0]["source"]["sha256"],
                 "upload_id": "upload-case_01",
                 "quote": response["quote"],
             }), encoding="utf-8")
             evidence = collect_case_evidence(api, matrix["cases"][0], case_dir)
-        self.assertEqual("acceptance/local-fake/case_01", evidence.idempotency_key)
+        self.assertEqual("acceptance:local-fake:case_01", evidence.idempotency_key)
         self.assertEqual(["poll", "poll", "result", "range"], api.operations)
 
     def test_local_fake_run_writes_twenty_immutable_case_evidence_files(self) -> None:
@@ -1092,14 +1367,14 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 self.assertEqual(3, terminal_result_code({"status": evidence.status, "quote": evidence.quote}))
                 self.assertTrue(verify_case_evidence(case_dir, strict=True).passed)
                 creates = [item for item in api.operations if item.startswith("create:")]
-                self.assertEqual(["create:acceptance/local-fake/case_01"], creates)
+                self.assertEqual(["create:acceptance:local-fake:case_01"], creates)
 
     def test_strict_verifier_rejects_forged_refunded_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             case_dir = Path(folder)
             (case_dir / "evidence.json").write_text(json.dumps({
                 "case_id": "wrong",
-                "idempotency_key": "acceptance/other/wrong",
+                "idempotency_key": "acceptance:other:wrong",
                 "status": "refunded",
                 "normalized_request_sha256": "garbage",
                 "quote": {},

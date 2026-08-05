@@ -4,10 +4,12 @@ import json
 import hashlib
 import os
 import re
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Collection, Mapping, Protocol, Sequence
+from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
 
 class V3Api(Protocol):
@@ -22,6 +24,8 @@ class V3Api(Protocol):
     def get_result(self, job_id: str) -> Mapping[str, Any]: ...
 
     def verify_range(self, playback_url: str) -> bool: ...
+
+    def expected_request_sha256(self, case: Mapping[str, Any]) -> str: ...
 
 
 class TestSession:
@@ -190,12 +194,23 @@ def collect_case_evidence(
     run_dir: Path,
     *,
     run_id: str = "local-fake",
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_timeout_seconds: float = 60 * 60,
 ) -> CaseEvidence:
     evidence_path = run_dir / "evidence.json"
     if evidence_path.exists():
         raise FileExistsError(evidence_path)
     run_dir.mkdir(parents=True, exist_ok=True)
     case_id = str(case["case_id"])
+    expected_request = getattr(client, "expected_request_sha256", None)
+    expected_request_sha256 = (
+        str(expected_request(case))
+        if callable(expected_request)
+        else str(case["source"]["sha256"])
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_request_sha256):
+        raise ValueError("normalized_request_sha256_invalid")
     checkpoint_path = run_dir / "checkpoint.json"
     checkpoint_existed = checkpoint_path.exists()
     if checkpoint_existed:
@@ -210,8 +225,8 @@ def collect_case_evidence(
         )
         if (
             checkpoint.case_id != case_id
-            or checkpoint.idempotency_key != f"acceptance/{run_id}/{case_id}"
-            or checkpoint.normalized_request_sha256 != str(case["source"]["sha256"])
+            or checkpoint.idempotency_key != f"acceptance:{run_id}:{case_id}"
+            or checkpoint.normalized_request_sha256 != expected_request_sha256
         ):
             raise ValueError("checkpoint_identity_mismatch")
     else:
@@ -219,9 +234,9 @@ def collect_case_evidence(
         quote = dict(client.quote(case, upload))
         checkpoint = CaseCheckpoint(
             case_id=case_id,
-            idempotency_key=f"acceptance/{run_id}/{case_id}",
+            idempotency_key=f"acceptance:{run_id}:{case_id}",
             job_id=None,
-            normalized_request_sha256=str(case["source"]["sha256"]),
+            normalized_request_sha256=expected_request_sha256,
             upload_id=str(upload["upload_id"]),
             quote=quote,
         )
@@ -231,17 +246,22 @@ def collect_case_evidence(
     if not checkpoint_existed:
         write_json_exclusive(checkpoint_path, asdict(checkpoint))
     terminal_statuses = {
-        "completed", "refunded", "failed",
+        "completed", "refunded", "prehold_absent",
         "failed_reconciliation_pending", "failed_asset_decision_pending",
     }
-    terminal = False
-    for _ in range(120):
+    if poll_timeout_seconds <= 0:
+        raise ValueError("poll_timeout_invalid")
+    deadline = clock() + poll_timeout_seconds
+    delay = 2.0
+    while True:
         state = client.get_job(checkpoint.job_id)
         if state.get("status") in terminal_statuses:
-            terminal = True
             break
-    if not terminal:
-        raise ValueError("job_poll_limit_exceeded")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise ValueError("job_poll_deadline_exceeded")
+        sleep(min(delay, remaining))
+        delay = min(15.0, delay * 1.5)
     result = dict(client.get_result(checkpoint.job_id))
     result_request_sha = result.get("normalized_request_sha256")
     if result_request_sha is not None and result_request_sha != checkpoint.normalized_request_sha256:
@@ -299,8 +319,8 @@ def verify_case_evidence(case_dir: Path, *, strict: bool) -> CaseVerdict:
     if (
         not isinstance(idempotency_key, str)
         or not isinstance(case_id, str)
-        or not idempotency_key.startswith("acceptance/")
-        or not idempotency_key.endswith(f"/{case_id}")
+        or not idempotency_key.startswith("acceptance:")
+        or not idempotency_key.endswith(f":{case_id}")
     ):
         errors.append("idempotency_key_invalid")
     if not isinstance(payload.get("job_id"), str) or not payload.get("job_id"):
@@ -423,15 +443,14 @@ def run_cases(
         cases = cases[:10]
     elif subset is not None:
         return RunSummary(4, ())
-    results: list[Mapping[str, str]] = []
-    for case in cases:
+    def execute_case(case: Mapping[str, Any]) -> Mapping[str, str]:
         case_id = str(case["case_id"])
         case_dir = config.run_dir / case_id
         evidence_path = case_dir / "evidence.json"
         if evidence_path.exists():
             verdict = verify_case_evidence(case_dir, strict=True)
             if not verdict.passed:
-                return RunSummary(4, tuple(results))
+                raise ValueError("existing_evidence_invalid")
             payload = json.loads(evidence_path.read_text(encoding="utf-8"))
             status = str(payload["status"])
         else:
@@ -442,14 +461,26 @@ def run_cases(
                 run_id=config.run_id,
             )
             status = evidence.status
-        results.append({
+            verdict = verify_case_evidence(case_dir, strict=True)
+            if not verdict.passed:
+                raise ValueError("new_evidence_invalid")
+        return {
             "case_id": case_id,
             "status": status,
             "normalized_request_sha256": str(
                 json.loads(evidence_path.read_text(encoding="utf-8"))["normalized_request_sha256"]
             ),
             "evidence_sha256": _sha256_file(evidence_path),
-        })
+        }
+
+    try:
+        if len(cases) <= 1 or concurrency == 1:
+            results = [execute_case(case) for case in cases]
+        else:
+            with ThreadPoolExecutor(max_workers=min(concurrency, len(cases))) as executor:
+                results = list(executor.map(execute_case, cases))
+    except Exception:
+        return RunSummary(4, ())
     codes = [terminal_result_code({"status": item["status"], "quote": {}}) for item in results]
     # terminal_result_code requires a quote mapping only to distinguish malformed
     # input; evidence has already been strictly verified above.
