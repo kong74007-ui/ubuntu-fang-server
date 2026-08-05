@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 from types import SimpleNamespace
 from typing import Any, Mapping
 import subprocess
@@ -479,6 +480,110 @@ def _material_asset_hashes(
             raise ValueError("quality_material_evidence_mismatch")
         evidence[asset_id] = asset_sha256
     return evidence
+
+
+def _verified_snapshot_inputs(
+    output_root: Path,
+    render_payload: Mapping[str, Any],
+    render_report: Mapping[str, Any],
+    *,
+    duration_ms: int,
+) -> tuple[dict[str, Any], ...]:
+    """Rebind visual inspection to real renderer-owned PNG evidence."""
+
+    if (
+        isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or not 1 <= duration_ms <= 600_000
+        or not isinstance(render_payload, Mapping)
+        or not isinstance(render_report, Mapping)
+    ):
+        raise ValueError("quality_snapshot_evidence_invalid")
+    root = Path(output_root).resolve()
+    snapshot_root = (root / "snapshots").resolve()
+    render_items = render_payload.get("snapshots")
+    report_items = render_report.get("snapshots")
+    if (
+        not isinstance(render_items, list)
+        or not isinstance(report_items, list)
+        or not 1 <= len(render_items) <= 6
+        or len(report_items) != len(render_items)
+        or any(not isinstance(item, str) for item in render_items)
+        or len(set(render_items)) != len(render_items)
+    ):
+        raise ValueError("quality_snapshot_evidence_invalid")
+    evidence: list[dict[str, Any]] = []
+    denominator = max(1, len(render_items) - 1)
+    for index, (relative, item) in enumerate(zip(render_items, report_items)):
+        if not isinstance(item, Mapping) or set(item) != {
+            "path", "size_bytes", "sha256"
+        }:
+            raise ValueError("quality_snapshot_evidence_invalid")
+        name = item.get("path")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        expected_relative = f"snapshots/{name}" if isinstance(name, str) else ""
+        candidate = root / relative
+        if (
+            not isinstance(name, str)
+            or Path(name).name != name
+            or relative != expected_relative
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 1 <= size <= 32 * 1024 * 1024
+            or not isinstance(digest, str)
+            or _VARIATION_SHA256.fullmatch(digest) is None
+            or candidate.is_symlink()
+            or not candidate.is_file()
+        ):
+            raise ValueError("quality_snapshot_evidence_invalid")
+        resolved = candidate.resolve()
+        if resolved.parent != snapshot_root:
+            raise ValueError("quality_snapshot_evidence_invalid")
+        try:
+            before = os.stat(resolved, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_size != size
+                or before.st_size > 32 * 1024 * 1024
+            ):
+                raise ValueError("quality_snapshot_evidence_invalid")
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(
+                os, "O_NOFOLLOW", 0
+            )
+            descriptor = os.open(os.fspath(resolved), flags)
+            with os.fdopen(descriptor, "rb", closefd=True) as source:
+                opened = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or not os.path.samestat(before, opened)
+                    or opened.st_size != size
+                ):
+                    raise ValueError("quality_snapshot_evidence_invalid")
+                hasher = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > size or total > 32 * 1024 * 1024:
+                        raise ValueError("quality_snapshot_evidence_invalid")
+                    hasher.update(chunk)
+        except OSError as exc:
+            raise ValueError("quality_snapshot_evidence_invalid") from exc
+        if total != size or hasher.hexdigest() != digest:
+            raise ValueError("quality_snapshot_evidence_invalid")
+        timestamp_ms = 0 if len(render_items) == 1 else round(
+            index * duration_ms / denominator
+        )
+        evidence.append({
+            "local_path": resolved,
+            "frame_sha256": digest,
+            "timestamp_ms": timestamp_ms,
+            "size_bytes": size,
+        })
+    return tuple(evidence)
 
 
 def _scene_asset_ids(
@@ -1038,8 +1143,23 @@ class DeterministicVisualInspector:
                 "checks": checks,
             }
 
-        digest = hashlib.sha256(canonical_json(manifest)).hexdigest()
-        evidence = [{"frame_sha256": digest, "timestamp_ms": 0}]
+        snapshots = kwargs.get("snapshots")
+        evidence = [
+            {
+                "frame_sha256": item["frame_sha256"],
+                "timestamp_ms": item["timestamp_ms"],
+            }
+            for item in snapshots
+            if isinstance(item, Mapping)
+            and isinstance(item.get("frame_sha256"), str)
+            and isinstance(item.get("timestamp_ms"), int)
+            and not isinstance(item.get("timestamp_ms"), bool)
+        ] if isinstance(snapshots, (list, tuple)) else []
+        if snapshots is None:
+            evidence = [{
+                "frame_sha256": hashlib.sha256(canonical_json(manifest)).hexdigest(),
+                "timestamp_ms": 0,
+            }]
         duration = manifest.get("duration_ms")
         compositions = manifest.get("compositions")
         captions = manifest.get("captions")
@@ -1049,6 +1169,7 @@ class DeterministicVisualInspector:
             and isinstance(compositions, list) and bool(compositions)
             and isinstance(captions, list) and bool(captions)
             and isinstance(assets, list)
+            and bool(evidence)
         )
         results = {check_id: ("unknown", "manifest_shape_invalid", False) for check_id in blocking}
         if valid_shape:
@@ -2332,16 +2453,30 @@ class ProductionStageCoordinator:
                     _json(root / "materials.json"),
                 ),
             }
-            quality = run_blocking_quality(mux, manifest, report, owner_evidence=owner_evidence, visual_inspector=self.visual_inspector, deadline_at=context.deadline_at)
-            payload = {"passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "report_sha256": quality.report_sha256, "final_relpath": final_path.relative_to(root).as_posix(), "final": {"relative_path": mux.relative_path, "sha256": mux.sha256, "duration_ms": mux.duration_ms, "video_codec": mux.video_codec, "audio_codec": mux.audio_codec, "width": mux.width, "height": mux.height, "fps_num": mux.fps_num, "fps_den": mux.fps_den, "sample_rate": mux.sample_rate, "channels": mux.channels, "audit": dict(mux.audit)}}
+            snapshot_inputs = _verified_snapshot_inputs(
+                output_root,
+                render,
+                report,
+                duration_ms=int(manifest["duration_ms"]),
+            )
+            quality = run_blocking_quality(
+                mux,
+                manifest,
+                report,
+                owner_evidence=owner_evidence,
+                visual_inspector=self.visual_inspector,
+                snapshot_inputs=snapshot_inputs,
+                deadline_at=context.deadline_at,
+            )
+            payload = {"passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "can_repair": quality.can_repair, "report_sha256": quality.report_sha256, "final_relpath": final_path.relative_to(root).as_posix(), "final": {"relative_path": mux.relative_path, "sha256": mux.sha256, "duration_ms": mux.duration_ms, "video_codec": mux.video_codec, "audio_codec": mux.audio_codec, "width": mux.width, "height": mux.height, "fps_num": mux.fps_num, "fps_den": mux.fps_den, "sample_rate": mux.sample_rate, "channels": mux.channels, "audit": dict(mux.audit)}}
             digest = _write_json(root / f"quality-{attempt}.json", payload)
             if quality.passed:
                 next_state = "staging_delivery"
-            elif int(job.get("repair_count", 0)) == 0 and quality.repairable_ids:
+            elif int(job.get("repair_count", 0)) == 0 and quality.can_repair:
                 next_state = "repair_planning"
             else:
                 next_state = "failed"
-            return StageOutcome(next_state, {"quality_sha256": digest, "passed": quality.passed, "repairable_ids": list(quality.repairable_ids)}, input_sha)
+            return StageOutcome(next_state, {"quality_sha256": digest, "passed": quality.passed, "repairable_ids": list(quality.repairable_ids), "can_repair": quality.can_repair}, input_sha)
         if name == "staging_delivery":
             attempt = self._render_attempt(job)
             quality = _json(root / f"quality-{attempt}.json")

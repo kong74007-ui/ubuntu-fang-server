@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+from pathlib import Path
+import stat
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Sequence
 
 from .contracts import ContractError, validate_quality_verdict
 from .media import FinalMux
@@ -24,7 +27,6 @@ _BLOCKING = MappingProxyType({
     "opening_hook_visual_consistency": False,
 })
 _REPAIRABLE = frozenset({
-    "black_frames", "abnormal_freeze", "audio_integrity",
     "safe_area_and_text_visibility", "face_product_obstruction",
     "material_semantic_identity", "opening_hook_visual_consistency",
 })
@@ -73,6 +75,7 @@ class QualityReport:
     passed: bool
     findings: tuple[QualityFinding, ...]
     repairable_ids: tuple[str, ...]
+    can_repair: bool
     report_sha256: str
 
 
@@ -148,6 +151,94 @@ def _provenance_ok(manifest: Mapping[str, Any], owner_evidence: Mapping[str, Any
     return True, {"asset_count": len(assets), "owner_verified": True}
 
 
+def _snapshot_contract(
+    values: Sequence[Mapping[str, Any]],
+    duration_ms: object,
+) -> tuple[Mapping[str, Any], ...]:
+    if (
+        not isinstance(values, (list, tuple))
+        or not 1 <= len(values) <= 6
+        or isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or not 1 <= duration_ms <= 600_000
+    ):
+        raise ValueError("quality_snapshot_evidence_invalid")
+    frozen: list[Mapping[str, Any]] = []
+    identities: set[tuple[str, int]] = set()
+    for item in values:
+        if not isinstance(item, Mapping) or set(item) != {
+            "local_path", "frame_sha256", "timestamp_ms", "size_bytes"
+        }:
+            raise ValueError("quality_snapshot_evidence_invalid")
+        path = item.get("local_path")
+        digest = item.get("frame_sha256")
+        timestamp_ms = item.get("timestamp_ms")
+        size_bytes = item.get("size_bytes")
+        if (
+            not isinstance(path, Path)
+            or not path.is_absolute()
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or isinstance(timestamp_ms, bool)
+            or not isinstance(timestamp_ms, int)
+            or not 0 <= timestamp_ms <= duration_ms
+            or isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or not 1 <= size_bytes <= 32 * 1024 * 1024
+            or (digest, timestamp_ms) in identities
+        ):
+            raise ValueError("quality_snapshot_evidence_invalid")
+        identities.add((digest, timestamp_ms))
+        frozen.append(MappingProxyType({
+            "local_path": path,
+            "frame_sha256": digest,
+            "timestamp_ms": timestamp_ms,
+            "size_bytes": size_bytes,
+        }))
+    return tuple(frozen)
+
+
+def _assert_snapshot_files_unchanged(values: Sequence[Mapping[str, Any]]) -> None:
+    for item in values:
+        path = item["local_path"]
+        expected_size = item["size_bytes"]
+        expected_sha = item["frame_sha256"]
+        try:
+            before = os.stat(path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_size != expected_size
+            ):
+                raise ValueError("quality_snapshot_evidence_changed")
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(
+                os, "O_NOFOLLOW", 0
+            )
+            descriptor = os.open(os.fspath(path), flags)
+            with os.fdopen(descriptor, "rb", closefd=True) as source:
+                opened = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or not os.path.samestat(before, opened)
+                    or opened.st_size != expected_size
+                ):
+                    raise ValueError("quality_snapshot_evidence_changed")
+                hasher = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > expected_size or total > 32 * 1024 * 1024:
+                        raise ValueError("quality_snapshot_evidence_changed")
+                    hasher.update(chunk)
+        except OSError as exc:
+            raise ValueError("quality_snapshot_evidence_changed") from exc
+        if total != expected_size or hasher.hexdigest() != expected_sha:
+            raise ValueError("quality_snapshot_evidence_changed")
+
+
 def run_blocking_quality(
     final_mux: FinalMux,
     manifest: Mapping[str, Any],
@@ -155,19 +246,35 @@ def run_blocking_quality(
     *,
     owner_evidence: Mapping[str, Any],
     visual_inspector: VisualInspector,
+    snapshot_inputs: Sequence[Mapping[str, Any]],
     deadline_at: float,
 ) -> QualityReport:
     if not isinstance(final_mux, FinalMux) or not isinstance(manifest, Mapping) or not isinstance(render_report, Mapping):
         raise ValueError("quality_input_invalid")
     if time.time() >= deadline_at:
         raise TimeoutError("quality_deadline_exceeded")
+    snapshots = _snapshot_contract(snapshot_inputs, manifest.get("duration_ms"))
+    inspector_snapshots = tuple(MappingProxyType(dict(item)) for item in snapshots)
+    allowed_evidence = {
+        (item["frame_sha256"], item["timestamp_ms"]) for item in snapshots
+    }
     verdict: Mapping[str, Any] | None = None
     try:
+        _assert_snapshot_files_unchanged(snapshots)
         raw = visual_inspector.inspect(
             manifest=manifest, render_report=render_report,
-            final_mux_sha256=final_mux.sha256, deadline_at=deadline_at,
+            final_mux_sha256=final_mux.sha256, snapshots=inspector_snapshots,
+            deadline_at=deadline_at,
         )
+        _assert_snapshot_files_unchanged(snapshots)
         verdict = validate_quality_verdict(raw)
+        if any(
+            (evidence.get("frame_sha256"), evidence.get("timestamp_ms"))
+            not in allowed_evidence
+            for check in verdict.get("checks", ())
+            for evidence in check.get("evidence", ())
+        ):
+            raise ValueError("quality_visual_evidence_unbound")
     except Exception:
         verdict = None
     visual_by_id = {
@@ -196,7 +303,19 @@ def run_blocking_quality(
     frozen = tuple(findings)
     passed = all(item.status == "pass" for item in frozen if item.blocking)
     repairable_ids = tuple(item.check_id for item in frozen if item.status == "fail" and item.repairable)
-    return QualityReport(passed, frozen, repairable_ids, hashlib.sha256(_canonical_findings(frozen)).hexdigest())
+    blocking_failures = tuple(
+        item for item in frozen if item.blocking and item.status != "pass"
+    )
+    can_repair = bool(blocking_failures) and all(
+        item.status == "fail" and item.repairable for item in blocking_failures
+    )
+    return QualityReport(
+        passed,
+        frozen,
+        repairable_ids,
+        can_repair,
+        hashlib.sha256(_canonical_findings(frozen)).hexdigest(),
+    )
 
 
 __all__ = ("QualityFinding", "QualityReport", "VisualInspector", "run_blocking_quality")

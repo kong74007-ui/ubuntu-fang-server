@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -27,6 +29,14 @@ class _Inspector:
 class BlockingQualityTests(unittest.TestCase):
     def setUp(self):
         self.verdict = json.loads((ROOT / "tests/fixtures/ai_edit_v3/valid-quality-verdict-v1.json").read_text(encoding="utf-8"))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        snapshot_path = Path(temporary.name) / "frame.png"
+        snapshot_path.write_bytes(b"verified-render-frame")
+        snapshot_sha256 = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+        for check in self.verdict["checks"]:
+            for evidence in check["evidence"]:
+                evidence["frame_sha256"] = snapshot_sha256
         self.mux = FinalMux("final.mp4", "1" * 64, 4000, "h264", "aac", 1920, 1080, 30, 1, 48000, 2, {
             "decode_ok": True, "video_start_ms": 0, "audio_start_ms": 0,
             "black_max_ms": 0, "freeze_max_ms": 0, "speech_silence_max_ms": 0,
@@ -39,9 +49,15 @@ class BlockingQualityTests(unittest.TestCase):
         }
         self.render_report = {"status": "done", "output": {"silent": True}, "audit": {"audio_elements": 0, "audible_video_elements": 0}}
         self.owner = {"owner": "owner_1", "job_id": "job_1", "asset_hashes": {"asset_1": "2" * 64}}
+        self.snapshots = ({
+            "local_path": snapshot_path.resolve(),
+            "frame_sha256": snapshot_sha256,
+            "timestamp_ms": 1000,
+            "size_bytes": snapshot_path.stat().st_size,
+        },)
 
     def test_valid_technical_content_and_visual_evidence_pass(self):
-        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=_Inspector(self.verdict), deadline_at=time.time() + 10)
+        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=_Inspector(self.verdict), snapshot_inputs=self.snapshots, deadline_at=time.time() + 10)
         self.assertTrue(report.passed)
         self.assertEqual(len(report.findings), 12)
         self.assertEqual(report.repairable_ids, ())
@@ -52,7 +68,7 @@ class BlockingQualityTests(unittest.TestCase):
         visual = next(item for item in self.verdict["checks"] if item["check_id"] == "safe_area_and_text_visibility")
         visual["result"] = "unknown"
         visual["evidence"] = []
-        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=_Inspector(self.verdict), deadline_at=time.time() + 10)
+        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=_Inspector(self.verdict), snapshot_inputs=self.snapshots, deadline_at=time.time() + 10)
         self.assertFalse(report.passed)
         failed = {finding.check_id for finding in report.findings if finding.status != "pass"}
         self.assertIn("material_provenance", failed)
@@ -60,9 +76,123 @@ class BlockingQualityTests(unittest.TestCase):
 
     def test_visual_inspector_is_called_once_and_invalid_output_cannot_be_repaired_by_reprompt(self):
         inspector = _Inspector({"bad": True})
-        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=inspector, deadline_at=time.time() + 10)
+        report = run_blocking_quality(self.mux, self.manifest, self.render_report, owner_evidence=self.owner, visual_inspector=inspector, snapshot_inputs=self.snapshots, deadline_at=time.time() + 10)
         self.assertFalse(report.passed)
         self.assertEqual(inspector.calls, 1)
+
+    def test_visual_evidence_not_bound_to_verified_snapshot_fails_closed(self):
+        self.verdict["checks"][0]["evidence"][0]["frame_sha256"] = "7" * 64
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+        self.assertFalse(report.passed)
+        self.assertTrue(all(
+            finding.status == "unknown"
+            for finding in report.findings
+            if finding.executor["kind"] == "visual_model"
+        ))
+
+    def test_snapshot_changed_during_visual_inspection_fails_closed(self):
+        class MutatingInspector(_Inspector):
+            def inspect(inner_self, **kwargs):
+                kwargs["snapshots"][0]["local_path"].write_bytes(b"tampered")
+                return super(MutatingInspector, inner_self).inspect(**kwargs)
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=MutatingInspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertTrue(all(
+            finding.status == "unknown"
+            for finding in report.findings
+            if finding.executor["kind"] == "visual_model"
+        ))
+
+    def test_visual_inspector_cannot_rebind_verified_snapshot_descriptor(self):
+        replacement_path = self.snapshots[0]["local_path"].with_name("other.png")
+        replacement_path.write_bytes(b"different-render-frame")
+        replacement_sha256 = hashlib.sha256(replacement_path.read_bytes()).hexdigest()
+
+        class DescriptorMutatingInspector(_Inspector):
+            def inspect(inner_self, **kwargs):
+                kwargs["snapshots"][0]["local_path"] = replacement_path
+                kwargs["snapshots"][0]["frame_sha256"] = replacement_sha256
+                return super(DescriptorMutatingInspector, inner_self).inspect(**kwargs)
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=DescriptorMutatingInspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertTrue(all(
+            finding.status == "unknown"
+            for finding in report.findings
+            if finding.executor["kind"] == "visual_model"
+        ))
+
+    def test_repair_is_forbidden_when_any_blocking_failure_is_not_repairable(self):
+        safe_area = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "safe_area_and_text_visibility"
+        )
+        safe_area.update({"result": "fail", "repairable": True})
+        caption = next(
+            item for item in self.verdict["checks"]
+            if item["check_id"] == "caption_fact_accuracy"
+        )
+        caption.update({"result": "unknown", "repairable": False, "evidence": []})
+
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(("safe_area_and_text_visibility",), report.repairable_ids)
+        self.assertFalse(report.can_repair)
+
+    def test_unsupported_technical_failure_never_enters_visual_repair(self):
+        self.mux = replace(
+            self.mux,
+            audit={**self.mux.audit, "black_max_ms": 500},
+        )
+        report = run_blocking_quality(
+            self.mux,
+            self.manifest,
+            self.render_report,
+            owner_evidence=self.owner,
+            visual_inspector=_Inspector(self.verdict),
+            snapshot_inputs=self.snapshots,
+            deadline_at=time.time() + 10,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual((), report.repairable_ids)
+        self.assertFalse(report.can_repair)
 
 
 if __name__ == "__main__":
