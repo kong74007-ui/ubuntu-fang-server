@@ -1,0 +1,1 @@
+{"status":"failed_reconciliation_pending","job_id":"job-local-reconcile","quote":{"quote_id":"quote-local-reconcile","pricing_version":"pricing-test-v1","held_points":30},"settlement":{"state":"reconciliation_pending","charged_points":0,"refunded_points":0},"error_code":"reconciliation_pending"}

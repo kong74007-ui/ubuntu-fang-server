@@ -1,0 +1,1 @@
+{"status":"failed","job_id":"job-local-prehold","quote":{"quote_id":"quote-local-prehold","pricing_version":"pricing-test-v1","held_points":0},"settlement":{"state":"prehold_absent","charged_points":0,"refunded_points":0},"error_code":"prehold_absent"}

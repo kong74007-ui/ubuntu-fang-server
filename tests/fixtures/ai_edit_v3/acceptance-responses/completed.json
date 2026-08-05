@@ -1,0 +1,21 @@
+{
+  "status": "completed",
+  "job_id": "job-local-01",
+  "attempt_id": "attempt-local-01",
+  "normalized_request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "quote": {"quote_id": "quote-local-01", "pricing_version": "pricing-test-v1", "held_points": 30},
+  "stage_timings_ms": {"queued": 5, "planning": 40, "rendering": 80, "quality": 20},
+  "plan_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "material_decisions": [{"slot_id": "slot_01", "asset_id": "material-local-01", "decision": "selected"}],
+  "provider_usage": [{"provider": "local-fake", "request_id": "provider-local-01", "units": 1}],
+  "audio_evidence": {"dialogue_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "peak_dbfs": -1.0, "lufs": -16.0},
+  "renderer_build_id": "renderer-local-v1",
+  "render_manifest_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "qc": {"passed": true, "report_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+  "settlement": {"state": "settled", "charged_points": 24, "refunded_points": 6},
+  "publication_generation": 1,
+  "asset_id": "asset-local-01",
+  "stable_cos_key": "acceptance/local-fake/final-01.mp4",
+  "output_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "playback_url": "https://playback.invalid/final.mp4?token=fake-signed-value"
+}

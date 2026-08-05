@@ -1,0 +1,1 @@
+{"status":"refunded","job_id":"job-local-refunded","quote":{"quote_id":"quote-local-refunded","pricing_version":"pricing-test-v1","held_points":30},"settlement":{"state":"refunded","charged_points":0,"refunded_points":30},"error_code":"render_failed"}
