@@ -58,7 +58,7 @@ from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_m
 from .materials import MaterialError, bind_scene_materials, validate_generated_material_review
 from .overlay_catalog import load_overlay_placement_catalog, overlay_budget_index
 from .providers.asr import normalize_asr_result
-from .providers.base import DefinitiveNotAccepted, ProviderResult
+from .providers.base import DefinitiveNotAccepted, ProviderResult, SubmissionUnknown
 from .providers.qwen_compatible import DashScopeCompatibleQwenClient
 from .quality import run_blocking_quality
 from .renderers import RenderRequest
@@ -1736,11 +1736,32 @@ def invoke_provider_once(
     request_sha256: str,
     call: Any,
     now_ms: int,
+    recover: Any = None,
 ) -> Mapping[str, Any]:
     """Use the real V3 provider receipt before making a replayable provider call."""
 
     if not callable(call):
         raise ValueError("provider_call_invalid")
+    if recover is not None and not callable(recover):
+        raise ValueError("provider_recovery_invalid")
+
+    def normalize_result(result: Any) -> tuple[str, dict[str, Any]]:
+        if isinstance(result, ProviderResult):
+            external_id = result.request_id
+            payload: Any = result.payload.get("content", result.payload)
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("provider_result_invalid") from exc
+        elif isinstance(result, Mapping):
+            external_id = getattr(result, "request_id", result.get("request_id"))
+            payload = dict(result)
+        else:
+            raise ValueError("provider_result_invalid")
+        if not isinstance(external_id, str) or not external_id or not isinstance(payload, Mapping):
+            raise ValueError("provider_result_invalid")
+        return external_id, dict(payload)
     def frozen_result(task: Any, expected_status: str) -> Mapping[str, Any] | None:
         if not isinstance(task, Mapping) or task.get("status") != expected_status:
             return None
@@ -1792,7 +1813,24 @@ def invoke_provider_once(
     if replay is not None:
         return replay
     if existing is not None and existing.get("status") != "intent_recorded":
-        raise ValueError("provider_receipt_pending")
+        if existing.get("status") == "submitting" and recover is not None:
+            recovered = recover(existing)
+            if recovered is not None:
+                external_id, frozen = normalize_result(recovered)
+                store.recover_provider_result(
+                    context.claim,
+                    stage,
+                    context.stage_attempt_id,
+                    provider,
+                    capability,
+                    operation_key,
+                    request_sha256,
+                    external_id,
+                    frozen,
+                    now_ms,
+                )
+                return frozen
+        raise SubmissionUnknown("provider_receipt_pending")
     if existing is None or existing.get("status") == "intent_recorded":
         store.record_provider_intent(
             context.claim,
@@ -1823,7 +1861,7 @@ def invoke_provider_once(
         replay = replay_terminal(existing)
         if replay is not None:
             return replay
-        raise ValueError("provider_receipt_pending")
+        raise SubmissionUnknown("provider_receipt_pending")
 
     try:
         result = call()
@@ -1852,22 +1890,7 @@ def invoke_provider_once(
             now_ms,
         )
         raise
-    if isinstance(result, ProviderResult):
-        external_id = result.request_id
-        payload: Any = result.payload.get("content", result.payload)
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ValueError("provider_result_invalid") from exc
-    elif isinstance(result, Mapping):
-        external_id = getattr(result, "request_id", result.get("request_id"))
-        payload = dict(result)
-    else:
-        raise ValueError("provider_result_invalid")
-    if not isinstance(external_id, str) or not external_id or not isinstance(payload, Mapping):
-        raise ValueError("provider_result_invalid")
-    frozen = dict(payload)
+    external_id, frozen = normalize_result(result)
     store.bind_provider_result(
         context.claim,
         operation_key,
@@ -2311,6 +2334,7 @@ class ProductionStageCoordinator:
         visual_inspector: Any | None = None,
         material_analyzer: Any | None = None,
         source_catalog: Any | None = None,
+        tts: Any | None = None,
     ) -> None:
         self.store = store
         self.cos = cos
@@ -2325,6 +2349,7 @@ class ProductionStageCoordinator:
         self.visual_inspector = visual_inspector or DeterministicVisualInspector()
         self.material_analyzer = material_analyzer or self.visual_inspector
         self.source_catalog = source_catalog
+        self.tts = tts
 
     def probe_capability(self, capability: str, *, environment: str | None):
         return {"available": True, "environment": environment, "reason_code": "capability_ready"}
@@ -2374,6 +2399,54 @@ class ProductionStageCoordinator:
             if not source.is_file():
                 raise ValueError("audio_source_not_found")
             return source, None
+        if input_type == "script_to_audio_video":
+            descriptor_path = root / "voice-source.json"
+            if not descriptor_path.is_file():
+                raise ValueError("generated_voice_not_found")
+            descriptor = _json(descriptor_path)
+            source = root / str(descriptor.get("relative_path", ""))
+            expected_sha256 = descriptor.get("sha256")
+            expected_size = descriptor.get("size_bytes")
+            valid_local = False
+            try:
+                valid_local = (
+                    source.is_file()
+                    and isinstance(expected_sha256, str)
+                    and _sha(source) == expected_sha256
+                    and isinstance(expected_size, int)
+                    and not isinstance(expected_size, bool)
+                    and source.stat().st_size == expected_size
+                    and probe_media(source).media_type == "audio"
+                )
+            except Exception:
+                valid_local = False
+            if not valid_local:
+                source.unlink(missing_ok=True)
+                object_key = descriptor.get("object_key")
+                if not isinstance(object_key, str) or not object_key:
+                    raise ValueError("generated_voice_not_found")
+                temporary = source.with_name(
+                    f".{source.name}.{os.getpid()}.{time.monotonic_ns()}.download"
+                )
+                try:
+                    self.cos.download_file(object_key, temporary)
+                    if (
+                        not temporary.is_file()
+                        or _sha(temporary) != expected_sha256
+                        or temporary.stat().st_size != expected_size
+                        or probe_media(temporary).media_type != "audio"
+                    ):
+                        raise ValueError("generated_voice_hash_mismatch")
+                    os.replace(temporary, source)
+                except Exception as exc:
+                    source.unlink(missing_ok=True)
+                    raise SubmissionUnknown("generated_voice_recovery_pending") from exc
+                finally:
+                    temporary.unlink(missing_ok=True)
+            tts_input = request.get("tts_input")
+            if not isinstance(tts_input, Mapping) or not isinstance(tts_input.get("text"), str):
+                raise ValueError("generated_voice_text_missing")
+            return source, tts_input["text"]
         raise ValueError("input_type_not_implemented")
 
     @staticmethod
@@ -2678,7 +2751,182 @@ class ProductionStageCoordinator:
             )
         if name == "generating_voice":
             if request["input_type"] == "script_to_audio_video":
-                raise ValueError("script_to_audio_not_enabled")
+                tts_input = request.get("tts_input")
+                if not isinstance(tts_input, Mapping) or self.tts is None:
+                    raise ValueError("script_to_audio_not_enabled")
+                target = root / "generated-voice.mp3"
+                operation_key = f"ai-edit-v3:{job_id}:tts"
+                request_sha = hashlib.sha256(canonical_json({
+                    "owner": str(job["owner_id"]),
+                    "text_sha256": hashlib.sha256(
+                        str(tts_input["text"]).encode("utf-8")
+                    ).hexdigest(),
+                    "voice_id": str(tts_input["voice_id"]),
+                })).hexdigest()
+                object_key = (
+                    f"{self.store.environment}/ai-edit-v3/"
+                    f"{self._owner_hmac(str(job['owner_id']))}/{job_id}/"
+                    "working/generated-voice.mp3"
+                )
+
+                def valid_voice(
+                    candidate: Path,
+                    *,
+                    expected_sha256: str | None = None,
+                    expected_size: int | None = None,
+                ) -> bool:
+                    try:
+                        if not candidate.is_file() or candidate.stat().st_size <= 0:
+                            return False
+                        if expected_size is not None and candidate.stat().st_size != expected_size:
+                            return False
+                        if expected_sha256 is not None and _sha(candidate) != expected_sha256:
+                            return False
+                        probe = probe_media(candidate)
+                        return probe.media_type == "audio" and probe.duration_ms > 0
+                    except Exception:
+                        return False
+
+                def download_voice(
+                    *,
+                    expected_sha256: str | None = None,
+                    expected_size: int | None = None,
+                ) -> bool:
+                    temporary = target.with_name(
+                        f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.download"
+                    )
+                    temporary.unlink(missing_ok=True)
+                    try:
+                        self.cos.download_file(object_key, temporary)
+                        if not valid_voice(
+                            temporary,
+                            expected_sha256=expected_sha256,
+                            expected_size=expected_size,
+                        ):
+                            return False
+                        os.replace(temporary, target)
+                        return True
+                    except Exception:
+                        return False
+                    finally:
+                        temporary.unlink(missing_ok=True)
+
+                def generate_voice() -> Mapping[str, Any]:
+                    result = self.tts.generate(
+                        owner=str(job["owner_id"]),
+                        text=str(tts_input["text"]),
+                        voice_id=str(tts_input["voice_id"]),
+                        output_path=target,
+                        idempotency_key=operation_key,
+                        deadline_at=context.deadline_at,
+                    )
+                    return {
+                        "request_id": result.request_id,
+                        "object_key": object_key,
+                        "sha256": result.payload["sha256"],
+                        "size_bytes": result.payload["size_bytes"],
+                        "mime_type": "audio/mpeg",
+                        "usage": dict(result.usage),
+                    }
+
+                def recover_voice(_task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+                    if not valid_voice(target):
+                        target.unlink(missing_ok=True)
+                        if not download_voice():
+                            target.unlink(missing_ok=True)
+                            return None
+                    if not valid_voice(target):
+                        target.unlink(missing_ok=True)
+                        return None
+                    digest = _sha(target)
+                    return {
+                        "request_id": "website-tts-" + hashlib.sha256(
+                            operation_key.encode("utf-8")
+                        ).hexdigest()[:32],
+                        "object_key": object_key,
+                        "sha256": digest,
+                        "size_bytes": target.stat().st_size,
+                        "mime_type": "audio/mpeg",
+                        "usage": {"characters": len(str(tts_input["text"]))},
+                    }
+
+                receipt_methods = (
+                    "record_provider_intent", "get_provider_task_for_claim",
+                    "claim_provider_submission", "bind_provider_result",
+                    "recover_provider_result",
+                )
+                if (
+                    hasattr(context, "claim")
+                    and hasattr(context, "stage_attempt_id")
+                    and all(callable(getattr(self.store, method, None)) for method in receipt_methods)
+                ):
+                    payload = invoke_provider_once(
+                        store=self.store,
+                        context=context,
+                        stage="generating_voice",
+                        provider="website-cosyvoice",
+                        capability="tts",
+                        operation_key=operation_key,
+                        request_sha256=request_sha,
+                        call=generate_voice,
+                        now_ms=round(time.time() * 1000),
+                        recover=recover_voice,
+                    )
+                else:
+                    payload = dict(generate_voice())
+                expected_sha256 = payload.get("sha256")
+                expected_size = payload.get("size_bytes")
+                if (
+                    not isinstance(expected_sha256, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+                    or isinstance(expected_size, bool)
+                    or not isinstance(expected_size, int)
+                    or expected_size <= 0
+                ):
+                    raise SubmissionUnknown("website_tts_receipt_invalid")
+                if not valid_voice(
+                    target,
+                    expected_sha256=expected_sha256,
+                    expected_size=expected_size,
+                ):
+                    target.unlink(missing_ok=True)
+                    if not download_voice(
+                        expected_sha256=expected_sha256,
+                        expected_size=expected_size,
+                    ):
+                        target.unlink(missing_ok=True)
+                        raise SubmissionUnknown("website_tts_artifact_pending")
+                if not valid_voice(
+                    target,
+                    expected_sha256=expected_sha256,
+                    expected_size=expected_size,
+                ):
+                    target.unlink(missing_ok=True)
+                    raise SubmissionUnknown("website_tts_artifact_hash_unknown")
+                try:
+                    self.cos.put_file(
+                        target,
+                        str(payload["object_key"]),
+                        "audio/mpeg",
+                        private=True,
+                        if_absent=True,
+                    )
+                except Exception as exc:
+                    raise SubmissionUnknown("website_tts_cos_persistence_pending") from exc
+                descriptor = {
+                    "relative_path": target.relative_to(root).as_posix(),
+                    "object_key": str(payload["object_key"]),
+                    "sha256": str(payload["sha256"]),
+                    "size_bytes": int(payload["size_bytes"]),
+                    "mime_type": "audio/mpeg",
+                    "provider_request_id": str(payload["request_id"]),
+                }
+                digest = _write_json(root / "voice-source.json", descriptor)
+                return StageOutcome(
+                    _NEXT[name],
+                    {"voice_source_sha256": digest, "provider_request_id": descriptor["provider_request_id"]},
+                    input_sha,
+                )
             return StageOutcome(_NEXT[name], {"skipped": True, "reason": "source_has_voice"}, input_sha)
         if name == "normalizing":
             source, authoritative_text = self._source(job, context)

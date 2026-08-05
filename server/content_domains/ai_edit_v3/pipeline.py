@@ -683,6 +683,27 @@ def run_job(
             store.close_running_attempts(claim, current_ms)
             store.release_lease(claim, current_ms)
         raise
+    except SubmissionUnknown as exc:
+        heartbeat.close()
+        terminate_once()
+        current_ms = _now_ms(runtime)
+        if store.lease_owned(claim, current_ms):
+            if not attempt_finished:
+                store.finish_stage_attempt(
+                    claim,
+                    attempt["id"],
+                    "failed",
+                    current_ms,
+                    error_code=exc.reason_code,
+                    error={"type": type(exc).__name__},
+                )
+            store.release_lease(claim, current_ms)
+        return JobRunResult(
+            claim.job_id,
+            state,
+            "safety_pending",
+            exc.reason_code,
+        )
     except BillingError as exc:
         heartbeat.close()
         current_ms = _now_ms(runtime)

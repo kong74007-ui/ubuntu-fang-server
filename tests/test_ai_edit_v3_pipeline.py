@@ -1564,6 +1564,61 @@ class V3StateCASTests(unittest.TestCase):
         self.assertEqual(refund_count, 0)
         self.assertIsNone(self.row(claim.job_id)["worker_id"])
 
+    def test_unknown_provider_submission_keeps_job_nonterminal(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+        from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        class Supervisor:
+            def terminate_job(self, _job_id):
+                return None
+
+        self.seed_job("job-provider-unknown", "queued")
+        claim = self.store.claim_job(
+            "job-provider-unknown",
+            "worker-provider-unknown",
+            30,
+            100_000,
+            expected_states={"queued"},
+        )
+
+        def unknown(_job, _context):
+            raise SubmissionUnknown("website_tts_submission_unknown")
+
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=Supervisor(),
+            stage_handlers={"queued": unknown},
+        )
+
+        result = run_job(claim, runtime, db_path=self.db)
+
+        attempt = self.store._read(
+            lambda connection: dict(connection.execute(
+                "SELECT * FROM edit_v3_stage_attempts WHERE job_id=?",
+                (claim.job_id,),
+            ).fetchone())
+        )
+        self.assertEqual("queued", result.state)
+        self.assertEqual("safety_pending", result.status)
+        self.assertEqual("website_tts_submission_unknown", result.error_code)
+        self.assertEqual("queued", self.row(claim.job_id)["state"])
+        self.assertEqual("failed", attempt["status"])
+        self.assertIsNone(self.row(claim.job_id)["worker_id"])
+
     def test_pending_publication_is_advanced_before_asset_reconciliation(self):
         from server.content_domains.ai_edit_v3.delivery import (
             create_publish_intent,

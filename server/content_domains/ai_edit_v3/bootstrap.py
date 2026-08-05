@@ -23,7 +23,6 @@ from .cos import V3Cos
 from .feature import load_config
 from .media import _probe_image, probe_media
 from .production import (
-    CapabilityPlaceholder,
     DashScopeAsr,
     ProductionStageCoordinator,
     QwenCompiledDirector,
@@ -33,6 +32,7 @@ from .providers.base import SecretValue
 from .providers.elevenlabs import ElevenLabsAudioGenerator
 from .providers.openai_image import OpenAIImageGenerator
 from .providers.qwen_compatible import DashScopeCompatibleQwenClient
+from .providers.website_tts import WebsiteCosyVoiceTts
 from .renderers.hyperframes import HyperframesRenderer
 from .renderers.release import verify_renderer_release
 from .runtime import (
@@ -451,6 +451,21 @@ def _build():
         api_key=SecretValue(image_key) if image_key else None
     )
     asr = DashScopeAsr()
+    try:
+        website_audio = _audio_domain()
+    except Exception:
+        website_audio = None
+    tts_configured = bool(
+        os.environ.get("DASHSCOPE_API_KEY", "").strip()
+        and website_audio is not None
+        and callable(getattr(website_audio, "gen_audio", None))
+        and callable(getattr(website_audio, "_resolve_out_file", None))
+    )
+    tts = WebsiteCosyVoiceTts(
+        generate_audio=lambda payload: website_audio.gen_audio(dict(payload)),
+        resolve_output=lambda value: website_audio._resolve_out_file(value),
+        configured=tts_configured,
+    )
     director = QwenCompiledDirector(
         timeout_seconds=config.director_timeout_seconds
     )
@@ -479,6 +494,7 @@ def _build():
         visual_inspector=material_reviewer,
         material_analyzer=material_reviewer,
         source_catalog=catalog,
+        tts=tts,
     )
     ledger = HttpPointsLedger()
     asset_db = Path(
@@ -491,7 +507,7 @@ def _build():
         points=ledger,
         assets=publisher,
         cos=cos,
-        tts=CapabilityPlaceholder("tts"),
+        tts=tts,
         asr=asr,
         director=director,
         image_generator=image_generator,
@@ -514,7 +530,7 @@ def _build():
         result_signer=lambda key, expires, download: cos.presign_get(key, expires=expires),
         deployed_sha=getattr(config, "deployed_sha", None),
         acceptance_provider_identities={
-            "tts": "placeholder",
+            "tts": "website-cosyvoice",
             "asr": "dashscope-asr",
             "director": "qwen-compiled-director",
             "image_generator": "openai-image",

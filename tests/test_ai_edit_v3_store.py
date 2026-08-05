@@ -5636,6 +5636,63 @@ class V3LeaseTests(unittest.TestCase):
                 109_000,
             )
 
+    def test_pending_provider_submission_can_bind_verified_result_on_new_attempt(self):
+        self.seed_job("job-provider-recovery")
+        first = self.store.claim_next_job("worker-a", 30, 100_000)
+        first_attempt = self.store.start_stage_attempt(
+            first, "queued", "a" * 64, 101_000
+        )
+        self.store.record_provider_intent(
+            first,
+            "queued",
+            first_attempt["id"],
+            "website-cosyvoice",
+            "tts",
+            "op-tts-recovery",
+            "b" * 64,
+            102_000,
+        )
+        self.assertTrue(self.store.claim_provider_submission(
+            first,
+            "queued",
+            first_attempt["id"],
+            "website-cosyvoice",
+            "tts",
+            "op-tts-recovery",
+            "b" * 64,
+            103_000,
+        ))
+        self.store.finish_stage_attempt(
+            first, first_attempt["id"], "failed", 104_000,
+            error_code="website_tts_submission_unknown",
+        )
+        self.assertTrue(self.store.release_lease(first, 105_000))
+
+        second = self.store.claim_next_job("worker-b", 30, 106_000)
+        second_attempt = self.store.start_stage_attempt(
+            second, "queued", "a" * 64, 107_000
+        )
+        recovered = self.store.recover_provider_result(
+            second,
+            "queued",
+            second_attempt["id"],
+            "website-cosyvoice",
+            "tts",
+            "op-tts-recovery",
+            "b" * 64,
+            "website-tts-stable",
+            {"sha256": "c" * 64, "size_bytes": 123},
+            108_000,
+        )
+
+        self.assertEqual("completed", recovered["status"])
+        self.assertEqual(second_attempt["id"], recovered["stage_attempt_id"])
+        self.assertEqual("website-tts-stable", recovered["external_id"])
+        self.assertEqual(
+            '{"sha256":"' + "c" * 64 + '","size_bytes":123}',
+            recovered["result_json"],
+        )
+
     def test_provider_submission_claim_has_one_winner(self):
         self.seed_job("job-provider-claim")
         claim = self.store.claim_next_job("worker-a", 30, 100_000)

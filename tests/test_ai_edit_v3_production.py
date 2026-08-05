@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import hashlib
 import os
@@ -20,6 +21,27 @@ from server.content_domains.ai_edit_v3.providers.qwen_compatible import (
     DashScopeCompatibleQwenClient,
 )
 from server.content_domains.ai_edit_v3.transcript import Caption
+
+
+@functools.lru_cache(maxsize=1)
+def _valid_mp3_bytes() -> bytes:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise unittest.SkipTest("ffmpeg is required for production media tests")
+    with tempfile.TemporaryDirectory() as folder:
+        target = Path(folder) / "voice.mp3"
+        completed = subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=0.25",
+                "-codec:a", "libmp3lame", str(target),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0 or not target.is_file():
+            raise unittest.SkipTest("ffmpeg cannot create the MP3 test fixture")
+        return target.read_bytes()
 
 
 def _node22_command() -> list[str]:
@@ -1429,6 +1451,312 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             self.assertEqual(first_bytes, second.read_bytes())
             self.assertTrue(first_bytes.startswith(b"\xff\xd8"))
             self.assertLessEqual(len(first_bytes), 256 * 1024)
+
+    def test_script_tts_retries_cos_persistence_without_provider_resubmit(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+        from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+        from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+        with tempfile.TemporaryDirectory() as folder:
+            audio = _valid_mp3_bytes()
+
+            class Tts:
+                calls = 0
+
+                def generate(self, **kwargs):
+                    self.calls += 1
+                    kwargs["output_path"].parent.mkdir(parents=True, exist_ok=True)
+                    kwargs["output_path"].write_bytes(audio)
+                    return ProviderResult(
+                        provider="website-cosyvoice", capability="tts",
+                        request_id="website-tts-stable",
+                        payload={
+                            "sha256": hashlib.sha256(audio).hexdigest(),
+                            "size_bytes": len(audio), "mime_type": "audio/mpeg",
+                        },
+                        usage={"characters": 7}, elapsed_ms=5,
+                    )
+
+            class Store:
+                environment = "test"
+
+                def __init__(self):
+                    self.task = None
+
+                def get_provider_task_for_claim(self, *_args):
+                    return self.task
+
+                def record_provider_intent(self, *args):
+                    self.task = {
+                        "status": "intent_recorded", "stage": args[1],
+                        "stage_attempt_id": args[2], "provider": args[3],
+                        "capability": args[4], "request_sha256": args[6],
+                    }
+
+                def claim_provider_submission(self, *_args):
+                    self.task = {**self.task, "status": "submitting"}
+                    return True
+
+                def bind_provider_result(self, *args):
+                    self.task = {
+                        **self.task, "status": "completed",
+                        "external_id": args[2], "result_json": json.dumps(args[4]),
+                    }
+
+                def recover_provider_result(self, *_args):
+                    raise AssertionError("completed receipt must replay directly")
+
+            class Cos:
+                calls = 0
+                files = {}
+
+                def put_file(self, path, key, *_args, **_kwargs):
+                    self.calls += 1
+                    self.files[key] = Path(path).read_bytes()
+                    if self.calls == 1:
+                        raise RuntimeError("temporary COS failure")
+
+                def download_file(self, key, path):
+                    Path(path).write_bytes(self.files[key])
+
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(folder) / "work"
+            coordinator.owner_hmac_secret = b"production-tts-test-secret"
+            coordinator.store = Store()
+            coordinator.tts = Tts()
+            coordinator.cos = Cos()
+            job = {
+                "job_id": "job-tts-cos-retry", "owner_id": "alice",
+                "stage_input_sha256": "1" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "script_to_audio_video",
+                    "tts_input": {"text": "content", "voice_id": "voice"},
+                    "ratio": "16:9", "creation_mode": "ai_auto",
+                    "material_asset_ids": [],
+                }),
+            }
+            context = SimpleNamespace(
+                claim=object(), stage_attempt_id="attempt-1",
+                deadline_at=time.time() + 60,
+            )
+            with self.assertRaisesRegex(SubmissionUnknown, "cos_persistence_pending"):
+                coordinator._stage("generating_voice", job, context)
+
+            target = coordinator._root(job["job_id"]) / "generated-voice.mp3"
+            target.write_bytes(b"corrupt-local-artifact")
+            outcome = coordinator._stage("generating_voice", job, context)
+
+            self.assertEqual("normalizing", outcome.next_state)
+            self.assertEqual(1, coordinator.tts.calls)
+            self.assertEqual(2, coordinator.cos.calls)
+            self.assertEqual(audio, target.read_bytes())
+
+    def test_script_tts_recovers_unbound_receipt_from_private_cos_without_resubmit(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+        from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+        with tempfile.TemporaryDirectory() as folder:
+            audio = _valid_mp3_bytes()
+
+            class Tts:
+                calls = 0
+
+                def generate(self, **kwargs):
+                    self.calls += 1
+                    target = kwargs["output_path"]
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(audio)
+                    return ProviderResult(
+                        provider="website-cosyvoice",
+                        capability="tts",
+                        request_id="website-tts-stable",
+                        payload={
+                            "sha256": hashlib.sha256(audio).hexdigest(),
+                            "size_bytes": len(audio),
+                            "mime_type": "audio/mpeg",
+                            "characters": 4,
+                        },
+                        usage={"characters": 4},
+                        elapsed_ms=5,
+                    )
+
+            class Cos:
+                files = {}
+                fail_download_once = False
+
+                def put_file(self, path, key, content_type, private, if_absent):
+                    self.files[key] = Path(path).read_bytes()
+
+                def download_file(self, key, path):
+                    Path(path).parent.mkdir(parents=True, exist_ok=True)
+                    if self.fail_download_once:
+                        self.fail_download_once = False
+                        Path(path).write_bytes(b"partial-nonempty-download")
+                        raise RuntimeError("interrupted COS download")
+                    Path(path).write_bytes(self.files[key])
+
+            class Store:
+                environment = "test"
+
+                def __init__(self):
+                    self.task = None
+                    self.bind_calls = 0
+                    self.recovery_calls = 0
+
+                def get_provider_task_for_claim(self, *_args):
+                    return self.task
+
+                def record_provider_intent(self, *args):
+                    self.task = {
+                        "status": "intent_recorded",
+                        "stage": args[1],
+                        "stage_attempt_id": args[2],
+                        "provider": args[3],
+                        "capability": args[4],
+                        "request_sha256": args[6],
+                    }
+                    return self.task
+
+                def claim_provider_submission(self, *_args):
+                    self.task = {**self.task, "status": "submitting"}
+                    return True
+
+                def bind_provider_result(self, *_args):
+                    self.bind_calls += 1
+                    raise RuntimeError("injected receipt bind failure")
+
+                def recover_provider_result(self, *args):
+                    self.recovery_calls += 1
+                    self.task = {
+                        **self.task,
+                        "status": "completed",
+                        "stage_attempt_id": args[2],
+                        "external_id": args[7],
+                        "result_json": json.dumps(args[8]),
+                    }
+                    return self.task
+
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(folder) / "work"
+            coordinator.owner_hmac_secret = b"production-tts-test-secret"
+            coordinator.store = Store()
+            coordinator.tts = Tts()
+            coordinator.cos = Cos()
+            job = {
+                "job_id": "job-tts-recovery",
+                "owner_id": "alice",
+                "stage_input_sha256": "1" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "script_to_audio_video",
+                    "tts_input": {"text": "content", "voice_id": "my-clone"},
+                    "ratio": "16:9",
+                    "creation_mode": "ai_auto",
+                    "material_asset_ids": [],
+                }),
+            }
+            first_context = SimpleNamespace(
+                claim=object(),
+                stage_attempt_id="attempt-1",
+                deadline_at=time.time() + 60,
+            )
+            with self.assertRaisesRegex(RuntimeError, "receipt bind failure"):
+                coordinator._stage("generating_voice", job, first_context)
+
+            target = coordinator._root(job["job_id"]) / "generated-voice.mp3"
+            object_key = (
+                f"test/ai-edit-v3/{coordinator._owner_hmac('alice')}/"
+                f"{job['job_id']}/working/generated-voice.mp3"
+            )
+            coordinator.cos.files[object_key] = target.read_bytes()
+            target.unlink()
+
+            second_context = SimpleNamespace(
+                claim=object(),
+                stage_attempt_id="attempt-2",
+                deadline_at=time.time() + 60,
+            )
+            coordinator.cos.fail_download_once = True
+            from server.content_domains.ai_edit_v3.providers import SubmissionUnknown
+            with self.assertRaisesRegex(SubmissionUnknown, "provider_receipt_pending"):
+                coordinator._stage("generating_voice", job, second_context)
+            self.assertFalse(target.exists())
+            self.assertEqual(0, coordinator.store.recovery_calls)
+            self.assertEqual(1, coordinator.tts.calls)
+
+            third_context = SimpleNamespace(
+                claim=object(),
+                stage_attempt_id="attempt-3",
+                deadline_at=time.time() + 60,
+            )
+            outcome = coordinator._stage("generating_voice", job, third_context)
+
+            self.assertEqual("normalizing", outcome.next_state)
+            self.assertEqual(1, coordinator.tts.calls)
+            self.assertEqual(1, coordinator.store.bind_calls)
+            self.assertEqual(1, coordinator.store.recovery_calls)
+            self.assertEqual(audio, target.read_bytes())
+
+    def test_script_to_audio_generates_private_recoverable_voice_source(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+        from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+        with tempfile.TemporaryDirectory() as folder:
+            class Tts:
+                calls = 0
+
+                def generate(self, **kwargs):
+                    self.calls += 1
+                    target = kwargs["output_path"]
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    audio = _valid_mp3_bytes()
+                    target.write_bytes(audio)
+                    return ProviderResult(
+                        provider="website-cosyvoice", capability="tts",
+                        request_id="tts-request-1",
+                        payload={
+                            "sha256": hashlib.sha256(audio).hexdigest(),
+                            "size_bytes": len(audio), "mime_type": "audio/mpeg", "characters": 4,
+                        },
+                        usage={"characters": 4}, elapsed_ms=5,
+                    )
+
+            class Cos:
+                files = {}
+
+                def put_file(self, path, key, content_type, private, if_absent):
+                    self.files[key] = Path(path).read_bytes()
+
+                def download_file(self, key, path):
+                    Path(path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(path).write_bytes(self.files[key])
+
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(folder) / "work"
+            coordinator.owner_hmac_secret = b"production-tts-test-secret"
+            coordinator.store = SimpleNamespace(environment="test")
+            coordinator.tts = Tts()
+            coordinator.cos = Cos()
+            job = {
+                "job_id": "job-tts-1", "owner_id": "alice",
+                "stage_input_sha256": "1" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "script_to_audio_video",
+                    "tts_input": {"text": "讲解内容", "voice_id": "my-clone"},
+                    "ratio": "16:9", "creation_mode": "ai_auto",
+                    "material_asset_ids": [],
+                }),
+            }
+            context = SimpleNamespace(deadline_at=time.time() + 60)
+
+            outcome = coordinator._stage("generating_voice", job, context)
+            voice_path = coordinator._root("job-tts-1") / "generated-voice.mp3"
+            voice_path.unlink()
+            recovered, text = coordinator._source(job, context)
+
+            self.assertEqual(outcome.next_state, "normalizing")
+            self.assertEqual(coordinator.tts.calls, 1)
+            self.assertEqual(recovered.read_bytes(), _valid_mp3_bytes())
+            self.assertEqual(text, "讲解内容")
 
     def test_existing_audio_source_requires_owned_ready_catalog_record(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator

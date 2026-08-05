@@ -4458,6 +4458,128 @@ def _release_material_analysis_submission_tx(
     )
 
 
+def _recover_provider_result_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    stage: str,
+    stage_attempt_id: str,
+    provider: str,
+    capability: str,
+    operation_key: str,
+    request_sha256: str,
+    external_id: str,
+    result: Any,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Bind a verified durable result left by an older submitting attempt."""
+
+    claim = _require_claim(claim)
+    stage = _require_nonblank("stage", stage)
+    stage_attempt_id = _require_nonblank("stage_attempt_id", stage_attempt_id)
+    provider = _require_nonblank("provider", provider)
+    capability = _require_nonblank("capability", capability)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    request_sha256 = _require_sha256("request_sha256", request_sha256)
+    external_id = _require_nonblank("external_id", external_id)
+    now_ms = _require_now_ms(now_ms)
+    result_json = _json_text(result)
+    existing = connection.execute(
+        "SELECT * FROM edit_v3_provider_tasks WHERE job_id=? AND operation_key=?",
+        (claim.job_id, operation_key),
+    ).fetchone()
+    if existing is None:
+        raise StoreConflictError(
+            "provider_intent_missing",
+            "provider recovery requires an existing submission intent",
+        )
+    expected = {
+        "stage": stage,
+        "provider": provider,
+        "capability": capability,
+        "request_sha256": request_sha256,
+    }
+    if any(existing[key] != value for key, value in expected.items()):
+        raise StoreConflictError(
+            "provider_intent_conflict",
+            "provider recovery diverges from immutable intent",
+        )
+    if (
+        existing["status"] != "submitting"
+        or existing["external_id"] is not None
+        or existing["result_json"] is not None
+    ):
+        raise StoreConflictError(
+            "provider_recovery_not_pending",
+            "only an unresolved submitting operation can be recovered",
+        )
+    current_attempt = connection.execute(
+        """SELECT a.status FROM edit_v3_stage_attempts AS a
+           JOIN edit_v3_jobs AS j ON j.job_id=a.job_id
+           WHERE a.id=? AND a.job_id=? AND a.stage=?
+             AND a.fencing_token=j.fencing_token AND a.status='running'
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            stage_attempt_id,
+            claim.job_id,
+            stage,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    old_attempt = connection.execute(
+        "SELECT status FROM edit_v3_stage_attempts WHERE id=? AND job_id=?",
+        (existing["stage_attempt_id"], claim.job_id),
+    ).fetchone()
+    if current_attempt is None:
+        raise StoreConflictError(
+            "provider_attempt_not_running",
+            "provider recovery requires the current running stage attempt",
+        )
+    if (
+        existing["stage_attempt_id"] != stage_attempt_id
+        and old_attempt is not None
+        and old_attempt["status"] == "running"
+    ):
+        raise StoreConflictError(
+            "provider_attempt_mismatch",
+            "provider recovery cannot replace a running submission attempt",
+        )
+    try:
+        updated = connection.execute(
+            """UPDATE edit_v3_provider_tasks
+               SET stage_attempt_id=?,external_id=?,status='completed',result_json=?,
+                   fencing_token=?,last_checked_at=?,updated_at=?
+               WHERE id=? AND status='submitting'
+                 AND external_id IS NULL AND result_json IS NULL""",
+            (
+                stage_attempt_id,
+                external_id,
+                result_json,
+                claim.fencing_token,
+                now_ms,
+                now_ms,
+                existing["id"],
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise StoreConflictError(
+            "provider_external_id_conflict",
+            "provider external ID is already bound",
+        ) from exc
+    if updated.rowcount != 1:
+        raise StoreConflictError(
+            "provider_result_conflict",
+            "provider result was concurrently recovered",
+        )
+    return dict(
+        connection.execute(
+            "SELECT * FROM edit_v3_provider_tasks WHERE id=?",
+            (existing["id"],),
+        ).fetchone()
+    )
+
+
 def _billing_row_for_claim_tx(
     connection: sqlite3.Connection,
     intent_id: str,
@@ -5178,6 +5300,35 @@ class V3Store:
                 connection,
                 claim,
                 operation_key,
+                now_ms,
+            )
+        )
+
+    def recover_provider_result(
+        self,
+        claim: LeaseClaim,
+        stage: str,
+        stage_attempt_id: str,
+        provider: str,
+        capability: str,
+        operation_key: str,
+        request_sha256: str,
+        external_id: str,
+        result: Any,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _recover_provider_result_tx(
+                connection,
+                claim,
+                stage,
+                stage_attempt_id,
+                provider,
+                capability,
+                operation_key,
+                request_sha256,
+                external_id,
+                result,
                 now_ms,
             )
         )
