@@ -2310,6 +2310,7 @@ class ProductionStageCoordinator:
         renderer_root: Path,
         visual_inspector: Any | None = None,
         material_analyzer: Any | None = None,
+        source_catalog: Any | None = None,
     ) -> None:
         self.store = store
         self.cos = cos
@@ -2323,6 +2324,7 @@ class ProductionStageCoordinator:
         self.renderer_root = Path(renderer_root).resolve()
         self.visual_inspector = visual_inspector or DeterministicVisualInspector()
         self.material_analyzer = material_analyzer or self.visual_inspector
+        self.source_catalog = source_catalog
 
     def probe_capability(self, capability: str, *, environment: str | None):
         return {"available": True, "environment": environment, "reason_code": "capability_ready"}
@@ -2355,6 +2357,23 @@ class ProductionStageCoordinator:
             if not destination.exists():
                 self.cos.download_file(upload["object_key"], destination)
             return destination, None
+        if input_type == "existing_audio":
+            resolver = getattr(self.source_catalog, "resolve_audio_asset", None)
+            if not callable(resolver):
+                raise ValueError("audio_source_not_found")
+            record = resolver(owner, str(request["source_asset_id"]))
+            if (
+                not isinstance(record, Mapping)
+                or record.get("asset_id") != str(request["source_asset_id"])
+                or record.get("owner") != owner
+                or record.get("status") != "ready"
+                or not isinstance(record.get("local_path"), str)
+            ):
+                raise ValueError("audio_source_not_found")
+            source = Path(record["local_path"]).resolve()
+            if not source.is_file():
+                raise ValueError("audio_source_not_found")
+            return source, None
         raise ValueError("input_type_not_implemented")
 
     @staticmethod

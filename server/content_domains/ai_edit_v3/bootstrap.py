@@ -50,6 +50,12 @@ _RUNTIME = None
 _SERVICE = None
 
 
+def _audio_domain():
+    from server.content_domains import audio
+
+    return audio
+
+
 class SystemClock:
     def now(self) -> float:
         return time.time()
@@ -241,16 +247,75 @@ class ProductionCatalog:
     def resolve_platform_asset(self, owner: str, asset_id: str):
         return self._platform(owner, asset_id)
 
-    def list_audio_assets(self, owner: str):
-        return []
-
-    def resolve_audio_asset(self, owner: str, asset_id: str):
+    def _audio(self, owner: str, asset_id: str) -> dict[str, Any] | None:
+        audio = _audio_domain()
+        for item in audio.list_audio_assets(owner, limit=120):
+            if str(item.get("id")) != str(asset_id) or item.get("username") != owner:
+                continue
+            path = audio._resolve_out_file(item.get("file"))
+            if path is None:
+                return None
+            resolved = Path(path).resolve()
+            media = probe_media(resolved)
+            mime_type = mimetypes.guess_type(resolved.name)[0] or "audio/mpeg"
+            if not mime_type.startswith("audio/"):
+                mime_type = "audio/mpeg"
+            title = " ".join(str(item.get("text") or "").split())[:120]
+            if not title:
+                title = " ".join(str(item.get("voice_name") or "音频素材").split())[:120]
+            return {
+                "asset_id": str(asset_id),
+                "title": title,
+                "duration_ms": int(media.duration_ms),
+                "mime_type": mime_type,
+                "status": "ready",
+                "owner": owner,
+                "local_path": str(resolved),
+            }
         return None
 
+    def list_audio_assets(self, owner: str):
+        audio = _audio_domain()
+        values = []
+        for item in audio.list_audio_assets(owner, limit=120):
+            record = self._audio(owner, str(item.get("id")))
+            if record is not None:
+                values.append(record)
+        return values
+
+    def resolve_audio_asset(self, owner: str, asset_id: str):
+        return self._audio(owner, asset_id)
+
     def list_voices(self, owner: str):
-        return []
+        audio = _audio_domain()
+        values = []
+        for item in audio.list_audio_voices(owner):
+            scope = item.get("scope")
+            username = item.get("username")
+            voice_key = item.get("voice_key")
+            if (
+                not isinstance(voice_key, str)
+                or not voice_key
+                or scope not in {"public", "personal"}
+                or scope == "personal" and username != owner
+            ):
+                continue
+            name = " ".join(str(item.get("display_name") or voice_key).split())[:80]
+            record = {
+                "voice_id": voice_key,
+                "name": name,
+                "title": name,
+                "description": "公共音色" if scope == "public" else "个人克隆音色",
+                "status": "ready" if item.get("provider_voice") else "unavailable",
+                "owner": owner,
+            }
+            values.append(record)
+        return values
 
     def resolve_voice(self, owner: str, voice_id: str):
+        for item in self.list_voices(owner):
+            if item["voice_id"] == voice_id:
+                return item
         return None
 
     def list_templates(self, owner: str):
@@ -399,6 +464,7 @@ def _build():
         os.environ.get("AI_EDIT_V3_WORK_ROOT", "/var/lib/huangque-ai-edit-v3/work")
     ).resolve()
     work_root.mkdir(parents=True, exist_ok=True)
+    catalog = ProductionCatalog(templates)
     coordinator = ProductionStageCoordinator(
         store=store,
         cos=cos,
@@ -412,6 +478,7 @@ def _build():
         renderer_root=renderer_root,
         visual_inspector=material_reviewer,
         material_analyzer=material_reviewer,
+        source_catalog=catalog,
     )
     ledger = HttpPointsLedger()
     asset_db = Path(
@@ -434,7 +501,6 @@ def _build():
         stage_handlers=build_stage_handlers(coordinator),
     )
     runtime = build_runtime(dependencies)
-    catalog = ProductionCatalog(templates)
     capacity = Capacity(store, config.queue_capacity, config.temp_bytes_limit, work_root)
     service = EditV3Service(
         store,

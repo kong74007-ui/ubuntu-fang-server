@@ -1430,6 +1430,46 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             self.assertTrue(first_bytes.startswith(b"\xff\xd8"))
             self.assertLessEqual(len(first_bytes), 256 * 1024)
 
+    def test_existing_audio_source_requires_owned_ready_catalog_record(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "owned.mp3"
+            source.write_bytes(b"audio")
+
+            class Catalog:
+                record = {
+                    "asset_id": "17",
+                    "owner": "alice",
+                    "status": "ready",
+                    "local_path": str(source.resolve()),
+                }
+
+                def resolve_audio_asset(self, owner, asset_id):
+                    return dict(self.record) if asset_id == "17" else None
+
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(folder) / "work"
+            coordinator.source_catalog = Catalog()
+            job = {
+                "job_id": "job-audio-1",
+                "owner_id": "alice",
+                "normalized_request_json": json.dumps({
+                    "input_type": "existing_audio",
+                    "source_asset_id": "17",
+                }),
+            }
+
+            resolved, authoritative_text = coordinator._source(
+                job, SimpleNamespace(deadline_at=time.time() + 60)
+            )
+            self.assertEqual(resolved, source.resolve())
+            self.assertIsNone(authoritative_text)
+
+            coordinator.source_catalog.record["owner"] = "mallory"
+            with self.assertRaisesRegex(ValueError, "audio_source_not_found"):
+                coordinator._source(job, SimpleNamespace(deadline_at=time.time() + 60))
+
     def test_visual_inspector_rejects_material_layout_without_assets(self):
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
 
