@@ -19,6 +19,7 @@ from jsonschema import Draft202012Validator
 from server.content_domains.ai_edit_v3.acceptance_export import (
     AcceptanceConfig,
     RunManifest,
+    TestSession,
     build_blind_review_package,
     collect_case_evidence,
     run_cases,
@@ -444,6 +445,189 @@ class RealRunUnavailable(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class AcceptanceBindings:
+    owners: Mapping[str, TestSession]
+    cases: Mapping[str, Mapping[str, Any]]
+
+
+def load_authorized_bindings(
+    matrix_path: Path,
+    bindings_path: Path,
+    *,
+    environment: Mapping[str, str],
+    authorization_ref: str,
+    subset: str | None = None,
+) -> AcceptanceBindings:
+    """Load strict owner-scoped authority without persisting session values."""
+
+    try:
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RealRunUnavailable("asset_bindings_invalid") from exc
+    if (
+        not isinstance(matrix, Mapping)
+        or matrix.get("authorization_ref") != authorization_ref
+        or not isinstance(matrix.get("cases"), list)
+        or not isinstance(bindings, Mapping)
+        or set(bindings) != {"version", "owners", "cases"}
+        or bindings.get("version") != "2.0"
+        or not isinstance(bindings.get("owners"), list)
+        or not isinstance(bindings.get("cases"), list)
+    ):
+        raise RealRunUnavailable("asset_bindings_invalid")
+    matrix_cases = list(matrix["cases"])
+    if subset == "parallel-5":
+        matrix_cases = matrix_cases[:5]
+    elif subset == "stress-10":
+        matrix_cases = matrix_cases[:10]
+    elif subset is not None:
+        raise RealRunUnavailable("acceptance_subset_invalid")
+
+    owners: dict[str, TestSession] = {}
+    for raw in bindings["owners"]:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != {"owner_alias", "session_env"}
+            or not SAFE_ALIAS.fullmatch(str(raw.get("owner_alias", "")))
+            or not re.fullmatch(
+                r"AI_EDIT_V3_TEST_SESSION_[A-Z0-9_]{1,64}",
+                str(raw.get("session_env", "")),
+            )
+            or raw["owner_alias"] in owners
+        ):
+            raise RealRunUnavailable("owner_binding_invalid")
+        secret = environment.get(str(raw["session_env"]), "")
+        if not isinstance(secret, str) or not secret.strip():
+            raise RealRunUnavailable("test_session_missing")
+        owners[str(raw["owner_alias"])] = TestSession(secret)
+
+    raw_cases: dict[str, Mapping[str, Any]] = {}
+    for raw in bindings["cases"]:
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != {"case_id", "owner_alias", "source", "materials"}
+            or not isinstance(raw.get("case_id"), str)
+            or raw["case_id"] in raw_cases
+        ):
+            raise RealRunUnavailable("case_binding_invalid")
+        raw_cases[str(raw["case_id"])] = raw
+    expected_ids = {
+        str(case.get("case_id")) for case in matrix_cases if isinstance(case, Mapping)
+    }
+    if set(raw_cases) != expected_ids or len(expected_ids) != len(matrix_cases):
+        raise RealRunUnavailable("asset_binding_case_set_mismatch")
+
+    normalized: dict[str, Mapping[str, Any]] = {}
+    expected_kinds = {
+        "uploaded_video": "upload",
+        "uploaded_audio": "upload",
+        "platform_talking_head": "platform_asset",
+        "existing_audio": "audio_asset",
+        "script_to_audio_video": "tts",
+    }
+    for case in matrix_cases:
+        if not isinstance(case, Mapping) or not isinstance(case.get("source"), Mapping):
+            raise RealRunUnavailable("acceptance_matrix_invalid")
+        case_id = str(case["case_id"])
+        frozen_source = case["source"]
+        raw = raw_cases[case_id]
+        owner_alias = raw.get("owner_alias")
+        if (
+            owner_alias not in owners
+            or owner_alias != frozen_source.get("owner_alias")
+            or case.get("authorization_ref") != authorization_ref
+            or frozen_source.get("authorization_ref") != authorization_ref
+        ):
+            raise RealRunUnavailable("owner_binding_mismatch")
+        source = raw.get("source")
+        materials = raw.get("materials")
+        if not isinstance(source, Mapping) or not isinstance(materials, list):
+            raise RealRunUnavailable("case_binding_invalid")
+        kind = expected_kinds.get(str(case.get("input_type")))
+        common = {"kind", "alias", "authorization_ref", "sha256"}
+        kind_fields = {
+            "upload": {"path", "upload_type", "content_type"},
+            "platform_asset": {"asset_id"},
+            "audio_asset": {"asset_id"},
+            "tts": {"text_path", "voice_id"},
+        }.get(kind or "")
+        if (
+            kind_fields is None
+            or set(source) != common | kind_fields
+            or source.get("kind") != kind
+            or source.get("alias") != frozen_source.get("alias")
+            or source.get("authorization_ref") != authorization_ref
+            or source.get("sha256") != frozen_source.get("sha256")
+        ):
+            raise RealRunUnavailable("source_binding_invalid")
+        if kind in {"upload", "tts"}:
+            field = "path" if kind == "upload" else "text_path"
+            path = Path(str(source.get(field, "")))
+            if (
+                not path.is_absolute()
+                or not path.is_file()
+                or not SHA256.fullmatch(str(source.get("sha256", "")))
+                or _sha256_file(path) != source["sha256"]
+            ):
+                raise RealRunUnavailable("source_binding_invalid")
+        if kind == "upload":
+            expected_upload = (
+                "main_video" if case.get("input_type") == "uploaded_video" else "main_audio"
+            )
+            if (
+                source.get("upload_type") != expected_upload
+                or source.get("content_type") != frozen_source.get("media_type")
+            ):
+                raise RealRunUnavailable("source_binding_invalid")
+        elif kind in {"platform_asset", "audio_asset"}:
+            if not isinstance(source.get("asset_id"), str) or not source["asset_id"]:
+                raise RealRunUnavailable("source_binding_invalid")
+        elif kind == "tts":
+            if not isinstance(source.get("voice_id"), str) or not source["voice_id"]:
+                raise RealRunUnavailable("source_binding_invalid")
+
+        frozen_materials = case.get("materials")
+        if not isinstance(frozen_materials, list) or len(materials) != len(frozen_materials):
+            raise RealRunUnavailable("material_binding_invalid")
+        normalized_materials: list[dict[str, Any]] = []
+        for material, frozen in zip(materials, frozen_materials, strict=True):
+            fields = {
+                "kind", "alias", "owner_alias", "authorization_ref",
+                "path", "sha256", "content_type",
+            }
+            if (
+                not isinstance(material, Mapping)
+                or not isinstance(frozen, Mapping)
+                or set(material) != fields
+                or material.get("kind") != "upload"
+                or material.get("owner_alias") != owner_alias
+            ):
+                raise RealRunUnavailable("material_owner_mismatch")
+            path = Path(str(material.get("path", "")))
+            if (
+                material.get("alias") != frozen.get("alias")
+                or material.get("authorization_ref") != authorization_ref
+                or material.get("authorization_ref") != frozen.get("authorization_ref")
+                or material.get("sha256") != frozen.get("sha256")
+                or material.get("content_type") != frozen.get("media_type")
+                or material.get("content_type") not in {"image/jpeg", "image/png", "image/webp"}
+                or not path.is_absolute()
+                or not path.is_file()
+                or _sha256_file(path) != material.get("sha256")
+            ):
+                raise RealRunUnavailable("material_binding_invalid")
+            normalized_materials.append(dict(material))
+        normalized[case_id] = {
+            "case_id": case_id,
+            "owner_alias": owner_alias,
+            "source": dict(source),
+            "materials": tuple(normalized_materials),
+        }
+    return AcceptanceBindings(owners=dict(owners), cases=normalized)
+
+
 class _FileBody:
     def __init__(self, path: Path, *, chunk_size: int = 1024 * 1024) -> None:
         self.path = path
@@ -465,6 +649,7 @@ class HttpRealRunApi:
         session: Any,
         bindings_path: Path,
         opener: Any | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         parsed = urllib.parse.urlsplit(base_url)
         if (
@@ -490,7 +675,9 @@ class HttpRealRunApi:
         self._opener = opener or urllib.request.build_opener(
             urllib.request.ProxyHandler({})
         )
+        self._environment = dict(os.environ if environment is None else environment)
         self._authorized_uploads: dict[str, dict[str, str]] = {}
+        self._authorized_cases: dict[str, dict[str, Any]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -508,11 +695,12 @@ class HttpRealRunApi:
         body: Mapping[str, Any] | None,
         *,
         expected_statuses: tuple[int, ...],
+        session: TestSession | None = None,
     ) -> Mapping[str, Any]:
         data = None
         headers = {
             "Accept": "application/json",
-            "Authorization": f"Bearer {self._session.reveal()}",
+            "Authorization": f"Bearer {(session or self._session).reveal()}",
         }
         if body is not None:
             data = json.dumps(
@@ -569,6 +757,19 @@ class HttpRealRunApi:
             raise RealRunUnavailable("authorized_upload_phase_replayed")
         if matrix_path is None:
             raise RealRunUnavailable("acceptance_matrix_missing")
+        try:
+            binding_version = json.loads(
+                self._bindings_path.read_text(encoding="utf-8")
+            ).get("version")
+        except (OSError, AttributeError, json.JSONDecodeError) as exc:
+            raise RealRunUnavailable("asset_bindings_invalid") from exc
+        if binding_version == "2.0":
+            self._prepare_authorized_cases_v2(
+                matrix_path,
+                authorization_ref=authorization_ref,
+                subset=subset,
+            )
+            return
         sources = self._load_authorized_sources(
             matrix_path, authorization_ref=authorization_ref, subset=subset
         )
@@ -606,6 +807,180 @@ class HttpRealRunApi:
                 "owner_alias": source["owner_alias"],
             }
         self._authorized_uploads = uploaded
+
+    def _upload_bound_file(
+        self,
+        *,
+        session: TestSession,
+        path: Path,
+        upload_type: str,
+        content_type: str,
+        expected_sha256: str,
+    ) -> str:
+        created = self._json_request(
+            "POST",
+            "/api/v3/edit/uploads",
+            {
+                "upload_type": upload_type,
+                "filename": path.name,
+                "content_type": content_type,
+                "size_bytes": path.stat().st_size,
+            },
+            expected_statuses=(201,),
+            session=session,
+        )
+        upload_id = created.get("upload_id")
+        put_url = created.get("put_url")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise RealRunUnavailable("upload_id_invalid")
+        if not isinstance(put_url, str) or not self._safe_signed_upload_url(put_url):
+            raise RealRunUnavailable("put_url_invalid")
+        self._put_file(put_url, path, content_type)
+        completed = self._json_request(
+            "POST",
+            f"/api/v3/edit/uploads/{urllib.parse.quote(upload_id, safe='')}/complete",
+            {},
+            expected_statuses=(200,),
+            session=session,
+        )
+        if (
+            completed.get("upload_id") != upload_id
+            or completed.get("sha256") != expected_sha256
+        ):
+            raise RealRunUnavailable("upload_completion_invalid")
+        return upload_id
+
+    def _catalog_contains(
+        self,
+        *,
+        session: TestSession,
+        path: str,
+        identity_field: str,
+        identity: str,
+    ) -> None:
+        payload = self._json_request(
+            "GET", path, None, expected_statuses=(200,), session=session
+        )
+        items = payload.get("items")
+        if (
+            not isinstance(items, list)
+            or not any(
+                isinstance(item, Mapping) and item.get(identity_field) == identity
+                for item in items
+            )
+        ):
+            raise RealRunUnavailable("catalog_authority_missing")
+
+    def _prepare_authorized_cases_v2(
+        self,
+        matrix_path: Path,
+        *,
+        authorization_ref: str,
+        subset: str | None,
+    ) -> None:
+        bindings = load_authorized_bindings(
+            matrix_path,
+            self._bindings_path,
+            environment=self._environment,
+            authorization_ref=authorization_ref,
+            subset=subset,
+        )
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        cases = list(matrix["cases"])
+        if subset == "parallel-5":
+            cases = cases[:5]
+        elif subset == "stress-10":
+            cases = cases[:10]
+        prepared: dict[str, dict[str, Any]] = {}
+        for case in cases:
+            case_id = str(case["case_id"])
+            binding = bindings.cases[case_id]
+            owner_alias = str(binding["owner_alias"])
+            session = bindings.owners[owner_alias]
+            source = binding["source"]
+            source_fields: dict[str, Any]
+            if source["kind"] == "upload":
+                upload_id = self._upload_bound_file(
+                    session=session,
+                    path=Path(source["path"]),
+                    upload_type=str(source["upload_type"]),
+                    content_type=str(source["content_type"]),
+                    expected_sha256=str(source["sha256"]),
+                )
+                source_fields = {"source_upload_id": upload_id}
+            elif source["kind"] == "platform_asset":
+                self._catalog_contains(
+                    session=session,
+                    path="/api/v3/edit/platform-assets",
+                    identity_field="asset_id",
+                    identity=str(source["asset_id"]),
+                )
+                source_fields = {"source_asset_id": str(source["asset_id"])}
+            elif source["kind"] == "audio_asset":
+                self._catalog_contains(
+                    session=session,
+                    path="/api/v3/edit/audio-assets",
+                    identity_field="asset_id",
+                    identity=str(source["asset_id"]),
+                )
+                source_fields = {"source_asset_id": str(source["asset_id"])}
+            else:
+                self._catalog_contains(
+                    session=session,
+                    path="/api/v3/edit/voices",
+                    identity_field="voice_id",
+                    identity=str(source["voice_id"]),
+                )
+                try:
+                    text_value = Path(source["text_path"]).read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise RealRunUnavailable("tts_text_invalid") from exc
+                if not text_value.strip() or len(text_value) > 4000:
+                    raise RealRunUnavailable("tts_text_invalid")
+                source_fields = {
+                    "tts_input": {
+                        "text": text_value,
+                        "voice_id": str(source["voice_id"]),
+                    }
+                }
+            material_ids: list[str] = []
+            for material in binding["materials"]:
+                upload_id = self._upload_bound_file(
+                    session=session,
+                    path=Path(material["path"]),
+                    upload_type="material_image",
+                    content_type=str(material["content_type"]),
+                    expected_sha256=str(material["sha256"]),
+                )
+                created = self._json_request(
+                    "POST",
+                    "/api/v3/edit/materials",
+                    {"upload_id": upload_id},
+                    expected_statuses=(201,),
+                    session=session,
+                )
+                material_id = created.get("material_id")
+                if (
+                    not isinstance(material_id, str)
+                    or not material_id
+                    or created.get("sha256") != material["sha256"]
+                ):
+                    raise RealRunUnavailable("material_creation_invalid")
+                material_ids.append(material_id)
+            prepared[case_id] = {
+                "owner_alias": owner_alias,
+                "session": session,
+                "source_fields": source_fields,
+                "material_asset_ids": tuple(material_ids),
+            }
+        self._authorized_cases = prepared
+        self._authorized_uploads = {
+            case_id: {
+                "upload_id": f"authority-{case_id}",
+                "owner_alias": str(value["owner_alias"]),
+            }
+            for case_id, value in prepared.items()
+        }
 
     def upload_source(self, case: Mapping[str, Any]) -> Mapping[str, Any]:
         case_id = case.get("case_id")

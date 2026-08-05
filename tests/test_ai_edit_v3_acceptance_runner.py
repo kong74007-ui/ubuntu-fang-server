@@ -9,6 +9,7 @@ from scripts.ai_edit_v3_acceptance import (
     HttpRealRunApi,
     RealRunConfig,
     RealRunUnavailable,
+    load_authorized_bindings,
     main,
     run_real_acceptance,
 )
@@ -92,6 +93,150 @@ class FakeRealRunApi:
 
 
 class AcceptanceRunnerTests(unittest.TestCase):
+    def test_bindings_v2_loads_owner_sessions_without_persisting_values(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            media = root / "source.mp3"
+            media.write_bytes(b"audio-source")
+            script = root / "script.txt"
+            script.write_text("authorized script", encoding="utf-8")
+            media_sha = __import__("hashlib").sha256(media.read_bytes()).hexdigest()
+            script_sha = __import__("hashlib").sha256(script.read_bytes()).hexdigest()
+            matrix = {
+                "authorization_ref": "approval-test",
+                "cases": [
+                    {
+                        "case_id": "case_01", "input_type": "uploaded_audio",
+                        "authorization_ref": "approval-test",
+                        "source": {
+                            "alias": "bindings/case_01/source", "sha256": media_sha,
+                            "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                            "media_type": "audio/mpeg",
+                        },
+                        "materials": [],
+                    },
+                    {
+                        "case_id": "case_02", "input_type": "script_to_audio_video",
+                        "authorization_ref": "approval-test",
+                        "source": {
+                            "alias": "bindings/case_02/source", "sha256": script_sha,
+                            "owner_alias": "owner_b", "authorization_ref": "approval-test",
+                            "media_type": "text/plain",
+                        },
+                        "materials": [],
+                    },
+                ],
+            }
+            bindings = {
+                "version": "2.0",
+                "owners": [
+                    {"owner_alias": "owner_a", "session_env": "AI_EDIT_V3_TEST_SESSION_A"},
+                    {"owner_alias": "owner_b", "session_env": "AI_EDIT_V3_TEST_SESSION_B"},
+                ],
+                "cases": [
+                    {
+                        "case_id": "case_01", "owner_alias": "owner_a",
+                        "source": {
+                            "kind": "upload", "alias": "bindings/case_01/source",
+                            "authorization_ref": "approval-test", "path": str(media),
+                            "sha256": media_sha, "upload_type": "main_audio",
+                            "content_type": "audio/mpeg",
+                        },
+                        "materials": [],
+                    },
+                    {
+                        "case_id": "case_02", "owner_alias": "owner_b",
+                        "source": {
+                            "kind": "tts", "alias": "bindings/case_02/source",
+                            "authorization_ref": "approval-test", "text_path": str(script),
+                            "sha256": script_sha, "voice_id": "voice-owned-b",
+                        },
+                        "materials": [],
+                    },
+                ],
+            }
+            matrix_path = root / "matrix.json"
+            bindings_path = root / "bindings.json"
+            matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+            bindings_path.write_text(json.dumps(bindings), encoding="utf-8")
+
+            loaded = load_authorized_bindings(
+                matrix_path,
+                bindings_path,
+                environment={
+                    "AI_EDIT_V3_TEST_SESSION_A": "session-a-secret",
+                    "AI_EDIT_V3_TEST_SESSION_B": "session-b-secret",
+                },
+                authorization_ref="approval-test",
+            )
+
+            self.assertEqual({"owner_a", "owner_b"}, set(loaded.owners))
+            self.assertEqual("upload", loaded.cases["case_01"]["source"]["kind"])
+            self.assertEqual("tts", loaded.cases["case_02"]["source"]["kind"])
+            self.assertNotIn("session-a-secret", repr(loaded))
+            self.assertNotIn("session-b-secret", repr(loaded))
+
+    def test_bindings_v2_rejects_missing_session_and_cross_owner_material(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp3"
+            material = root / "material.jpg"
+            source.write_bytes(b"source")
+            material.write_bytes(b"material")
+            sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+            matrix = {
+                "authorization_ref": "approval-test",
+                "cases": [{
+                    "case_id": "case_01", "input_type": "uploaded_audio",
+                    "authorization_ref": "approval-test",
+                    "source": {
+                        "alias": "bindings/case_01/source", "sha256": sha(source),
+                        "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                        "media_type": "audio/mpeg",
+                    },
+                    "materials": [{
+                        "alias": "bindings/case_01/material_01", "sha256": sha(material),
+                        "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                        "media_type": "image/jpeg",
+                    }],
+                }],
+            }
+            bindings = {
+                "version": "2.0",
+                "owners": [{"owner_alias": "owner_a", "session_env": "AI_EDIT_V3_TEST_SESSION_A"}],
+                "cases": [{
+                    "case_id": "case_01", "owner_alias": "owner_a",
+                    "source": {
+                        "kind": "upload", "alias": "bindings/case_01/source",
+                        "authorization_ref": "approval-test", "path": str(source),
+                        "sha256": sha(source), "upload_type": "main_audio",
+                        "content_type": "audio/mpeg",
+                    },
+                    "materials": [{
+                        "kind": "upload", "alias": "bindings/case_01/material_01",
+                        "owner_alias": "owner_b", "authorization_ref": "approval-test",
+                        "path": str(material), "sha256": sha(material),
+                        "content_type": "image/jpeg",
+                    }],
+                }],
+            }
+            matrix_path = root / "matrix.json"
+            bindings_path = root / "bindings.json"
+            matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+            bindings_path.write_text(json.dumps(bindings), encoding="utf-8")
+
+            with self.assertRaisesRegex(RealRunUnavailable, "test_session_missing"):
+                load_authorized_bindings(
+                    matrix_path, bindings_path, environment={},
+                    authorization_ref="approval-test",
+                )
+            with self.assertRaisesRegex(RealRunUnavailable, "material_owner_mismatch"):
+                load_authorized_bindings(
+                    matrix_path, bindings_path,
+                    environment={"AI_EDIT_V3_TEST_SESSION_A": "secret"},
+                    authorization_ref="approval-test",
+                )
+
     def test_http_real_api_normalizes_only_nested_acceptance_contract(self) -> None:
         class Response:
             status = 200
@@ -147,6 +292,161 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(timeout, 15)
         self.assertEqual(request.get_header("Authorization"), "Bearer session-secret")
         self.assertNotIn("session-secret", repr(api))
+
+    def test_http_real_api_prepares_v2_upload_material_and_tts_per_owner(self) -> None:
+        class Response:
+            def __init__(self, status, payload=None):
+                self.status = status
+                self.payload = b"" if payload is None else json.dumps(payload).encode()
+
+            def read(self, size=-1):
+                value, self.payload = self.payload[:size], self.payload[size:]
+                return value
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.mp3"
+            material = root / "material.jpg"
+            script = root / "script.txt"
+            source.write_bytes(b"source-audio")
+            material.write_bytes(b"image-material")
+            script.write_text("authorized narration", encoding="utf-8")
+            sha = lambda path: __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+            source_sha, material_sha, script_sha = sha(source), sha(material), sha(script)
+
+            class Opener:
+                def __init__(self):
+                    self.requests = []
+                    self.uploads = iter((
+                        ("upload-source", source_sha, "https://cos.example/source?signed=x"),
+                        ("upload-material", material_sha, "https://cos.example/material?signed=x"),
+                    ))
+                    self.completions = {
+                        "upload-source": source_sha,
+                        "upload-material": material_sha,
+                    }
+
+                def open(self, request, timeout):
+                    self.requests.append((request, timeout))
+                    url = request.full_url
+                    if request.get_method() == "PUT":
+                        return Response(200)
+                    if url.endswith("/api/v3/edit/uploads"):
+                        upload_id, _digest, put_url = next(self.uploads)
+                        return Response(201, {"upload_id": upload_id, "put_url": put_url})
+                    if "/uploads/" in url and url.endswith("/complete"):
+                        upload_id = url.split("/uploads/", 1)[1].split("/", 1)[0]
+                        return Response(200, {
+                            "upload_id": upload_id,
+                            "sha256": self.completions[upload_id],
+                        })
+                    if url.endswith("/api/v3/edit/materials"):
+                        return Response(201, {
+                            "material_id": "material-owned-a", "sha256": material_sha,
+                        })
+                    if url.endswith("/api/v3/edit/voices"):
+                        return Response(200, {"items": [{"voice_id": "voice-owned-b"}]})
+                    raise AssertionError(url)
+
+            matrix = {
+                "authorization_ref": "approval-test",
+                "cases": [
+                    {
+                        "case_id": "case_01", "input_type": "uploaded_audio",
+                        "authorization_ref": "approval-test",
+                        "source": {
+                            "alias": "bindings/case_01/source", "sha256": source_sha,
+                            "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                            "media_type": "audio/mpeg",
+                        },
+                        "materials": [{
+                            "alias": "bindings/case_01/material_01", "sha256": material_sha,
+                            "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                            "media_type": "image/jpeg",
+                        }],
+                    },
+                    {
+                        "case_id": "case_02", "input_type": "script_to_audio_video",
+                        "authorization_ref": "approval-test",
+                        "source": {
+                            "alias": "bindings/case_02/source", "sha256": script_sha,
+                            "owner_alias": "owner_b", "authorization_ref": "approval-test",
+                            "media_type": "text/plain",
+                        },
+                        "materials": [],
+                    },
+                ],
+            }
+            bindings = {
+                "version": "2.0",
+                "owners": [
+                    {"owner_alias": "owner_a", "session_env": "AI_EDIT_V3_TEST_SESSION_A"},
+                    {"owner_alias": "owner_b", "session_env": "AI_EDIT_V3_TEST_SESSION_B"},
+                ],
+                "cases": [
+                    {
+                        "case_id": "case_01", "owner_alias": "owner_a",
+                        "source": {
+                            "kind": "upload", "alias": "bindings/case_01/source",
+                            "authorization_ref": "approval-test", "path": str(source),
+                            "sha256": source_sha, "upload_type": "main_audio",
+                            "content_type": "audio/mpeg",
+                        },
+                        "materials": [{
+                            "kind": "upload", "alias": "bindings/case_01/material_01",
+                            "owner_alias": "owner_a", "authorization_ref": "approval-test",
+                            "path": str(material), "sha256": material_sha,
+                            "content_type": "image/jpeg",
+                        }],
+                    },
+                    {
+                        "case_id": "case_02", "owner_alias": "owner_b",
+                        "source": {
+                            "kind": "tts", "alias": "bindings/case_02/source",
+                            "authorization_ref": "approval-test", "text_path": str(script),
+                            "sha256": script_sha, "voice_id": "voice-owned-b",
+                        },
+                        "materials": [],
+                    },
+                ],
+            }
+            matrix_path = root / "matrix.json"
+            bindings_path = root / "bindings.json"
+            matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+            bindings_path.write_text(json.dumps(bindings), encoding="utf-8")
+            opener = Opener()
+            primary = load_test_session({"AI_EDIT_V3_TEST_SESSION": "primary"}, lambda _: "")
+            api = HttpRealRunApi(
+                base_url="https://test.example", session=primary,
+                bindings_path=bindings_path, opener=opener,
+                environment={
+                    "AI_EDIT_V3_TEST_SESSION_A": "session-a",
+                    "AI_EDIT_V3_TEST_SESSION_B": "session-b",
+                },
+            )
+
+            api.upload_authorized_sources(matrix_path, "approval-test", None)
+
+            self.assertEqual(
+                ("material-owned-a",),
+                api._authorized_cases["case_01"]["material_asset_ids"],
+            )
+            self.assertEqual(
+                "authorized narration",
+                api._authorized_cases["case_02"]["source_fields"]["tts_input"]["text"],
+            )
+            authenticated = [
+                request.get_header("Authorization")
+                for request, _timeout in opener.requests
+                if request.get_method() != "PUT"
+            ]
+            self.assertEqual(
+                ["Bearer session-a"] * 5 + ["Bearer session-b"],
+                authenticated,
+            )
 
     def test_http_real_api_rejects_unsafe_origin_and_invalid_capability_body(self) -> None:
         session = load_test_session(

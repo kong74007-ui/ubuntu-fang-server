@@ -37,7 +37,18 @@
 
 任何目录不匹配、上传回执不匹配或账号不匹配都必须在 quote/create 前退出 `2`。
 
-## Task 3：实现逐案例 quote/create/poll/result/range 客户端
+## Task 3：补齐测试环境验收证据持久化与只读接口
+
+当前 `GET /api/v3/edit/jobs/{job_id}/result` 只持久化并返回 `asset_id` 与交付对象键，无法证明阶段耗时、方案 Schema、素材决策、Provider 用量、音频、渲染清单和质检。因此先按 TDD 增加测试环境专用的 owner-scoped evidence snapshot：
+
+- 在各阶段已有权威事务中冻结 plan、material、provider receipt/usage、audio、render、quality、settlement、publication 的非敏感摘要；不从日志反推。
+- 新增 `GET /api/v3/edit/jobs/{job_id}/acceptance-evidence`，仅 `environment=test` 可用，生产环境统一 404。
+- 只返回哈希、ID、耗时、计量、判断和稳定 COS key；不返回原文、prompt、文件路径、会话、签名 URL或原始 Provider 响应。
+- 服务按 owner 查询，跨账号和不存在任务使用相同 404。
+
+缺少任一必需证据时返回“证据未就绪”，真实验收不得用空对象代替。
+
+## Task 4：实现逐案例 quote/create/poll/result/range 客户端
 
 新增每案例不可变 request：
 
@@ -48,13 +59,13 @@
 
 轮询：2 秒起步、最大 15 秒、总截止时间默认 60 分钟，可由测试注入时钟和 sleep。结果与播放 Range 请求只允许 HTTPS，签名播放 URL 仅在内存中使用。
 
-## Task 4：实现 `execute_preflighted_cases`
+## Task 5：实现 `execute_preflighted_cases`
 
 复用 `run_cases`、checkpoint、evidence 与 verify 路径，生成不可覆盖的 profile 目录及聚合报告。preflight 上传/解析只执行一次；case factory 只取已冻结的账号客户端和已解析 authority。
 
 返回码保持：`0` 全部完成，`3` 有合法终态失败，`4` 证据/协议损坏。任何未终态或未知响应保持可恢复 checkpoint，不伪造成失败证据。
 
-## Task 5：验证与提交
+## Task 6：验证与提交
 
 执行：
 
