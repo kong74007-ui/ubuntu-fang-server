@@ -20,6 +20,12 @@ from server.content_domains.ai_edit_v3.acceptance_export import (
     verify_case_evidence,
     write_json_exclusive,
 )
+from server.content_domains.ai_edit_v3.acceptance_verify import (
+    CaseEvidence as MachineCaseEvidence,
+    load_quality_evidence,
+    probe_final_output,
+    verify_quality_evidence,
+)
 
 
 INPUT_TYPES = (
@@ -494,6 +500,24 @@ def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
     return 2
 
 
+def execute_machine_verify_command(args: argparse.Namespace) -> int:
+    try:
+        evidence = load_quality_evidence(args.evidence)
+        probe = probe_final_output(args.media)
+    except (OSError, ValueError):
+        return 4
+    verdict = verify_quality_evidence(MachineCaseEvidence(
+        checks={**evidence.checks, **probe.checks},
+        metrics={**evidence.metrics, **probe.metrics},
+        analyzers=evidence.analyzers,
+        output_sha256=probe.output_sha256,
+        lip_sync_applicable=evidence.lip_sync_applicable,
+    ))
+    if verdict.passed:
+        return 0
+    return 3
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -508,11 +532,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify = commands.add_parser("verify")
     verify.add_argument("--report", type=Path, required=True)
     verify.add_argument("--strict", action="store_true", required=True)
+    machine_verify = commands.add_parser("machine-verify")
+    machine_verify.add_argument("--media", type=Path, required=True)
+    machine_verify.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "run":
         return execute_run_command(args)
     if args.command == "verify":
         return execute_verify_command(args)
+    if args.command == "machine-verify":
+        return execute_machine_verify_command(args)
     report = validate_matrix(args.matrix)
     pair_count = len(INPUT_TYPES) * len(CREATION_MODES) - len(report.missing_pairs)
     if report.passed:

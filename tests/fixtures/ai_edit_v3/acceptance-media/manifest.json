@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "fixtures": {
+    "known_good": {
+      "filename": "known-good.mp4",
+      "sha256": "c20c5df573b8a9237e3a7e0d9c6aeca7caa4c15eab6a06a303ccbad5ea8f8a78",
+      "expected": "passes stream, decode, PTS and A/V duration checks"
+    },
+    "known_bad": {
+      "filename": "known-bad.mp4",
+      "sha256": "a61e4e3860f9a24ad39f4e81bf8fce6ef0be4b097136fde6b8ca6357c2866bdd",
+      "expected": "fails stream_contract, av_duration_sync and integrated_loudness"
+    }
+  }
+}
