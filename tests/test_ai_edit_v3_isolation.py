@@ -63,11 +63,29 @@ def repository_v3_paths(repository: Path) -> list[str]:
         if value
     }
     return sorted(
-        path
-        for path in paths
+        path for path in paths
         if re.search(r"(?i)ai[_-]edit[_-]v3", path)
-        and not re.search(r"(?:^|/)node_modules(?:/|$)", path)
+        and not any(part.casefold() == "node_modules" for part in Path(path).parts)
     )
+
+
+TRUSTED_ACCEPTANCE_MEDIA_SHA256 = {
+    "tests/fixtures/ai_edit_v3/acceptance-media/known-good.mp4":
+        "c20c5df573b8a9237e3a7e0d9c6aeca7caa4c15eab6a06a303ccbad5ea8f8a78",
+    "tests/fixtures/ai_edit_v3/acceptance-media/known-bad.mp4":
+        "a61e4e3860f9a24ad39f4e81bf8fce6ef0be4b097136fde6b8ca6357c2866bdd",
+}
+
+
+def is_trusted_acceptance_media(repository: Path, relative: str) -> bool:
+    normalized = relative.replace("\\", "/")
+    expected = TRUSTED_ACCEPTANCE_MEDIA_SHA256.get(normalized)
+    if expected is None:
+        return False
+    artifact = repository / relative
+    if not artifact.is_file() or artifact.stat().st_size > 100_000:
+        return False
+    return hashlib.sha256(artifact.read_bytes()).hexdigest() == expected
 
 
 PRIVATE_ARTIFACT_PATTERNS = (
@@ -372,6 +390,8 @@ class V3IsolationTests(unittest.TestCase):
             suffix = Path(relative).suffix.lower()
             normalized = relative.replace("\\", "/")
             if suffix in {".mp4", ".mov", ".mkv", ".webm", ".mp3", ".wav", ".flac"}:
+                if is_trusted_acceptance_media(repository, relative):
+                    continue
                 findings.append(f"media:{normalized}")
                 continue
             if suffix in {".db", ".sqlite", ".sqlite3"} and not normalized.startswith(
@@ -424,6 +444,41 @@ class V3IsolationTests(unittest.TestCase):
             "server/ai_edit_v3_renderer/node_modules/fixture/secret.js",
             discovered,
         )
+
+    def test_v3_path_discovery_excludes_dependency_trees_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repository = Path(temp)
+            subprocess.run(("git", "init", "--quiet"), cwd=repository, check=True)
+            (repository / ".gitignore").write_text("node_modules/\n*.env\n", encoding="utf-8")
+            dependency = repository / "server/ai_edit_v3_renderer/node_modules/pkg/index.js"
+            dependency.parent.mkdir(parents=True)
+            dependency.write_text("Cookie: dependency-value-that-is-not-ours", encoding="utf-8")
+            secret = repository / "ai-edit-v3.env"
+            secret.write_text("SECRET=still-discovered", encoding="utf-8")
+
+            discovered = repository_v3_paths(repository)
+
+        self.assertNotIn("server/ai_edit_v3_renderer/node_modules/pkg/index.js", discovered)
+        self.assertIn("ai-edit-v3.env", discovered)
+
+    def test_only_frozen_small_acceptance_media_hashes_are_trusted(self):
+        repository = Path(__file__).resolve().parents[1]
+        self.assertTrue(is_trusted_acceptance_media(
+            repository, "tests/fixtures/ai_edit_v3/acceptance-media/known-good.mp4",
+        ))
+        with tempfile.TemporaryDirectory() as temp:
+            fake_root = Path(temp)
+            fake = fake_root / "tests/fixtures/ai_edit_v3/acceptance-media/known-good.mp4"
+            fake.parent.mkdir(parents=True)
+            fake.write_bytes(b"tampered")
+            self.assertFalse(is_trusted_acceptance_media(
+                fake_root, "tests/fixtures/ai_edit_v3/acceptance-media/known-good.mp4",
+            ))
+            extra = fake.with_name("customer-video.mp4")
+            extra.write_bytes(b"small but not frozen")
+            self.assertFalse(is_trusted_acceptance_media(
+                fake_root, "tests/fixtures/ai_edit_v3/acceptance-media/customer-video.mp4",
+            ))
 
     def test_private_header_detection_handles_quoted_curl_and_cookie_lists(self):
         examples = {
