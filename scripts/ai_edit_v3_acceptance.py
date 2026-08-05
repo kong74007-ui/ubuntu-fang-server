@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from jsonschema import Draft202012Validator
 
@@ -1570,6 +1570,60 @@ def execute_blind_export_command(args: argparse.Namespace) -> int:
     except (FileExistsError, OSError, ValueError, json.JSONDecodeError):
         return 4
     return 0
+
+
+@dataclass(frozen=True)
+class GateSummary:
+    passed: bool
+    blockers: tuple[str, ...]
+    capacity_blocked: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.passed) is not bool
+            or type(self.capacity_blocked) is not bool
+            or not isinstance(self.blockers, tuple)
+            or len(set(self.blockers)) != len(self.blockers)
+            or any(
+                not isinstance(blocker, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{2,127}", blocker)
+                for blocker in self.blockers
+            )
+            or (self.passed and bool(self.blockers))
+            or (not self.passed and not self.capacity_blocked and not self.blockers)
+            or (self.capacity_blocked and (self.passed or bool(self.blockers)))
+        ):
+            raise ValueError("gate_summary_invalid")
+
+
+@dataclass(frozen=True)
+class GoNoGoDecision:
+    status: Literal["GO_FOR_PRODUCTION_REVIEW", "NO_GO", "CAPACITY_BLOCKED"]
+    blockers: tuple[str, ...]
+
+
+def build_go_no_go(
+    *,
+    machine: GateSummary,
+    human: GateSummary,
+    faults: GateSummary,
+    capacity: GateSummary,
+    regressions: GateSummary,
+) -> GoNoGoDecision:
+    summaries = (machine, human, faults, capacity, regressions)
+    blockers = tuple(dict.fromkeys(
+        blocker
+        for summary in summaries
+        for blocker in summary.blockers
+    ))
+    if blockers or any(
+        not summary.passed and not summary.capacity_blocked
+        for summary in summaries
+    ):
+        return GoNoGoDecision("NO_GO", blockers)
+    if capacity.capacity_blocked:
+        return GoNoGoDecision("CAPACITY_BLOCKED", ())
+    return GoNoGoDecision("GO_FOR_PRODUCTION_REVIEW", ())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
