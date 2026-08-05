@@ -1,8 +1,10 @@
 import unittest
 import tempfile
 import json
+import hashlib
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from scripts.ai_edit_v3_acceptance import (
     RealRunUnavailable,
     load_authorized_bindings,
     execute_preflighted_cases,
+    _refresh_acceptance_aggregate,
     main,
     run_real_acceptance,
 )
@@ -106,6 +109,65 @@ class FakeRealRunApi:
 
 
 class AcceptanceRunnerTests(unittest.TestCase):
+    def test_acceptance_aggregate_lock_recovers_stale_file_and_waits_for_competitor(self) -> None:
+        import scripts.ai_edit_v3_acceptance as command
+
+        with tempfile.TemporaryDirectory() as folder:
+            run_root = Path(folder) / "lock-run-01"
+            profile_dir = run_root / "parallel-5"
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "report.json").write_text(json.dumps({
+                "run_id": "lock-run-01",
+                "environment": "test",
+                "status": "completed",
+                "case_count": 5,
+                "manifest_sha256": "a" * 64,
+            }), encoding="utf-8")
+            (run_root / ".acceptance.lock").write_text("stale", encoding="utf-8")
+            with patch(
+                "scripts.ai_edit_v3_acceptance.execute_verify_command", return_value=0,
+            ):
+                try:
+                    _refresh_acceptance_aggregate(run_root, "lock-run-01")
+                except ValueError as exc:
+                    self.fail(f"stale advisory lock file must not block recovery: {exc}")
+                self.assertTrue((run_root / "acceptance.json").is_file())
+
+                original_write = command._write_json_atomic
+                first_writer_entered = threading.Event()
+                release_first_writer = threading.Event()
+                errors: list[BaseException] = []
+
+                def blocking_write(path, payload):
+                    if path.name == "acceptance.json" and not first_writer_entered.is_set():
+                        first_writer_entered.set()
+                        release_first_writer.wait(timeout=2)
+                    return original_write(path, payload)
+
+                def refresh() -> None:
+                    try:
+                        _refresh_acceptance_aggregate(run_root, "lock-run-01")
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                with patch(
+                    "scripts.ai_edit_v3_acceptance._write_json_atomic",
+                    side_effect=blocking_write,
+                ):
+                    first = threading.Thread(target=refresh)
+                    first.start()
+                    self.assertTrue(first_writer_entered.wait(timeout=2))
+                    second = threading.Thread(target=refresh)
+                    second.start()
+                    time.sleep(0.1)
+                    release_first_writer.set()
+                    first.join(timeout=2)
+                    second.join(timeout=2)
+
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+                self.assertEqual([], errors)
+
     def test_execute_preflighted_cases_writes_real_immutable_report_without_reupload(self) -> None:
         root = Path(__file__).resolve().parents[1]
         matrix_path = root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
@@ -139,10 +201,56 @@ class AcceptanceRunnerTests(unittest.TestCase):
             "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "acceptance-approved-corpus-v1",
         }, clear=False):
             result = execute_preflighted_cases(api, args)
-            run_dir = Path(folder) / "real-run-01"
+            run_root = Path(folder) / "real-run-01"
+            run_dir = run_root / "parallel-5"
             self.assertEqual(0, result, list(run_dir.rglob("*")) if run_dir.exists() else [])
             report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
             manifest = json.loads((run_dir / "run-manifest.json").read_text(encoding="utf-8"))
+            aggregate = json.loads((run_root / "acceptance.json").read_text(encoding="utf-8"))
+            (run_root / "acceptance.json").unlink()
+            self.assertEqual(4, execute_preflighted_cases(api, args))
+            self.assertTrue((run_root / "acceptance.json").is_file())
+            stress_args = type("Args", (), {
+                "matrix": matrix_path, "run_id": "real-run-01", "concurrency": 10,
+                "subset": "stress-10", "environment": "test",
+            })()
+            stress_api = Api()
+            self.assertEqual(0, execute_preflighted_cases(stress_api, stress_args))
+            aggregate = json.loads((run_root / "acceptance.json").read_text(encoding="utf-8"))
+            self.assertEqual(0, main([
+                "verify", "--report", str(run_root / "acceptance.json"), "--strict",
+            ]))
+            stress_manifest_path = run_root / "stress-10" / "run-manifest.json"
+            stress_manifest = json.loads(stress_manifest_path.read_text(encoding="utf-8"))
+            stress_manifest["profile"] = "parallel-5"
+            stress_manifest_path.write_text(json.dumps(stress_manifest), encoding="utf-8")
+            stress_report_path = run_root / "stress-10" / "report.json"
+            stress_report = json.loads(stress_report_path.read_text(encoding="utf-8"))
+            stress_report["manifest_sha256"] = hashlib.sha256(
+                stress_manifest_path.read_bytes()
+            ).hexdigest()
+            stress_report_path.write_text(json.dumps(stress_report), encoding="utf-8")
+            profile_swapped = json.loads(json.dumps(aggregate))
+            profile_swapped["profiles"]["stress-10"]["manifest_sha256"] = (
+                stress_report["manifest_sha256"]
+            )
+            profile_swapped["profiles"]["stress-10"]["report_sha256"] = hashlib.sha256(
+                stress_report_path.read_bytes()
+            ).hexdigest()
+            (run_root / "acceptance.json").write_text(
+                json.dumps(profile_swapped), encoding="utf-8"
+            )
+            self.assertEqual(4, main([
+                "verify", "--report", str(run_root / "acceptance.json"), "--strict",
+            ]))
+            tampered = json.loads(json.dumps(aggregate))
+            tampered["profiles"]["parallel-5"]["case_count"] = 99
+            (run_root / "acceptance.json").write_text(
+                json.dumps(tampered), encoding="utf-8"
+            )
+            self.assertEqual(4, main([
+                "verify", "--report", str(run_root / "acceptance.json"), "--strict",
+            ]))
 
         self.assertCountEqual(
             [case["case_id"] for case in matrix["cases"][:5]], api.case_ids
@@ -152,6 +260,27 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual("a" * 40, manifest["commit_sha"])
         self.assertEqual("completed", report["status"])
         self.assertEqual(5, report["case_count"])
+        self.assertEqual(["parallel-5", "stress-10"], sorted(aggregate["profiles"]))
+        self.assertEqual(
+            report["manifest_sha256"],
+            aggregate["profiles"]["parallel-5"]["manifest_sha256"],
+        )
+        self.assertEqual(10, aggregate["profiles"]["stress-10"]["case_count"])
+
+    def test_real_profile_rejects_wrong_concurrency_before_writing(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        matrix_path = root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        args = type("Args", (), {
+            "matrix": matrix_path, "run_id": "wrong-concurrency-01", "concurrency": 1,
+            "subset": "parallel-5", "environment": "test",
+        })()
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
+            "AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT": folder,
+            "AI_EDIT_V3_EXPECTED_SHA": "a" * 40,
+            "AI_EDIT_V3_ACCEPTANCE_AUTHORIZATION_REF": "acceptance-approved-corpus-v1",
+        }, clear=False):
+            self.assertEqual(4, execute_preflighted_cases(object(), args))
+            self.assertFalse((Path(folder) / "wrong-concurrency-01").exists())
 
     def test_run_cases_honors_requested_concurrency(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -1242,6 +1371,28 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 "verify", "--report", str(run_dir / "report.json"), "--strict",
             ]))
             self.assertEqual(4, main(argv))
+
+    def test_local_fake_run_defaults_to_non_served_artifact_directory(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        matrix = root / "tests/fixtures/ai_edit_v3/acceptance-20.json"
+        previous_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT", None)
+            try:
+                os.chdir(folder)
+                self.assertEqual(0, main([
+                    "run", "--environment", "local-fake", "--matrix", str(matrix),
+                    "--run-id", "run-default-01", "--concurrency", "1",
+                    "--subset", "parallel-5",
+                ]))
+            finally:
+                os.chdir(previous_cwd)
+            self.assertTrue((
+                Path(folder) / ".artifacts/ai-edit-v3/acceptance/run-default-01/report.json"
+            ).is_file())
+            self.assertFalse((
+                Path(folder) / "server/content_out/ai-edit-v3-acceptance/run-default-01"
+            ).exists())
 
     def test_failed_local_fake_run_reports_and_verifies_exit_three(self) -> None:
         root = Path(__file__).resolve().parents[1]

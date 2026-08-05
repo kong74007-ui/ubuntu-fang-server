@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import errno
 import getpass
 import hashlib
 import json
 import os
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
@@ -299,7 +303,7 @@ def execute_local_fake_run(args: argparse.Namespace) -> int:
         return 4
     output_root = Path(os.environ.get(
         "AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT",
-        "server/content_out/ai-edit-v3-acceptance",
+        ".artifacts/ai-edit-v3/acceptance",
     ))
     run_dir = output_root / args.run_id
     try:
@@ -394,6 +398,58 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        write_json_exclusive(temporary, payload)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _aggregate_file_lock(
+    path: Path, *, timeout_seconds: float = 10.0, poll_seconds: float = 0.05,
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("acceptance_aggregate_lock_timeout") from exc
+                time.sleep(poll_seconds)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _git_commit(root: Path) -> str:
@@ -1400,6 +1456,49 @@ def execute_verify_command(args: argparse.Namespace) -> int:
         return 4
     if not isinstance(report, dict):
         return 4
+    if "profiles" in report:
+        profiles = report.get("profiles")
+        if (
+            set(report) != {"version", "run_id", "environment", "profiles"}
+            or report.get("version") != "1.0"
+            or report.get("environment") != "test"
+            or not isinstance(report.get("run_id"), str)
+            or not isinstance(profiles, Mapping)
+            or not profiles
+            or not set(profiles).issubset({"single", "parallel-5", "stress-10"})
+        ):
+            return 4
+        results: list[int] = []
+        for profile, metadata in profiles.items():
+            profile_report = args.report.parent / profile / "report.json"
+            try:
+                profile_payload = json.loads(profile_report.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return 4
+            if (
+                not isinstance(metadata, Mapping)
+                or set(metadata) != {
+                    "status", "case_count", "manifest_sha256", "report_sha256",
+                }
+                or not profile_report.is_file()
+                or metadata.get("report_sha256") != _sha256_file(profile_report)
+                or not isinstance(profile_payload, Mapping)
+                or profile_payload.get("run_id") != report["run_id"]
+                or profile_payload.get("environment") != "test"
+                or metadata.get("status") != profile_payload.get("status")
+                or metadata.get("case_count") != profile_payload.get("case_count")
+                or metadata.get("manifest_sha256")
+                != profile_payload.get("manifest_sha256")
+            ):
+                return 4
+            result = execute_verify_command(type("VerifyArgs", (), {
+                "report": profile_report,
+                "strict": args.strict,
+            })())
+            if result == 4:
+                return 4
+            results.append(result)
+        return 0 if all(result == 0 for result in results) else 3
     run_dir = args.report.parent
     manifest_path = run_dir / "run-manifest.json"
     try:
@@ -1408,6 +1507,22 @@ def execute_verify_command(args: argparse.Namespace) -> int:
         return 4
     case_ids = manifest.get("case_ids")
     case_statuses = report.get("case_statuses")
+    if report.get("environment") == "test":
+        expected_profiles = {
+            "single": (None, 1, 20),
+            "parallel-5": ("parallel-5", 5, 5),
+            "stress-10": ("stress-10", 10, 10),
+        }
+        profile = run_dir.name
+        if (
+            profile not in expected_profiles
+            or manifest.get("profile") != profile
+            or (
+                manifest.get("subset"), manifest.get("concurrency"),
+                report.get("case_count"),
+            ) != expected_profiles[profile]
+        ):
+            return 4
     if (
         not isinstance(case_ids, list)
         or not isinstance(case_statuses, list)
@@ -1447,11 +1562,50 @@ def execute_verify_command(args: argparse.Namespace) -> int:
     return 0 if all_completed else 3
 
 
+def _refresh_acceptance_aggregate(run_root: Path, run_id: str) -> None:
+    lock_path = run_root / ".acceptance.lock"
+    with _aggregate_file_lock(lock_path):
+        profiles: dict[str, Mapping[str, Any]] = {}
+        for profile in ("single", "parallel-5", "stress-10"):
+            report_path = run_root / profile / "report.json"
+            if not report_path.is_file():
+                continue
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(report, Mapping)
+                or report.get("run_id") != run_id
+                or report.get("environment") != "test"
+                or execute_verify_command(type("VerifyArgs", (), {
+                    "report": report_path, "strict": True,
+                })()) not in {0, 3}
+            ):
+                raise ValueError("acceptance_profile_invalid")
+            profiles[profile] = {
+                "status": report["status"],
+                "case_count": report["case_count"],
+                "manifest_sha256": report["manifest_sha256"],
+                "report_sha256": _sha256_file(report_path),
+            }
+        if not profiles:
+            raise ValueError("acceptance_profiles_missing")
+        _write_json_atomic(run_root / "acceptance.json", {
+            "version": "1.0", "run_id": run_id,
+            "environment": "test", "profiles": profiles,
+        })
+
+
 def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
+    profile = args.subset or "single"
+    expected_concurrency = {
+        "single": 1,
+        "parallel-5": 5,
+        "stress-10": 10,
+    }.get(profile)
     if (
         args.environment != "test"
         or args.concurrency < 1
         or args.concurrency > 10
+        or args.concurrency != expected_concurrency
         or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", args.run_id)
     ):
         return 4
@@ -1463,9 +1617,10 @@ def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
         return 4
     output_root = Path(os.environ.get(
         "AI_EDIT_V3_ACCEPTANCE_OUTPUT_ROOT",
-        "server/content_out/ai-edit-v3-acceptance",
+        ".artifacts/ai-edit-v3/acceptance",
     ))
-    run_dir = output_root / args.run_id
+    run_root = output_root / args.run_id
+    run_dir = run_root / profile
     try:
         document = json.loads(args.matrix.read_text(encoding="utf-8"))
         if (
@@ -1486,6 +1641,7 @@ def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
             "version": "1.0",
             "run_id": args.run_id,
             "environment": "test",
+            "profile": profile,
             "commit_sha": expected_sha,
             "matrix_sha256": _sha256_file(args.matrix),
             "schema_sha256": _sha256_file(
@@ -1508,6 +1664,7 @@ def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
         report_path = run_dir / "report.json"
         if run_dir.exists():
             if report_path.exists():
+                _refresh_acceptance_aggregate(run_root, args.run_id)
                 return 4
             persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
             if persisted != manifest:
@@ -1536,6 +1693,7 @@ def execute_preflighted_cases(api: Any, args: argparse.Namespace) -> int:
             "manifest_sha256": _sha256_file(manifest_path),
         }
         write_json_exclusive(report_path, report)
+        _refresh_acceptance_aggregate(run_root, args.run_id)
         return summary.result_code
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return 4
