@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://huangquechuanmei.com/schemas/ai-edit-v3-human-review-1.0.json",
+  "title": "AI Edit V3 blinded human review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "reviewer_id", "cases"],
+  "properties": {
+    "version": {"const": "1.0"},
+    "reviewer_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"},
+    "cases": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^case_[0-9]{2}$": {"$ref": "#/$defs/caseReview"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "caseReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scores", "justifications"],
+      "properties": {
+        "scores": {"$ref": "#/$defs/scores"},
+        "justifications": {"$ref": "#/$defs/justifications"}
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["事实准确", "素材相关", "前三秒钩子", "叙事节奏", "布局清晰", "字幕可读", "声音质量", "视觉一致性"],
+      "properties": {
+        "事实准确": {"type": "integer", "enum": [0, 1, 2]},
+        "素材相关": {"type": "integer", "enum": [0, 1, 2]},
+        "前三秒钩子": {"type": "integer", "enum": [0, 1, 2]},
+        "叙事节奏": {"type": "integer", "enum": [0, 1, 2]},
+        "布局清晰": {"type": "integer", "enum": [0, 1, 2]},
+        "字幕可读": {"type": "integer", "enum": [0, 1, 2]},
+        "声音质量": {"type": "integer", "enum": [0, 1, 2]},
+        "视觉一致性": {"type": "integer", "enum": [0, 1, 2]}
+      }
+    },
+    "justifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["事实准确", "素材相关", "前三秒钩子", "叙事节奏", "布局清晰", "字幕可读", "声音质量", "视觉一致性"],
+      "properties": {
+        "事实准确": {"$ref": "#/$defs/justification"},
+        "素材相关": {"$ref": "#/$defs/justification"},
+        "前三秒钩子": {"$ref": "#/$defs/justification"},
+        "叙事节奏": {"$ref": "#/$defs/justification"},
+        "布局清晰": {"$ref": "#/$defs/justification"},
+        "字幕可读": {"$ref": "#/$defs/justification"},
+        "声音质量": {"$ref": "#/$defs/justification"},
+        "视觉一致性": {"$ref": "#/$defs/justification"}
+      }
+    },
+    "justification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor", "note"],
+      "properties": {
+        "note": {"type": "string", "minLength": 8},
+        "anchor": {
+          "type": "string",
+          "enum": [
+            "出现与准确文本或授权事实冲突、虚构或无法追溯的可见事实",
+            "无明确错误，但至少一项事实仅能追溯到弱证据或表达存在歧义",
+            "所有口播与可见事实均与准确文本一致并可追溯到授权证据",
+            "存在无关、错主体、错产品、错门店或误导性素材",
+            "素材主题相关但至少一处语义、时机或主体表达不够精确",
+            "全部素材与当前语义、主体和出现时机准确匹配",
+            "前三秒没有清晰钩子或钩子与后文事实不一致",
+            "前三秒有相关信息但吸引力、可读性或承诺清晰度一般",
+            "前三秒以准确、清晰且有吸引力的视听信息建立观看理由",
+            "结构难以理解，存在明显拖沓、跳跃或信息拥堵",
+            "主线可理解但至少一段节奏、停留或转场时机不理想",
+            "开场、展开、证明和收束连贯，节奏与信息密度匹配",
+            "主体、文字或素材互相遮挡，关键层级无法辨认",
+            "层级基本可辨，但至少一处拥挤、失衡或安全区利用不佳",
+            "主体、字幕、卡片与素材层级明确且在安全区内稳定呈现",
+            "存在错字、漏字、遮挡、越界或无法按正常速度阅读的字幕",
+            "字幕准确可读，但至少一处断句、字号、对比或停留时间不佳",
+            "字幕准确、同步、断句自然，字号、对比和停留时间均适合发布",
+            "存在削波、异常静音、重复人声、明显不同步或对白不可辨",
+            "对白可辨且无阻断故障，但响度、混音或音效时机仍可改善",
+            "对白清晰同步，响度稳定，BGM与音效服务内容且不遮蔽人声",
+            "颜色、字体、动效或素材风格冲突，成片呈现拼贴失控",
+            "整体风格基本统一，但至少一处组件或素材语言不协调",
+            "颜色、字体、动效、转场与素材语言统一且保留内容驱动差异"
+          ]
+        }
+      }
+    }
+  }
+}

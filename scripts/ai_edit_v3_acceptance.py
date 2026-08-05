@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from server.content_domains.ai_edit_v3.acceptance_export import (
     AcceptanceConfig,
     RunManifest,
+    build_blind_review_package,
     collect_case_evidence,
     run_cases,
     verify_case_evidence,
@@ -518,6 +519,19 @@ def execute_machine_verify_command(args: argparse.Namespace) -> int:
     return 3
 
 
+def execute_blind_export_command(args: argparse.Namespace) -> int:
+    try:
+        source = json.loads(args.source.read_text(encoding="utf-8"))
+        if not isinstance(source, Mapping) or not isinstance(source.get("cases"), list):
+            return 4
+        package = build_blind_review_package(source["cases"])
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        write_json_exclusive(args.output, package)
+    except (FileExistsError, OSError, ValueError, json.JSONDecodeError):
+        return 4
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -535,6 +549,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     machine_verify = commands.add_parser("machine-verify")
     machine_verify.add_argument("--media", type=Path, required=True)
     machine_verify.add_argument("--evidence", type=Path, required=True)
+    blind_export = commands.add_parser("blind-export")
+    blind_export.add_argument("--source", type=Path, required=True)
+    blind_export.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "run":
         return execute_run_command(args)
@@ -542,6 +559,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return execute_verify_command(args)
     if args.command == "machine-verify":
         return execute_machine_verify_command(args)
+    if args.command == "blind-export":
+        return execute_blind_export_command(args)
     report = validate_matrix(args.matrix)
     pair_count = len(INPUT_TYPES) * len(CREATION_MODES) - len(report.missing_pairs)
     if report.passed:

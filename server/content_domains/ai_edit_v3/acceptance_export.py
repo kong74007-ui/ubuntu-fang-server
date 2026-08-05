@@ -7,7 +7,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Collection, Mapping, Protocol, Sequence
 
 
 class V3Api(Protocol):
@@ -462,3 +462,322 @@ def run_cases(
         if any(item["status"] not in allowed_failures for item in results):
             result_code = 4
     return RunSummary(result_code, tuple(results))
+
+
+DIMENSION_ANCHORS = {
+    "事实准确": {
+        0: "出现与准确文本或授权事实冲突、虚构或无法追溯的可见事实",
+        1: "无明确错误，但至少一项事实仅能追溯到弱证据或表达存在歧义",
+        2: "所有口播与可见事实均与准确文本一致并可追溯到授权证据",
+    },
+    "素材相关": {
+        0: "存在无关、错主体、错产品、错门店或误导性素材",
+        1: "素材主题相关但至少一处语义、时机或主体表达不够精确",
+        2: "全部素材与当前语义、主体和出现时机准确匹配",
+    },
+    "前三秒钩子": {
+        0: "前三秒没有清晰钩子或钩子与后文事实不一致",
+        1: "前三秒有相关信息但吸引力、可读性或承诺清晰度一般",
+        2: "前三秒以准确、清晰且有吸引力的视听信息建立观看理由",
+    },
+    "叙事节奏": {
+        0: "结构难以理解，存在明显拖沓、跳跃或信息拥堵",
+        1: "主线可理解但至少一段节奏、停留或转场时机不理想",
+        2: "开场、展开、证明和收束连贯，节奏与信息密度匹配",
+    },
+    "布局清晰": {
+        0: "主体、文字或素材互相遮挡，关键层级无法辨认",
+        1: "层级基本可辨，但至少一处拥挤、失衡或安全区利用不佳",
+        2: "主体、字幕、卡片与素材层级明确且在安全区内稳定呈现",
+    },
+    "字幕可读": {
+        0: "存在错字、漏字、遮挡、越界或无法按正常速度阅读的字幕",
+        1: "字幕准确可读，但至少一处断句、字号、对比或停留时间不佳",
+        2: "字幕准确、同步、断句自然，字号、对比和停留时间均适合发布",
+    },
+    "声音质量": {
+        0: "存在削波、异常静音、重复人声、明显不同步或对白不可辨",
+        1: "对白可辨且无阻断故障，但响度、混音或音效时机仍可改善",
+        2: "对白清晰同步，响度稳定，BGM与音效服务内容且不遮蔽人声",
+    },
+    "视觉一致性": {
+        0: "颜色、字体、动效或素材风格冲突，成片呈现拼贴失控",
+        1: "整体风格基本统一，但至少一处组件或素材语言不协调",
+        2: "颜色、字体、动效、转场与素材语言统一且保留内容驱动差异",
+    },
+}
+
+DIMENSIONS = tuple(DIMENSION_ANCHORS)
+CRITICAL_DIMENSIONS = ("事实准确", "素材相关", "字幕可读", "声音质量")
+_CONTINUITY_REASONS = frozenset({"speaker_continuity", "step_sequence", "evidence_hold"})
+_REVIEWER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
+_CREATIVE_REGISTRY_SHA256 = "2023e55cc2092cdf29632ff2f5d05c1d0123d5d9c1950efcb00b46315e4de2ba"
+_CANONICAL_LAYOUT_VARIANTS = {
+    "speaker_fullscreen": frozenset({"clean_center", "headline_top", "caption_sidebar"}),
+    "speaker_left_info_right": frozenset({"card_stack", "number_focus", "image_evidence"}),
+    "speaker_right_evidence_left": frozenset({"document_panel", "comparison_panel", "quote_evidence"}),
+    "material_fullscreen_speaker_pip": frozenset({"pip_round", "pip_card", "pip_edge"}),
+    "product_hero": frozenset({"center_pedestal", "split_copy", "detail_gallery"}),
+    "editorial_collage": frozenset({"magazine_grid", "layered_cards", "film_strip"}),
+    "comparison_split": frozenset({"vertical_divide", "before_after_slider", "score_compare"}),
+    "steps_stack": frozenset({"vertical_steps", "numbered_cards", "progress_path"}),
+    "number_proof": frozenset({"hero_number", "metric_grid", "chart_callout"}),
+    "quote_reversal": frozenset({"diagonal_statement", "strike_reveal", "question_answer"}),
+    "method_timeline": frozenset({"horizontal_timeline", "vertical_milestones", "chapter_route"}),
+    "cta_offer": frozenset({"offer_card", "qr_placeholder", "action_steps"}),
+}
+
+
+@dataclass(frozen=True)
+class HumanReview:
+    reviewer_id: str
+    cases: Mapping[str, Mapping[str, int]]
+
+
+@dataclass(frozen=True)
+class HumanCaseDecision:
+    publishable: bool
+    average_total: float
+    personal_passes: int
+    reviewer_count: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class HumanSummary:
+    cases: Mapping[str, HumanCaseDecision]
+
+    @property
+    def publishable_count(self) -> int:
+        return sum(decision.publishable for decision in self.cases.values())
+
+
+@dataclass(frozen=True)
+class CreativeDistributionReport:
+    passed: bool
+    errors: tuple[str, ...]
+
+
+def _validated_reviewer_id(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not _REVIEWER_ID.fullmatch(value)
+        or value.casefold() in {"self", "system", "ai", "qwen", "codex"}
+    ):
+        raise ValueError("reviewer_id_invalid")
+    return value
+
+
+def _validated_scores(raw: Mapping[str, int]) -> dict[str, int]:
+    if not isinstance(raw, Mapping) or len(raw) != len(DIMENSIONS) or set(raw) != set(DIMENSIONS):
+        raise ValueError("human_review_dimensions_invalid")
+    values = dict(raw)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1, 2)
+        for value in values.values()
+    ):
+        raise ValueError("human_review_score_invalid")
+    return values
+
+
+def validate_human_review(
+    path: Path,
+    *,
+    expected_cases: Collection[str],
+    reviewer_id: str,
+) -> HumanReview:
+    expected_reviewer = _validated_reviewer_id(reviewer_id)
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("human_review_json_invalid") from exc
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"version", "reviewer_id", "cases"}
+        or payload.get("version") != "1.0"
+    ):
+        raise ValueError("human_review_json_invalid")
+    if _validated_reviewer_id(payload.get("reviewer_id")) != expected_reviewer:
+        raise ValueError("reviewer_id_mismatch")
+    cases = payload.get("cases")
+    if not isinstance(cases, Mapping) or set(cases) != set(expected_cases):
+        raise ValueError("human_review_case_set_invalid")
+    validated: dict[str, Mapping[str, int]] = {}
+    for case_id, raw_case in cases.items():
+        if (
+            not isinstance(raw_case, Mapping)
+            or set(raw_case) != {"scores", "justifications"}
+        ):
+            raise ValueError("human_review_case_invalid")
+        case_scores = _validated_scores(raw_case.get("scores"))
+        justifications = raw_case.get("justifications")
+        if not isinstance(justifications, Mapping) or set(justifications) != set(DIMENSIONS):
+            raise ValueError("human_review_justifications_invalid")
+        for dimension, score in case_scores.items():
+            justification = justifications.get(dimension)
+            if (
+                not isinstance(justification, Mapping)
+                or set(justification) != {"anchor", "note"}
+                or justification.get("anchor") != DIMENSION_ANCHORS[dimension][score]
+                or not isinstance(justification.get("note"), str)
+                or len(justification["note"].strip()) < 8
+            ):
+                raise ValueError("human_review_anchor_invalid")
+        validated[str(case_id)] = case_scores
+    return HumanReview(expected_reviewer, validated)
+
+
+def _personal_pass(values: Mapping[str, int]) -> bool:
+    return (
+        sum(values.values()) >= 13
+        and all(values[name] > 0 for name in CRITICAL_DIMENSIONS)
+    )
+
+
+def _assert_distinct_reviews(*reviews: HumanReview | None) -> None:
+    present = [review for review in reviews if review is not None]
+    if len({id(review) for review in present}) != len(present):
+        raise ValueError("review_object_reused")
+    reviewer_ids = [_validated_reviewer_id(review.reviewer_id) for review in present]
+    if len({value.casefold() for value in reviewer_ids}) != len(reviewer_ids):
+        raise ValueError("reviewer_id_reused")
+
+
+def reconcile_human_reviews(
+    first: HumanReview,
+    second: HumanReview,
+    third: HumanReview | None,
+) -> HumanSummary:
+    _assert_distinct_reviews(first, second, third)
+    if not first.cases or any(
+        not isinstance(case_id, str) or not re.fullmatch(r"case_[0-9]{2}", case_id)
+        for case_id in first.cases
+    ):
+        raise ValueError("primary_case_set_invalid")
+    if set(first.cases) != set(second.cases):
+        raise ValueError("primary_case_set_mismatch")
+    first_scores = {case_id: _validated_scores(raw) for case_id, raw in first.cases.items()}
+    second_scores = {case_id: _validated_scores(raw) for case_id, raw in second.cases.items()}
+    disputed = {
+        case_id for case_id in first_scores
+        if _personal_pass(first_scores[case_id]) != _personal_pass(second_scores[case_id])
+    }
+    if disputed and third is None:
+        raise ValueError(f"third_reviewer_required:{sorted(disputed)[0]}")
+    if not disputed and third is not None:
+        raise ValueError("third_reviewer_not_required")
+    if third is not None and set(third.cases) != disputed:
+        raise ValueError("third_reviewer_case_set_invalid")
+    third_scores = (
+        {case_id: _validated_scores(raw) for case_id, raw in third.cases.items()}
+        if third is not None else {}
+    )
+    decisions: dict[str, HumanCaseDecision] = {}
+    for case_id in first_scores:
+        score_sets = [first_scores[case_id], second_scores[case_id]]
+        if case_id in disputed:
+            score_sets.append(third_scores[case_id])
+        totals = [sum(values.values()) for values in score_sets]
+        average_total = sum(totals) / len(totals)
+        personal_passes = sum(_personal_pass(values) for values in score_sets)
+        zero_critical = next((
+            name for name in CRITICAL_DIMENSIONS
+            if any(values[name] == 0 for values in score_sets)
+        ), None)
+        publishable = (
+            average_total >= 13
+            and zero_critical is None
+            and (len(score_sets) == 2 or personal_passes >= 2)
+        )
+        if zero_critical is not None:
+            reason = f"critical_dimension_zero:{zero_critical}"
+        elif average_total < 13:
+            reason = "average_total_below_13"
+        elif len(score_sets) == 3 and personal_passes < 2:
+            reason = "personal_pass_votes_below_2"
+        else:
+            reason = "publishable"
+        decisions[case_id] = HumanCaseDecision(
+            publishable, average_total, personal_passes, len(score_sets), reason
+        )
+    return HumanSummary(decisions)
+
+
+def validate_creative_distribution(
+    scenes: Sequence[Mapping[str, Any]],
+) -> CreativeDistributionReport:
+    errors: list[str] = []
+    if not scenes:
+        return CreativeDistributionReport(False, ("scenes_missing",))
+    layouts = [str(scene.get("layout", "")) for scene in scenes]
+    for index, scene in enumerate(scenes):
+        layout = scene.get("layout")
+        variant = scene.get("variant")
+        if layout not in _CANONICAL_LAYOUT_VARIANTS:
+            errors.append(f"layout_unknown:{index}")
+        elif variant not in _CANONICAL_LAYOUT_VARIANTS[layout]:
+            errors.append(f"layout_variant_unknown:{index}")
+        if scene.get("registry_sha256") != _CREATIVE_REGISTRY_SHA256:
+            errors.append(f"layout_registry_mismatch:{index}")
+    unique_layouts = set(layouts)
+    if len(unique_layouts) < 8:
+        errors.append("layout_diversity_below_8")
+    for layout in sorted(unique_layouts):
+        indices = [index for index, value in enumerate(layouts) if value == layout]
+        variants = {str(scenes[index].get("variant", "")) for index in indices}
+        if len(variants) < 2:
+            errors.append(f"layout_variant_diversity_below_2:{layout}")
+        if len(indices) / len(scenes) > 0.35:
+            errors.append(f"layout_share_above_35_percent:{layout}")
+    run_layout = None
+    run_length = 0
+    for index, (layout, scene) in enumerate(zip(layouts, scenes, strict=True)):
+        if layout == run_layout:
+            run_length += 1
+        else:
+            run_layout = layout
+            run_length = 1
+        if run_length > 2 and scene.get("continuity_reason") not in _CONTINUITY_REASONS:
+            errors.append(f"unjustified_layout_run:{index}")
+    return CreativeDistributionReport(not errors, tuple(errors))
+
+
+def human_acceptance_passes(summary: HumanSummary, *, expected_cases: int = 20) -> bool:
+    return (
+        expected_cases == 20
+        and len(summary.cases) == expected_cases
+        and summary.publishable_count >= 16
+    )
+
+
+def build_blind_review_package(
+    cases: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    blinded: list[Mapping[str, str]] = []
+    observed: set[str] = set()
+    expected = {f"case_{index:02d}" for index in range(1, 21)}
+    case_ids = [
+        case.get("case_id") if isinstance(case, Mapping) else None
+        for case in cases
+    ]
+    if (
+        len(cases) != 20
+        or any(not isinstance(case, Mapping) for case in cases)
+        or any(not isinstance(case_id, str) for case_id in case_ids)
+        or set(case_ids) != expected
+    ):
+        raise ValueError("blind_package_case_set_invalid")
+    for blind_index, case in enumerate(sorted(cases, key=lambda value: value["case_id"]), start=1):
+        case_id = case.get("case_id")
+        if (
+            not isinstance(case_id, str)
+            or not re.fullmatch(r"case_[0-9]{2}", case_id)
+            or case_id in observed
+        ):
+            raise ValueError("blind_package_case_invalid")
+        observed.add(case_id)
+        blinded.append({
+            "case_id": case_id,
+            "media_filename": f"blind_{blind_index:03d}.mp4",
+        })
+    return {"version": "1.0", "cases": blinded}
