@@ -1493,6 +1493,7 @@ def build_go_no_go(
 npm ci --ignore-scripts
 npm ls hyperframes gsap --depth=0
 npm test
+npm run render:fixtures
 npm run hf:check -- test/fixtures/landscape --strict --json
 npm run hf:check -- test/fixtures/portrait --strict --json
 npm run hf:check -- test/fixtures/animations --strict --json
@@ -1503,7 +1504,6 @@ npm run hf:snapshot -- test/fixtures/animations --at 0,0.5,1,1.4
 npm run hf:snapshot -- test/fixtures/transitions --at 0,0.2,0.4,0.8
 npm run hf:snapshot -- test/fixtures/landscape --at 0,1.5,3
 npm run hf:snapshot -- test/fixtures/portrait --at 0,1.5,3
-npm run render:fixtures
 ```
 
   Expected: every command exits `0`; dependency versions equal the frozen release, both fixture projects have zero persistent check findings, keyframe validation passes, all requested snapshots are produced and deterministic fixture rendering passes.
