@@ -25,6 +25,39 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SceneMaterialBindingTests(unittest.TestCase):
+    @staticmethod
+    def _freeze_material_descriptors(
+        coordinator: ProductionStageCoordinator,
+        job: dict,
+        descriptors: list[dict] | None = None,
+    ) -> None:
+        trusted = coordinator._frozen_bound_materials(job)
+        safe_descriptors = list(descriptors or ())
+        if len(trusted) != len(safe_descriptors):
+            raise AssertionError("one descriptor is required for every bound upload")
+        items = []
+        for index, (material, descriptor) in enumerate(
+            zip(trusted, safe_descriptors, strict=True), 1,
+        ):
+            items.append({
+                "upload_alias": f"upload_{index:02d}",
+                "material_id": material["material_id"],
+                "sha256": material["sha256"],
+                **descriptor,
+            })
+        root = coordinator._root(str(job["job_id"]))
+        (root / "material-descriptors.json").write_text(
+            json.dumps({
+                "contract": "ai-edit-v3-material-descriptors-v1",
+                "version": "1.0",
+                "input_sha256": production_module._material_descriptor_input_sha256(
+                    str(job["owner_id"]), trusted,
+                ),
+                "items": items,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
     def test_generated_material_review_rejects_urls_and_signed_parameters(self) -> None:
         cases = (
             {
@@ -202,6 +235,7 @@ class SceneMaterialBindingTests(unittest.TestCase):
                     "stage_input_sha256": "0" * 64,
                     "normalized_request_json": json.dumps({"input_type": "platform_talking_head", "material_asset_ids": []}),
                 }
+                self._freeze_material_descriptors(coordinator, job)
                 coordinator._stage("resolving_materials", job, SimpleNamespace(deadline_at=time.time() + 60))
                 with patch("server.content_domains.ai_edit_v3.production._probe_image", autospec=True, return_value=SimpleNamespace(width=1024, height=1536)):
                     with self.assertRaisesRegex((MaterialError, RuntimeError), expected_error):
@@ -491,6 +525,7 @@ class SceneMaterialBindingTests(unittest.TestCase):
                 "scenes": [{"id": "scene_01", "material_slots": [{"id": "detail", "semantic": "energy-saving airflow diagram", "purpose": "context", "priority": "required", "ratio": "9:16"}]}],
             }), encoding="utf-8")
             job = {"job_id": "job-rejected-material", "owner_id": "owner", "stage_input_sha256": "0" * 64, "normalized_request_json": json.dumps({"input_type": "platform_talking_head", "material_asset_ids": []})}
+            self._freeze_material_descriptors(coordinator, job)
             coordinator._stage("resolving_materials", job, SimpleNamespace(deadline_at=time.time() + 60))
             with patch("server.content_domains.ai_edit_v3.production._probe_image", autospec=True, return_value=SimpleNamespace(width=1024, height=1536)):
                 with self.assertRaisesRegex(MaterialError, "generated_required_material_review_failed"):
@@ -675,7 +710,7 @@ class SceneMaterialBindingTests(unittest.TestCase):
             },
             materials=[{
                 "material_id": "mat_product",
-                "semantic": ["green product package"],
+                "semantic": "green product package",
                 "subject_type": "product",
                 "composition": "center",
                 "supported_ratios": ["9:16"],
@@ -703,7 +738,7 @@ class SceneMaterialBindingTests(unittest.TestCase):
                         "size_bytes": len(upload),
                         "sha256": hashlib.sha256(upload).hexdigest(),
                         "metadata_json": json.dumps({
-                            "semantic": ["green product package"],
+                            "semantic": "green product package",
                             "subject_type": "product",
                             "composition": "center",
                         }),
@@ -774,6 +809,13 @@ class SceneMaterialBindingTests(unittest.TestCase):
                     "material_asset_ids": ["mat_product"],
                 }),
             }
+            self._freeze_material_descriptors(coordinator, job, [{
+                "semantic": "green product package",
+                "subject_type": "product",
+                "composition": "center",
+                "supported_ratios": ["9:16"],
+                "risk_labels": [],
+            }])
 
             resolved = coordinator._stage(
                 "resolving_materials",

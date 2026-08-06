@@ -383,6 +383,43 @@ class ProductionDirectorTests(unittest.TestCase):
 
         captured_capabilities = []
         captured_requests = []
+        image = b"verified-user-image"
+
+        class Store:
+            environment = "test"
+
+            @staticmethod
+            def resolve_request_uploads_for_owner(*_args, **_kwargs):
+                return {
+                    "materials": [{
+                        "material_id": "material-1234",
+                        "cos_key": "test/alice/material.png",
+                        "mime_type": "image/png",
+                        "size_bytes": len(image),
+                        "sha256": hashlib.sha256(image).hexdigest(),
+                        "metadata_json": '{"width":1080,"height":1920,"format":"png"}',
+                    }],
+                }
+
+        class Cos:
+            @staticmethod
+            def download_file(_key, target):
+                Path(target).write_bytes(image)
+
+        class Analyzer:
+            @staticmethod
+            def describe_materials(images, *, deadline_at):
+                del deadline_at
+                assert [item["upload_alias"] for item in images] == ["upload_01"]
+                return {"descriptors": [{
+                    "upload_alias": "upload_01",
+                    "semantic": "用户上传的产品实拍图",
+                    "subject_type": "product",
+                    "composition": "centered close-up",
+                    "supported_ratios": ["9:16"],
+                    "risk_labels": [],
+                }]}
+
         decision = SimpleNamespace(
             value={
                 "version": "1.0",
@@ -438,20 +475,9 @@ class ProductionDirectorTests(unittest.TestCase):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-            coordinator.store = type("Store", (), {
-                "environment": "test",
-                "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {
-                    "materials": [{
-                        "material_id": "material-1234",
-                        "metadata_json": json.dumps({
-                            "semantic": "用户上传的产品实拍图",
-                            "subject_type": "product",
-                            "composition": "original",
-                        }, ensure_ascii=False),
-                        "sha256": "e" * 64,
-                    }],
-                },
-            })()
+            coordinator.store = Store()
+            coordinator.cos = Cos()
+            coordinator.material_analyzer = Analyzer()
             coordinator.director = object()
             coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
             root = coordinator._root("job-gate-one")
@@ -461,7 +487,13 @@ class ProductionDirectorTests(unittest.TestCase):
                 captured_capabilities.append(context.capabilities)
                 captured_requests.append(context.request)
                 return decision
-            with patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision) as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
+            def fake_jpeg(_source, destination, *, deadline_at):
+                del deadline_at
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"\xff\xd8safe-jpeg")
+                return {"width": 288, "height": 512}
+
+            with patch("server.content_domains.ai_edit_v3.production._prepare_material_analysis_jpeg", side_effect=fake_jpeg), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision) as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
                 outcome = coordinator._stage(
                     "planning",
                     {
@@ -520,7 +552,7 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertNotIn("sha256", captured_requests[0]["current_materials"][0])
         prompt_json = json.dumps(captured_requests[0], ensure_ascii=False)
         self.assertNotIn("material-1234", prompt_json)
-        self.assertNotIn("e" * 64, prompt_json)
+        self.assertNotIn(hashlib.sha256(image).hexdigest(), prompt_json)
         self.assertEqual(
             capabilities["layout_requirements"],
             prompt_capabilities["layout_requirements"],
@@ -970,6 +1002,59 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertEqual(plan["scenes"][0]["material_slots"][0]["id"], "material_01")
         self.assertEqual(plan["materials"][0]["request_id"], "material_01")
 
+    def test_legacy_compiler_keeps_all_ten_current_material_descriptors(self):
+        capabilities = {
+            "layout_capabilities": ["product_hero", "editorial_collage"],
+            "overlay_capabilities": ["standard_caption"],
+            "animation_capabilities": ["subtitle_pop"],
+            "transition_capabilities": ["hard_cut"],
+            "theme_capabilities": {
+                "palette_id": ["midnight_gold"],
+                "typography_id": ["editorial_sans"],
+                "density": ["balanced"],
+                "motion_energy": ["medium"],
+                "image_fit": ["cover"],
+            },
+        }
+        captions = [
+            {
+                "id": f"caption_{index + 1:03d}",
+                "start_ms": index * 8000,
+                "end_ms": (index + 1) * 8000,
+                "text": f"素材说明 {index + 1}",
+            }
+            for index in range(10)
+        ]
+        plan = QwenCompiledDirector._compile(
+            {
+                "timeline": {
+                    "duration_ms": 80000,
+                    "captions": captions,
+                    "source_segments": [],
+                },
+                "source": {"input_type": "uploaded_audio"},
+                "current_materials": [
+                    {
+                        "upload_alias": f"upload_{index + 1:02d}",
+                        "semantic": f"用户素材 {index + 1}",
+                        "purpose": "context",
+                        "scene_index": index,
+                    }
+                    for index in range(10)
+                ],
+                "generate_missing_material": False,
+                "capabilities": capabilities,
+                "ratio": "9:16",
+            },
+            {"motion_energy": "medium"},
+        )
+
+        self.assertEqual(10, len(plan["materials"]))
+        self.assertEqual(
+            [f"用户素材 {index}" for index in range(1, 11)],
+            [item["semantic"] for item in plan["materials"]],
+        )
+
     def test_missing_material_requests_one_generic_generated_visual(self):
         provider = QwenCompiledDirector(_Qwen())
         capabilities = {
@@ -1218,6 +1303,86 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_material_descriptor_text_rejects_secret_prefixes_and_control_characters(self):
+        from server.content_domains.ai_edit_v3 import production
+
+        for unsafe in (
+            "sk-test-secret",
+            "token sk_test_secret",
+            "password=secret-value",
+            "api_key: secret-value",
+            "signature=secret-value",
+            "credential=secret-value",
+            "product\x00photo",
+        ):
+            with self.subTest(unsafe=repr(unsafe)), self.assertRaisesRegex(
+                ValueError, "material_descriptor_invalid",
+            ):
+                production._material_descriptor_payload(
+                    {"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": unsafe,
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }]},
+                    expected_aliases=("upload_01",),
+                )
+
+    def test_material_descriptor_text_allows_sk_inside_ordinary_words(self):
+        from server.content_domains.ai_edit_v3 import production
+
+        for safe_text in (
+            "desk-side product close-up",
+            "mask_style visual",
+            "signature pose",
+            "credential document",
+        ):
+            with self.subTest(safe_text=safe_text):
+                result = production._material_descriptor_payload(
+                    {"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": safe_text,
+                        "subject_type": "product",
+                        "composition": safe_text,
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }]},
+                    expected_aliases=("upload_01",),
+                )
+                self.assertEqual(safe_text, result["descriptors"][0]["semantic"])
+
+    def test_material_analysis_reencode_is_bounded_jpeg_and_deterministic(self):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg and ffprobe are required")
+        from server.content_domains.ai_edit_v3.production import (
+            _prepare_material_analysis_jpeg,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.ppm"
+            source.write_bytes(
+                b"P6\n1024 768\n255\n" + bytes((18, 126, 214)) * (1024 * 768)
+            )
+            first = root / "first.jpg"
+            second = root / "second.jpg"
+
+            first_dimensions = _prepare_material_analysis_jpeg(
+                source, first, deadline_at=time.time() + 30,
+            )
+            second_dimensions = _prepare_material_analysis_jpeg(
+                source, second, deadline_at=time.time() + 30,
+            )
+
+            first_bytes = first.read_bytes()
+            self.assertEqual({"width": 512, "height": 384}, first_dimensions)
+            self.assertEqual(first_dimensions, second_dimensions)
+            self.assertEqual(first_bytes, second.read_bytes())
+            self.assertTrue(first_bytes.startswith(b"\xff\xd8"))
+            self.assertLessEqual(len(first_bytes), 256 * 1024)
+
     def test_visual_inspector_rejects_material_layout_without_assets(self):
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
 
@@ -2342,6 +2507,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual("测试", persisted["words"][0]["text"])
 
     def test_resolving_materials_freezes_only_job_bound_uploads(self):
+        from server.content_domains.ai_edit_v3 import production
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
         image = b"verified-user-image"
@@ -2373,17 +2539,40 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             coordinator.store = Store()
             coordinator.cos = Cos()
             coordinator.work_root = Path(directory)
+            job = {
+                "job_id": "job-material",
+                "owner_id": "alice",
+                "stage_input_sha256": "0" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "platform_talking_head",
+                    "material_asset_ids": ["mat-1"],
+                }),
+            }
+            trusted = coordinator._frozen_bound_materials(job)
+            descriptor_input = production._material_descriptor_input_sha256(
+                "alice", trusted,
+            )
+            (coordinator._root("job-material") / "material-descriptors.json").write_text(
+                json.dumps({
+                    "contract": "ai-edit-v3-material-descriptors-v1",
+                    "version": "1.0",
+                    "input_sha256": descriptor_input,
+                    "items": [{
+                        "upload_alias": "upload_01",
+                        "material_id": "mat-1",
+                        "sha256": hashlib.sha256(image).hexdigest(),
+                        "semantic": "用户上传的产品图",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }],
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
             outcome = coordinator._stage(
                 "resolving_materials",
-                {
-                    "job_id": "job-material",
-                    "owner_id": "alice",
-                    "stage_input_sha256": "0" * 64,
-                    "normalized_request_json": json.dumps({
-                        "input_type": "platform_talking_head",
-                        "material_asset_ids": ["mat-1"],
-                    }),
-                },
+                job,
                 object(),
             )
             frozen = json.loads((coordinator._root("job-material") / "materials.json").read_text("utf-8"))
@@ -2392,6 +2581,539 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual(1, outcome.checkpoint["material_count"])
         self.assertEqual("mat-1", frozen["items"][0]["material_id"])
         self.assertEqual(("alice", None, ["mat-1"], "test"), coordinator.store.call)
+
+    def test_two_uploaded_images_freeze_descriptors_match_second_and_skip_generation_on_retry(self):
+        from server.content_domains.ai_edit_v3 import production
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        image_bytes = {
+            "test/owner/green.png": b"verified-green-product",
+            "test/owner/blue.png": b"verified-blue-store",
+        }
+        real_ids = ("material-real-green", "material-real-blue")
+        hashes = {
+            key: hashlib.sha256(value).hexdigest()
+            for key, value in image_bytes.items()
+        }
+
+        class Store:
+            environment = "test"
+
+            def resolve_request_uploads_for_owner(self, owner, *, source_upload_id, material_ids, environment):
+                self.last_scope = (owner, source_upload_id, tuple(material_ids), environment)
+                return {
+                    "source_upload": None,
+                    "materials": [
+                        {
+                            "material_id": real_ids[0],
+                            "cos_key": "test/owner/green.png",
+                            "mime_type": "image/png",
+                            "size_bytes": len(image_bytes["test/owner/green.png"]),
+                            "sha256": hashes["test/owner/green.png"],
+                            "metadata_json": '{"width":1080,"height":1080,"format":"png"}',
+                        },
+                        {
+                            "material_id": real_ids[1],
+                            "cos_key": "test/owner/blue.png",
+                            "mime_type": "image/png",
+                            "size_bytes": len(image_bytes["test/owner/blue.png"]),
+                            "sha256": hashes["test/owner/blue.png"],
+                            "metadata_json": '{"width":1920,"height":1080,"format":"png"}',
+                        },
+                    ],
+                }
+
+        class Cos:
+            def download_file(self, key, target):
+                Path(target).write_bytes(image_bytes[key])
+
+        class Analyzer:
+            def __init__(self):
+                self.calls = []
+
+            def describe_materials(self, images, *, deadline_at):
+                self.calls.append(copy.deepcopy(images))
+                self.assert_safe(images)
+                return {
+                    "descriptors": [
+                        {
+                            "upload_alias": "upload_01",
+                            "semantic": "绿色产品包装正面实拍",
+                            "subject_type": "product",
+                            "composition": "centered close-up",
+                            "supported_ratios": ["9:16", "1:1"],
+                            "risk_labels": [],
+                        },
+                        {
+                            "upload_alias": "upload_02",
+                            "semantic": "蓝色门店前台实拍",
+                            "subject_type": "store",
+                            "composition": "wide interior",
+                            "supported_ratios": ["16:9", "9:16"],
+                            "risk_labels": [],
+                        },
+                    ],
+                }
+
+            @staticmethod
+            def assert_safe(images):
+                for image in images:
+                    if set(image) != {"upload_alias", "width", "height", "jpeg_bytes"}:
+                        raise AssertionError(f"unsafe descriptor request keys: {set(image)}")
+                    serialized = repr(image)
+                    if any(value in serialized for value in (
+                        *real_ids, *hashes.values(), *image_bytes.keys(),
+                    )):
+                        raise AssertionError("trusted material identity leaked to analyzer")
+
+        class NoImageGenerator:
+            def __init__(self):
+                self.calls = 0
+
+            def generate(self, **_kwargs):
+                self.calls += 1
+                raise AssertionError("matched upload must not trigger image generation")
+
+        decision = SimpleNamespace(
+            value={
+                "version": "1.0",
+                "creative_concept": "用门店实拍支撑讲解",
+                "narrative_pattern": "question_proof",
+                "theme_profile_id": "editorial_clean",
+                "design_intent": {
+                    "density": "balanced",
+                    "motion_energy": "medium",
+                    "image_fit": "cover",
+                    "decoration_intensity": "medium",
+                },
+                "scene_directives": [{
+                    "scene_id": "candidate_01",
+                    "narrative_role": "proof",
+                    "layout_id": "product_hero",
+                    "layout_variant": "center_pedestal",
+                    "headline": {
+                        "text_kind": "verbatim",
+                        "source_caption_ids": ["caption_001"],
+                    },
+                    "overlay_instances": [{
+                        "instance_id": "caption_overlay",
+                        "component_id": "standard_caption",
+                        "content_ref": "headline",
+                        "placement": "subtitle_safe",
+                    }],
+                    "material_bindings": [],
+                    "material_slot_directives": [{
+                        "slot_id": "candidate_01_product",
+                        "semantic": "蓝色门店前台实拍",
+                        "purpose": "product",
+                        "priority": "required",
+                        "ratio": "9:16",
+                    }],
+                    "animations": [{
+                        "target_id": "caption_overlay",
+                        "preset": "subtitle_pop",
+                        "direction": "up",
+                        "duration_ms": 400,
+                        "delay_ms": 0,
+                    }],
+                    "transition": "hard_cut",
+                    "sound_events": [],
+                }],
+                "audio_intent": {
+                    "bgm_description": "克制的无歌词商务氛围",
+                    "energy": "medium",
+                    "dialogue_priority": True,
+                },
+            },
+            decision_sha256="b" * 64,
+            provider_request_id="director-request-descriptor",
+            raw_output_sha256="c" * 64,
+        )
+        captured_requests = []
+        analyzer = Analyzer()
+        generator = NoImageGenerator()
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False
+        ):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+            coordinator.store = Store()
+            coordinator.cos = Cos()
+            coordinator.material_analyzer = analyzer
+            coordinator.image_generator = generator
+            coordinator.director = object()
+            coordinator.owner_hmac_secret = b"0123456789abcdef"
+            coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
+            root = coordinator._root("job-descriptors")
+            (root / "normalized.json").write_text(json.dumps({
+                "input_type": "uploaded_audio",
+                "ratio": "9:16",
+                "sha256": "a" * 64,
+            }), encoding="utf-8")
+            (root / "timeline.json").write_text(json.dumps({
+                "duration_ms": 4000,
+                "captions": [{
+                    "id": "caption_001",
+                    "text": "蓝色门店前台是团队服务的第一现场",
+                    "start_ms": 0,
+                    "end_ms": 4000,
+                }],
+                "source_segments": [],
+                "authoritative_text_sha256": None,
+                "alignment_coverage": 1.0,
+            }), encoding="utf-8")
+            job = {
+                "job_id": "job-descriptors",
+                "owner_id": "alice",
+                "request_sha256": "1" * 64,
+                "stage_input_sha256": "0" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "uploaded_audio",
+                    "material_asset_ids": list(real_ids),
+                }),
+            }
+
+            def fake_jpeg(source, destination, *, deadline_at):
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"safe-jpeg-" + Path(source).name.encode("ascii"))
+                return {"width": 512, "height": 288}
+
+            def capture_decision(context, *_args, **_kwargs):
+                captured_requests.append(copy.deepcopy(context.request))
+                return decision
+
+            with patch(
+                "server.content_domains.ai_edit_v3.production._prepare_material_analysis_jpeg",
+                side_effect=fake_jpeg,
+            ), patch(
+                "server.content_domains.ai_edit_v3.production.generate_director_decision",
+                side_effect=capture_decision,
+            ):
+                first = coordinator._stage(
+                    "planning", job,
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+                replay = coordinator._stage(
+                    "planning", job,
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+                resolving_job = {**job, "stage_input_sha256": "2" * 64}
+                resolved = coordinator._stage(
+                    "resolving_materials", resolving_job,
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+                generated = coordinator._stage(
+                    "generating_images", job,
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+
+            descriptor_document = json.loads(
+                (root / "material-descriptors.json").read_text(encoding="utf-8")
+            )
+            descriptor_sha256 = hashlib.sha256(
+                (root / "material-descriptors.json").read_bytes()
+            ).hexdigest()
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            materials = json.loads((root / "materials.json").read_text(encoding="utf-8"))
+            trusted = coordinator._frozen_bound_materials(job)
+            expected_descriptor_input = production._material_descriptor_input_sha256(
+                "alice", trusted,
+            )
+            with self.assertRaises(production.MaterialError):
+                coordinator._validated_material_descriptor_document(
+                    descriptor_document,
+                    list(reversed(trusted)),
+                    input_sha256=production._material_descriptor_input_sha256(
+                        "alice", list(reversed(trusted)),
+                    ),
+                )
+
+        self.assertEqual("resolving_materials", first.next_state)
+        self.assertEqual("resolving_materials", replay.next_state)
+        self.assertEqual(descriptor_sha256, first.checkpoint["material_descriptors_sha256"])
+        self.assertEqual("ai-edit-v3-material-descriptors-v1", descriptor_document["contract"])
+        self.assertEqual(expected_descriptor_input, descriptor_document["input_sha256"])
+        self.assertNotEqual("0" * 64, descriptor_document["input_sha256"])
+        self.assertEqual("generating_images", resolved.next_state)
+        self.assertEqual("generating_audio", generated.next_state)
+        self.assertEqual(1, len(analyzer.calls), "two images must share one bounded batch and replay must reuse it")
+        self.assertEqual(0, generator.calls)
+        self.assertEqual("primary", plan["scenes"][0]["material_slots"][0]["layout_slot_id"])
+        self.assertEqual(real_ids[1], materials["items"][0]["material_id"])
+        self.assertEqual("primary", materials["items"][0]["slot_id"])
+        self.assertEqual([], materials["unresolved"])
+        public_materials = captured_requests[0]["current_materials"]
+        self.assertEqual(["upload_01", "upload_02"], [item["upload_alias"] for item in public_materials])
+        self.assertEqual("蓝色门店前台实拍", public_materials[1]["semantic"])
+        prompt_json = json.dumps(captured_requests, ensure_ascii=False)
+        artifact_json = json.dumps(descriptor_document, ensure_ascii=False)
+        for secret in (*real_ids, *hashes.values(), "test/owner/green.png", "test/owner/blue.png"):
+            self.assertNotIn(secret, prompt_json)
+        self.assertNotIn("data:image", artifact_json)
+        self.assertNotIn("relative_path", artifact_json)
+
+    def test_material_descriptor_receipt_closes_success_before_artifact_crash_window(self):
+        from server.content_domains.ai_edit_v3 import production
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+        from server.content_domains.ai_edit_v3.providers.base import ProviderResult
+
+        source = b"verified-upload"
+        source_sha = hashlib.sha256(source).hexdigest()
+
+        class Store:
+            environment = "test"
+
+            def __init__(self):
+                self.task = None
+                self.receipt_calls = []
+
+            def resolve_request_uploads_for_owner(self, owner, *, source_upload_id, material_ids, environment):
+                return {"materials": [{
+                    "material_id": "trusted-material",
+                    "cos_key": "test/owner/upload.png",
+                    "mime_type": "image/png",
+                    "size_bytes": len(source),
+                    "sha256": source_sha,
+                    "metadata_json": '{"width":1080,"height":1080}',
+                }]}
+
+            def get_provider_task_for_claim(self, claim, operation_key, now_ms):
+                return copy.deepcopy(self.task)
+
+            def record_provider_intent(self, claim, stage, stage_attempt_id, provider, capability, operation_key, request_sha256, now_ms):
+                self.receipt_calls.append(("intent", stage, capability, operation_key))
+                if self.task is None:
+                    self.task = {
+                        "status": "intent_recorded",
+                        "stage": stage,
+                        "provider": provider,
+                        "capability": capability,
+                        "request_sha256": request_sha256,
+                    }
+
+            def claim_provider_submission(self, *args):
+                self.receipt_calls.append(("claim",))
+                return True
+
+            def bind_provider_result(self, claim, operation_key, external_id, status, result, now_ms):
+                self.receipt_calls.append(("bind", external_id, status))
+                self.task.update({
+                    "status": status,
+                    "external_id": external_id,
+                    "result_json": json.dumps(result, ensure_ascii=False),
+                })
+
+        class Cos:
+            def download_file(self, key, target):
+                Path(target).write_bytes(source)
+
+        class Analyzer:
+            def __init__(self):
+                self.calls = 0
+
+            def describe_materials(self, images, *, deadline_at):
+                self.calls += 1
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="material_analysis",
+                    request_id="descriptor-request-1",
+                    payload={"content": json.dumps({"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": "绿色产品包装正面实拍",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16", "1:1"],
+                        "risk_labels": [],
+                    }]}, ensure_ascii=False)},
+                    usage={},
+                    elapsed_ms=1,
+                )
+
+        store = Store()
+        analyzer = Analyzer()
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.store = store
+            coordinator.cos = Cos()
+            coordinator.material_analyzer = analyzer
+            job = {
+                "job_id": "job-receipt",
+                "owner_id": "alice",
+                "stage_input_sha256": "0" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "uploaded_audio",
+                    "material_asset_ids": ["trusted-material"],
+                }),
+            }
+            context = SimpleNamespace(
+                deadline_at=time.time() + 60,
+                claim=object(),
+                stage_attempt_id="attempt-1",
+            )
+
+            def fake_jpeg(source_path, destination, *, deadline_at):
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"safe-jpeg")
+                return {"width": 512, "height": 512}
+
+            real_write_json = production._write_json
+            failed_once = False
+
+            def crash_after_receipt(path, value):
+                nonlocal failed_once
+                if Path(path).name == "material-descriptors.json" and not failed_once:
+                    failed_once = True
+                    raise OSError("simulated-artifact-crash")
+                return real_write_json(path, value)
+
+            with patch(
+                "server.content_domains.ai_edit_v3.production._prepare_material_analysis_jpeg",
+                side_effect=fake_jpeg,
+            ), patch(
+                "server.content_domains.ai_edit_v3.production._write_json",
+                side_effect=crash_after_receipt,
+            ):
+                with self.assertRaisesRegex(OSError, "simulated-artifact-crash"):
+                    coordinator._material_descriptors(job, context)
+                descriptors = coordinator._material_descriptors(job, context)
+
+        self.assertEqual(1, analyzer.calls)
+        self.assertEqual("绿色产品包装正面实拍", descriptors[0]["semantic"])
+        self.assertEqual(
+            [("intent", "planning", "material_analysis", "ai-edit-v3:job-receipt:material-analysis:0"),
+             ("claim",),
+             ("bind", "descriptor-request-1", "completed")],
+            store.receipt_calls,
+        )
+
+    def test_ten_uploads_use_two_bounded_batches_and_all_reach_director_as_safe_aliases(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        contents = [f"image-{index}".encode("ascii") for index in range(1, 11)]
+        material_ids = [f"trusted-real-{index}" for index in range(1, 11)]
+        cos_keys = [f"test/private/material-{index}.png" for index in range(1, 11)]
+
+        class Store:
+            environment = "test"
+
+            def resolve_request_uploads_for_owner(self, owner, *, source_upload_id, material_ids, environment):
+                return {"materials": [
+                    {
+                        "material_id": material_id,
+                        "cos_key": cos_key,
+                        "mime_type": "image/png",
+                        "size_bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "metadata_json": '{"width":1080,"height":1080}',
+                    }
+                    for material_id, cos_key, content in zip(
+                        material_ids, cos_keys, contents, strict=True,
+                    )
+                ]}
+
+        class Cos:
+            def download_file(self, key, target):
+                Path(target).write_bytes(contents[cos_keys.index(key)])
+
+        class Analyzer:
+            def __init__(self):
+                self.batch_sizes = []
+
+            def describe_materials(self, images, *, deadline_at):
+                self.batch_sizes.append(len(images))
+                return {"descriptors": [{
+                    "upload_alias": item["upload_alias"],
+                    "semantic": f"安全素材描述 {item['upload_alias']}",
+                    "subject_type": "object",
+                    "composition": "centered object",
+                    "supported_ratios": ["9:16"],
+                    "risk_labels": [],
+                } for item in images]}
+
+        decision = SimpleNamespace(
+            value={
+                "theme_profile_id": "editorial_clean",
+                "design_intent": {
+                    "density": "balanced", "motion_energy": "medium",
+                    "image_fit": "cover", "decoration_intensity": "medium",
+                },
+            },
+            decision_sha256="b" * 64,
+            provider_request_id="director-ten",
+            raw_output_sha256="c" * 64,
+        )
+        captured = []
+        analyzer = Analyzer()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False,
+        ):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+            coordinator.store = Store()
+            coordinator.cos = Cos()
+            coordinator.material_analyzer = analyzer
+            coordinator.director = object()
+            coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
+            root = coordinator._root("job-ten")
+            (root / "normalized.json").write_text(json.dumps({
+                "input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64,
+            }), encoding="utf-8")
+            (root / "timeline.json").write_text(json.dumps({
+                "duration_ms": 4000,
+                "captions": [{
+                    "id": "caption_001", "text": "十张素材测试",
+                    "start_ms": 0, "end_ms": 4000,
+                }],
+                "source_segments": [], "authoritative_text_sha256": None,
+                "alignment_coverage": 1.0,
+            }), encoding="utf-8")
+            job = {
+                "job_id": "job-ten", "owner_id": "alice",
+                "request_sha256": "1" * 64, "stage_input_sha256": "0" * 64,
+                "normalized_request_json": json.dumps({
+                    "input_type": "uploaded_audio", "material_asset_ids": material_ids,
+                }),
+            }
+
+            def fake_jpeg(source, destination, *, deadline_at):
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                Path(destination).write_bytes(b"safe-jpeg")
+                return {"width": 512, "height": 512}
+
+            def capture_decision(context, *_args, **_kwargs):
+                captured.append(copy.deepcopy(context.request))
+                return decision
+
+            with patch(
+                "server.content_domains.ai_edit_v3.production._prepare_material_analysis_jpeg",
+                side_effect=fake_jpeg,
+            ), patch(
+                "server.content_domains.ai_edit_v3.production.generate_director_decision",
+                side_effect=capture_decision,
+            ), patch(
+                "server.content_domains.ai_edit_v3.production.compile_edit_plan",
+                return_value={"version": "2.0", "visual_program_version": "1.0"},
+            ):
+                coordinator._stage(
+                    "planning", job,
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+
+        self.assertEqual([5, 5], analyzer.batch_sizes)
+        self.assertEqual(10, len(captured[0]["current_materials"]))
+        self.assertEqual(
+            [f"upload_{index:02d}" for index in range(1, 11)],
+            [item["upload_alias"] for item in captured[0]["current_materials"]],
+        )
+        prompt = json.dumps(captured[0], ensure_ascii=False)
+        for private_value in [*material_ids, *cos_keys, *(
+            hashlib.sha256(content).hexdigest() for content in contents
+        )]:
+            self.assertNotIn(private_value, prompt)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,134 @@ class _QwenVision:
 
 
 class MaterialReviewerTests(unittest.TestCase):
+    def test_real_qwen_client_result_is_accepted_by_descriptor_reviewer(self):
+        from server.content_domains.ai_edit_v3.providers.qwen_compatible import (
+            DashScopeCompatibleQwenClient,
+        )
+
+        def mock_http(_method, _url, _headers, _body, _timeout):
+            return {
+                "id": "real-compatible-descriptor-1",
+                "choices": [{"message": {"content": json.dumps({
+                    "descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": "绿色产品包装正面实拍",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }],
+                }, ensure_ascii=False)}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(http_request=mock_http)
+        reviewer = production.QwenMaterialReviewer(cos=_Cos(), client=client)
+        with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            result = reviewer.describe_materials(
+                [{
+                    "upload_alias": "upload_01",
+                    "width": 320,
+                    "height": 512,
+                    "jpeg_bytes": b"\xff\xd8sanitized-pixels",
+                }],
+                deadline_at=10_000_000_000.0,
+            )
+
+        self.assertEqual("real-compatible-descriptor-1", result.request_id)
+        self.assertEqual("绿色产品包装正面实拍", result["descriptors"][0]["semantic"])
+
+    def test_duck_typed_descriptor_result_requires_exact_provider_contract(self):
+        content = json.dumps({"descriptors": [{
+            "upload_alias": "upload_01",
+            "semantic": "绿色产品包装正面实拍",
+            "subject_type": "product",
+            "composition": "centered close-up",
+            "supported_ratios": ["9:16"],
+            "risk_labels": [],
+        }]}, ensure_ascii=False)
+        invalid_results = (
+            SimpleNamespace(
+                provider="openai", capability="material_analysis",
+                request_id="request-1", payload={"content": content},
+            ),
+            SimpleNamespace(
+                provider="dashscope", capability="material_review",
+                request_id="request-1", payload={"content": content},
+            ),
+            SimpleNamespace(
+                provider="dashscope", capability="material_analysis",
+                request_id="", payload={"content": content},
+            ),
+            SimpleNamespace(
+                provider="dashscope", capability="material_analysis",
+                request_id="request-1", payload="not-a-mapping",
+            ),
+        )
+
+        for result in invalid_results:
+            with self.subTest(result=result), self.assertRaisesRegex(
+                ValueError, "material_descriptor_invalid",
+            ):
+                production._material_descriptor_payload(
+                    result,
+                    expected_aliases=("upload_01",),
+                )
+
+    def test_qwen_descriptor_adapter_sends_only_alias_dimensions_and_inline_jpeg(self):
+        class DescriptorQwen:
+            def __init__(self):
+                self.requests = []
+
+            def inspect_image(self, *_args, **_kwargs):
+                raise AssertionError("descriptor analysis must not use signed-URL review")
+
+            def describe_images(self, request, *, deadline_at):
+                self.requests.append((request, deadline_at))
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="material_analysis",
+                    request_id="descriptor-request-1",
+                    payload={"content": json.dumps({"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": "绿色产品包装正面实拍",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }]}, ensure_ascii=False)},
+                    usage={},
+                    elapsed_ms=1,
+                )
+
+        qwen = DescriptorQwen()
+        reviewer = production.QwenMaterialReviewer(cos=_Cos(), client=qwen)
+        result = reviewer.describe_materials(
+            [{
+                "upload_alias": "upload_01",
+                "width": 320,
+                "height": 512,
+                "jpeg_bytes": b"\xff\xd8sanitized-pixels",
+            }],
+            deadline_at=123.0,
+        )
+
+        self.assertEqual("descriptor-request-1", result.request_id)
+        self.assertEqual("绿色产品包装正面实拍", result["descriptors"][0]["semantic"])
+        request, deadline_at = qwen.requests[0]
+        self.assertEqual(123.0, deadline_at)
+        self.assertEqual("material-descriptors-v1", request["output_contract"])
+        image = request["images"][0]
+        self.assertEqual(
+            {"upload_alias", "width", "height", "data_url"},
+            set(image),
+        )
+        self.assertTrue(image["data_url"].startswith("data:image/jpeg;base64,"))
+        serialized = json.dumps(request, ensure_ascii=False)
+        self.assertNotIn("material_id", serialized)
+        self.assertNotIn("sha256", serialized)
+        self.assertNotIn("cos_key", serialized)
+
     def test_bootstrap_injects_qwen_material_reviewer_into_coordinator(self):
         from server.content_domains.ai_edit_v3 import bootstrap
 
@@ -97,6 +225,7 @@ class MaterialReviewerTests(unittest.TestCase):
 
         reviewer = captured.get("visual_inspector")
         self.assertIsNotNone(reviewer, "bootstrap must explicitly inject the reviewer")
+        self.assertIs(reviewer, captured.get("material_analyzer"))
         self.assertIs(cos, reviewer.cos)
         self.assertTrue(callable(getattr(reviewer, "inspect_material", None)))
 

@@ -39,8 +39,8 @@ def _timeline(*, duration_ms: int = 12_000, count: int = 6) -> TextTimeline:
 
 def _materials() -> tuple[MaterialDescriptor, ...]:
     return (
-        MaterialDescriptor("material_02", ("产品",), "context", "portrait", ("9:16",), (), "b" * 64),
-        MaterialDescriptor("material_01", ("门店",), "context", "portrait", ("9:16",), (), "a" * 64),
+        MaterialDescriptor("material_02", "产品", "context", "portrait", ("9:16",), (), "b" * 64),
+        MaterialDescriptor("material_01", "门店", "context", "portrait", ("9:16",), (), "a" * 64),
     )
 
 

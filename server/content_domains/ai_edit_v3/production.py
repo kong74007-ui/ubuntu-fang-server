@@ -6,6 +6,7 @@ the frozen V3 protocol so provider formatting mistakes cannot strand a paid job.
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import hmac
@@ -916,7 +917,7 @@ class QwenCompiledDirector:
         has_speaker_video = source_type not in {
             "existing_audio", "uploaded_audio", "script_to_audio_video",
         }
-        current_materials = list(request.get("current_materials") or ())[:4]
+        current_materials = list(request.get("current_materials") or ())[:10]
         if (
             not current_materials
             and request.get("generate_missing_material") is True
@@ -1419,6 +1420,143 @@ class _MaterialReviewMapping(dict[str, Any]):
         self.request_id = request_id
 
 
+_MATERIAL_DESCRIPTOR_TEXT_RE = re.compile(
+    r"(?:[\x00-\x1f\x7f-\x9f]|https?://|file://|data:image|q-sign-|x-cos-|security-token|(?<![A-Za-z0-9])sk[-_][A-Za-z0-9]|(?:signature|credential|api[_ -]?key|password)\s*[:=]\s*\S)",
+    re.IGNORECASE,
+)
+_MATERIAL_SUBJECT_TYPES = frozenset({
+    "product", "store", "venue", "document", "object", "environment",
+    "graphic", "person", "other",
+})
+_MATERIAL_RISK_LABELS = frozenset({
+    "person", "face", "text", "logo", "sensitive", "uncertain",
+})
+_MATERIAL_RATIOS = frozenset({"16:9", "9:16", "1:1"})
+
+
+def _material_descriptor_input_sha256(
+    owner_id: str,
+    frozen: list[Mapping[str, Any]],
+) -> str:
+    if not isinstance(owner_id, str) or not owner_id:
+        raise MaterialError("material_descriptor_input_invalid")
+    identities: list[dict[str, Any]] = []
+    for ordinal, item in enumerate(frozen, 1):
+        if not isinstance(item, Mapping):
+            raise MaterialError("material_descriptor_input_invalid")
+        identity = {
+            "ordinal": ordinal,
+            "material_id": item.get("material_id"),
+            "sha256": item.get("sha256"),
+            "size_bytes": item.get("size_bytes"),
+            "mime_type": item.get("mime_type"),
+        }
+        if (
+            not isinstance(identity["material_id"], str)
+            or not identity["material_id"]
+            or not isinstance(identity["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
+            or isinstance(identity["size_bytes"], bool)
+            or not isinstance(identity["size_bytes"], int)
+            or identity["size_bytes"] < 1
+            or identity["mime_type"] not in {"image/jpeg", "image/png", "image/webp"}
+        ):
+            raise MaterialError("material_descriptor_input_invalid")
+        identities.append(identity)
+    return hashlib.sha256(canonical_json({
+        "contract": "ai-edit-v3-material-descriptor-input-v1",
+        "owner_id": owner_id,
+        "items": identities,
+    })).hexdigest()
+
+
+def _safe_descriptor_text(value: Any, *, max_chars: int) -> str:
+    if not isinstance(value, str):
+        raise MaterialError("material_descriptor_invalid")
+    normalized = " ".join(value.split())
+    if (
+        not normalized
+        or len(normalized) > max_chars
+        or _MATERIAL_DESCRIPTOR_TEXT_RE.search(normalized) is not None
+        or re.search(r"[0-9a-f]{64}", normalized, re.IGNORECASE) is not None
+    ):
+        raise MaterialError("material_descriptor_invalid")
+    return normalized
+
+
+def _material_descriptor_payload(
+    raw: Any,
+    *,
+    expected_aliases: tuple[str, ...],
+) -> dict[str, Any]:
+    if isinstance(raw, ProviderResult) or (
+        not isinstance(raw, Mapping)
+        and all(hasattr(raw, field) for field in (
+            "provider", "capability", "request_id", "payload",
+        ))
+    ):
+        provider_payload = getattr(raw, "payload", None)
+        if (
+            getattr(raw, "provider", None) != "dashscope"
+            or getattr(raw, "capability", None) != "material_analysis"
+            or not isinstance(getattr(raw, "request_id", None), str)
+            or not getattr(raw, "request_id", "")
+            or not isinstance(provider_payload, Mapping)
+        ):
+            raise MaterialError("material_descriptor_invalid")
+        content = provider_payload.get("content")
+        if not isinstance(content, str):
+            raise MaterialError("material_descriptor_invalid")
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise MaterialError("material_descriptor_invalid") from exc
+    elif isinstance(raw, Mapping):
+        payload = dict(raw)
+    else:
+        raise MaterialError("material_descriptor_invalid")
+    if set(payload) != {"descriptors"} or not isinstance(payload["descriptors"], list):
+        raise MaterialError("material_descriptor_invalid")
+    by_alias: dict[str, dict[str, Any]] = {}
+    for raw_descriptor in payload["descriptors"]:
+        if not isinstance(raw_descriptor, Mapping) or set(raw_descriptor) != {
+            "upload_alias", "semantic", "subject_type", "composition",
+            "supported_ratios", "risk_labels",
+        }:
+            raise MaterialError("material_descriptor_invalid")
+        alias = raw_descriptor.get("upload_alias")
+        subject_type = raw_descriptor.get("subject_type")
+        ratios = raw_descriptor.get("supported_ratios")
+        risks = raw_descriptor.get("risk_labels")
+        if (
+            not isinstance(alias, str)
+            or alias not in expected_aliases
+            or alias in by_alias
+            or subject_type not in _MATERIAL_SUBJECT_TYPES
+            or not isinstance(ratios, list)
+            or not ratios
+            or len(ratios) > len(_MATERIAL_RATIOS)
+            or any(item not in _MATERIAL_RATIOS for item in ratios)
+            or len(set(ratios)) != len(ratios)
+            or not isinstance(risks, list)
+            or len(risks) > len(_MATERIAL_RISK_LABELS)
+            or any(item not in _MATERIAL_RISK_LABELS for item in risks)
+            or len(set(risks)) != len(risks)
+        ):
+            raise MaterialError("material_descriptor_invalid")
+        by_alias[alias] = {
+            "upload_alias": alias,
+            "semantic": _safe_descriptor_text(raw_descriptor.get("semantic"), max_chars=300),
+            "subject_type": subject_type,
+            "composition": _safe_descriptor_text(raw_descriptor.get("composition"), max_chars=160),
+            "supported_ratios": list(ratios),
+            "risk_labels": list(risks),
+        }
+    if set(by_alias) != set(expected_aliases):
+        raise MaterialError("material_descriptor_scope_invalid")
+    return {"descriptors": [by_alias[alias] for alias in expected_aliases]}
+
+
 class QwenMaterialReviewer(DeterministicVisualInspector):
     """Keep COS signing inside the Qwen-VL adapter and return only review JSON."""
 
@@ -1481,6 +1619,64 @@ class QwenMaterialReviewer(DeterministicVisualInspector):
         if not isinstance(review, Mapping):
             raise ValueError("material_review_response_invalid")
         normalized = validate_generated_material_review(review, required=False)
+        return _MaterialReviewMapping(normalized, request_id=request_id)
+
+    def describe_materials(
+        self,
+        images: list[Mapping[str, Any]],
+        *,
+        deadline_at: float,
+    ) -> Mapping[str, Any]:
+        describe_images = getattr(self.client, "describe_images", None)
+        if not callable(describe_images) or not isinstance(images, list) or not 1 <= len(images) <= 5:
+            raise ValueError("material_descriptor_client_invalid")
+        provider_images: list[dict[str, Any]] = []
+        aliases: list[str] = []
+        for image in images:
+            if not isinstance(image, Mapping) or set(image) != {
+                "upload_alias", "width", "height", "jpeg_bytes",
+            }:
+                raise ValueError("material_descriptor_request_invalid")
+            alias = image.get("upload_alias")
+            width = image.get("width")
+            height = image.get("height")
+            pixels = image.get("jpeg_bytes")
+            if (
+                not isinstance(alias, str)
+                or re.fullmatch(r"upload_[0-9]{2}", alias) is None
+                or alias in aliases
+                or isinstance(width, bool)
+                or not isinstance(width, int)
+                or not 1 <= width <= 512
+                or isinstance(height, bool)
+                or not isinstance(height, int)
+                or not 1 <= height <= 512
+                or not isinstance(pixels, bytes)
+                or not pixels
+                or len(pixels) > 256 * 1024
+            ):
+                raise ValueError("material_descriptor_request_invalid")
+            aliases.append(alias)
+            provider_images.append({
+                "upload_alias": alias,
+                "width": width,
+                "height": height,
+                "data_url": "data:image/jpeg;base64," + base64.b64encode(pixels).decode("ascii"),
+            })
+        result = describe_images(
+            {
+                "images": provider_images,
+                "output_contract": "material-descriptors-v1",
+            },
+            deadline_at=deadline_at,
+        )
+        request_id = getattr(result, "request_id", None)
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("material_descriptor_response_invalid")
+        normalized = _material_descriptor_payload(
+            result,
+            expected_aliases=tuple(aliases),
+        )
         return _MaterialReviewMapping(normalized, request_id=request_id)
 
 
@@ -1981,6 +2177,66 @@ def _repair_instruction_from_quality(
     return copy.deepcopy(dict(instruction))
 
 
+def _prepare_material_analysis_jpeg(
+    source: Path,
+    destination: Path,
+    *,
+    deadline_at: float,
+) -> dict[str, int]:
+    """Create a bounded, metadata-free JPEG for multimodal analysis."""
+
+    source = Path(source).resolve(strict=True)
+    destination = Path(destination).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    remaining = deadline_at - time.time()
+    if remaining <= 0:
+        raise TimeoutError("material_descriptor_deadline_exceeded")
+    temporary = destination.with_name(f".{destination.stem}.{os.getpid()}.tmp.jpg")
+    command = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-protocol_whitelist", "file,pipe",
+        "-i", os.fspath(source),
+        "-map_metadata", "-1",
+        "-frames:v", "1",
+        "-an",
+        "-vf", "scale=w='min(512,iw)':h='min(512,ih)':force_original_aspect_ratio=decrease",
+        "-c:v", "mjpeg",
+        "-q:v", "5",
+        "-pix_fmt", "yuvj420p",
+        os.fspath(temporary),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(1.0, min(30.0, remaining)),
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise MaterialError("material_descriptor_ffmpeg_missing") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("material_descriptor_ffmpeg_timeout") from exc
+    if completed.returncode != 0 or not temporary.is_file():
+        temporary.unlink(missing_ok=True)
+        raise MaterialError("material_descriptor_ffmpeg_failed")
+    try:
+        size_bytes = temporary.stat().st_size
+        if size_bytes < 4 or size_bytes > 256 * 1024:
+            raise MaterialError("material_descriptor_pixels_invalid")
+        image = _probe_image(
+            temporary,
+            timeout_seconds=max(1.0, min(10.0, deadline_at - time.time())),
+        )
+        if not 1 <= image.width <= 512 or not 1 <= image.height <= 512:
+            raise MaterialError("material_descriptor_pixels_invalid")
+        os.replace(temporary, destination)
+        return {"width": image.width, "height": image.height}
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class ProductionStageCoordinator:
     def __init__(
         self,
@@ -1996,6 +2252,7 @@ class ProductionStageCoordinator:
         owner_hmac_secret: bytes,
         renderer_root: Path,
         visual_inspector: Any | None = None,
+        material_analyzer: Any | None = None,
     ) -> None:
         self.store = store
         self.cos = cos
@@ -2008,6 +2265,7 @@ class ProductionStageCoordinator:
         self.owner_hmac_secret = owner_hmac_secret
         self.renderer_root = Path(renderer_root).resolve()
         self.visual_inspector = visual_inspector or DeterministicVisualInspector()
+        self.material_analyzer = material_analyzer or self.visual_inspector
 
     def probe_capability(self, capability: str, *, environment: str | None):
         return {"available": True, "environment": environment, "reason_code": "capability_ready"}
@@ -2083,6 +2341,222 @@ class ProductionStageCoordinator:
         if [item.get("material_id") for item in materials] != material_ids:
             raise ValueError("job_materials_authority_mismatch")
         return materials
+
+    def _frozen_bound_materials(self, job: Mapping[str, Any]) -> list[dict[str, Any]]:
+        root = self._root(str(job["job_id"]))
+        material_root = root / "materials"
+        material_root.mkdir(parents=True, exist_ok=True)
+        suffixes = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+        frozen: list[dict[str, Any]] = []
+        for index, material in enumerate(self._bound_materials(job), 1):
+            mime = str(material.get("mime_type"))
+            suffix = suffixes.get(mime)
+            if suffix is None:
+                raise ValueError("job_material_type_invalid")
+            destination = material_root / f"material-{index:02d}{suffix}"
+            if not destination.exists():
+                self.cos.download_file(material["cos_key"], destination)
+            digest = _sha(destination)
+            if (
+                destination.stat().st_size != int(material["size_bytes"])
+                or digest != material["sha256"]
+            ):
+                raise ValueError("job_material_content_mismatch")
+            try:
+                metadata = json.loads(material.get("metadata_json") or "{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError("job_material_metadata_invalid") from exc
+            if not isinstance(metadata, Mapping):
+                raise ValueError("job_material_metadata_invalid")
+            frozen.append({
+                "material_id": material["material_id"],
+                "cos_key": material["cos_key"],
+                "relative_path": destination.relative_to(root).as_posix(),
+                "mime_type": mime,
+                "size_bytes": destination.stat().st_size,
+                "sha256": digest,
+                "probe_metadata": dict(metadata),
+            })
+        return frozen
+
+    @staticmethod
+    def _validated_material_descriptor_document(
+        document: Any,
+        frozen: list[dict[str, Any]],
+        *,
+        input_sha256: str,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(document, Mapping) or set(document) != {
+            "contract", "version", "input_sha256", "items",
+        }:
+            raise MaterialError("material_descriptor_artifact_invalid")
+        items = document.get("items")
+        if (
+            document.get("contract") != "ai-edit-v3-material-descriptors-v1"
+            or document.get("version") != "1.0"
+            or document.get("input_sha256") != input_sha256
+            or not isinstance(items, list)
+            or len(items) != len(frozen)
+        ):
+            raise MaterialError("material_descriptor_artifact_invalid")
+        normalized: list[dict[str, Any]] = []
+        for index, (raw, trusted) in enumerate(zip(items, frozen, strict=True), 1):
+            if not isinstance(raw, Mapping) or set(raw) != {
+                "upload_alias", "material_id", "sha256", "semantic", "subject_type",
+                "composition", "supported_ratios", "risk_labels",
+            }:
+                raise MaterialError("material_descriptor_artifact_invalid")
+            alias = f"upload_{index:02d}"
+            if (
+                raw.get("upload_alias") != alias
+                or raw.get("material_id") != trusted["material_id"]
+                or raw.get("sha256") != trusted["sha256"]
+            ):
+                raise MaterialError("material_descriptor_artifact_identity_invalid")
+            safe = _material_descriptor_payload(
+                {"descriptors": [{
+                    key: copy.deepcopy(raw[key])
+                    for key in (
+                        "upload_alias", "semantic", "subject_type", "composition",
+                        "supported_ratios", "risk_labels",
+                    )
+                }]},
+                expected_aliases=(alias,),
+            )["descriptors"][0]
+            normalized.append({
+                "upload_alias": alias,
+                "material_id": trusted["material_id"],
+                "sha256": trusted["sha256"],
+                **safe,
+            })
+        return normalized
+
+    def _material_descriptors(
+        self,
+        job: Mapping[str, Any],
+        context: Any,
+    ) -> list[dict[str, Any]]:
+        job_id = str(job["job_id"])
+        root = self._root(job_id)
+        frozen = self._frozen_bound_materials(job)
+        artifact = root / "material-descriptors.json"
+        input_sha256 = _material_descriptor_input_sha256(
+            str(job.get("owner_id") or ""), frozen,
+        )
+        if artifact.exists():
+            return self._validated_material_descriptor_document(
+                _json(artifact), frozen, input_sha256=input_sha256,
+            )
+        if not frozen:
+            _write_json(artifact, {
+                "contract": "ai-edit-v3-material-descriptors-v1",
+                "version": "1.0",
+                "input_sha256": input_sha256,
+                "items": [],
+            })
+            return []
+        analyzer = getattr(self, "material_analyzer", None)
+        describe_materials = getattr(analyzer, "describe_materials", None)
+        if not callable(describe_materials):
+            raise MaterialError("material_descriptor_analyzer_unavailable")
+        deadline_at = getattr(context, "deadline_at", None)
+        if not isinstance(deadline_at, (int, float)):
+            raise MaterialError("material_descriptor_deadline_invalid")
+        items: list[dict[str, Any]] = []
+        analysis_root = root / "material-analysis"
+        for batch_start in range(0, len(frozen), 5):
+            batch = frozen[batch_start : batch_start + 5]
+            analysis_images: list[dict[str, Any]] = []
+            aliases: list[str] = []
+            for offset, trusted in enumerate(batch):
+                item_index = batch_start + offset + 1
+                alias = f"upload_{item_index:02d}"
+                source = root / trusted["relative_path"]
+                analysis_path = analysis_root / f"{alias}.jpg"
+                dimensions = _prepare_material_analysis_jpeg(
+                    source,
+                    analysis_path,
+                    deadline_at=float(deadline_at),
+                )
+                aliases.append(alias)
+                analysis_images.append({
+                    "upload_alias": alias,
+                    "width": dimensions["width"],
+                    "height": dimensions["height"],
+                    "jpeg_bytes": analysis_path.read_bytes(),
+                })
+
+            def call_analyzer() -> Mapping[str, Any]:
+                return describe_materials(
+                    analysis_images,
+                    deadline_at=float(deadline_at),
+                )
+
+            receipt_request = {
+                "aliases": aliases,
+                "source_sha256": [item["sha256"] for item in batch],
+                "analysis_sha256": [
+                    hashlib.sha256(item["jpeg_bytes"]).hexdigest()
+                    for item in analysis_images
+                ],
+                "dimensions": [
+                    [item["width"], item["height"]]
+                    for item in analysis_images
+                ],
+            }
+            real_receipts = (
+                hasattr(context, "claim")
+                and hasattr(context, "stage_attempt_id")
+                and callable(getattr(self.store, "record_provider_intent", None))
+                and callable(getattr(self.store, "get_provider_task_for_claim", None))
+                and callable(getattr(self.store, "claim_provider_submission", None))
+                and callable(getattr(self.store, "bind_provider_result", None))
+            )
+            if real_receipts:
+                raw_descriptors = invoke_provider_once(
+                    store=self.store,
+                    context=context,
+                    stage="planning",
+                    provider="dashscope",
+                    capability="material_analysis",
+                    operation_key=(
+                        f"ai-edit-v3:{job_id}:material-analysis:{batch_start // 5}"
+                    ),
+                    request_sha256=hashlib.sha256(
+                        canonical_json(receipt_request)
+                    ).hexdigest(),
+                    call=call_analyzer,
+                    now_ms=round(time.time() * 1000),
+                )
+            else:
+                raw_descriptors = call_analyzer()
+            safe_batch = _material_descriptor_payload(
+                raw_descriptors,
+                expected_aliases=tuple(aliases),
+            )["descriptors"]
+            public_json = canonical_json({"descriptors": safe_batch}).decode("utf-8")
+            for trusted in batch:
+                for private_value in (
+                    trusted["material_id"], trusted["sha256"], trusted["cos_key"],
+                ):
+                    if isinstance(private_value, str) and private_value and private_value in public_json:
+                        raise MaterialError("material_descriptor_private_data_leak")
+            for trusted, safe in zip(batch, safe_batch, strict=True):
+                items.append({
+                    "material_id": trusted["material_id"],
+                    "sha256": trusted["sha256"],
+                    **safe,
+                })
+        document = {
+            "contract": "ai-edit-v3-material-descriptors-v1",
+            "version": "1.0",
+            "input_sha256": input_sha256,
+            "items": items,
+        }
+        _write_json(artifact, document)
+        return self._validated_material_descriptor_document(
+            document, frozen, input_sha256=input_sha256,
+        )
 
     def _render_attempt(self, job: Mapping[str, Any]) -> int:
         return int(job.get("repair_count", 0)) + 1
@@ -2165,16 +2639,15 @@ class ProductionStageCoordinator:
             )
             capabilities = self._capabilities(str(normalized["ratio"]))
             descriptors = []
-            for material in self._bound_materials(job):
-                metadata = json.loads(material.get("metadata_json") or "{}")
+            for material in self._material_descriptors(job, context):
                 descriptors.append(SimpleNamespace(
-                    material_id=material["material_id"],
-                    semantic=str(metadata.get("semantic") or "用户上传的产品、门店或招商素材"),
-                    subject_type=str(metadata.get("subject_type") or "user_provided"),
-                    composition=str(metadata.get("composition") or "original"),
-                    supported_ratios=("16:9", "9:16", "1:1"),
-                    risk_labels=(),
-                    sha256=material["sha256"],
+                    material_id=material["upload_alias"],
+                    upload_alias=material["upload_alias"],
+                    semantic=material["semantic"],
+                    subject_type=material["subject_type"],
+                    composition=material["composition"],
+                    supported_ratios=tuple(material["supported_ratios"]),
+                    risk_labels=tuple(material["risk_labels"]),
                 ))
             director_request = build_director_request(source, timeline, (), descriptors, capabilities)
             director_request["ratio"] = normalized["ratio"]
@@ -2224,7 +2697,7 @@ class ProductionStageCoordinator:
                     safe_materials.append({
                         key: copy.deepcopy(material[key])
                         for key in (
-                            "semantic", "subject_type", "composition",
+                            "upload_alias", "semantic", "subject_type", "composition",
                             "supported_ratios", "risk_labels",
                         )
                         if key in material
@@ -2251,30 +2724,43 @@ class ProductionStageCoordinator:
             save = getattr(self.store, "save_director_plan", None)
             if callable(save):
                 save(context.claim, context.stage_attempt_id, generated, now_ms=int(time.time() * 1000))
-            return StageOutcome(_NEXT[name], {"plan_sha256": digest, "provider_request_id": generated.provider_request_id}, input_sha)
+            return StageOutcome(
+                _NEXT[name],
+                {
+                    "plan_sha256": digest,
+                    "material_descriptors_sha256": _sha(root / "material-descriptors.json"),
+                    "provider_request_id": generated.provider_request_id,
+                },
+                input_sha,
+            )
         if name == "resolving_materials":
+            trusted_materials = self._frozen_bound_materials(job)
+            descriptor_path = root / "material-descriptors.json"
+            if not descriptor_path.exists():
+                raise MaterialError("material_descriptor_artifact_missing")
+            descriptors = self._validated_material_descriptor_document(
+                _json(descriptor_path),
+                trusted_materials,
+                input_sha256=_material_descriptor_input_sha256(
+                    str(job.get("owner_id") or ""), trusted_materials,
+                ),
+            )
             frozen = []
-            material_root = root / "materials"
-            material_root.mkdir(parents=True, exist_ok=True)
-            suffixes = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
-            for index, material in enumerate(self._bound_materials(job), 1):
-                mime = str(material["mime_type"])
-                suffix = suffixes.get(mime)
-                if suffix is None:
-                    raise ValueError("job_material_type_invalid")
-                destination = material_root / f"material-{index:02d}{suffix}"
-                if not destination.exists():
-                    self.cos.download_file(material["cos_key"], destination)
-                digest = _sha(destination)
-                if destination.stat().st_size != int(material["size_bytes"]) or digest != material["sha256"]:
-                    raise ValueError("job_material_content_mismatch")
+            for material, descriptor in zip(trusted_materials, descriptors, strict=True):
                 frozen.append({
                     "material_id": material["material_id"],
-                    "relative_path": destination.relative_to(root).as_posix(),
-                    "mime_type": mime,
-                    "size_bytes": destination.stat().st_size,
-                    "sha256": digest,
-                    "metadata": json.loads(material.get("metadata_json") or "{}"),
+                    "upload_alias": descriptor["upload_alias"],
+                    "relative_path": material["relative_path"],
+                    "mime_type": material["mime_type"],
+                    "size_bytes": material["size_bytes"],
+                    "sha256": material["sha256"],
+                    "metadata": {
+                        key: copy.deepcopy(descriptor[key])
+                        for key in (
+                            "semantic", "subject_type", "composition",
+                            "supported_ratios", "risk_labels",
+                        )
+                    },
                 })
             plan_path = root / "plan.json"
             plan = _json(plan_path) if plan_path.exists() else {}

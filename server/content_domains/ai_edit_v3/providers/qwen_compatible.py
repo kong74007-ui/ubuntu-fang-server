@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import socket
 import time
 import urllib.error
@@ -113,7 +115,7 @@ class DashScopeCompatibleQwenClient:
         )
         body = json.dumps(
             {
-                "model": os.environ.get("DASHSCOPE_QWEN_VL_MODEL", os.environ.get("DASHSCOPE_QWEN_MODEL", _MODEL)),
+                "model": os.environ.get("DASHSCOPE_QWEN_VL_MODEL") or _MODEL,
                 "messages": [
                     {
                         "role": "system",
@@ -155,6 +157,142 @@ class DashScopeCompatibleQwenClient:
         return ProviderResult(
             provider="dashscope",
             capability="material_review",
+            request_id=request_id,
+            payload={"content": content},
+            cost_units=tokens,
+            elapsed_ms=max(0, self._clock_ms() - started_at),
+        )
+
+    def describe_images(
+        self,
+        request: dict[str, Any],
+        *,
+        deadline_at: float,
+    ) -> ProviderResult:
+        """Describe up to five sanitized JPEGs using public upload aliases only."""
+
+        images = request.get("images") if isinstance(request, dict) else None
+        if (
+            not isinstance(images, list)
+            or not images
+            or len(images) > 5
+            or request.get("output_contract") != "material-descriptors-v1"
+        ):
+            raise ProviderError("dashscope_material_descriptor_request_invalid")
+        prompt_images: list[dict[str, Any]] = []
+        image_parts: list[dict[str, Any]] = []
+        aliases: set[str] = set()
+        prefix = "data:image/jpeg;base64,"
+        for image in images:
+            if not isinstance(image, dict) or set(image) != {
+                "upload_alias", "width", "height", "data_url",
+            }:
+                raise ProviderError("dashscope_material_descriptor_request_invalid")
+            alias = image.get("upload_alias")
+            width = image.get("width")
+            height = image.get("height")
+            data_url = image.get("data_url")
+            if (
+                not isinstance(alias, str)
+                or re.fullmatch(r"upload_[0-9]{2}", alias) is None
+                or alias in aliases
+                or isinstance(width, bool)
+                or not isinstance(width, int)
+                or not 1 <= width <= 512
+                or isinstance(height, bool)
+                or not isinstance(height, int)
+                or not 1 <= height <= 512
+                or not isinstance(data_url, str)
+                or not data_url.startswith(prefix)
+            ):
+                raise ProviderError("dashscope_material_descriptor_request_invalid")
+            try:
+                pixels = base64.b64decode(data_url[len(prefix):], validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ProviderError("dashscope_material_descriptor_request_invalid") from exc
+            if not pixels.startswith(b"\xff\xd8") or len(pixels) > 256 * 1024:
+                raise ProviderError("dashscope_material_descriptor_request_invalid")
+            aliases.add(alias)
+            prompt_images.append({
+                "upload_alias": alias,
+                "width": width,
+                "height": height,
+                "image_order": len(prompt_images) + 1,
+            })
+            image_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+
+        remaining = int(deadline_at - time.time())
+        if remaining < 1:
+            raise TimeoutError("material_descriptor_deadline_exceeded")
+        api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            raise ProviderError("dashscope_not_configured")
+        prompt = json.dumps(
+            {
+                "images": prompt_images,
+                "task": (
+                    "Describe only the visible product, place, object, document, or graphic and its composition. "
+                    "Do not identify people or infer sensitive attributes. Use one concise Chinese semantic string."
+                ),
+                "output_contract": {
+                    "descriptors": [{
+                        "upload_alias": "upload_XX copied exactly",
+                        "semantic": "single safe plain-text string",
+                        "subject_type": "product|store|venue|document|object|environment|graphic|person|other",
+                        "composition": "short plain-text composition",
+                        "supported_ratios": ["16:9|9:16|1:1"],
+                        "risk_labels": ["person|face|text|logo|sensitive|uncertain"],
+                    }],
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        body = json.dumps(
+            {
+                "model": os.environ.get("DASHSCOPE_QWEN_VL_MODEL") or _MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Return only the exact JSON contract. Never echo image bytes, URLs, paths, "
+                            "credentials, hashes, or hidden identifiers."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}, *image_parts],
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        started_at = self._clock_ms()
+        try:
+            response = self._http_request(
+                "POST",
+                os.environ.get("DASHSCOPE_QWEN_COMPATIBLE_URL", _ENDPOINT),
+                {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                body,
+                min(self._timeout_seconds, remaining),
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            raise RetryableProviderError("dashscope_material_descriptor_unavailable") from exc
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            status = getattr(exc, "code", None)
+            if status is None or status in {408, 429} or int(status) >= 500:
+                raise RetryableProviderError("dashscope_material_descriptor_unavailable") from exc
+            raise ProviderError("dashscope_material_descriptor_rejected") from exc
+        request_id, content, tokens = self._normalize_response(response)
+        return ProviderResult(
+            provider="dashscope",
+            capability="material_analysis",
             request_id=request_id,
             payload={"content": content},
             cost_units=tokens,

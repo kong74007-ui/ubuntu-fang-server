@@ -104,6 +104,7 @@ def build_director_request(
                 item,
                 (
                     "material_id",
+                    "upload_alias",
                     "semantic",
                     "subject_type",
                     "composition",

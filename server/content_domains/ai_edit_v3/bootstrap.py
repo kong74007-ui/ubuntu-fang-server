@@ -411,6 +411,7 @@ def _build():
         owner_hmac_secret=secret,
         renderer_root=renderer_root,
         visual_inspector=material_reviewer,
+        material_analyzer=material_reviewer,
     )
     ledger = HttpPointsLedger()
     asset_db = Path(

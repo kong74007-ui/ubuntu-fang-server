@@ -106,7 +106,11 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             }
 
         client = DashScopeCompatibleQwenClient(http_request=recorded)
-        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+        with patch.dict(os.environ, {
+            "DASHSCOPE_API_KEY": "test-key",
+            "DASHSCOPE_QWEN_MODEL": "qwen3.7-max",
+        }, clear=False):
+            os.environ.pop("DASHSCOPE_QWEN_VL_MODEL", None)
             result = client.inspect_image(
                 {
                     "image_url": "https://private.example/image.png?q-signature=secret",
@@ -119,6 +123,7 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             )
 
         body = bodies[0]
+        self.assertEqual("qwen3.7-max-2026-06-08", body["model"])
         self.assertEqual({"type": "json_object"}, body["response_format"])
         content = body["messages"][1]["content"]
         self.assertEqual("image_url", content[1]["type"])
@@ -127,6 +132,124 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             content[1]["image_url"]["url"],
         )
         self.assertNotIn("https://", json.dumps(result.payload, ensure_ascii=False))
+
+    def test_material_descriptor_batch_uses_only_aliases_pixels_and_inline_jpegs(self):
+        bodies = []
+
+        def recorded(method, url, headers, body, timeout):
+            bodies.append(json.loads(body.decode("utf-8")))
+            return {
+                "id": "material-descriptor-1",
+                "choices": [{"message": {"content": json.dumps({
+                    "descriptors": [
+                        {
+                            "upload_alias": "upload_01",
+                            "semantic": "绿色产品包装正面实拍",
+                            "subject_type": "product",
+                            "composition": "centered close-up",
+                            "supported_ratios": ["9:16", "1:1"],
+                            "risk_labels": [],
+                        },
+                        {
+                            "upload_alias": "upload_02",
+                            "semantic": "蓝色门店前台实拍",
+                            "subject_type": "store",
+                            "composition": "wide interior",
+                            "supported_ratios": ["16:9", "9:16"],
+                            "risk_labels": [],
+                        },
+                    ],
+                }, ensure_ascii=False)}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(http_request=recorded)
+        with patch.dict(os.environ, {
+            "DASHSCOPE_API_KEY": "test-key",
+            "DASHSCOPE_QWEN_MODEL": "qwen3.7-max",
+        }, clear=False):
+            os.environ.pop("DASHSCOPE_QWEN_VL_MODEL", None)
+            result = client.describe_images(
+                {
+                    "images": [
+                        {
+                            "upload_alias": "upload_01",
+                            "width": 512,
+                            "height": 384,
+                            "data_url": "data:image/jpeg;base64,/9j/AA==",
+                        },
+                        {
+                            "upload_alias": "upload_02",
+                            "width": 384,
+                            "height": 512,
+                            "data_url": "data:image/jpeg;base64,/9j/BB==",
+                        },
+                    ],
+                    "output_contract": "material-descriptors-v1",
+                },
+                deadline_at=10_000_000_000.0,
+            )
+
+        body = bodies[0]
+        self.assertEqual("qwen3.7-max-2026-06-08", body["model"])
+        self.assertEqual({"type": "json_object"}, body["response_format"])
+        content = body["messages"][1]["content"]
+        self.assertEqual(["text", "image_url", "image_url"], [item["type"] for item in content])
+        prompt = content[0]["text"]
+        self.assertIn("upload_01", prompt)
+        self.assertIn("upload_02", prompt)
+        self.assertNotIn("data:image", prompt)
+        self.assertNotIn("material-real", prompt)
+        self.assertEqual(
+            ["data:image/jpeg;base64,/9j/AA==", "data:image/jpeg;base64,/9j/BB=="],
+            [item["image_url"]["url"] for item in content[1:]],
+        )
+        self.assertNotIn("data:image", json.dumps(result.payload, ensure_ascii=False))
+
+    def test_vision_calls_honor_only_explicit_vl_model_override(self):
+        bodies = []
+
+        def recorded(method, url, headers, body, timeout):
+            bodies.append(json.loads(body.decode("utf-8")))
+            return {
+                "id": "vision-model-override",
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(http_request=recorded)
+        with patch.dict(os.environ, {
+            "DASHSCOPE_API_KEY": "test-key",
+            "DASHSCOPE_QWEN_MODEL": "generic-text-model",
+            "DASHSCOPE_QWEN_VL_MODEL": "explicit-vl-model",
+        }, clear=False):
+            client.inspect_image(
+                {
+                    "image_url": "https://private.example/image.png",
+                    "semantic": "product image",
+                    "forbidden_subjects": [],
+                    "source_metadata": {},
+                    "output_contract": "material-review-v1",
+                },
+                deadline_at=10_000_000_000.0,
+            )
+            client.describe_images(
+                {
+                    "images": [{
+                        "upload_alias": "upload_01",
+                        "width": 32,
+                        "height": 32,
+                        "data_url": "data:image/jpeg;base64,/9j/AA==",
+                    }],
+                    "output_contract": "material-descriptors-v1",
+                },
+                deadline_at=10_000_000_000.0,
+            )
+
+        self.assertEqual(
+            ["explicit-vl-model", "explicit-vl-model"],
+            [body["model"] for body in bodies],
+        )
 
 
 if __name__ == "__main__":

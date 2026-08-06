@@ -27,12 +27,13 @@ class MaterialError(ValueError):
 @dataclass(frozen=True)
 class MaterialDescriptor:
     material_id: str
-    semantic: tuple[str, ...]
+    semantic: str
     subject_type: str
     composition: str
     supported_ratios: tuple[str, ...]
     risk_labels: tuple[str, ...]
     sha256: str
+    upload_alias: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,19 +106,24 @@ def bind_scene_materials(
             layout_slot_id = raw_slot.get("layout_slot_id", request_id)
             if not isinstance(layout_slot_id, str) or not layout_slot_id:
                 raise MaterialError("scene_material_slot_invalid")
-            selected = by_id.get(request_id)
-            if selected is None:
-                ranked: list[tuple[float, str, dict[str, Any]]] = []
-                for material_id, candidate in by_id.items():
-                    metadata = candidate["metadata"]
-                    candidate_semantic = _semantic_tokens(metadata.get("semantic", ()))
-                    overlap = semantic & candidate_semantic
-                    previous = reused_semantics.get(material_id)
-                    if not overlap or (previous is not None and previous != semantic):
-                        continue
-                    ranked.append((-(len(overlap) / max(1, len(semantic))), material_id, candidate))
-                if ranked:
-                    selected = sorted(ranked, key=lambda row: (row[0], row[1]))[0][2]
+            selected = None
+            ranked: list[tuple[str, dict[str, Any]]] = []
+            requested_text = _canonical_semantic_text(raw_slot.get("semantic"))
+            for material_id, candidate in by_id.items():
+                metadata = candidate["metadata"]
+                candidate_text = _canonical_semantic_text(metadata.get("semantic", ()))
+                previous = reused_semantics.get(material_id)
+                if (
+                    candidate_text != requested_text
+                    or (previous is not None and previous != semantic)
+                ):
+                    continue
+                stable_alias = candidate.get("upload_alias")
+                if not isinstance(stable_alias, str) or not stable_alias:
+                    stable_alias = material_id
+                ranked.append((stable_alias, candidate))
+            if ranked:
+                selected = sorted(ranked, key=lambda row: row[0])[0][1]
             if selected is not None:
                 material_id = str(selected["material_id"])
                 previous = reused_semantics.get(material_id)
@@ -235,6 +241,16 @@ def _semantic_tokens(value: Any) -> frozenset[str]:
     return frozenset(tokens)
 
 
+def _canonical_semantic_text(value: Any) -> str:
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    if not values or any(not isinstance(item, str) for item in values):
+        raise MaterialError("material_semantic_invalid")
+    normalized = " ".join(" ".join(item.split()) for item in values if item.strip())
+    if not normalized:
+        raise MaterialError("material_semantic_invalid")
+    return normalized.casefold()
+
+
 def _slot_values(slot: Mapping[str, Any]) -> tuple[str, frozenset[str], bool, str, str]:
     slot_id = slot.get("id")
     if not isinstance(slot_id, str) or not slot_id:
@@ -335,23 +351,33 @@ def _provider_descriptors(result: Any) -> Sequence[Mapping[str, Any]]:
     return descriptors
 
 
-def _normalize_descriptor(raw: Mapping[str, Any]) -> MaterialDescriptor:
+def _normalize_descriptor(
+    raw: Mapping[str, Any],
+    *,
+    upload_alias: str,
+    material_id: str,
+    sha256: str,
+) -> MaterialDescriptor:
     try:
-        material_id = raw["material_id"]
+        returned_alias = raw["upload_alias"]
         semantic = raw["semantic"]
         subject_type = raw["subject_type"]
         composition = raw["composition"]
         ratios = raw["supported_ratios"]
         risks = raw["risk_labels"]
-        sha256 = raw["sha256"]
     except (KeyError, TypeError) as exc:
         raise MaterialError("material_analysis_invalid") from exc
     if (
-        not isinstance(material_id, str)
+        set(raw) != {
+            "upload_alias", "semantic", "subject_type", "composition",
+            "supported_ratios", "risk_labels",
+        }
+        or returned_alias != upload_alias
+        or not isinstance(material_id, str)
         or not material_id
-        or not isinstance(semantic, (list, tuple))
-        or not semantic
-        or any(not isinstance(item, str) or not item for item in semantic)
+        or not isinstance(semantic, str)
+        or not semantic.strip()
+        or len(semantic) > 300
         or not isinstance(subject_type, str)
         or not subject_type
         or not isinstance(composition, str)
@@ -366,12 +392,13 @@ def _normalize_descriptor(raw: Mapping[str, Any]) -> MaterialDescriptor:
         raise MaterialError("material_analysis_invalid")
     return MaterialDescriptor(
         material_id,
-        tuple(semantic),
+        " ".join(semantic.split()),
         subject_type,
         composition,
         tuple(ratios),
         tuple(risks),
         sha256,
+        upload_alias,
     )
 
 
@@ -423,27 +450,42 @@ def analyze_current_images(
     descriptors: list[MaterialDescriptor] = []
     for batch_index in range(0, len(material_ids), 5):
         batch_ids = material_ids[batch_index : batch_index + 5]
+        batch_aliases = [
+            f"upload_{material_ids.index(asset_id) + 1:02d}"
+            for asset_id in batch_ids
+        ]
         request_images = [
             {
-                "material_id": asset_id,
+                "upload_alias": alias,
                 "thumbnail": by_id[asset_id]["thumbnail"],
                 "thumbnail_width": by_id[asset_id]["thumbnail_width"],
                 "thumbnail_height": by_id[asset_id]["thumbnail_height"],
-                "sha256": by_id[asset_id]["sha256"],
             }
-            for asset_id in batch_ids
+            for asset_id, alias in zip(batch_ids, batch_aliases, strict=True)
         ]
         result = provider.analyze_images(
             {"images": request_images, "output": "material-descriptor-v1"},
             idempotency_key=f"ai-edit-v3:{context.job_id}:materials:{batch_index // 5}",
             deadline_at=context.deadline_at,
         )
-        normalized = tuple(_normalize_descriptor(item) for item in _provider_descriptors(result))
-        if {item.material_id for item in normalized} != set(batch_ids):
+        raw_descriptors = _provider_descriptors(result)
+        by_alias = {
+            item.get("upload_alias"): item
+            for item in raw_descriptors
+            if isinstance(item, Mapping)
+            and isinstance(item.get("upload_alias"), str)
+        }
+        if set(by_alias) != set(batch_aliases) or len(by_alias) != len(raw_descriptors):
             raise MaterialError("material_analysis_scope_invalid")
-        for item in normalized:
-            if item.sha256 != by_id[item.material_id]["sha256"]:
-                raise MaterialError("material_analysis_identity_invalid")
+        normalized = tuple(
+            _normalize_descriptor(
+                by_alias[alias],
+                upload_alias=alias,
+                material_id=asset_id,
+                sha256=by_id[asset_id]["sha256"],
+            )
+            for asset_id, alias in zip(batch_ids, batch_aliases, strict=True)
+        )
         descriptors.extend(normalized)
     return tuple(sorted(descriptors, key=lambda item: material_ids.index(item.material_id)))
 
