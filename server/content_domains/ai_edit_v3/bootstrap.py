@@ -495,6 +495,7 @@ def _build():
         material_analyzer=material_reviewer,
         source_catalog=catalog,
         tts=tts,
+        auto_repair_enabled=config.auto_repair_enabled,
     )
     ledger = HttpPointsLedger()
     asset_db = Path(

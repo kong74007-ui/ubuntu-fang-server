@@ -443,6 +443,148 @@ class V3StateCASTests(unittest.TestCase):
             self.assertNotEqual(inputs[0][0], inputs[1][0])
         self.assertEqual(self.row("job-one-repair")["repair_count"], 1)
 
+    def test_failed_first_quality_routes_to_full_refund_without_repair_generation(self):
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 101.0
+
+        class Supervisor:
+            def terminate_job(self, job_id):
+                raise AssertionError(f"bounded QC failure must not terminate {job_id}")
+
+        calls = {
+            "compiling": 0,
+            "rendering": 0,
+            "quality_checking": 0,
+            "repair_planning": 0,
+            "staging_delivery": 0,
+        }
+        call_order = []
+
+        def handler(job, context):
+            context.assert_active()
+            state = job["state"]
+            calls[state] += 1
+            call_order.append(state)
+            if state in {"repair_planning", "staging_delivery"}:
+                raise AssertionError(f"disabled repair path invoked {state}")
+            next_state = {
+                "compiling": "rendering",
+                "rendering": "quality_checking",
+                "quality_checking": "failed",
+            }[state]
+            return StageOutcome(
+                next_state,
+                {"stage": state, "repair_generation": job["repair_count"]},
+                job["stage_input_sha256"],
+            )
+
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=Supervisor(),
+            stage_handlers={state: handler for state in calls},
+        )
+        job_id = "job-quality-fail-no-auto-repair"
+        self.seed_job(job_id, "compiling")
+        self.store._write(
+            lambda connection: connection.execute(
+                """UPDATE edit_v3_jobs SET confirmed_preheld_total=1
+                   WHERE job_id=?""",
+                (job_id,),
+            )
+        )
+
+        routed_states = []
+        for index in range(3):
+            state = self.row(job_id)["state"]
+            claim = self.store.claim_job(
+                job_id,
+                f"worker-quality-route-{index}",
+                30,
+                101_000,
+                expected_states={state},
+            )
+            routed_states.append(run_job(claim, runtime, db_path=self.db).state)
+
+        self.assertEqual(
+            ["rendering", "quality_checking", "failed"], routed_states
+        )
+        refund_claim = self.store.claim_job(
+            job_id,
+            "worker-quality-refund",
+            30,
+            101_000,
+            expected_states={"failed"},
+        )
+        refund = run_job(refund_claim, runtime, db_path=self.db)
+
+        job = self.row(job_id)
+        attempts = self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT stage,attempt,status FROM edit_v3_stage_attempts
+                       WHERE job_id=? ORDER BY started_at,id""",
+                    (job_id,),
+                )
+            )
+        )
+        refund_intents = self.store._read(
+            lambda connection: tuple(
+                dict(row)
+                for row in connection.execute(
+                    """SELECT operation,status,request_amount FROM edit_v3_billing_intents
+                       WHERE job_id=? ORDER BY id""",
+                    (job_id,),
+                )
+            )
+        )
+
+        self.assertEqual("refund_pending", refund.state)
+        self.assertEqual("refund_pending", job["state"])
+        self.assertEqual(0, job["repair_count"])
+        self.assertIsNone(job["repair_budget_granted_at"])
+        self.assertEqual(
+            {
+                "compiling": 1,
+                "rendering": 1,
+                "quality_checking": 1,
+                "repair_planning": 0,
+                "staging_delivery": 0,
+            },
+            calls,
+        )
+        self.assertEqual(
+            ["compiling", "rendering", "quality_checking"],
+            call_order,
+        )
+        self.assertEqual(
+            {"compiling", "rendering", "quality_checking"},
+            {item["stage"] for item in attempts},
+        )
+        self.assertTrue(all(item["attempt"] == 1 for item in attempts))
+        self.assertTrue(all(item["status"] == "completed" for item in attempts))
+        self.assertEqual(
+            [{
+                "operation": "refund_full",
+                "status": "pending",
+                "request_amount": 1,
+            }],
+            list(refund_intents),
+        )
+
     def test_no_work_stage_records_skipped_before_transition(self):
         try:
             from server.content_domains.ai_edit_v3.pipeline import run_job

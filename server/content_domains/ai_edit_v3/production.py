@@ -2347,7 +2347,10 @@ class ProductionStageCoordinator:
         material_analyzer: Any | None = None,
         source_catalog: Any | None = None,
         tts: Any | None = None,
+        auto_repair_enabled: bool = True,
     ) -> None:
+        if not isinstance(auto_repair_enabled, bool):
+            raise ValueError("auto_repair_enabled_invalid")
         self.store = store
         self.cos = cos
         self.asr = asr
@@ -2362,6 +2365,7 @@ class ProductionStageCoordinator:
         self.material_analyzer = material_analyzer or self.visual_inspector
         self.source_catalog = source_catalog
         self.tts = tts
+        self.auto_repair_enabled = auto_repair_enabled
 
     def probe_capability(self, capability: str, *, environment: str | None):
         return {"available": True, "environment": environment, "reason_code": "capability_ready"}
@@ -3570,7 +3574,11 @@ class ProductionStageCoordinator:
             digest = _write_json(root / f"quality-{attempt}.json", payload)
             if quality.passed:
                 next_state = "staging_delivery"
-            elif int(job.get("repair_count", 0)) == 0 and quality.can_repair:
+            elif (
+                int(job.get("repair_count", 0)) == 0
+                and quality.can_repair
+                and self.auto_repair_enabled
+            ):
                 next_state = "repair_planning"
             else:
                 next_state = "failed"

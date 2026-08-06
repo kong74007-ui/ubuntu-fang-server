@@ -1372,6 +1372,134 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             hashlib.sha256(production.canonical_json(legacy_payload)).hexdigest(),
         )
 
+    def test_quality_auto_repair_gate_routes_pass_and_preserves_failed_first_render(self):
+        from server.content_domains.ai_edit_v3.media import FinalMux
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        class Cos:
+            def __init__(self):
+                self.puts = []
+
+            def put_file(self, *args, **kwargs):
+                self.puts.append((args, kwargs))
+
+        def run(auto_repair_enabled, *, quality_passed=False):
+            with tempfile.TemporaryDirectory() as directory:
+                coordinator = object.__new__(ProductionStageCoordinator)
+                coordinator.store = type("Store", (), {"environment": "test"})()
+                coordinator.work_root = Path(directory)
+                coordinator.visual_inspector = object()
+                coordinator.auto_repair_enabled = auto_repair_enabled
+                coordinator.cos = Cos()
+                root = coordinator._root("job-quality-gate")
+                output = root / "render-1" / "output"
+                output.mkdir(parents=True)
+                (root / "render-1" / "input").mkdir()
+                (root / "render-1.json").write_text(json.dumps({
+                    "output_root": "render-1/output",
+                    "silent_video_relpath": "silent.mp4",
+                    "report_relpath": "report.json",
+                    "snapshots": ["snapshots/frame-1-at-0.0s.png"],
+                }), encoding="utf-8")
+                (root / "master.json").write_text(json.dumps({
+                    "relative_path": "media/master.wav",
+                    "duration_ms": 6000,
+                }), encoding="utf-8")
+                manifest = {
+                    "duration_ms": 6000,
+                    "assets": [],
+                    "compositions": [{
+                        "id": "composition_001",
+                        "scene_id": "scene_01",
+                        "start_ms": 0,
+                        "end_ms": 6000,
+                        "layout_id": "product_hero",
+                        "asset_ids": [],
+                    }],
+                    "captions": [],
+                }
+                (root / "render-1" / "input" / "render-manifest.json").write_text(
+                    json.dumps(manifest), encoding="utf-8",
+                )
+                (output / "report.json").write_text("{}", encoding="utf-8")
+                (root / "materials.json").write_text('{"items":[]}', encoding="utf-8")
+
+                mux = FinalMux(
+                    relative_path="final-1.mp4",
+                    sha256="a" * 64,
+                    duration_ms=6000,
+                    video_codec="h264",
+                    audio_codec="aac",
+                    width=1080,
+                    height=1920,
+                    fps_num=30,
+                    fps_den=1,
+                    sample_rate=48000,
+                    channels=2,
+                    audit={},
+                )
+                quality = SimpleNamespace(
+                    passed=quality_passed,
+                    can_repair=not quality_passed,
+                    repairable_ids=(
+                        () if quality_passed else ("material_semantic_identity",)
+                    ),
+                    repair_directives=(
+                        () if quality_passed else ({
+                            "scene_id": "scene_01",
+                            "reason_code": "material_semantic_identity",
+                            "allowed_action": "speaker_fallback",
+                        },)
+                    ),
+                    report_sha256="b" * 64,
+                )
+
+                def mux_first_render(*_args, **_kwargs):
+                    (root / "final-1.mp4").write_bytes(b"first-render")
+                    return mux
+
+                with patch(
+                    "server.content_domains.ai_edit_v3.production.mux_master_audio",
+                    side_effect=mux_first_render,
+                ), patch(
+                    "server.content_domains.ai_edit_v3.production._verified_snapshot_inputs",
+                    return_value=(),
+                ), patch(
+                    "server.content_domains.ai_edit_v3.production.run_blocking_quality",
+                    return_value=quality,
+                ):
+                    outcome = coordinator._stage(
+                        "quality_checking",
+                        {
+                            "job_id": "job-quality-gate",
+                            "owner_id": "alice",
+                            "repair_count": 0,
+                            "stage_input_sha256": "0" * 64,
+                            "normalized_request_json": '{"input_type":"platform_talking_head"}',
+                        },
+                        SimpleNamespace(deadline_at=time.time() + 60),
+                    )
+
+                return {
+                    "next_state": outcome.next_state,
+                    "first_render": (root / "final-1.mp4").read_bytes(),
+                    "second_render_exists": (root / "final-2.mp4").exists(),
+                    "puts": list(coordinator.cos.puts),
+                }
+
+        enabled = run(True)
+        disabled = run(False)
+        passed_with_auto_repair_disabled = run(False, quality_passed=True)
+
+        self.assertEqual("repair_planning", enabled["next_state"])
+        self.assertEqual("failed", disabled["next_state"])
+        self.assertEqual(
+            "staging_delivery", passed_with_auto_repair_disabled["next_state"]
+        )
+        self.assertEqual(b"first-render", disabled["first_render"])
+        self.assertFalse(disabled["second_render_exists"])
+        self.assertEqual([], disabled["puts"])
+
     def test_material_descriptor_text_rejects_secret_prefixes_and_control_characters(self):
         from server.content_domains.ai_edit_v3 import production
 

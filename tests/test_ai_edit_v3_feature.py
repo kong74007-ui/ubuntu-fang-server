@@ -53,6 +53,7 @@ class V3EnvironmentManifestTests(unittest.TestCase):
         "AI_EDIT_V3_TEMP_BYTES_LIMIT": "10737418240",
         "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS": "120",
         "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "0",
+        "AI_EDIT_V3_AUTO_REPAIR": "1",
     }
     FORBIDDEN_V3_NAMES = {
         "AI_EDIT_V3_OWNER_HMAC_SECRET",
@@ -178,6 +179,7 @@ class FeatureConfigTests(unittest.TestCase):
         self.assertIsNone(config.db_path)
         self.assertEqual(config.director_timeout_seconds, 120)
         self.assertFalse(config.visual_program_enabled)
+        self.assertTrue(config.auto_repair_enabled)
         self.assertEqual(dict(os.environ), before)
         with self.assertRaises(FrozenInstanceError):
             config.enabled = True
@@ -191,6 +193,35 @@ class FeatureConfigTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 env["AI_EDIT_V3_VISUAL_PROGRAM_ENABLED"] = invalid
                 self.assert_reason("config_visual_program_invalid", env)
+
+    def test_auto_repair_is_frozen_default_on_and_may_be_disabled_only_in_test(self):
+        default = load_config({})
+        self.assertTrue(default.auto_repair_enabled)
+        with self.assertRaises(FrozenInstanceError):
+            default.auto_repair_enabled = False
+
+        test = self.enabled_env()
+        test["AI_EDIT_V3_AUTO_REPAIR"] = "0"
+        self.assertFalse(load_config(test).auto_repair_enabled)
+
+    def test_auto_repair_gate_is_strict_and_fails_closed_outside_test(self):
+        for invalid in ("", "true", " 1", "2"):
+            with self.subTest(invalid=invalid):
+                env = self.enabled_env()
+                env["AI_EDIT_V3_AUTO_REPAIR"] = invalid
+                self.assert_reason("config_auto_repair_invalid", env)
+
+        for environment in (None, "production"):
+            with self.subTest(environment=environment):
+                env = self.enabled_env()
+                if environment is None:
+                    del env["AI_EDIT_V3_ENVIRONMENT"]
+                    env["AI_EDIT_V3_ENABLED"] = "0"
+                else:
+                    env["AI_EDIT_V3_ENVIRONMENT"] = environment
+                    del env["AI_EDIT_V3_DEPLOYED_SHA"]
+                env["AI_EDIT_V3_AUTO_REPAIR"] = "0"
+                self.assert_reason("config_auto_repair_environment_forbidden", env)
 
     def test_director_timeout_is_part_of_the_frozen_config_contract(self):
         env = self.enabled_env()

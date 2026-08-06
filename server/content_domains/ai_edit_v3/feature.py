@@ -25,6 +25,7 @@ _CONFIG_NAMES = frozenset(
         "AI_EDIT_V3_TEMP_BYTES_LIMIT",
         "AI_EDIT_V3_DIRECTOR_TIMEOUT_SECONDS",
         "AI_EDIT_V3_VISUAL_PROGRAM_ENABLED",
+        "AI_EDIT_V3_AUTO_REPAIR",
         "AI_EDIT_V3_DEPLOYED_SHA",
     }
 )
@@ -99,6 +100,7 @@ class FeatureConfig:
     temp_bytes_limit: int | None
     director_timeout_seconds: int = 120
     visual_program_enabled: bool = False
+    auto_repair_enabled: bool = True
     deployed_sha: str | None = None
 
 
@@ -329,6 +331,15 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
     if environment is not None and environment not in {"test", "production"}:
         raise _error("config_environment_invalid", "AI_EDIT_V3_ENVIRONMENT")
 
+    auto_repair_text = source.get("AI_EDIT_V3_AUTO_REPAIR", "1")
+    if auto_repair_text not in {"0", "1"}:
+        raise _error("config_auto_repair_invalid", "AI_EDIT_V3_AUTO_REPAIR")
+    auto_repair_enabled = auto_repair_text == "1"
+    if not auto_repair_enabled and environment != "test":
+        raise _error(
+            "config_auto_repair_environment_forbidden", "AI_EDIT_V3_AUTO_REPAIR"
+        )
+
     deployed_sha = source.get("AI_EDIT_V3_DEPLOYED_SHA")
     if (
         deployed_sha is not None
@@ -399,5 +410,6 @@ def load_config(env: Mapping[str, str] | None = None) -> FeatureConfig:
         temp_bytes_limit=temp_bytes_limit,
         director_timeout_seconds=director_timeout_seconds,
         visual_program_enabled=visual_program_enabled,
+        auto_repair_enabled=auto_repair_enabled,
         deployed_sha=deployed_sha,
     )

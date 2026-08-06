@@ -188,6 +188,7 @@ class MaterialReviewerTests(unittest.TestCase):
             queue_capacity=1,
             temp_bytes_limit=1024,
             director_timeout_seconds=45,
+            auto_repair_enabled=False,
         )
 
         def coordinator(**kwargs):
@@ -227,6 +228,7 @@ class MaterialReviewerTests(unittest.TestCase):
         self.assertIsNotNone(reviewer, "bootstrap must explicitly inject the reviewer")
         self.assertIs(reviewer, captured.get("material_analyzer"))
         self.assertIs(cos, reviewer.cos)
+        self.assertIs(False, captured.get("auto_repair_enabled"))
         self.assertTrue(callable(getattr(reviewer, "inspect_material", None)))
 
     def test_qwen_reviewer_presigns_private_key_only_inside_adapter(self):
