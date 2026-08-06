@@ -542,7 +542,7 @@ DIMENSIONS = tuple(DIMENSION_ANCHORS)
 CRITICAL_DIMENSIONS = ("事实准确", "素材相关", "字幕可读", "声音质量")
 _CONTINUITY_REASONS = frozenset({"speaker_continuity", "step_sequence", "evidence_hold"})
 _REVIEWER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
-_CREATIVE_REGISTRY_SHA256 = "2023e55cc2092cdf29632ff2f5d05c1d0123d5d9c1950efcb00b46315e4de2ba"
+_CREATIVE_REGISTRY_SHA256 = "24e8fe3df5763b1e95e621afb766316fc32e90494f64ebfdcdb757b9e8a395d0"
 _CANONICAL_LAYOUT_VARIANTS = {
     "speaker_fullscreen": frozenset({"clean_center", "headline_top", "caption_sidebar"}),
     "speaker_left_info_right": frozenset({"card_stack", "number_focus", "image_evidence"}),
