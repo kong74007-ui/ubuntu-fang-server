@@ -103,7 +103,7 @@ function representativeOperations({transition, effectiveTransition, outgoing, in
     {kind: "from_to", target: outgoing, start_ms: startMs, duration_ms: durationMs, from: {opacity: 1}, to: {opacity: .7}, ease: "power2.out"},
     {kind: "from_to", target: incoming, start_ms: startMs, duration_ms: durationMs, from: {opacity: .7}, to: {opacity: 1}, ease: "power2.out"},
     {kind: "from_to", target: flashTarget, start_ms: startMs, duration_ms: Math.floor(durationMs / 2), from: {opacity: 0}, to: {opacity: 1}, ease: "power2.out"},
-    {kind: "from_to", target: flashTarget, start_ms: startMs + Math.floor(durationMs / 2), duration_ms: durationMs - Math.floor(durationMs / 2), from: {opacity: 1}, to: {opacity: 0}, ease: "power2.out", immediate_render: false},
+    {kind: "from_to", target: flashTarget, start_ms: startMs + Math.floor(durationMs / 2) + 1, duration_ms: durationMs - Math.floor(durationMs / 2) - 1, from: {opacity: 1}, to: {opacity: 0}, ease: "power2.out", immediate_render: false},
   ]);
   return null;
 }

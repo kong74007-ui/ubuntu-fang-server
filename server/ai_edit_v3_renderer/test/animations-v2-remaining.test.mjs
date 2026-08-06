@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import {mkdtemp, readFile} from "node:fs/promises";
+import {execFile} from "node:child_process";
+import {mkdir, mkdtemp, readFile, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {fileURLToPath} from "node:url";
+import {promisify} from "node:util";
 
 import {compileProjectV2} from "../src/compile-project-v2.mjs";
 import {applyAnimation} from "../src/registry/animations.mjs";
@@ -14,6 +17,8 @@ const REMAINING_PRESETS = [
   "stamp", "light_sweep", "highlight_draw", "split_screen", "subtitle_pop",
 ];
 const VALID_V2_FIXTURE = new URL("../../../tests/fixtures/ai_edit_v3/valid-render-manifest-v2.json", import.meta.url);
+const HYPERFRAMES_CLI = fileURLToPath(new URL("../node_modules/hyperframes/bin/hyperframes.mjs", import.meta.url));
+const execFileAsync = promisify(execFile);
 
 test("Task 8b RED E2E: adjacent shared primary binding becomes a real matched-card host transition", async () => {
   const manifest = await adjacentCardManifest();
@@ -213,6 +218,45 @@ test("Task 8b review RED: light flash pulses a real white layer inside the 80-24
   for (const selector of ["#composition_01_host", "#composition_02_host", "#transition_flash_global"]) {
     assert.match(index, new RegExp(`tl\\.fromTo\\(${JSON.stringify(selector)}`, "u"));
   }
+});
+
+test("light flash uses a strict one-millisecond seam at the real 18.938s boundary", () => {
+  const audit = applyTransition({
+    timeline: seekableTimeline(), transition: "light_flash",
+    outgoing: "#scene_previous", incoming: "#scene_current",
+    flashTarget: "#transition_flash_global", operationVersion: "2.0",
+    boundaryMs: 18938, sceneDurationMs: 20000, fps: 30,
+  });
+  const pulse = audit.operations.filter((operation) => operation.target === "#transition_flash_global");
+  assert.deepEqual(
+    pulse.map(({start_ms, duration_ms}) => ({start_ms, duration_ms})),
+    [{start_ms: 18818, duration_ms: 120}, {start_ms: 18939, duration_ms: 119}],
+  );
+  assert.ok(pulse[0].start_ms + pulse[0].duration_ms < pulse[1].start_ms);
+  assert.equal(pulse[1].start_ms + pulse[1].duration_ms, audit.endMs);
+});
+
+test("compiled light flash passes the real HyperFrames intra-flash overlap linter", async () => {
+  const manifest = await adjacentCardManifest();
+  manifest.duration_ms = 20000;
+  manifest.compositions[0] = {...manifest.compositions[0], end_ms: 18938};
+  manifest.compositions[1] = {
+    ...manifest.compositions[1], start_ms: 18938, end_ms: 20000, transition: "light_flash",
+  };
+  const outputRoot = path.join(await mkdtemp(path.join(os.tmpdir(), "v3-light-flash-strict-lint-")), "project");
+  await compileProjectV2({manifest, outputRoot});
+  await mkdir(path.join(outputRoot, "media"));
+  await writeFile(path.join(outputRoot, "media", "image.png"), "lint-only-fixture");
+  const {stdout} = await execFileAsync(
+    process.execPath, [HYPERFRAMES_CLI, "lint", outputRoot, "--json"],
+    {encoding: "utf8", timeout: 30000},
+  );
+  const lint = JSON.parse(stdout);
+  const overlaps = (lint.findings ?? lint.issues ?? []).filter(
+    (finding) => finding.code === "overlapping_gsap_tweens"
+      && finding.selector === "#transition_flash_global",
+  );
+  assert.deepEqual(overlaps, []);
 });
 
 test("Task 8b review RED: multiple flash boundaries reuse one global white layer without timeline overlap", async () => {
