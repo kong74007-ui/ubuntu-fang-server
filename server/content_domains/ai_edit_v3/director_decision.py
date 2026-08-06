@@ -1107,6 +1107,97 @@ def _without_visible_text_schema_regression(
     return guarded
 
 
+def _visible_text_target_context(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    candidates: Sequence[Any],
+) -> dict[str, Any]:
+    """Expose only safe identity and enum data for one visible-text repair."""
+
+    match = _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path)
+    if error.code != "director_decision_schema_invalid" or match is None:
+        raise error
+    scene_index = int(match.group("scene_index"))
+    field = match.group("field")
+    directives = value.get("scene_directives")
+    candidate_records = tuple(_record(item) for item in candidates)
+    if (
+        not isinstance(directives, list)
+        or scene_index >= len(directives)
+        or scene_index >= len(candidate_records)
+        or not isinstance(directives[scene_index], Mapping)
+    ):
+        raise error
+    directive = directives[scene_index]
+    candidate = candidate_records[scene_index]
+    scene_id = directive.get("scene_id")
+    caption_ids = candidate.get("caption_ids")
+    if (
+        not isinstance(scene_id, str)
+        or _SAFE_CODE.fullmatch(scene_id) is None
+        or scene_id != candidate.get("id")
+        or not isinstance(caption_ids, (list, tuple))
+        or not caption_ids
+        or any(
+            not isinstance(item, str)
+            or re.fullmatch(r"caption_[0-9]{3}", item) is None
+            for item in caption_ids
+        )
+    ):
+        raise error
+    overlays = directive.get("overlay_instances")
+    omission_allowed = isinstance(overlays, list) and not any(
+        isinstance(item, Mapping) and item.get("content_ref") == field
+        for item in overlays
+    )
+    return {
+        "scene_id": scene_id,
+        "field": field,
+        "allowed_text_kinds": ["verbatim", "compressed"],
+        "allowed_source_caption_ids": list(caption_ids),
+        "omission_allowed": omission_allowed,
+    }
+
+
+def _apply_scoped_visible_text_repair(
+    repair_value: Mapping[str, Any],
+    initial_value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    candidates: Sequence[Any],
+) -> dict[str, Any]:
+    """Take only one repaired visible-text field and freeze all other fields."""
+
+    try:
+        contracts.validate_director_decision_schema(repair_value)
+    except ContractError as exc:
+        raise DirectorDecisionError(exc.error_code, exc.field_path) from None
+    _reject_unsafe_text(repair_value)
+    target = _visible_text_target_context(initial_value, error, candidates)
+    match = _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path)
+    if match is None:
+        raise error
+    scene_index = int(match.group("scene_index"))
+    field = match.group("field")
+    repair_directives = repair_value.get("scene_directives")
+    if (
+        not isinstance(repair_directives, list)
+        or scene_index >= len(repair_directives)
+        or not isinstance(repair_directives[scene_index], Mapping)
+        or repair_directives[scene_index].get("scene_id") != target["scene_id"]
+    ):
+        raise error
+    repair_directive = repair_directives[scene_index]
+    recovered = copy.deepcopy(dict(initial_value))
+    recovered_directive = recovered["scene_directives"][scene_index]
+    if field in repair_directive:
+        recovered_directive[field] = copy.deepcopy(repair_directive[field])
+    elif target["omission_allowed"] is True:
+        recovered_directive.pop(field, None)
+    else:
+        raise error
+    return recovered
+
+
 def _repair_constraint_envelope(
     candidates: Sequence[Any], capabilities: Mapping[str, Any]
 ) -> dict[str, Any] | None:
@@ -1198,6 +1289,9 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
     attempts: list[dict[str, Any]] = []
     initial_speaker_candidate: tuple[dict[str, Any], str | None, str, str] | None = None
     initial_material_candidate: tuple[dict[str, Any], DirectorDecisionError] | None = None
+    initial_visible_text_candidate: tuple[
+        dict[str, Any], DirectorDecisionError
+    ] | None = None
     constraint_envelope = _repair_constraint_envelope(
         context.candidates, context.capabilities
     )
@@ -1224,6 +1318,16 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
                     context.capabilities,
                 )
                 repair_request["preserve_all_other_fields"] = True
+            elif initial_visible_text_candidate is not None:
+                initial_visible_value, initial_visible_error = (
+                    initial_visible_text_candidate
+                )
+                repair_request["target_context"] = _visible_text_target_context(
+                    initial_visible_value,
+                    initial_visible_error,
+                    context.candidates,
+                )
+                repair_request["preserve_all_other_fields"] = True
             request = {
                 "frozen_request": frozen_request,
                 "previous_response_sha256": previous_sha,
@@ -1242,6 +1346,7 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
             parsed_output = _provider_output(raw)
             value, request_id, raw_json, previous_sha = parsed_output
             response_sha256 = previous_sha
+            scoped_visible_text_repair = False
             if attempt == max_repairs and initial_material_candidate is not None:
                 initial_material_value, initial_material_error = (
                     initial_material_candidate
@@ -1252,12 +1357,33 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
                     initial_material_error,
                     context.capabilities,
                 )
-            normalized = _validate_generated_decision(
-                value,
-                candidates=context.candidates,
-                capabilities=context.capabilities,
-                allow_speaker_fallback=attempt == max_repairs,
-            )
+            elif (
+                attempt == max_repairs
+                and initial_visible_text_candidate is not None
+            ):
+                initial_visible_value, initial_visible_error = (
+                    initial_visible_text_candidate
+                )
+                value = _apply_scoped_visible_text_repair(
+                    value,
+                    initial_visible_value,
+                    initial_visible_error,
+                    context.candidates,
+                )
+                scoped_visible_text_repair = True
+            if scoped_visible_text_repair:
+                normalized = validate_director_decision(
+                    value,
+                    candidates=context.candidates,
+                    capabilities=context.capabilities,
+                )
+            else:
+                normalized = _validate_generated_decision(
+                    value,
+                    candidates=context.candidates,
+                    capabilities=context.capabilities,
+                    allow_speaker_fallback=attempt == max_repairs,
+                )
             normalized_json = contracts.canonical_json(normalized)
             candidate_json = contracts.canonical_json([_record(item) for item in context.candidates])
             return ValidatedDecision(
@@ -1271,6 +1397,16 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
             )
         except DirectorDecisionError as exc:
             if (
+                attempt == 0
+                and exc.code == "director_decision_schema_invalid"
+                and _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(exc.path) is not None
+                and parsed_output is not None
+            ):
+                initial_visible_text_candidate = (
+                    copy.deepcopy(parsed_output[0]),
+                    exc,
+                )
+            elif (
                 attempt == 0
                 and exc.code == "director_material_purpose_invalid"
                 and _MATERIAL_PURPOSE_PATH.fullmatch(exc.path) is not None

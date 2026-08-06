@@ -1465,6 +1465,346 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         )
         self.assertNotIn("model-authored copy", json.dumps(calls[1], ensure_ascii=False))
 
+    def test_visible_text_scoped_repair_discards_unrelated_material_purpose_change(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        initial["scene_directives"][0]["material_slot_directives"] = [{
+            "slot_id": "candidate_01_evidence",
+            "semantic": "abstract platform capability evidence",
+            "purpose": "evidence",
+            "priority": "optional",
+            "ratio": "auto",
+        }]
+        repair = copy.deepcopy(initial)
+        repair["creative_concept"] = "unrelated repair rewrite"
+        repair["scene_directives"][0]["highlight"] = {
+            "text_kind": "compressed",
+            "source_caption_ids": ["caption_001"],
+        }
+        repair["scene_directives"][0]["material_slot_directives"][0][
+            "purpose"
+        ] = "context"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-scoped-repair",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "visible_text_reference_object_or_omit",
+            calls[1]["repair"]["expected_constraint"],
+        )
+        self.assertTrue(calls[1]["repair"]["preserve_all_other_fields"])
+        self.assertEqual(
+            {
+                "scene_id": "candidate_01",
+                "field": "highlight",
+                "allowed_text_kinds": ["verbatim", "compressed"],
+                "allowed_source_caption_ids": ["caption_001"],
+                "omission_allowed": True,
+            },
+            calls[1]["repair"]["target_context"],
+        )
+        self.assertEqual(initial["creative_concept"], result.value["creative_concept"])
+        self.assertEqual(
+            "evidence",
+            result.value["scene_directives"][0]["material_slot_directives"][0][
+                "purpose"
+            ],
+        )
+        self.assertEqual(
+            repair["scene_directives"][0]["highlight"],
+            result.value["scene_directives"][0]["highlight"],
+        )
+        repair_raw_json = canonical_json(repair).decode("utf-8")
+        self.assertEqual("request-2", result.provider_request_id)
+        self.assertEqual(repair_raw_json, result.raw_output_json)
+        self.assertEqual(
+            hashlib.sha256(repair_raw_json.encode("utf-8")).hexdigest(),
+            result.raw_output_sha256,
+        )
+        self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
+        self.assertEqual(
+            result.value,
+            validate_director_decision(
+                result.value,
+                candidates=candidates,
+                capabilities=capabilities,
+            ),
+        )
+
+    def test_visible_text_scoped_repair_allows_safe_omission(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0].pop("highlight")
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-safe-omission",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertNotIn("highlight", result.value["scene_directives"][0])
+        self.assertTrue(calls[1]["repair"]["target_context"]["omission_allowed"])
+
+    def test_visible_text_scoped_repair_rejects_omission_with_dangling_overlay(self):
+        candidates, capabilities, initial = production_video_case()
+        first = initial["scene_directives"][0]
+        first["highlight"] = "model-authored copy"
+        first["overlay_instances"][0]["content_ref"] = "highlight"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0].pop("highlight")
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-unsafe-omission",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual(2, len(calls))
+        self.assertFalse(calls[1]["repair"]["target_context"]["omission_allowed"])
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual(
+            "director_decision_schema_invalid", raised.exception.detail_code
+        )
+        self.assertEqual("$.scene_directives[0].highlight", raised.exception.path)
+
+    def test_visible_text_scoped_repair_rejects_unsafe_discarded_field(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["highlight"] = {
+            "text_kind": "verbatim",
+            "source_caption_ids": ["caption_001"],
+        }
+        repair["creative_concept"] = "https://example.invalid/unsafe"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-unsafe-discarded-field",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual("director_decision_unsafe_value", raised.exception.detail_code)
+        self.assertEqual("$.creative_concept", raised.exception.path)
+
+    def test_visible_text_scoped_repair_rejects_caption_outside_target_scene(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["highlight"] = {
+            "text_kind": "verbatim",
+            "source_caption_ids": ["caption_002"],
+        }
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-wrong-caption",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual("director_text_reference_invalid", raised.exception.detail_code)
+        self.assertEqual("$.scene_directives[0].highlight", raised.exception.path)
+
+    def test_visible_text_scoped_repair_rejects_target_scene_identity_change(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["highlight"] = {
+            "text_kind": "verbatim",
+            "source_caption_ids": ["caption_001"],
+        }
+        repair["scene_directives"][0]["scene_id"] = "candidate_02"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-scene-identity-change",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual(
+            "director_decision_schema_invalid", raised.exception.detail_code
+        )
+        self.assertEqual("$.scene_directives[0].highlight", raised.exception.path)
+
+    def test_visible_text_scoped_repair_does_not_normalize_a_second_initial_defect(self):
+        for defect, expected_code, expected_path in (
+            (
+                lambda value: value["scene_directives"][0].__setitem__(
+                    "transition", "cross_fade"
+                ),
+                "director_transition_unknown",
+                "$.scene_directives[0].transition",
+            ),
+            (
+                lambda value: (
+                    value["scene_directives"][1].__setitem__(
+                        "layout_id", "quote_reversal"
+                    ),
+                    value["scene_directives"][1].__setitem__(
+                        "layout_variant", "diagonal_statement"
+                    ),
+                    value["scene_directives"][2].__setitem__(
+                        "layout_id", "quote_reversal"
+                    ),
+                    value["scene_directives"][2].__setitem__(
+                        "layout_variant", "diagonal_statement"
+                    ),
+                ),
+                "director_speaker_visibility_exceeded",
+                "$.scene_directives",
+            ),
+        ):
+            with self.subTest(expected_code=expected_code):
+                candidates, capabilities, initial = production_video_case()
+                initial["scene_directives"][0]["highlight"] = "model-authored copy"
+                defect(initial)
+                repair = copy.deepcopy(initial)
+                repair["scene_directives"][0]["highlight"] = {
+                    "text_kind": "verbatim",
+                    "source_caption_ids": ["caption_001"],
+                }
+                calls = []
+
+                class Provider:
+                    def generate_decision(self, request, **kwargs):
+                        calls.append(request)
+                        payload = initial if len(calls) == 1 else repair
+                        return ProviderResult(
+                            "dashscope",
+                            "director",
+                            f"request-{len(calls)}",
+                            {"content": json.dumps(payload, ensure_ascii=False)},
+                            {},
+                            1,
+                        )
+
+                context = SimpleNamespace(
+                    job_id=f"job-visible-text-second-defect-{expected_code}",
+                    request={"safe": True},
+                    candidates=candidates,
+                    capabilities=capabilities,
+                    deadline_at=123.0,
+                )
+                with self.assertRaises(DirectorDecisionError) as raised:
+                    generate_director_decision(context, Provider(), max_repairs=1)
+
+                self.assertEqual("director_decision_invalid", raised.exception.code)
+                self.assertEqual(expected_code, raised.exception.detail_code)
+                self.assertEqual(expected_path, raised.exception.path)
+
     def test_nested_visible_text_schema_repair_uses_the_same_safe_constraint(self):
         calls = []
 
