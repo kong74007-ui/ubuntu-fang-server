@@ -490,14 +490,6 @@ def validate_director_decision(
                     f"{path}.material_slot_directives",
                 )
     if (
-        source_has_speaker
-        and hidden_speaker_ms
-        > int(total_duration_ms * SPEAKER_VISIBILITY_POLICY["max_hidden_ratio"])
-    ):
-        raise DirectorDecisionError(
-            "director_speaker_visibility_exceeded", "$.scene_directives"
-        )
-    if (
         layout_requirements is not None
         and total_duration_ms >= SCENE_STRUCTURE_POLICY["min_duration_ms"]
         and len(signatures) >= SCENE_STRUCTURE_POLICY["min_scenes"]
@@ -515,6 +507,16 @@ def validate_director_decision(
                     "director_scene_structure_repetitive", "$.scene_directives"
                 )
             previous = signature
+    # Keep speaker visibility last: the single-call fallback is safe only when
+    # every schema, content, material and scene-structure rule already passed.
+    if (
+        source_has_speaker
+        and hidden_speaker_ms
+        > int(total_duration_ms * SPEAKER_VISIBILITY_POLICY["max_hidden_ratio"])
+    ):
+        raise DirectorDecisionError(
+            "director_speaker_visibility_exceeded", "$.scene_directives"
+        )
     contracts.canonical_json(normalized)
     return normalized
 
@@ -1346,6 +1348,54 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
             parsed_output = _provider_output(raw)
             value, request_id, raw_json, previous_sha = parsed_output
             response_sha256 = previous_sha
+            if attempt == 0:
+                try:
+                    validate_director_decision(
+                        value,
+                        candidates=context.candidates,
+                        capabilities=context.capabilities,
+                    )
+                except DirectorDecisionError as initial_error:
+                    if (
+                        initial_error.code == "director_speaker_visibility_exceeded"
+                        and initial_error.path == "$.scene_directives"
+                    ):
+                        try:
+                            # Strict validation reaches speaker visibility only after
+                            # schema, unsafe-text, transition and material checks pass.
+                            # Recheck unsafe text explicitly before the fallback so a
+                            # future validation-order change cannot weaken this guard.
+                            _reject_unsafe_text(value)
+                            normalized = _with_speaker_visibility_fallback(
+                                value,
+                                candidates=context.candidates,
+                                capabilities=context.capabilities,
+                            )
+                            normalized = validate_director_decision(
+                                normalized,
+                                candidates=context.candidates,
+                                capabilities=context.capabilities,
+                            )
+                        except DirectorDecisionError:
+                            # Preserve the existing bounded Qwen repair/fail-closed
+                            # path when the deterministic fallback cannot fully pass.
+                            pass
+                        else:
+                            normalized_json = contracts.canonical_json(normalized)
+                            candidate_json = contracts.canonical_json(
+                                [_record(item) for item in context.candidates]
+                            )
+                            return ValidatedDecision(
+                                normalized,
+                                request_id,
+                                raw_json,
+                                previous_sha,
+                                hashlib.sha256(normalized_json).hexdigest(),
+                                contracts.schema_sha256(
+                                    "director-decision-v1.schema.json"
+                                ),
+                                hashlib.sha256(candidate_json).hexdigest(),
+                            )
             scoped_visible_text_repair = False
             if attempt == max_repairs and initial_material_candidate is not None:
                 initial_material_value, initial_material_error = (

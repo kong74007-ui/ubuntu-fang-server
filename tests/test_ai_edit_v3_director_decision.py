@@ -99,7 +99,7 @@ def production_video_case(layouts=("speaker_fullscreen", "quote_reversal", "spea
             True,
             ((f"caption_{index:03d}", f"authoritative sentence {index}"),),
         )
-        for index in range(1, 4)
+        for index in range(1, len(layouts) + 1)
     )
     capabilities = copy.deepcopy(CAPABILITIES)
     capabilities["material_binding_mode"] = "semantic_slots_only"
@@ -927,7 +927,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         )
         self.assertEqual("speaker_fullscreen", result.value["scene_directives"][2]["layout_id"])
 
-    def test_second_visibility_failure_gets_minimal_deterministic_speaker_fallback(self):
+    def test_initial_visibility_gets_single_call_minimal_deterministic_speaker_fallback(self):
         candidates, capabilities, invalid = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
         )
@@ -936,6 +936,8 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         class Provider:
             def generate_decision(self, request, **kwargs):
                 calls.append(request)
+                if len(calls) != 1:
+                    raise AssertionError("speaker-only initial must not call Qwen repair")
                 return ProviderResult(
                     "dashscope",
                     "director",
@@ -954,7 +956,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         )
         result = generate_director_decision(context, Provider())
 
-        self.assertEqual(2, len(calls))
+        self.assertEqual(1, len(calls))
         self.assertEqual(
             ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
             [item["layout_id"] for item in result.value["scene_directives"]],
@@ -970,6 +972,23 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
             invalid["scene_directives"][1]["overlay_instances"],
             result.value["scene_directives"][1]["overlay_instances"],
         )
+        for initial_directive, recovered_directive in zip(
+            invalid["scene_directives"],
+            result.value["scene_directives"],
+            strict=True,
+        ):
+            for field in ("headline", "highlight", "material_slot_directives"):
+                self.assertEqual(
+                    initial_directive.get(field), recovered_directive.get(field)
+                )
+        initial_raw_json = canonical_json(invalid).decode("utf-8")
+        self.assertEqual("request-1", result.provider_request_id)
+        self.assertEqual(initial_raw_json, result.raw_output_json)
+        self.assertEqual(
+            hashlib.sha256(initial_raw_json.encode("utf-8")).hexdigest(),
+            result.raw_output_sha256,
+        )
+        self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
         timeline = {
             "duration_ms": 12000,
             "ratio": "9:16",
@@ -996,7 +1015,60 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
             [item["layout_id"] for item in compiled["scenes"]],
         )
 
-    def test_schema_broken_repair_recovers_strict_initial_visibility_candidate(self):
+    def test_scene_structure_error_precedes_speaker_fast_path(self):
+        layouts = (
+            "speaker_fullscreen",
+            "quote_reversal",
+            "quote_reversal",
+            "quote_reversal",
+        )
+        candidates, capabilities, initial = production_video_case(layouts)
+        candidates = (
+            replace(candidates[0], start_ms=0, end_ms=1000),
+            replace(candidates[1], start_ms=1000, end_ms=2000),
+            replace(candidates[2], start_ms=2000, end_ms=12000),
+            replace(candidates[3], start_ms=12000, end_ms=13000),
+        )
+        _, _, repaired = production_video_case(
+            (
+                "speaker_fullscreen",
+                "quote_reversal",
+                "speaker_fullscreen",
+                "quote_reversal",
+            )
+        )
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(copy.deepcopy(request))
+                payload = initial if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-structure-before-speaker-fast-path",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "director_scene_structure_repetitive",
+            calls[1]["repair"]["error_code"],
+        )
+        self.assertEqual("request-2", result.provider_request_id)
+
+    def test_speaker_only_initial_skips_schema_broken_qwen_repair(self):
         candidates, capabilities, initial = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
         )
@@ -1026,15 +1098,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         )
         result = generate_director_decision(context, Provider())
 
-        self.assertEqual(2, len(calls))
-        self.assertEqual(
-            "director_speaker_visibility_exceeded",
-            calls[1]["repair"]["error_code"],
-        )
-        self.assertEqual(
-            "speaker_hidden_duration_within_max_ratio",
-            calls[1]["repair"]["expected_constraint"],
-        )
+        self.assertEqual(1, len(calls))
         self.assertEqual(
             ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
             [item["layout_id"] for item in result.value["scene_directives"]],
@@ -1118,10 +1182,70 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         self.assertEqual("director_decision_schema_invalid", raised.exception.detail_code)
         self.assertEqual("$.scene_directives[0].highlight", raised.exception.path)
 
+    def test_schema_or_unsafe_initial_cannot_use_speaker_fast_path(self):
+        for defect, expected_code, expected_detail in (
+            (
+                lambda value: value["scene_directives"][0].__setitem__(
+                    "highlight", "model-authored copy"
+                ),
+                "director_decision_schema_invalid",
+                "director_speaker_visibility_exceeded",
+            ),
+            (
+                lambda value: value.__setitem__(
+                    "creative_concept", "https://example.invalid/director"
+                ),
+                "director_decision_unsafe_value",
+                None,
+            ),
+        ):
+            with self.subTest(expected_code=expected_code):
+                candidates, capabilities, initial = production_video_case(
+                    ("speaker_fullscreen", "quote_reversal", "quote_reversal")
+                )
+                defect(initial)
+                _, _, repaired = production_video_case()
+                calls = []
+
+                class Provider:
+                    def generate_decision(self, request, **kwargs):
+                        calls.append(copy.deepcopy(request))
+                        payload = initial if len(calls) == 1 else repaired
+                        return ProviderResult(
+                            "dashscope",
+                            "director",
+                            f"request-{len(calls)}",
+                            {"content": json.dumps(payload, ensure_ascii=False)},
+                            {},
+                            1,
+                        )
+
+                context = SimpleNamespace(
+                    job_id=f"job-no-fast-path-{expected_code}",
+                    request={"safe": True},
+                    candidates=candidates,
+                    capabilities=capabilities,
+                    deadline_at=123.0,
+                )
+                terminal_error = None
+                try:
+                    generate_director_decision(context, Provider())
+                except DirectorDecisionError as exc:
+                    terminal_error = exc
+
+                self.assertEqual(2, len(calls))
+                self.assertEqual(expected_code, calls[1]["repair"]["error_code"])
+                if expected_detail is None:
+                    self.assertIsNone(terminal_error)
+                else:
+                    self.assertIsNotNone(terminal_error)
+                    self.assertEqual(expected_detail, terminal_error.detail_code)
+
     def test_initial_recovery_does_not_mask_unsafe_repair(self):
         candidates, capabilities, initial = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
         )
+        initial["scene_directives"][0]["transition"] = "cross_fade"
         unsafe_repair = copy.deepcopy(initial)
         unsafe_repair["creative_concept"] = "https://example.invalid/director"
         calls = []
@@ -1158,6 +1282,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         candidates, capabilities, initial = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
         )
+        initial["scene_directives"][0]["transition"] = "cross_fade"
         _, _, broken_repair = production_video_case()
         broken_repair["scene_directives"][0]["highlight"] = "model-authored copy"
         broken_repair["creative_concept"] = "https://example.invalid/director"
@@ -1195,6 +1320,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         candidates, capabilities, initial = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
         )
+        initial["scene_directives"][0]["transition"] = "cross_fade"
         _, _, broken_repair = production_video_case()
         broken_repair["scene_directives"][0]["highlight"] = "model-authored copy"
         broken_repair["version"] = "2.0"
@@ -1348,9 +1474,11 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
                 "priority": "required",
                 "ratio": "auto",
             }]
+        calls = []
 
         class Provider:
             def generate_decision(self, request, **kwargs):
+                calls.append(request)
                 return ProviderResult(
                     "dashscope",
                     "director",
@@ -1370,6 +1498,7 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         with self.assertRaises(DirectorDecisionError) as raised:
             generate_director_decision(context, Provider())
 
+        self.assertEqual(2, len(calls))
         self.assertEqual("director_decision_invalid", raised.exception.code)
         self.assertEqual(
             "director_speaker_visibility_exceeded", raised.exception.detail_code
