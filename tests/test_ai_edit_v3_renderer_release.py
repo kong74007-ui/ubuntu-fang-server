@@ -23,6 +23,18 @@ class RendererReleaseTests(unittest.TestCase):
         self.assertIn("working-directory: server/ai_edit_v3_renderer", workflow)
         self.assertIn("npm run release:lock:check", workflow)
 
+    def test_ci_installs_renderer_runtime_before_python_compile_contracts(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        renderer_install = (
+            "working-directory: server/ai_edit_v3_renderer\n"
+            "        run: npm ci"
+        )
+        self.assertEqual(1, workflow.count(renderer_install))
+        self.assertLess(
+            workflow.index(renderer_install),
+            workflow.index("python -m unittest discover -s tests -v"),
+        )
+
     def test_committed_release_has_exact_pins_and_measured_fonts(self) -> None:
         report = verify_renderer_release(RELEASE)
         self.assertEqual(report.node_major, 22)
