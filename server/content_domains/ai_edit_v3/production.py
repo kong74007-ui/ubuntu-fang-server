@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from collections import Counter
 import hashlib
 import hmac
 import json
@@ -493,20 +494,37 @@ def _material_asset_hashes(
         raise ValueError("quality_material_evidence_invalid")
     if len(assets) > len(items):
         raise ValueError("quality_material_evidence_incomplete")
+
+    available_hashes: Counter[str] = Counter()
+    for material in items:
+        if not isinstance(material, Mapping):
+            raise ValueError("quality_material_evidence_invalid")
+        material_sha256 = material.get("sha256")
+        if (
+            not isinstance(material_sha256, str)
+            or _VARIATION_SHA256.fullmatch(material_sha256) is None
+        ):
+            raise ValueError("quality_material_evidence_invalid")
+        available_hashes[material_sha256] += 1
+
     evidence: dict[str, str] = {}
-    for asset, material in zip(assets, items):
-        if not isinstance(asset, Mapping) or not isinstance(material, Mapping):
+    for asset in assets:
+        if not isinstance(asset, Mapping):
             raise ValueError("quality_material_evidence_invalid")
         asset_id = asset.get("id")
         asset_sha256 = asset.get("sha256")
-        material_sha256 = material.get("sha256")
         if (
             not isinstance(asset_id, str)
             or not asset_id
             or not isinstance(asset_sha256, str)
-            or asset_sha256 != material_sha256
+            or _VARIATION_SHA256.fullmatch(asset_sha256) is None
         ):
+            raise ValueError("quality_material_evidence_invalid")
+        if asset_id in evidence:
+            raise ValueError("quality_material_evidence_invalid")
+        if available_hashes[asset_sha256] <= 0:
             raise ValueError("quality_material_evidence_mismatch")
+        available_hashes[asset_sha256] -= 1
         evidence[asset_id] = asset_sha256
     return evidence
 
@@ -658,22 +676,20 @@ def _layout_slot_bindings(
     """Emit deterministic V2 semantic bindings from the scene's frozen slots."""
 
     layout_id = str(scene.get("layout_id") or "")
-    consumed_slots = {
-        "speaker_fullscreen": frozenset({"evidence"}),
-        "speaker_left_info_right": frozenset({"evidence"}),
-        "speaker_right_evidence_left": frozenset({"evidence"}),
-        "material_fullscreen_speaker_pip": frozenset({"primary", "detail"}),
-        "product_hero": frozenset({"primary", "detail"}),
-        "editorial_collage": frozenset({"primary", "detail"}),
-        "comparison_split": frozenset({"primary", "detail"}),
-        "steps_stack": frozenset({"accent"}),
-        "number_proof": frozenset({"evidence"}),
-        "quote_reversal": frozenset({"evidence"}),
-        "method_timeline": frozenset({"accent"}),
-        "cta_offer": frozenset({"accent"}),
-    }.get(layout_id)
-    if consumed_slots is None:
+    try:
+        layout_policy = layout_requirements_for([layout_id])[layout_id]
+    except ValueError:
         return []
+    semantic_slots = layout_policy["semantic_slots"]
+    consumed_slots = frozenset(
+        str(slot["layout_slot_id"])
+        for slot in semantic_slots
+    )
+    required_slots = frozenset(
+        str(slot["layout_slot_id"])
+        for slot in semantic_slots
+        if slot["required_for_layout"] is True
+    )
     known = set(known_asset_ids)
     bindings: list[dict[str, str]] = []
     seen_slots: set[str] = set()
@@ -722,9 +738,7 @@ def _layout_slot_bindings(
             raise ValueError("scene_layout_binding_duplicate")
         seen_slots.add(slot_id)
         bindings.append({"slot_id": slot_id, "asset_id": asset_id})
-    if layout_id in {"product_hero", "material_fullscreen_speaker_pip", "editorial_collage", "comparison_split"} and "primary" not in seen_slots:
-        raise ValueError("scene_layout_required_slot_missing")
-    if layout_id in {"speaker_left_info_right", "speaker_right_evidence_left"} and "evidence" not in seen_slots:
+    if not required_slots.issubset(seen_slots):
         raise ValueError("scene_layout_required_slot_missing")
     slot_order = {"primary": 0, "detail": 1, "evidence": 2, "accent": 3, "steps": 4}
     return sorted(bindings, key=lambda binding: slot_order[binding["slot_id"]])
@@ -733,12 +747,10 @@ def _layout_slot_bindings(
 def _validate_layout_source_requirements(
     scene: Mapping[str, Any], *, source_video: Mapping[str, Any] | None
 ) -> None:
-    if str(scene.get("layout_id") or "") in {
-        "speaker_fullscreen",
-        "speaker_left_info_right",
-        "speaker_right_evidence_left",
-        "material_fullscreen_speaker_pip",
-    } and not isinstance(source_video, Mapping):
+    if (
+        layout_shows_speaker(str(scene.get("layout_id") or ""))
+        and not isinstance(source_video, Mapping)
+    ):
         raise ValueError("scene_layout_required_source_missing")
 
 
@@ -2030,7 +2042,7 @@ def _repair_render_manifest(
             or str(repaired["compositions"][0].get("scene_id") or "")
             in strict_targets.get("opening_hook_visual_consistency", frozenset())
         )
-        and not str(repaired["compositions"][0].get("layout_id", "")).startswith("speaker_")
+        and not layout_shows_speaker(repaired["compositions"][0].get("layout_id"))
     ):
         _apply_speaker_fallback(repaired["compositions"][0])
 
@@ -2042,7 +2054,7 @@ def _repair_render_manifest(
                 not in strict_targets.get("face_product_obstruction", frozenset())
             ):
                 continue
-            if composition.get("layout_id") in {"product_hero", "number_proof"}:
+            if not layout_shows_speaker(composition.get("layout_id")):
                 _apply_speaker_fallback(composition)
 
     if (

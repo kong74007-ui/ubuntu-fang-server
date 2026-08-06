@@ -1942,6 +1942,54 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             checks["material_semantic_identity"]["reason"],
         )
 
+    def test_visual_inspector_uses_frozen_required_material_layout_policy(self):
+        from server.content_domains.ai_edit_v3.director_layout_policy import (
+            required_material_layout_ids,
+        )
+        from server.content_domains.ai_edit_v3.production import (
+            DeterministicVisualInspector,
+            _LAYOUTS_REQUIRING_MATERIALS,
+        )
+
+        self.assertEqual(required_material_layout_ids(), _LAYOUTS_REQUIRING_MATERIALS)
+        cases = {
+            "speaker_left_info_right": "fail",
+            "number_proof": "pass",
+            "steps_stack": "pass",
+        }
+        for layout_id, expected in cases.items():
+            with self.subTest(layout_id=layout_id):
+                manifest = {
+                    "duration_ms": 4000,
+                    "source_video": {"path": "media/source.mp4", "silent": True},
+                    "assets": [],
+                    "compositions": [{
+                        "id": "composition_001",
+                        "scene_id": "scene_01",
+                        "start_ms": 0,
+                        "end_ms": 4000,
+                        "layout_id": layout_id,
+                        "asset_ids": [],
+                    }],
+                    "captions": [{
+                        "id": "caption_001",
+                        "start_ms": 0,
+                        "end_ms": 4000,
+                        "text": "Policy-bound material requirement",
+                    }],
+                }
+                checks = {
+                    item["check_id"]: item
+                    for item in DeterministicVisualInspector().inspect(
+                        manifest=manifest,
+                        render_report={},
+                    )["checks"]
+                }
+                self.assertEqual(
+                    expected,
+                    checks["material_semantic_identity"]["result"],
+                )
+
     def test_repair_manifest_replaces_material_layout_without_assets(self):
         from server.content_domains.ai_edit_v3.production import (
             DeterministicVisualInspector,
@@ -2176,6 +2224,48 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
                 ),
             )
         self.assertRegex(frozen.sha256, r"^[0-9a-f]{64}$")
+
+    def test_face_repair_falls_back_for_every_non_speaker_layout(self):
+        from server.content_domains.ai_edit_v3.production import (
+            _freeze_repair_instruction,
+            _repair_render_manifest,
+        )
+
+        manifest = {
+            "duration_ms": 4000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [{"id": "material_01", "kind": "image"}],
+            "compositions": [{
+                "id": "composition_001",
+                "scene_id": "scene_01",
+                "start_ms": 0,
+                "end_ms": 4000,
+                "layout_id": "comparison_split",
+                "layout_variant": "before_after",
+                "asset_ids": ["material_01"],
+                "layout_slot_bindings": [{
+                    "slot_id": "primary",
+                    "asset_id": "material_01",
+                }],
+            }],
+            "captions": [{
+                "id": "caption_001",
+                "start_ms": 0,
+                "end_ms": 4000,
+                "text": "Comparison evidence",
+            }],
+        }
+        instruction = _freeze_repair_instruction(manifest, ({
+            "scene_id": "scene_01",
+            "reason_code": "face_product_obstruction",
+            "allowed_action": "speaker_fallback",
+        },))
+
+        repaired = _repair_render_manifest(manifest, instruction)
+
+        self.assertEqual("speaker_fullscreen", repaired["compositions"][0]["layout_id"])
+        self.assertEqual([], repaired["compositions"][0]["asset_ids"])
+        self.assertEqual([], repaired["compositions"][0]["layout_slot_bindings"])
 
     def test_repair_manifest_changes_the_failed_structure_and_passes_bounded_checks(self):
         from server.content_domains.ai_edit_v3.production import (
@@ -2770,6 +2860,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
                 "highlight": {"text_kind": "compressed", "text": "证据 42.5%", "source_caption_ids": ["caption_002"]},
             }),
         )
+
         self.assertEqual(
             {"headline": {"text": "章节", "source_caption_ids": []}, "highlight": {"text": "行动", "source_caption_ids": []}},
             _freeze_overlay_authoritative_content({
@@ -2786,6 +2877,46 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
                 _validate_layout_authoritative_content(scene, captions=[])
             with self.assertRaisesRegex(ValueError, "scene_layout_authoritative_content_missing"):
                 _validate_layout_authoritative_content(scene, captions=[{"id": "caption_002", "start_ms": 2000, "end_ms": 3000, "text": "其他场景"}])
+
+    def test_layout_slot_bindings_derive_consumed_and_required_slots_from_policy(self):
+        from server.content_domains.ai_edit_v3.production import _layout_slot_bindings
+
+        policy = {
+            "speaker_fullscreen": {
+                "speaker_required": True,
+                "semantic_slots": [{
+                    "layout_slot_id": "primary",
+                    "purpose": "product",
+                    "required_for_layout": True,
+                }],
+            }
+        }
+        with patch(
+            "server.content_domains.ai_edit_v3.production.layout_requirements_for",
+            return_value=policy,
+        ):
+            self.assertEqual(
+                [{"slot_id": "primary", "asset_id": "product_01"}],
+                _layout_slot_bindings(
+                    {
+                        "layout_id": "speaker_fullscreen",
+                        "material_slots": [{
+                            "id": "product_01",
+                            "purpose": "product",
+                            "priority": "required",
+                        }],
+                    },
+                    ["product_01"],
+                ),
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "scene_layout_required_slot_missing",
+            ):
+                _layout_slot_bindings(
+                    {"layout_id": "speaker_fullscreen", "material_slots": []},
+                    ["product_01"],
+                )
 
     def test_deterministic_visual_inspector_emits_complete_quality_schema(self):
         from server.content_domains.ai_edit_v3.contracts import validate_quality_verdict
@@ -2821,6 +2952,55 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             {"material_01": digest},
             _material_asset_hashes(manifest, materials),
         )
+
+    def test_quality_owner_evidence_matches_material_hashes_as_a_multiset(self):
+        from server.content_domains.ai_edit_v3.production import _material_asset_hashes
+
+        digest_a = hashlib.sha256(b"uploaded-product").hexdigest()
+        digest_b = hashlib.sha256(b"generated-detail").hexdigest()
+        manifest = {
+            "assets": [
+                {"id": "material_01", "sha256": digest_a},
+                {"id": "material_02", "sha256": digest_b},
+                {"id": "material_03", "sha256": digest_a},
+            ]
+        }
+        materials = {
+            "items": [
+                {"material_id": "generated_01", "sha256": digest_b},
+                {"material_id": "upload_01", "sha256": digest_a},
+                {"material_id": "upload_01_reused", "sha256": digest_a},
+            ]
+        }
+
+        self.assertEqual(
+            {
+                "material_01": digest_a,
+                "material_02": digest_b,
+                "material_03": digest_a,
+            },
+            _material_asset_hashes(manifest, materials),
+        )
+
+    def test_quality_owner_evidence_rejects_duplicate_asset_identity(self):
+        from server.content_domains.ai_edit_v3.production import _material_asset_hashes
+
+        digest = hashlib.sha256(b"same-content").hexdigest()
+        manifest = {
+            "assets": [
+                {"id": "material_01", "sha256": digest},
+                {"id": "material_01", "sha256": digest},
+            ]
+        }
+        materials = {
+            "items": [
+                {"material_id": "upload_01", "sha256": digest},
+                {"material_id": "upload_01_reused", "sha256": digest},
+            ]
+        }
+
+        with self.assertRaisesRegex(ValueError, "quality_material_evidence_invalid"):
+            _material_asset_hashes(manifest, materials)
 
     def test_render_captions_strip_director_only_emphasis_metadata(self):
         from server.content_domains.ai_edit_v3.production import _render_captions

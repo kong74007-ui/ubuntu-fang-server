@@ -16,6 +16,7 @@ from typing import Any, Literal, Protocol, Sequence
 
 from .contracts import ContractError, validate_quality_verdict
 from .director_candidates import _scene_duration_budget
+from .director_layout_policy import layout_shows_speaker
 from .media import FinalMux
 
 
@@ -335,12 +336,11 @@ def _repair_action_executable(
         return False
     layout_id = scene.get("layout_id")
     if reason_code == "face_product_obstruction":
-        return layout_id in {"product_hero", "number_proof"}
+        return not layout_shows_speaker(layout_id)
     if reason_code == "opening_hook_visual_consistency":
         return (
             scene.get("scene_id") == first_scene_id
-            and isinstance(layout_id, str)
-            and not layout_id.startswith("speaker_")
+            and not layout_shows_speaker(layout_id)
         )
     if reason_code == "material_semantic_identity":
         return (

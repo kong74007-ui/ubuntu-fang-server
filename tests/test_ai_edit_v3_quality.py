@@ -277,6 +277,35 @@ class BlockingQualityTests(unittest.TestCase):
         repaired = _repair_render_manifest(self.manifest, instruction)
         self.assertEqual("speaker_fullscreen", repaired["compositions"][0]["layout_id"])
 
+    def test_repair_executability_uses_the_frozen_speaker_layout_policy(self):
+        from server.content_domains.ai_edit_v3.quality import _repair_action_executable
+
+        manifest = {"source_video": {"path": "media/source.mp4", "silent": True}}
+        self.assertTrue(_repair_action_executable(
+            manifest,
+            {
+                "scene_id": "scene_01",
+                "start_ms": 0,
+                "end_ms": 2000,
+                "layout_id": "comparison_split",
+            },
+            "face_product_obstruction",
+            6000,
+            first_scene_id="scene_01",
+        ))
+        self.assertFalse(_repair_action_executable(
+            manifest,
+            {
+                "scene_id": "scene_01",
+                "start_ms": 0,
+                "end_ms": 2000,
+                "layout_id": "material_fullscreen_speaker_pip",
+            },
+            "opening_hook_visual_consistency",
+            6000,
+            first_scene_id="scene_01",
+        ))
+
     def test_audio_only_scene_cannot_enter_speaker_fallback_repair(self):
         self.manifest["compositions"] = [{
             "id": "composition_001", "scene_id": "scene_01",
