@@ -7,6 +7,7 @@ from pathlib import Path
 
 from server.content_domains.ai_edit_v3.contracts import ContractError, canonical_json, validate_edit_plan
 from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
+from server.content_domains.ai_edit_v3.director_layout_policy import layout_requirements_for
 from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
 
 
@@ -69,6 +70,38 @@ class DirectorCompilerTests(unittest.TestCase):
         oversized_captions[0]["text"] = "权" * 76
         with self.assertRaisesRegex(ValueError, "director_overlay_text_budget_exceeded"):
             compile_edit_plan(DECISION, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": oversized_captions, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
+
+    def test_semantic_material_slot_projects_the_frozen_renderer_layout_slot(self):
+        decision = copy.deepcopy(DECISION)
+        decision["scene_directives"][1]["material_slot_directives"] = [{
+            "slot_id": "candidate_02_evidence",
+            "semantic": "与第二段权威文案对应的证据图",
+            "purpose": "evidence",
+            "priority": "required",
+            "ratio": "auto",
+        }]
+        capabilities = copy.deepcopy(CAPABILITIES)
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+
+        plan = compile_edit_plan(
+            decision,
+            candidates=CANDIDATES,
+            timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"},
+            materials=[],
+            capabilities=capabilities,
+            variation_seed=11,
+        )
+
+        self.assertEqual(
+            "evidence",
+            plan["scenes"][1]["material_slots"][0]["layout_slot_id"],
+        )
+        self.assertEqual(
+            "candidate_02_evidence",
+            plan["materials"][0]["request_id"],
+        )
 
 
 if __name__ == "__main__":

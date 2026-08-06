@@ -31,6 +31,7 @@ from .delivery import (
     list_due_publish_intents,
     reconcile_asset_decision,
 )
+from .director_decision import DirectorDecisionError
 from .providers import SubmissionUnknown
 from .runtime import LeaseHeartbeat, RuntimeDependencies, StageContext, StageOutcome
 from .store import LeaseLost, StoreConfigurationError, StoreConflictError
@@ -82,6 +83,76 @@ class _StageFailure(RuntimeError):
     def __init__(self, error_code: str):
         self.error_code = error_code
         super().__init__(error_code)
+
+
+_SAFE_DIAGNOSTIC_CODE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_SAFE_DIAGNOSTIC_PATH = re.compile(
+    r"^\$(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[\d+\]))*$"
+)
+_SAFE_DIAGNOSTIC_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+_SAFE_DIAGNOSTIC_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _safe_stage_error(exc: Exception) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"type": type(exc).__name__}
+    if not isinstance(exc, DirectorDecisionError):
+        return evidence
+    detail_code = getattr(exc, "detail_code", None)
+    field_path = getattr(exc, "path", None)
+    if isinstance(detail_code, str) and _SAFE_DIAGNOSTIC_CODE.fullmatch(detail_code):
+        evidence["detail_code"] = detail_code
+    if (
+        isinstance(field_path, str)
+        and len(field_path) <= 512
+        and _SAFE_DIAGNOSTIC_PATH.fullmatch(field_path)
+    ):
+        evidence["field_path"] = field_path
+    attempts = []
+    for value in tuple(getattr(exc, "attempts", ()))[:2]:
+        if not isinstance(value, Mapping):
+            continue
+        attempt = value.get("attempt")
+        purpose = value.get("purpose")
+        response_sha256 = value.get("response_sha256")
+        validation_code = value.get("validation_code")
+        attempt_path = value.get("field_path")
+        if (
+            type(attempt) is not int
+            or attempt not in {1, 2}
+            or purpose not in {"initial", "repair"}
+            or not isinstance(response_sha256, str)
+            or _SAFE_DIAGNOSTIC_SHA256.fullmatch(response_sha256) is None
+            or not isinstance(validation_code, str)
+            or _SAFE_DIAGNOSTIC_CODE.fullmatch(validation_code) is None
+            or not isinstance(attempt_path, str)
+            or len(attempt_path) > 512
+            or _SAFE_DIAGNOSTIC_PATH.fullmatch(attempt_path) is None
+        ):
+            continue
+        item = {
+            "attempt": attempt,
+            "purpose": purpose,
+            "response_sha256": response_sha256,
+            "validation_code": validation_code,
+            "field_path": attempt_path,
+        }
+        request_id = value.get("request_id")
+        if isinstance(request_id, str) and _SAFE_DIAGNOSTIC_REQUEST_ID.fullmatch(request_id):
+            item["request_id"] = request_id
+        else:
+            request_id_sha256 = value.get("request_id_sha256")
+            if (
+                value.get("request_id_present") is True
+                and isinstance(request_id_sha256, str)
+                and _SAFE_DIAGNOSTIC_SHA256.fullmatch(request_id_sha256)
+            ):
+                item["request_id_present"] = True
+                item["request_id_sha256"] = request_id_sha256
+        attempts.append(item)
+    if attempts:
+        evidence["attempt_count"] = len(attempts)
+        evidence["attempts"] = attempts
+    return evidence
 
 
 def _query_historical_publish_authority(
@@ -641,7 +712,7 @@ def run_job(
                     "failed",
                     current_ms,
                     error_code=error_code,
-                    error={"type": type(exc).__name__},
+                    error=_safe_stage_error(exc),
                 )
             store.transition_leased(
                 claim, {state}, "failed", current_ms, lease_seconds=lease_seconds

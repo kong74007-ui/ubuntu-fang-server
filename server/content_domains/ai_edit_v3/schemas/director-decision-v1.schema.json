@@ -72,7 +72,7 @@
       "properties": {
         "slot_id": {"$ref": "#/$defs/identifier"},
         "semantic": {"type": "string", "minLength": 1, "maxLength": 300},
-        "purpose": {"enum": ["context", "product", "evidence", "background", "illustration", "chart"]},
+        "purpose": {"enum": ["context", "product", "evidence", "decoration"]},
         "priority": {"enum": ["required", "optional"]},
         "ratio": {"enum": ["auto", "16:9", "9:16", "1:1"]}
       }

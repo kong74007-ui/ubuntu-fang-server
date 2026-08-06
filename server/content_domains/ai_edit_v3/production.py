@@ -34,6 +34,7 @@ from .capability_catalog import load_visual_capability_catalog
 from .contracts import (
     canonical_json,
     freeze_render_manifest,
+    load_frozen_schema,
     schema_sha256,
 )
 from .delivery import stage_private_delivery
@@ -41,6 +42,16 @@ from .director import ValidatedPlan, build_director_request, generate_edit_plan
 from .director_candidates import _build_caption_groups, _scene_duration_budget, build_scene_candidates
 from .director_compiler import compile_edit_plan
 from .director_decision import generate_director_decision
+from .director_layout_policy import (
+    MAX_REQUIRED_MATERIAL_SLOTS,
+    MAX_TOTAL_MATERIAL_SLOTS,
+    SCENE_STRUCTURE_POLICY,
+    SPEAKER_VISIBILITY_POLICY,
+    allowed_layout_ids,
+    layout_shows_speaker,
+    layout_requirements_for,
+    required_material_layout_ids,
+)
 from .media import FinalMux, _probe_image, mux_master_audio, normalize_primary_media, probe_media
 from .overlay_catalog import load_overlay_placement_catalog, overlay_budget_index
 from .providers.asr import normalize_asr_result
@@ -118,6 +129,72 @@ def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, An
     return copy.deepcopy(dict(capabilities))
 
 
+def director_prompt_capabilities(capabilities: Mapping[str, Any]) -> dict[str, Any]:
+    """Project renderer capabilities into the compact choices Qwen can use."""
+
+    ratio = capabilities.get("output_ratio")
+    budget = capabilities.get("overlay_placement_budgets")
+    entries = budget.get("entries") if isinstance(budget, Mapping) else None
+    overlays = capabilities.get("overlay_capabilities")
+    if ratio not in {"16:9", "9:16"} or not isinstance(entries, list) or not isinstance(overlays, list):
+        raise ValueError("visual_program_capabilities_incomplete")
+    placements: dict[str, list[dict[str, Any]]] = {
+        str(component_id): [] for component_id in overlays
+    }
+    for entry in entries:
+        if not isinstance(entry, Mapping) or entry.get("ratio") != ratio:
+            continue
+        component_id = entry.get("component_id")
+        placement = entry.get("placement")
+        max_chars = entry.get("max_chars")
+        max_lines = entry.get("max_lines")
+        if component_id not in placements:
+            continue
+        if (
+            not isinstance(placement, str)
+            or type(max_chars) is not int
+            or max_chars < 1
+            or type(max_lines) is not int
+            or max_lines < 1
+            or any(item["placement"] == placement for item in placements[component_id])
+        ):
+            raise ValueError("visual_program_capabilities_incomplete")
+        placements[component_id].append({
+            "placement": placement,
+            "max_chars": max_chars,
+            "max_lines": max_lines,
+        })
+    if any(not values for values in placements.values()):
+        raise ValueError("visual_program_capabilities_incomplete")
+    fields = (
+        "version",
+        "layout_capabilities",
+        "layout_variants",
+        "overlay_capabilities",
+        "overlay_variants",
+        "overlay_animation_targets",
+        "layout_animation_targets",
+        "animation_capabilities",
+        "transition_capabilities",
+        "theme_profile_ids",
+        "identity_match_capability",
+        "output_ratio",
+        "layout_requirements",
+        "material_binding_mode",
+        "max_required_material_slots",
+        "max_total_material_slots",
+        "speaker_visibility_policy",
+        "scene_structure_policy",
+    )
+    projected = {
+        name: copy.deepcopy(capabilities[name])
+        for name in fields
+        if name in capabilities
+    }
+    projected["overlay_placements"] = placements
+    return projected
+
+
 _VARIATION_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _VARIATION_SEED = re.compile(r"^[0-9a-f]{16}$")
 _THEME_PROFILES = {
@@ -172,19 +249,7 @@ def _resolve_design_tokens(
         "--hf-motion-distance": motion_distance, "--hf-image-fit": image_fit,
     }
 
-_LAYOUTS_REQUIRING_MATERIALS = frozenset({
-    "comparison_split",
-    "cta_offer",
-    "editorial_collage",
-    "material_fullscreen_speaker_pip",
-    "method_timeline",
-    "number_proof",
-    "product_hero",
-    "quote_reversal",
-    "speaker_left_info_right",
-    "speaker_right_evidence_left",
-    "steps_stack",
-})
+_LAYOUTS_REQUIRING_MATERIALS = required_material_layout_ids()
 
 
 def _sha(path: Path) -> str:
@@ -398,6 +463,8 @@ def _layout_slot_bindings(
         bindings.append({"slot_id": slot_id, "asset_id": asset_id})
     if layout_id in {"product_hero", "material_fullscreen_speaker_pip", "editorial_collage", "comparison_split"} and "primary" not in seen_slots:
         raise ValueError("scene_layout_required_slot_missing")
+    if layout_id in {"speaker_left_info_right", "speaker_right_evidence_left"} and "evidence" not in seen_slots:
+        raise ValueError("scene_layout_required_slot_missing")
     slot_order = {"primary": 0, "detail": 1, "evidence": 2, "accent": 3, "steps": 4}
     return sorted(bindings, key=lambda binding: slot_order[binding["slot_id"]])
 
@@ -546,6 +613,33 @@ class QwenCompiledDirector:
         except Exception:
             return {}
         return value if isinstance(value, Mapping) else {}
+
+    @staticmethod
+    def _director_decision_system_prompt() -> str:
+        schema = load_frozen_schema("director-decision-v1.schema.json")
+        for metadata_key in ("$schema", "$id", "title"):
+            schema.pop(metadata_key, None)
+        schema["$defs"]["sceneDirective"]["properties"]["material_bindings"] = {
+            "const": []
+        }
+        contract = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        return "\n".join((
+            "你是中文短视频导演。只返回一个 JSON 对象，不得输出 Markdown、解释、路径、URL、代码或提供商字段。",
+            "输出必须严格满足下方 director-decision-v1 JSON Schema；additionalProperties=false 表示不得增加任何字段。",
+            "scene_directives 必须与 scene_candidates 一一对应、顺序一致且不遗漏；scene_id 必须原样使用候选 ID。",
+            "每个场景的 layout_id 必须来自该 scene_candidate.allowed_layout_ids；layout_variant、component_id、preset、transition 和 theme_profile_id 只能从请求 capabilities 的对应白名单选择。",
+            "headline/highlight 若存在，只能包含 text_kind 与该候选 caption_ids 中的 source_caption_ids；不得复制或改写字幕文字。",
+            "overlay 的 content_ref 必须指向同场景已声明的 headline 或 highlight；placement 必须等于 capabilities.overlay_placements[component_id] 中某项的 placement，引用字幕拼接后的字符数和行数不得超过该项 max_chars 与 max_lines。",
+            "overlay_variants 中对应列表为空时省略 variant；每个 animation.target_id 必须等于同场景 overlay instance_id，除非 capabilities 明确声明公开 target；没有 overlay 时 animations 必须为空。",
+            "material_bindings 必须为空。只用 material_slot_directives 表达语义素材需求；slot_id 必须采用 candidate_XX_purpose 形式并在整条视频中唯一。",
+            "素材槽的 purpose、priority 必须满足 capabilities.layout_requirements；标记 required_for_layout 的槽必须用 priority=required 提供，整条视频 required 槽不得超过 max_required_material_slots。",
+            "整条视频的素材槽总数不得超过 max_total_material_slots。视频口播的第一场必须保留人物；无人物布局累计时长不得超过 speaker_visibility_policy.max_hidden_ratio。",
+            "达到 scene_structure_policy 的时长和场景门槛后，结构签名(layout_id、layout_variant、overlay组件集合)必须达到最小种类数，且连续相同签名不得超过上限。",
+            "current_materials 只是可优先匹配的安全语义摘要，不代表所有槽都已满足；若某素材槽意图复用其中一项，semantic 必须逐字复制该项 semantic，未匹配的 required 槽由后续素材解析器生成。所有必需数组即使为空也必须输出。",
+            "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code 和 field_path 修正结构。",
+            "JSON Schema:",
+            contract,
+        ))
 
     @staticmethod
     def _caption_groups(
@@ -783,8 +877,12 @@ class QwenCompiledDirector:
         remaining_seconds = math.floor(float(deadline_at) - time.time())
         if remaining_seconds < 1:
             raise TimeoutError("director_deadline_exceeded")
-        system = "你是中文短视频导演。只返回符合 director-decision-v1 的 JSON，使用请求冻结的候选场景、组件和参数 ID；不得输出路径、URL、代码或提供商字段。"
-        result = self.client.generate_edit_plan(system, json.dumps(request, ensure_ascii=False, separators=(",", ":")), timeout_seconds=min(self._timeout_seconds, remaining_seconds))
+        system = self._director_decision_system_prompt()
+        result = self.client.generate_director_decision(
+            system,
+            json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+            timeout_seconds=min(self._timeout_seconds, remaining_seconds),
+        )
         return ProviderResult(provider="dashscope", capability="director", request_id=result.request_id, payload={"content": result.payload["content"]}, usage={"tokens": result.cost_units}, elapsed_ms=result.elapsed_ms)
 
 
@@ -884,7 +982,7 @@ class DeterministicVisualInspector:
                 used_assets.update(scene_asset_set)
                 if scene_assets and scene_duration > scene_budget_ms:
                     long_material_scene = True
-                if layout_id in {"product_hero", "number_proof"}:
+                if not layout_shows_speaker(layout_id):
                     hidden_speaker_ms += scene_duration
             scene_flow_valid = scene_flow_valid and expected_start == duration
             material_binding_valid = material_binding_valid and used_assets == known_assets
@@ -929,11 +1027,11 @@ class DeterministicVisualInspector:
                 or (
                     hidden_speaker_ms <= int(duration * 0.4)
                     and bool(layouts)
-                    and layouts[0].startswith("speaker_")
+                    and layout_shows_speaker(layouts[0])
                 )
             )
             opening_consistent = scene_rhythm_valid and layout_varied and (
-                not source_video or (bool(layouts) and layouts[0].startswith("speaker_"))
+                not source_video or (bool(layouts) and layout_shows_speaker(layouts[0]))
             )
             material_identity = (
                 material_binding_valid
@@ -1370,7 +1468,55 @@ class ProductionStageCoordinator:
                     "overlay_placement_budgets": placement_catalog,
                     "output_ratio": str(normalized["ratio"]),
                 })
-                decision_request = {**director_request, "scene_candidates": [item.__dict__ if hasattr(item, "__dict__") else {slot: getattr(item, slot) for slot in item.__slots__} for item in candidates], "capabilities": visual_capabilities}
+                layout_ids = list(visual_capabilities["layout_capabilities"])
+                visual_capabilities["layout_requirements"] = layout_requirements_for(layout_ids)
+                visual_capabilities["material_binding_mode"] = "semantic_slots_only"
+                visual_capabilities["max_required_material_slots"] = MAX_REQUIRED_MATERIAL_SLOTS
+                visual_capabilities["max_total_material_slots"] = MAX_TOTAL_MATERIAL_SLOTS
+                visual_capabilities["speaker_visibility_policy"] = copy.deepcopy(
+                    SPEAKER_VISIBILITY_POLICY
+                )
+                visual_capabilities["scene_structure_policy"] = copy.deepcopy(
+                    SCENE_STRUCTURE_POLICY
+                )
+                prompt_candidates = []
+                for candidate_index, item in enumerate(candidates):
+                    candidate = (
+                        item.__dict__ if hasattr(item, "__dict__")
+                        else {slot: getattr(item, slot) for slot in item.__slots__}
+                    )
+                    candidate = copy.deepcopy(candidate)
+                    candidate["available_material_ids"] = []
+                    candidate["allowed_layout_ids"] = allowed_layout_ids(
+                        layout_ids,
+                        speaker_available=bool(candidate.get("speaker_available")),
+                        require_speaker=(
+                            candidate_index == 0
+                            and candidate.get("speaker_available") is True
+                            and SPEAKER_VISIBILITY_POLICY["opening_requires_speaker"] is True
+                        ),
+                    )
+                    prompt_candidates.append(candidate)
+                safe_materials = []
+                for material in director_request.get("current_materials", ()):
+                    if not isinstance(material, Mapping):
+                        raise ValueError("director_material_descriptor_invalid")
+                    safe_materials.append({
+                        key: copy.deepcopy(material[key])
+                        for key in (
+                            "semantic", "subject_type", "composition",
+                            "supported_ratios", "risk_labels",
+                        )
+                        if key in material
+                    })
+                decision_request = {
+                    **director_request,
+                    "current_materials": safe_materials,
+                    "scene_candidates": prompt_candidates,
+                    "capabilities": director_prompt_capabilities(visual_capabilities),
+                    "material_resolution_policy": "prefer_current_upload_then_generate_required",
+                }
+                decision_request.pop("generate_missing_material", None)
                 decision = generate_director_decision(SimpleNamespace(request=decision_request, timeline=timeline, candidates=candidates, capabilities=visual_capabilities, job_id=job_id, deadline_at=context.deadline_at), self.director)
                 variation_seed = derive_variation_seed(job.get("request_sha256"), decision.decision_sha256, self.renderer.registry_sha256.removeprefix("sha256:"))
                 plan = compile_edit_plan(decision.value, candidates=candidates, timeline={"duration_ms": timeline.duration_ms, "captions": [{"id": item.id, "start_ms": item.start_ms, "end_ms": item.end_ms, "text": item.text} for item in timeline.captions], "ratio": normalized["ratio"]}, materials=descriptors, capabilities=visual_capabilities, variation_seed=int(variation_seed[:8], 16))

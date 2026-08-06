@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import tempfile
 import time
@@ -901,6 +902,120 @@ class V3StateCASTests(unittest.TestCase):
         self.assertEqual(result.error_code, "invalid_stage_transition")
         self.assertEqual(attempt["status"], "failed")
         self.assertEqual(checkpoints, 0)
+        self.assertEqual(supervisor.terminated, [claim.job_id])
+
+    def test_director_failure_persists_only_allowlisted_diagnostics(self):
+        from server.content_domains.ai_edit_v3.director_decision import DirectorDecisionError
+        from server.content_domains.ai_edit_v3.pipeline import run_job
+
+        class Clock:
+            def now(self):
+                return 100.1
+
+        class Supervisor:
+            def __init__(self):
+                self.terminated = []
+
+            def terminate_job(self, job_id):
+                self.terminated.append(job_id)
+
+        self.seed_job("job-director-failure", "planning")
+        claim = self.store.claim_job(
+            "job-director-failure",
+            "worker-director-failure",
+            30,
+            100_000,
+            expected_states={"planning"},
+        )
+        supervisor = Supervisor()
+
+        def fail_director(job, context):
+            error = DirectorDecisionError(
+                "director_decision_invalid",
+                "$.scene_directives[1].transition",
+                detail_code="director_transition_unknown",
+                attempts=(
+                    {
+                        "attempt": 1,
+                        "purpose": "initial",
+                        "request_id": "request-1",
+                        "response_sha256": "a" * 64,
+                        "validation_code": "director_decision_json_invalid",
+                        "field_path": "$",
+                        "raw": "Bearer SECRET https://private.invalid",
+                    },
+                    {
+                        "attempt": 2,
+                        "purpose": "repair",
+                        "request_id": "request-2",
+                        "response_sha256": "b" * 64,
+                        "validation_code": "director_transition_unknown",
+                        "field_path": "$.scene_directives[1].transition",
+                    },
+                ),
+            )
+            error.unsafe_text = "Bearer SECRET https://private.invalid"
+            raise error
+
+        runtime = RuntimeDependencies(
+            store=self.store,
+            clock=Clock(),
+            points=object(),
+            assets=object(),
+            cos=None,
+            tts=None,
+            asr=None,
+            director=None,
+            image_generator=None,
+            audio_generator=None,
+            renderer=None,
+            process_supervisor=supervisor,
+            stage_handlers={"planning": fail_director},
+        )
+
+        result = run_job(claim, runtime, db_path=self.db)
+
+        attempt = self.store._read(
+            lambda connection: dict(
+                connection.execute(
+                    "SELECT * FROM edit_v3_stage_attempts WHERE job_id=?",
+                    (claim.job_id,),
+                ).fetchone()
+            )
+        )
+        evidence = json.loads(attempt["error_json"])
+        self.assertEqual("failed", result.state)
+        self.assertEqual("director_decision_invalid", result.error_code)
+        self.assertEqual("director_decision_invalid", attempt["error_code"])
+        self.assertEqual(
+            {
+                "type": "DirectorDecisionError",
+                "detail_code": "director_transition_unknown",
+                "field_path": "$.scene_directives[1].transition",
+                "attempt_count": 2,
+                "attempts": [
+                    {
+                        "attempt": 1,
+                        "purpose": "initial",
+                        "request_id": "request-1",
+                        "response_sha256": "a" * 64,
+                        "validation_code": "director_decision_json_invalid",
+                        "field_path": "$",
+                    },
+                    {
+                        "attempt": 2,
+                        "purpose": "repair",
+                        "request_id": "request-2",
+                        "response_sha256": "b" * 64,
+                        "validation_code": "director_transition_unknown",
+                        "field_path": "$.scene_directives[1].transition",
+                    },
+                ],
+            },
+            evidence,
+        )
+        self.assertNotIn("SECRET", attempt["error_json"])
+        self.assertNotIn("private.invalid", attempt["error_json"])
         self.assertEqual(supervisor.terminated, [claim.job_id])
 
     def test_pending_predebit_pass_moves_real_job_from_created_draft_to_queued(self):

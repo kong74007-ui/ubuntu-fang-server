@@ -16,6 +16,13 @@ from server.content_domains.ai_edit_v3.director_decision import (
     generate_director_decision,
     validate_director_decision,
 )
+from server.content_domains.ai_edit_v3.director_layout_policy import (
+    MAX_REQUIRED_MATERIAL_SLOTS,
+    MAX_TOTAL_MATERIAL_SLOTS,
+    SCENE_STRUCTURE_POLICY,
+    SPEAKER_VISIBILITY_POLICY,
+    layout_requirements_for,
+)
 from server.content_domains.ai_edit_v3.contracts import LeaseClaim, canonical_json, request_fingerprint, schema_sha256
 from server.content_domains.ai_edit_v3.providers.base import ProviderResult
 from server.content_domains.ai_edit_v3.runtime import get_or_generate_director_decision
@@ -147,6 +154,321 @@ class DirectorDecisionValidationTests(unittest.TestCase):
         with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
         value = valid_decision(); value["scene_directives"][0]["material_slot_directives"] = [{"slot_id": "primary", "semantic": "冲突", "purpose": "context", "priority": "required", "ratio": "auto"}]
         with self.assertRaises(DirectorDecisionError): validate_director_decision(value, candidates=CANDIDATES, capabilities=CAPABILITIES)
+    def test_production_layout_policy_rejects_source_material_and_binding_drift(self):
+        capabilities = copy.deepcopy(CAPABILITIES)
+        capabilities["layout_capabilities"] = [
+            "speaker_left_info_right", "speaker_fullscreen",
+        ]
+        capabilities["layout_variants"] = {
+            "speaker_left_info_right": ["evidence_panel"],
+            "speaker_fullscreen": ["clean_center"],
+        }
+        capabilities["layout_animation_targets"] = {
+            "speaker_left_info_right": [], "speaker_fullscreen": [],
+        }
+        capabilities["material_binding_mode"] = "semantic_slots_only"
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        capabilities["max_required_material_slots"] = MAX_REQUIRED_MATERIAL_SLOTS
+        capabilities["max_total_material_slots"] = MAX_TOTAL_MATERIAL_SLOTS
+        capabilities["speaker_visibility_policy"] = copy.deepcopy(
+            SPEAKER_VISIBILITY_POLICY
+        )
+        capabilities["scene_structure_policy"] = copy.deepcopy(
+            SCENE_STRUCTURE_POLICY
+        )
+
+        direct_binding = valid_decision()
+        direct_binding["scene_directives"][0]["layout_id"] = "speaker_left_info_right"
+        direct_binding["scene_directives"][0]["layout_variant"] = "evidence_panel"
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_material_binding_forbidden"
+        ):
+            validate_director_decision(
+                direct_binding, candidates=CANDIDATES, capabilities=capabilities
+            )
+
+        valid = valid_decision()
+        valid["scene_directives"][0]["layout_id"] = "speaker_left_info_right"
+        valid["scene_directives"][0]["layout_variant"] = "evidence_panel"
+        valid["scene_directives"][0]["material_bindings"] = []
+        valid["scene_directives"][0]["material_slot_directives"] = [{
+            "slot_id": "evidence_visual",
+            "semantic": "与观点相符的证据画面",
+            "purpose": "evidence",
+            "priority": "required",
+            "ratio": "auto",
+        }]
+        self.assertEqual(
+            valid,
+            validate_director_decision(
+                valid, candidates=CANDIDATES, capabilities=capabilities
+            ),
+        )
+
+        duplicate_global_slot = copy.deepcopy(valid)
+        duplicate_global_slot["scene_directives"][1]["material_slot_directives"][0]["slot_id"] = "evidence_visual"
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_material_slot_duplicate"
+        ):
+            validate_director_decision(
+                duplicate_global_slot,
+                candidates=CANDIDATES,
+                capabilities=capabilities,
+            )
+
+        missing_material = copy.deepcopy(valid)
+        missing_material["scene_directives"][0]["material_slot_directives"] = []
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_layout_material_missing"
+        ):
+            validate_director_decision(
+                missing_material, candidates=CANDIDATES, capabilities=capabilities
+            )
+
+        audio_candidates = tuple(
+            replace(candidate, speaker_available=False) for candidate in CANDIDATES
+        )
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_layout_source_incompatible"
+        ):
+            validate_director_decision(
+                valid, candidates=audio_candidates, capabilities=capabilities
+            )
+
+    def test_material_slot_purpose_matches_the_edit_plan_contract(self):
+        value = valid_decision()
+        value["scene_directives"][1]["material_slot_directives"][0]["purpose"] = "decoration"
+        self.assertEqual(
+            value,
+            validate_director_decision(
+                value, candidates=CANDIDATES, capabilities=CAPABILITIES
+            ),
+        )
+        value["scene_directives"][1]["material_slot_directives"][0]["purpose"] = "background"
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_decision_schema_invalid"
+        ):
+            validate_director_decision(
+                value, candidates=CANDIDATES, capabilities=CAPABILITIES
+            )
+
+    def test_semantic_material_policy_limits_required_slots_across_the_video(self):
+        candidates = tuple(
+            SceneCandidate(
+                f"candidate_{index:02d}",
+                (index - 1) * 1000,
+                index * 1000,
+                (f"caption_{index:03d}",),
+                f"权威文案{index}",
+                (),
+                (),
+                False,
+                ((f"caption_{index:03d}", f"权威文案{index}"),),
+            )
+            for index in range(1, 8)
+        )
+        capabilities = copy.deepcopy(CAPABILITIES)
+        capabilities["layout_capabilities"] = ["number_proof"]
+        capabilities["layout_variants"] = {
+            "number_proof": ["numeric_centerpiece"]
+        }
+        capabilities["layout_animation_targets"] = {"number_proof": []}
+        capabilities["material_binding_mode"] = "semantic_slots_only"
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        capabilities["max_required_material_slots"] = MAX_REQUIRED_MATERIAL_SLOTS
+        capabilities["max_total_material_slots"] = MAX_TOTAL_MATERIAL_SLOTS
+        capabilities["speaker_visibility_policy"] = copy.deepcopy(
+            SPEAKER_VISIBILITY_POLICY
+        )
+        capabilities["scene_structure_policy"] = copy.deepcopy(
+            SCENE_STRUCTURE_POLICY
+        )
+        decision = {
+            "version": "1.0",
+            "creative_concept": "数据证明",
+            "narrative_pattern": "number_proof",
+            "theme_profile_id": "editorial_clean",
+            "design_intent": {
+                "density": "balanced",
+                "motion_energy": "medium",
+                "image_fit": "smart_crop",
+                "decoration_intensity": "medium",
+            },
+            "scene_directives": [
+                {
+                    "scene_id": f"candidate_{index:02d}",
+                    "narrative_role": "proof",
+                    "layout_id": "number_proof",
+                    "layout_variant": "numeric_centerpiece",
+                    "headline": {
+                        "text_kind": "verbatim",
+                        "source_caption_ids": [f"caption_{index:03d}"],
+                    },
+                    "overlay_instances": [{
+                        "instance_id": f"caption_{index:02d}",
+                        "component_id": "standard_caption",
+                        "content_ref": "headline",
+                        "placement": "subtitle_safe",
+                    }],
+                    "material_bindings": [],
+                    "material_slot_directives": [{
+                        "slot_id": f"candidate_{index:02d}_evidence",
+                        "semantic": f"第{index}场的证据图",
+                        "purpose": "evidence",
+                        "priority": "required",
+                        "ratio": "auto",
+                    }],
+                    "animations": [{
+                        "target_id": f"caption_{index:02d}",
+                        "preset": "fade",
+                        "direction": "none",
+                        "duration_ms": 300,
+                        "delay_ms": 0,
+                    }],
+                    "transition": "hard_cut",
+                    "sound_events": [],
+                }
+                for index in range(1, 8)
+            ],
+            "audio_intent": {
+                "bgm_description": "克制的无歌词背景音乐",
+                "energy": "medium",
+                "dialogue_priority": True,
+            },
+        }
+
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_required_material_limit_exceeded"
+        ):
+            validate_director_decision(
+                decision, candidates=candidates, capabilities=capabilities
+            )
+        self.assertEqual(
+            6,
+            len(validate_director_decision(
+                {**decision, "scene_directives": decision["scene_directives"][:6]},
+                candidates=candidates[:6],
+                capabilities=capabilities,
+            )["scene_directives"]),
+        )
+
+    def test_video_director_enforces_opening_visibility_and_structure_before_render(self):
+        candidates = tuple(
+            SceneCandidate(
+                f"candidate_{index:02d}",
+                (index - 1) * 4000,
+                index * 4000,
+                (f"caption_{index:03d}",),
+                f"权威文案{index}",
+                (),
+                (),
+                True,
+                ((f"caption_{index:03d}", f"权威文案{index}"),),
+            )
+            for index in range(1, 4)
+        )
+        capabilities = copy.deepcopy(CAPABILITIES)
+        capabilities["material_binding_mode"] = "semantic_slots_only"
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        capabilities["max_required_material_slots"] = MAX_REQUIRED_MATERIAL_SLOTS
+        capabilities["max_total_material_slots"] = MAX_TOTAL_MATERIAL_SLOTS
+        capabilities["speaker_visibility_policy"] = copy.deepcopy(
+            SPEAKER_VISIBILITY_POLICY
+        )
+        capabilities["scene_structure_policy"] = copy.deepcopy(
+            SCENE_STRUCTURE_POLICY
+        )
+
+        def decision_for(layouts):
+            directives = []
+            for index, layout_id in enumerate(layouts, 1):
+                directives.append({
+                    "scene_id": f"candidate_{index:02d}",
+                    "narrative_role": "hook" if index == 1 else "proof",
+                    "layout_id": layout_id,
+                    "layout_variant": (
+                        "clean_center" if layout_id == "speaker_fullscreen"
+                        else "diagonal_statement"
+                    ),
+                    "headline": {
+                        "text_kind": "verbatim",
+                        "source_caption_ids": [f"caption_{index:03d}"],
+                    },
+                    "overlay_instances": [{
+                        "instance_id": f"caption_{index:02d}",
+                        "component_id": "standard_caption",
+                        "content_ref": "headline",
+                        "placement": "subtitle_safe",
+                    }],
+                    "material_bindings": [],
+                    "material_slot_directives": [],
+                    "animations": [{
+                        "target_id": f"caption_{index:02d}",
+                        "preset": "fade",
+                        "direction": "none",
+                        "duration_ms": 300,
+                        "delay_ms": 0,
+                    }],
+                    "transition": "hard_cut",
+                    "sound_events": [],
+                })
+            return {
+                "version": "1.0",
+                "creative_concept": "人物讲解与证据交替",
+                "narrative_pattern": "speaker_evidence",
+                "theme_profile_id": "editorial_clean",
+                "design_intent": {
+                    "density": "balanced",
+                    "motion_energy": "medium",
+                    "image_fit": "smart_crop",
+                    "decoration_intensity": "medium",
+                },
+                "scene_directives": directives,
+                "audio_intent": {
+                    "bgm_description": "克制的无歌词背景音乐",
+                    "energy": "medium",
+                    "dialogue_priority": True,
+                },
+            }
+
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_opening_speaker_required"
+        ):
+            validate_director_decision(
+                decision_for(("quote_reversal", "speaker_fullscreen", "speaker_fullscreen")),
+                candidates=candidates,
+                capabilities=capabilities,
+            )
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_speaker_visibility_exceeded"
+        ):
+            validate_director_decision(
+                decision_for(("speaker_fullscreen", "quote_reversal", "quote_reversal")),
+                candidates=candidates,
+                capabilities=capabilities,
+            )
+        with self.assertRaisesRegex(
+            DirectorDecisionError, "director_scene_structure_repetitive"
+        ):
+            validate_director_decision(
+                decision_for(("speaker_fullscreen", "speaker_fullscreen", "speaker_fullscreen")),
+                candidates=candidates,
+                capabilities=capabilities,
+            )
+        self.assertEqual(
+            3,
+            len(validate_director_decision(
+                decision_for(("speaker_fullscreen", "quote_reversal", "speaker_fullscreen")),
+                candidates=candidates,
+                capabilities=capabilities,
+            )["scene_directives"]),
+        )
 
 
 class DirectorDecisionGenerationTests(unittest.TestCase):
@@ -166,12 +488,68 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         self.assertNotIn("previous_response", repair)
 
     def test_second_invalid_response_fails(self):
+        calls = []
         class Provider:
             def generate_decision(self, request, **kwargs):
-                return {"invalid": True}
+                calls.append(request)
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps({"invalid": True})},
+                    {},
+                    1,
+                )
         context = SimpleNamespace(job_id="job-1", request={"safe": True}, candidates=CANDIDATES, capabilities=CAPABILITIES, deadline_at=123.0)
-        with self.assertRaisesRegex(DirectorDecisionError, "director_decision_invalid"):
+        with self.assertRaisesRegex(DirectorDecisionError, "director_decision_invalid") as raised:
             generate_director_decision(context, Provider(), max_repairs=1)
+        error = raised.exception
+        self.assertEqual("director_decision_schema_invalid", error.detail_code)
+        self.assertEqual("$", error.path)
+        self.assertEqual(2, error.attempt_count)
+        self.assertEqual(
+            [
+                {
+                    "attempt": 1,
+                    "purpose": "initial",
+                    "request_id": "request-1",
+                    "response_sha256": error.attempts[0]["response_sha256"],
+                    "validation_code": "director_decision_schema_invalid",
+                    "field_path": "$",
+                },
+                {
+                    "attempt": 2,
+                    "purpose": "repair",
+                    "request_id": "request-2",
+                    "response_sha256": error.attempts[1]["response_sha256"],
+                    "validation_code": "director_decision_schema_invalid",
+                    "field_path": "$",
+                },
+            ],
+            list(error.attempts),
+        )
+        self.assertRegex(error.attempts[0]["response_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_invalid_request_id_is_hashed_without_leaking_provider_text(self):
+        for secret_id in (
+            "https://provider.invalid/request?token=SECRET\n",
+            "sk-1234567890SECRET",
+        ):
+            class Provider:
+                def generate_decision(self, request, **kwargs):
+                    return SimpleNamespace(
+                        request_id=secret_id,
+                        payload={"content": "Bearer SECRET"},
+                    )
+            context = SimpleNamespace(job_id="job-1", request={"safe": True}, candidates=CANDIDATES, capabilities=CAPABILITIES, deadline_at=123.0)
+            with self.subTest(secret_id=secret_id), self.assertRaises(DirectorDecisionError) as raised:
+                generate_director_decision(context, Provider(), max_repairs=1)
+            encoded = json.dumps(list(raised.exception.attempts), sort_keys=True)
+            self.assertNotIn("SECRET", encoded)
+            self.assertNotIn("provider.invalid", encoded)
+            self.assertNotIn("request_id\"", encoded)
+            self.assertIn("request_id_present", encoded)
+            self.assertIn("request_id_sha256", encoded)
 
     def test_frozen_request_rejects_url_path_and_secret_bearing_values(self):
         class Provider:

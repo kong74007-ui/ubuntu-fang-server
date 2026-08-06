@@ -99,11 +99,17 @@ class ProductionDirectorTests(unittest.TestCase):
         }
 
         captured_capabilities = []
+        captured_requests = []
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.store = type("Store", (), {
+                "environment": "test",
+                "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {
+                    "materials": []
+                },
+            })()
             coordinator.director = object()
             coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
             coordinator._capabilities = lambda _ratio: capabilities
@@ -115,6 +121,7 @@ class ProductionDirectorTests(unittest.TestCase):
                 job = {"job_id": job_id, "owner_id": "alice", "request_sha256": request_sha256, "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}
                 def capture_decision(context, *_args, **_kwargs):
                     captured_capabilities.append(context.request["capabilities"])
+                    captured_requests.append(context.request)
                     return decision
                 with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
                     coordinator._stage("planning", job, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
@@ -130,7 +137,26 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertEqual(replay, replay_again)
         self.assertEqual(4, len(captured_capabilities))
         self.assertTrue(all(item["output_ratio"] == "9:16" for item in captured_capabilities))
-        self.assertTrue(all(item["overlay_placement_budgets"]["version"] == "overlay-placement-v1" for item in captured_capabilities))
+        self.assertTrue(all("overlay_placement_budgets" not in item for item in captured_capabilities))
+        self.assertTrue(all(
+            item["overlay_placements"]["standard_caption"]
+            == [{"placement": "subtitle_safe", "max_chars": 96, "max_lines": 3}]
+            for item in captured_capabilities
+        ))
+        speaker_layouts = {
+            "speaker_fullscreen", "speaker_left_info_right",
+            "speaker_right_evidence_left", "material_fullscreen_speaker_pip",
+        }
+        self.assertTrue(all(
+            not speaker_layouts.intersection(
+                request["scene_candidates"][0]["allowed_layout_ids"]
+            )
+            for request in captured_requests
+        ))
+        self.assertTrue(all(
+            request["scene_candidates"][0]["available_material_ids"] == []
+            for request in captured_requests
+        ))
 
     def test_visual_planning_rejects_missing_or_invalid_persisted_request_sha(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
@@ -141,7 +167,12 @@ class ProductionDirectorTests(unittest.TestCase):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.store = type("Store", (), {
+                "environment": "test",
+                "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {
+                    "materials": []
+                },
+            })()
             coordinator.director = object(); coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64); coordinator._capabilities = lambda _ratio: capabilities
             for index, request_sha256 in enumerate((None, "not-a-sha")):
                 job_id = f"job-invalid-{index}"; root = coordinator._root(job_id)
@@ -328,7 +359,12 @@ class ProductionDirectorTests(unittest.TestCase):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.store = type("Store", (), {
+                "environment": "test",
+                "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {
+                    "materials": []
+                },
+            })()
             coordinator.director = object()
             root = coordinator._root("job-gate-zero")
             (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
@@ -345,6 +381,7 @@ class ProductionDirectorTests(unittest.TestCase):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
         captured_capabilities = []
+        captured_requests = []
         decision = SimpleNamespace(
             value={
                 "version": "1.0",
@@ -400,7 +437,20 @@ class ProductionDirectorTests(unittest.TestCase):
             coordinator = object.__new__(ProductionStageCoordinator)
             coordinator.work_root = Path(directory)
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
-            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.store = type("Store", (), {
+                "environment": "test",
+                "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {
+                    "materials": [{
+                        "material_id": "material-1234",
+                        "metadata_json": json.dumps({
+                            "semantic": "用户上传的产品实拍图",
+                            "subject_type": "product",
+                            "composition": "original",
+                        }, ensure_ascii=False),
+                        "sha256": "e" * 64,
+                    }],
+                },
+            })()
             coordinator.director = object()
             coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
             root = coordinator._root("job-gate-one")
@@ -408,6 +458,7 @@ class ProductionDirectorTests(unittest.TestCase):
             (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000}], "source_segments": [{"id": "segment_01", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000, "protected": False, "output_start_ms": None, "output_end_ms": None}], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
             def capture_decision(context, *_args, **_kwargs):
                 captured_capabilities.append(context.capabilities)
+                captured_requests.append(context.request)
                 return decision
             with patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision) as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
                 outcome = coordinator._stage(
@@ -417,7 +468,7 @@ class ProductionDirectorTests(unittest.TestCase):
                         "owner_id": "alice",
                         "request_sha256": "1" * 64,
                         "stage_input_sha256": "0" * 64,
-                        "normalized_request_json": '{"input_type":"uploaded_video"}',
+                        "normalized_request_json": '{"input_type":"uploaded_video","material_asset_ids":["material-1234"]}',
                     },
                     SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"),
                 )
@@ -437,6 +488,48 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertNotIn("card_match_cut", capabilities["transition_capabilities"])
         self.assertEqual("overlay-placement-v1", capabilities["overlay_placement_budgets"]["version"])
         self.assertEqual("9:16", capabilities["output_ratio"])
+        prompt_capabilities = captured_requests[0]["capabilities"]
+        self.assertNotIn("overlay_placement_budgets", prompt_capabilities)
+        self.assertEqual(
+            [{"placement": "subtitle_safe", "max_chars": 96, "max_lines": 3}],
+            prompt_capabilities["overlay_placements"]["standard_caption"],
+        )
+        self.assertEqual(
+            capabilities["layout_variants"],
+            prompt_capabilities["layout_variants"],
+        )
+        self.assertFalse(prompt_capabilities["identity_match_capability"])
+        self.assertEqual("semantic_slots_only", prompt_capabilities["material_binding_mode"])
+        candidate = captured_requests[0]["scene_candidates"][0]
+        self.assertIn("speaker_fullscreen", candidate["allowed_layout_ids"])
+        self.assertTrue(all(
+            layout_id in {
+                "speaker_fullscreen", "speaker_left_info_right",
+                "speaker_right_evidence_left", "material_fullscreen_speaker_pip",
+            }
+            for layout_id in candidate["allowed_layout_ids"]
+        ))
+        self.assertEqual([], candidate["available_material_ids"])
+        self.assertEqual(1, len(captured_requests[0]["current_materials"]))
+        self.assertEqual(
+            "用户上传的产品实拍图",
+            captured_requests[0]["current_materials"][0]["semantic"],
+        )
+        self.assertNotIn("material_id", captured_requests[0]["current_materials"][0])
+        self.assertNotIn("sha256", captured_requests[0]["current_materials"][0])
+        prompt_json = json.dumps(captured_requests[0], ensure_ascii=False)
+        self.assertNotIn("material-1234", prompt_json)
+        self.assertNotIn("e" * 64, prompt_json)
+        self.assertEqual(
+            capabilities["layout_requirements"],
+            prompt_capabilities["layout_requirements"],
+        )
+        self.assertEqual(6, prompt_capabilities["max_required_material_slots"])
+        self.assertEqual(40, prompt_capabilities["max_total_material_slots"])
+        self.assertEqual(
+            {"opening_requires_speaker": True, "max_hidden_ratio": 0.4},
+            prompt_capabilities["speaker_visibility_policy"],
+        )
         self.assertEqual("2.0", plan["version"])
         self.assertEqual("1.0", plan["visual_program_version"])
         self.assertEqual("speaker_fullscreen", plan["scenes"][0]["layout_id"])
@@ -721,6 +814,68 @@ class ProductionDirectorTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(TimeoutError, "director_deadline_exceeded"):
                 provider.generate_plan({}, deadline_at=1_000.9)
+
+    def test_visual_director_uses_strict_json_transport_and_explicit_contract(self):
+        class StrictDirectorClient:
+            def generate_edit_plan(self, *args, **kwargs):
+                raise AssertionError("visual director must use strict JSON transport")
+
+            def generate_director_decision(
+                self, system_prompt, user_prompt, *, timeout_seconds=None
+            ):
+                self.system_prompt = system_prompt
+                self.user_prompt = user_prompt
+                self.timeout_seconds = timeout_seconds
+                return V2Result(
+                    provider="dashscope",
+                    capability="director",
+                    request_id="director-request-1",
+                    payload={"content": "{}"},
+                    cost_units=23,
+                    elapsed_ms=19,
+                )
+
+        client = StrictDirectorClient()
+        provider = QwenCompiledDirector(client, timeout_seconds=120)
+        request = {
+            "scene_candidates": [{
+                "id": "candidate_01",
+                "caption_ids": ["caption_001"],
+                "authoritative_text": "权威原文",
+            }],
+            "capabilities": {
+                "layout_capabilities": ["speaker_fullscreen"],
+                "layout_variants": {"speaker_fullscreen": ["clean_center"]},
+                "overlay_capabilities": ["standard_caption"],
+                "animation_capabilities": ["subtitle_pop"],
+                "transition_capabilities": ["hard_cut"],
+                "theme_profile_ids": ["editorial_clean"],
+            },
+        }
+
+        result = provider.generate_decision(
+            request,
+            purpose="initial",
+            idempotency_key="director-1",
+            deadline_at=9_999_999_999,
+        )
+
+        self.assertEqual("{}", result.payload["content"])
+        self.assertEqual({"tokens": 23}, result.usage)
+        self.assertEqual(120, client.timeout_seconds)
+        self.assertEqual(request, json.loads(client.user_prompt))
+        for required_field in (
+            '"scene_directives"',
+            '"material_slot_directives"',
+            '"source_caption_ids"',
+            '"audio_intent"',
+        ):
+            self.assertIn(required_field, client.system_prompt)
+        self.assertIn("candidate_01", client.user_prompt)
+        self.assertIn("material_bindings 必须为空", client.system_prompt)
+        self.assertIn("必须等于同场景 overlay instance_id", client.system_prompt)
+        self.assertIn("max_chars", client.system_prompt)
+        self.assertIn("semantic 必须逐字复制", client.system_prompt)
 
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()

@@ -12,6 +12,8 @@ def _record(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping): return copy.deepcopy(dict(value))
     slots = getattr(value, "__slots__", ())
     if slots: return {name: copy.deepcopy(getattr(value, name)) for name in slots}
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, Mapping): return copy.deepcopy(dict(attributes))
     raise ValueError("director_candidate_invalid")
 
 def _visible(value: Mapping[str, Any] | None, captions: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
@@ -41,6 +43,8 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
     layouts, overlays, presets, transitions = (allowed(name) for name in ("layout_capabilities","overlay_capabilities","animation_capabilities","transition_capabilities"))
     variants = capabilities.get("layout_variants", {})
     if not isinstance(variants,Mapping): raise ValueError("director_capabilities_invalid")
+    layout_requirements = capabilities.get("layout_requirements", {})
+    if not isinstance(layout_requirements, Mapping): raise ValueError("director_capabilities_invalid")
     scenes=[]; arcs=[]; requests=[]; cues=[{"id":"bgm_01","type":"bgm","priority":"required","start_ms":0,"end_ms":duration,"description":str(decision.get("audio_intent",{}).get("bgm_description","bounded instrumental"))[:240]}]
     material_by_id = {str(_record(item).get("material_id")):_record(item) for item in materials}
     for index,(candidate,directive) in enumerate(zip(rows,directives,strict=True),1):
@@ -67,12 +71,24 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
         if headline["text_kind"]=="ui_label" and highlight["text_kind"]=="ui_label": headline=_visible({"text_kind":"verbatim","source_caption_ids":list(candidate.get("caption_ids",()))},caption_by_id)
         slots=[]
         sources = [*( (source, True) for source in directive.get("material_bindings",()) ), *( (source, False) for source in directive.get("material_slot_directives",()) )]
+        layout_requirement = layout_requirements.get(layout, {})
+        if not isinstance(layout_requirement, Mapping): raise ValueError("director_capabilities_invalid")
+        semantic_slots = layout_requirement.get("semantic_slots", ())
+        if not isinstance(semantic_slots, (list, tuple)): raise ValueError("director_capabilities_invalid")
+        semantic_layout_slots = {
+            item.get("purpose"): item.get("layout_slot_id")
+            for item in semantic_slots
+            if isinstance(item, Mapping)
+            and isinstance(item.get("purpose"), str)
+            and isinstance(item.get("layout_slot_id"), str)
+        }
         for source, explicit_layout_slot in sources:
             if not isinstance(source,Mapping) or not isinstance(source.get("slot_id"),str): raise ValueError("director_material_slot_invalid")
             mid=str(source.get("material_id")) if explicit_layout_slot else source["slot_id"]; bound=material_by_id.get(str(source.get("material_id")),{})
             semantic=str(source.get("semantic") or bound.get("semantic") or "source-bound visual")[:240]; purpose=source.get("purpose") or "context"; priority=source.get("priority") or ("required" if source.get("required") else "optional"); ratio=source.get("ratio") or "auto"
             slot={"id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"start_ms":start,"end_ms":end}
             if explicit_layout_slot: slot["layout_slot_id"]=source["slot_id"]
+            elif purpose in semantic_layout_slots: slot["layout_slot_id"]=semantic_layout_slots[purpose]
             slots.append(slot); requests.append({"request_id":mid,"semantic":semantic,"purpose":purpose,"priority":priority,"ratio":ratio,"time_range":{"start_ms":start,"end_ms":end}})
         scenes.append({"id":f"scene_{index:02d}","start_ms":start,"end_ms":end,"intent":str(candidate.get("authoritative_text") or "authoritative scene")[:240],"layout_id":layout,"layout_variant":variant,"visual_type":"director_program","headline":headline,"highlight":highlight,"overlay_ids":[item["component_id"] for item in instances],"overlay_instances":instances,"material_slots":slots,"animations":anim,"transition":transition})
         arcs.append({"id":f"arc_{index:02d}","role":_ARC.get(directive.get("narrative_role"),"problem"),"start_ms":start,"end_ms":end,"summary":str(candidate.get("authoritative_text") or "authoritative scene")[:240]})

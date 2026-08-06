@@ -803,6 +803,12 @@ def _load_schema(name: str) -> dict[str, Any]:
         ) from exc
 
 
+def load_frozen_schema(name: str) -> dict[str, Any]:
+    """Return a mutable copy without exposing the cached contract object."""
+
+    return copy.deepcopy(_load_schema(name))
+
+
 def _json_path(parts: Any) -> str:
     result = "$"
     for part in parts:
