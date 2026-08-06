@@ -12,7 +12,7 @@ export function compileQuoteReversal(input) {
   const bodies = {
     diagonal_statement: `<blockquote class="hf-v2-diagonal-statement"><svg viewBox="0 0 100 100" aria-hidden="true"><path d="M0 85 100 15"></path></svg>${quote}<footer>${evidence}</footer></blockquote>`,
     strike_reveal: `<article class="hf-v2-strike-reveal"><header><del><span></span></del></header><section>${quote}<i></i></section><aside>${evidence}</aside></article>`,
-    question_answer: `<main class="hf-v2-question-answer"><section><b>?</b>${evidence}</section><div class="hf-v2-answer-divider"><span></span></div><aside>${quote}<footer class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></footer></aside></main>`,
+    question_answer: `<main class="hf-v2-question-answer"><section><b>?</b>${evidence}</section><div class="hf-v2-answer-divider"><span></span></div><aside>${quote}<footer id="${prepared.prefix}_answer_footer" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></footer></aside></main>`,
   };
   return layoutResult({contract: QUOTE_REVERSAL_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `quote-${input.variantId}`, body: bodies[input.variantId], criticalRegions: regions(input.variantId, input.ratio)});
 }

@@ -51,11 +51,10 @@ export function assetOrFallback({prefix, slot, value, duration, trackIndex}) {
 
 export function speakerSlot({prefix, value, duration, trackIndex}) {
   const asset = normalizeAsset(value, "speaker");
-  const attrs = clipAttributes(duration, trackIndex);
   const element = asset.kind === "video"
     ? speakerVideos({prefix, value, asset, duration, trackIndex})
     : `<img alt="" src="${asset.path}">`;
-  return `<div id="${prefix}_speaker" class="hf-v2-speaker clip" data-slot="speaker" data-v2-region="speaker" ${attrs}>${element}</div>`;
+  return `<div id="${prefix}_speaker" class="hf-v2-speaker" data-slot="speaker" data-v2-region="speaker">${element}</div>`;
 }
 
 function speakerVideos({prefix, value, asset, duration, trackIndex}) {
@@ -64,7 +63,7 @@ function speakerVideos({prefix, value, asset, duration, trackIndex}) {
   return clips.map((clip, ordinal) => {
     if (!Number.isInteger(clip.localStartMs) || clip.localStartMs < 0 || !Number.isInteger(clip.durationMs) || clip.durationMs <= 0 || !Number.isInteger(clip.playbackStartMs) || clip.playbackStartMs < 0) throw new Error("layout_source_clip_invalid");
     const id = `${prefix}_speaker_clip_${Number.isInteger(clip.index) ? clip.index : ordinal}`;
-    return `<video id="${id}" muted playsinline preload="metadata" src="${asset.path}" data-start="${seconds(clip.localStartMs)}" data-duration="${seconds(clip.durationMs)}" data-playback-start="${seconds(clip.playbackStartMs)}" data-track-index="${trackIndex}"></video>`;
+    return `<video id="${id}" class="clip" muted playsinline preload="metadata" src="${asset.path}" data-start="${seconds(clip.localStartMs)}" data-duration="${seconds(clip.durationMs)}" data-playback-start="${seconds(clip.playbackStartMs)}" data-track-index="${trackIndex}"></video>`;
   }).join("");
 }
 
@@ -105,7 +104,7 @@ export function layoutResult({contract, variantId, ratio, input, structure, body
     const legacyHost = placement === "title_safe" ? "title" : placement === "subtitle_safe" ? "captions" : placement;
     return `<aside id="${input.prefix}_safe_${placement}" class="hf-v2-safe-area hf-v2-safe-${placement} clip" data-safe-host="${legacyHost}" data-overlay-host="${placement}" data-safe-box="${box.x},${box.y},${box.width},${box.height}" data-safe-area="${ratio}" ${clipAttributes(input.duration, safeAreaHostTrackIndex(index))}>${input.overlays[placement]}</aside>`;
   }).join("");
-  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id} clip" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}" data-start="0" data-duration="${input.duration}" data-track-index="1"${input.style}>${body}${hosts}<style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
+  const html = `<section id="${root}" class="hf-v2-layout hf-v2-layout-${contract.id}" data-layout-v2="${contract.id}" data-layout-variant="${variantId}" data-layout-ratio="${ratio}" data-layout-structure="${structure}"${input.style}>${body}${hosts}<style data-layout-audit="${contract.id}">${layoutCss({contract, variantId, ratio, criticalRegions})}</style></section>`;
   return Object.freeze({
     html,
     publicTargets: Object.freeze({root: `#${root}`, safeAreas: Object.freeze(Object.fromEntries(V2_OVERLAY_PLACEMENTS.map((placement) => [placement, `#${input.prefix}_safe_${placement}`]))), slots: Object.freeze(publicSlots)}),

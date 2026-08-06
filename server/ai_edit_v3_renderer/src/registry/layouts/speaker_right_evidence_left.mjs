@@ -10,7 +10,7 @@ export function compileSpeakerRightEvidenceLeft(input) {
   const speaker = speakerSlot({prefix: prepared.prefix, value: prepared.slots.speaker, duration: prepared.duration, trackIndex: 3});
   const evidence = assetOrFallback({prefix: prepared.prefix, slot: "evidence", value: prepared.slots.evidence, duration: prepared.duration, trackIndex: 4});
   const bodies = {
-    document_panel: `<article class="hf-v2-document-stage"><section class="hf-v2-document-panel">${evidence}<footer class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i><i></i></footer></section><figure class="hf-v2-right-speaker">${speaker}</figure></article>`,
+    document_panel: `<article class="hf-v2-document-stage"><section class="hf-v2-document-panel">${evidence}<footer id="${prepared.prefix}_document_footer" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i><i></i></footer></section><figure class="hf-v2-right-speaker">${speaker}</figure></article>`,
     comparison_panel: `<main class="hf-v2-comparison-stage"><aside class="hf-v2-comparison-proof"><header><b></b><b></b></header><div>${evidence}</div></aside><section class="hf-v2-comparison-divider"><span></span></section><figure>${speaker}</figure></main>`,
     quote_evidence: `<blockquote class="hf-v2-quote-proof"><span aria-hidden="true">“</span><figure>${evidence}</figure><footer><i></i></footer></blockquote><aside class="hf-v2-quote-speaker">${speaker}</aside>`,
   };

@@ -12,7 +12,7 @@ export function compileMaterialFullscreenSpeakerPip(input) {
   const detail = assetOrFallback({prefix: prepared.prefix, slot: "detail", value: prepared.slots.detail, duration: prepared.duration, trackIndex: 3});
   const bodies = {
     pip_round: `<main class="hf-v2-pip-round-stage"><figure class="hf-v2-pip-primary">${primary}</figure><aside class="hf-v2-pip-round">${speaker}</aside><footer class="hf-v2-pip-orbit">${detail}</footer></main>`,
-    pip_card: `<article class="hf-v2-pip-card-stage"><figure>${primary}<figcaption class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></figcaption></figure><section class="hf-v2-pip-card">${speaker}<footer>${detail}</footer></section></article>`,
+    pip_card: `<article class="hf-v2-pip-card-stage"><figure>${primary}<figcaption id="${prepared.prefix}_pip_card_caption" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></figcaption></figure><section class="hf-v2-pip-card">${speaker}<footer>${detail}</footer></section></article>`,
     pip_edge: `<section class="hf-v2-pip-edge-stage"><div class="hf-v2-edge-primary">${primary}</div><aside class="hf-v2-edge-rail"><header>${detail}</header><figure>${speaker}</figure><footer><span></span></footer></aside></section>`,
   };
   return layoutResult({

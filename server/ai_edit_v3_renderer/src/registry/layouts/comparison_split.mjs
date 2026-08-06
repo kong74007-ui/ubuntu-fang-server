@@ -11,7 +11,7 @@ export function compileComparisonSplit(input) {
   const detail = assetOrFallback({prefix: prepared.prefix, slot: "detail", value: prepared.slots.detail, duration: prepared.duration, trackIndex: 4});
   const bodies = {
     vertical_divide: `<main class="hf-v2-vertical-compare"><section>${primary}</section><div class="hf-v2-compare-divider"><span></span></div><aside>${detail}</aside></main>`,
-    before_after_slider: `<figure class="hf-v2-before-after"><div>${primary}</div><aside>${detail}</aside><figcaption class="clip" ${clipAttributes(prepared.duration, 2)}><span></span><i></i></figcaption></figure>`,
+    before_after_slider: `<figure class="hf-v2-before-after"><div>${primary}</div><aside>${detail}</aside><figcaption id="${prepared.prefix}_comparison_slider" class="clip" ${clipAttributes(prepared.duration, 2)}><span></span><i></i></figcaption></figure>`,
     score_compare: `<article class="hf-v2-score-compare"><header><b></b><b></b></header><section>${primary}<meter min="0" max="100" value="72"></meter></section><aside>${detail}<meter min="0" max="100" value="48"></meter></aside><footer><i></i></footer></article>`,
   };
   return layoutResult({contract: COMPARISON_SPLIT_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `comparison-${input.variantId}`, body: bodies[input.variantId], criticalRegions: regions(input.variantId, input.ratio)});

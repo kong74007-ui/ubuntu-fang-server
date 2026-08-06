@@ -10,7 +10,7 @@ export function compileSpeakerLeftInfoRight(input) {
   const speaker = speakerSlot({prefix: prepared.prefix, value: prepared.slots.speaker, duration: prepared.duration, trackIndex: 3});
   const evidence = assetOrFallback({prefix: prepared.prefix, slot: "evidence", value: prepared.slots.evidence, duration: prepared.duration, trackIndex: 4});
   const bodies = {
-    card_stack: `<main class="hf-v2-left-speaker-card">${speaker}</main><aside class="hf-v2-right-card-stack"><header class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></header><section>${evidence}</section><footer><b></b><b></b></footer></aside>`,
+    card_stack: `<main class="hf-v2-left-speaker-card">${speaker}</main><aside class="hf-v2-right-card-stack"><header id="${prepared.prefix}_card_stack_header" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i><i></i></header><section>${evidence}</section><footer><b></b><b></b></footer></aside>`,
     number_focus: `<article class="hf-v2-left-speaker-number"><figure>${speaker}</figure><aside class="hf-v2-number-proof"><svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="42"></circle><path d="M28 56h44"></path></svg><section>${evidence}</section></aside></article>`,
     image_evidence: `<section class="hf-v2-left-speaker-evidence"><div class="hf-v2-evidence-canvas">${evidence}</div><figure class="hf-v2-speaker-cutout">${speaker}<figcaption><span></span></figcaption></figure></section>`,
   };

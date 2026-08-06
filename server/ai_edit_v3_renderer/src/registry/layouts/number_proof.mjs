@@ -12,7 +12,7 @@ export function compileNumberProof(input) {
   const bodies = {
     hero_number: `<main class="hf-v2-hero-number"><header><span></span></header>${proof}<aside>${evidence}</aside></main>`,
     metric_grid: `<section class="hf-v2-metric-grid"><div>${proof}</div><ul><li><b></b></li><li><b></b></li><li><b></b></li></ul><footer>${evidence}</footer></section>`,
-    chart_callout: `<article class="hf-v2-chart-callout"><svg viewBox="0 0 100 60" aria-hidden="true"><path d="M5 52 25 35 45 43 66 18 95 8"></path><circle cx="66" cy="18" r="3"></circle></svg><aside>${proof}</aside><figure>${evidence}<figcaption class="clip" ${clipAttributes(prepared.duration, 2)}><i></i></figcaption></figure></article>`,
+    chart_callout: `<article class="hf-v2-chart-callout"><svg viewBox="0 0 100 60" aria-hidden="true"><path d="M5 52 25 35 45 43 66 18 95 8"></path><circle cx="66" cy="18" r="3"></circle></svg><aside>${proof}</aside><figure>${evidence}<figcaption id="${prepared.prefix}_chart_caption" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i></figcaption></figure></article>`,
   };
   return layoutResult({contract: NUMBER_PROOF_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `number-${input.variantId}`, body: bodies[input.variantId], criticalRegions: regions(input.variantId, input.ratio)});
 }

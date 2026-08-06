@@ -11,7 +11,7 @@ export function compileMethodTimeline(input) {
   const accent = assetOrFallback({prefix: prepared.prefix, slot: "accent", value: prepared.slots.accent, duration: prepared.duration, trackIndex: 4});
   const bodies = {
     horizontal_timeline: `<main class="hf-v2-horizontal-timeline"><svg viewBox="0 0 100 20" aria-hidden="true"><path d="M5 10h90"></path></svg>${steps}<aside>${accent}</aside></main>`,
-    vertical_milestones: `<section class="hf-v2-vertical-milestones"><header class="clip" ${clipAttributes(prepared.duration, 2)}><i></i></header><nav>${steps}</nav><figure>${accent}<figcaption><span></span></figcaption></figure></section>`,
+    vertical_milestones: `<section class="hf-v2-vertical-milestones"><header id="${prepared.prefix}_milestones_header" class="clip" ${clipAttributes(prepared.duration, 2)}><i></i></header><nav>${steps}</nav><figure>${accent}<figcaption><span></span></figcaption></figure></section>`,
     chapter_route: `<article class="hf-v2-chapter-route"><aside>${accent}</aside><ol><li><b>01</b></li><li><b>02</b></li><li><b>03</b></li></ol><section>${steps}</section><footer><svg viewBox="0 0 100 30" aria-hidden="true"><path d="M0 15h100"></path></svg></footer></article>`,
   };
   return layoutResult({contract: METHOD_TIMELINE_CONTRACT, variantId: input.variantId, ratio: input.ratio, input: prepared, structure: `method-${input.variantId}`, body: bodies[input.variantId], criticalRegions: regions(input.variantId, input.ratio)});

@@ -11,7 +11,7 @@ export function compileSpeakerFullscreen(input) {
   const evidence = assetOrFallback({prefix: prepared.prefix, slot: "evidence", value: prepared.slots.evidence, duration: prepared.duration, trackIndex: 4});
   const bodies = {
     clean_center: `<main class="hf-v2-speaker-stage">${speaker}</main><footer class="hf-v2-evidence-dock">${evidence}</footer>`,
-    headline_top: `<header class="hf-v2-headline-band clip" ${clipAttributes(prepared.duration, 2)}></header><main class="hf-v2-speaker-stage">${speaker}${evidence}</main>`,
+    headline_top: `<header id="${prepared.prefix}_headline_band" class="hf-v2-headline-band clip" ${clipAttributes(prepared.duration, 2)}></header><main class="hf-v2-speaker-stage">${speaker}${evidence}</main>`,
     caption_sidebar: `<main class="hf-v2-speaker-stage">${speaker}</main><aside class="hf-v2-caption-rail">${evidence}</aside>`,
   };
   const critical = input.ratio === "16:9" ? {speaker: {x: 550, y: 96, width: 820, height: 650}} : {speaker: {x: 120, y: 340, width: 840, height: 940}};

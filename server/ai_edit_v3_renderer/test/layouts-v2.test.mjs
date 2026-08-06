@@ -114,6 +114,7 @@ test("layout v2 compiles all thirty-six variants for both ratios with auditable 
     assert.match(compiled.html, new RegExp(`data-layout-variant="${variantId}"`));
     assert.match(compiled.html, /data-fallback="no_optional_media"/);
     assert.match(compiled.html, /data-fallback-state="rendered"/);
+    assertStrictTimelineStructure(compiled.html, `${layout.id}/${variantId}/${ratio}`);
     const signature = treeSignature(compiled.html);
     const variantKey = `${layout.id}/${variantId}`;
     if (signatures.has(variantKey)) assert.equal(signatures.get(variantKey), signature, "ratio changes geometry, not the variant DOM structure");
@@ -215,6 +216,27 @@ function assertBox(box, audit) {
 function regionBody(html, region) {
   const pattern = new RegExp(`<([a-z][a-z0-9-]*)\\b[^>]*data-v2-region="${region}"[^>]*>([\\s\\S]*?)<\\/\\1>`, "u");
   return html.match(pattern)?.[2] ?? "";
+}
+
+function assertStrictTimelineStructure(html, label) {
+  const markup = html.replace(/<style\b[\s\S]*?<\/style>/gu, "");
+  const stack = [];
+  for (const match of markup.matchAll(/<\/?([a-z][a-z0-9-]*)\b[^>]*>/giu)) {
+    const [token, rawTag] = match;
+    const tag = rawTag.toLowerCase();
+    if (token.startsWith("</")) {
+      assert.equal(stack.pop()?.tag, tag, `${label} closes ${tag} in document order`);
+      continue;
+    }
+    const timed = /\sdata-start="/u.test(token);
+    if (timed) assert.match(token, /\sid="[a-z][a-z0-9_]*"/u, `${label} gives every timeline-visible element a stable id`);
+    if (tag === "video" && timed) {
+      assert.equal(stack.some((node) => node.timed), false, `${label} does not nest a timed video in another timed element`);
+      assert.match(token, /\sclass="[^"]*\bclip\b[^"]*"/u, `${label} initializes every timed video as a managed clip`);
+    }
+    if (!token.endsWith("/>") && tag !== "img") stack.push({tag, timed});
+  }
+  assert.equal(stack.length, 0, `${label} has balanced timeline markup`);
 }
 
 function treeSignature(html) {

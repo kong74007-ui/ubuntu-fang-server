@@ -10,7 +10,7 @@ export function compileCtaOffer(input) {
   const message = textSlot({prefix: prepared.prefix, slot: "message", value: prepared.slots.message, duration: prepared.duration, trackIndex: 3, maxChars: 120, maxLines: 3});
   const accent = assetOrFallback({prefix: prepared.prefix, slot: "accent", value: prepared.slots.accent, duration: prepared.duration, trackIndex: 4});
   const bodies = {
-    offer_card: `<main class="hf-v2-offer-card"><header><i></i><i></i></header><section>${message}<footer class="clip" ${clipAttributes(prepared.duration, 2)}><b></b></footer></section><aside>${accent}</aside></main>`,
+    offer_card: `<main class="hf-v2-offer-card"><header><i></i><i></i></header><section>${message}<footer id="${prepared.prefix}_offer_footer" class="clip" ${clipAttributes(prepared.duration, 2)}><b></b></footer></section><aside>${accent}</aside></main>`,
     qr_placeholder: `<article class="hf-v2-qr-offer"><figure>${accent}<figcaption><svg viewBox="0 0 100 100" aria-hidden="true"><path d="M8 8h28v28H8zM64 8h28v28H64zM8 64h28v28H8zM58 58h12v12H58zM78 58h14v34H78zM58 78h12v14H58z"></path></svg></figcaption></figure><section>${message}</section></article>`,
     action_steps: `<section class="hf-v2-action-steps"><nav><ol><li><b>1</b></li><li><b>2</b></li><li><b>3</b></li></ol></nav><main>${message}</main><aside>${accent}</aside><footer><span></span></footer></section>`,
   };
