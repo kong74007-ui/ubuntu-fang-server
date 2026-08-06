@@ -30,6 +30,7 @@ from .audio import (
     compile_audio_plan,
     generate_task_audio,
 )
+from .capability_catalog import load_visual_capability_catalog
 from .contracts import (
     canonical_json,
     freeze_render_manifest,
@@ -81,10 +82,32 @@ def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, An
         for layout in layouts
     ):
         raise ValueError("visual_program_capabilities_incomplete")
-    required = ("overlay_variants", "overlay_animation_targets", "layout_animation_targets", "theme_profile_ids", "overlay_placement_budgets", "output_ratio")
+    required = ("overlay_variants", "overlay_animation_targets", "layout_animation_targets", "theme_profile_ids", "identity_match_capability", "overlay_placement_budgets", "output_ratio")
     if any(name not in capabilities for name in required):
         raise ValueError("visual_program_capabilities_incomplete")
     if capabilities.get("output_ratio") not in {"16:9", "9:16"}:
+        raise ValueError("visual_program_capabilities_incomplete")
+    if (
+        capabilities.get("identity_match_capability") is not False
+        or "card_match_cut" in capabilities.get("transition_capabilities", ())
+    ):
+        raise ValueError("visual_program_capabilities_incomplete")
+    for name, expected in (
+        ("layout_variants", set(layouts)),
+        ("layout_animation_targets", set(layouts)),
+        ("overlay_variants", set(capabilities.get("overlay_capabilities", ()))),
+        ("overlay_animation_targets", set(capabilities.get("overlay_capabilities", ()))),
+    ):
+        catalog = capabilities.get(name)
+        if not isinstance(catalog, Mapping) or set(catalog) != expected:
+            raise ValueError("visual_program_capabilities_incomplete")
+    if any(
+        any(capabilities[name].values())
+        for name in (
+            "layout_animation_targets", "overlay_variants",
+            "overlay_animation_targets",
+        )
+    ):
         raise ValueError("visual_program_capabilities_incomplete")
     try:
         budget_components = {identity[0] for identity in overlay_budget_index(capabilities)}
@@ -1343,8 +1366,7 @@ class ProductionStageCoordinator:
                 candidates = build_scene_candidates(timeline, descriptors, ratio=str(normalized["ratio"]), input_type=normalized["input_type"])
                 placement_catalog = load_overlay_placement_catalog(self.renderer_root)
                 visual_capabilities = visual_program_capabilities({
-                    **capabilities,
-                    "overlay_capabilities": sorted({entry["component_id"] for entry in placement_catalog["entries"]}),
+                    **load_visual_capability_catalog(self.renderer_root),
                     "overlay_placement_budgets": placement_catalog,
                     "output_ratio": str(normalized["ratio"]),
                 })

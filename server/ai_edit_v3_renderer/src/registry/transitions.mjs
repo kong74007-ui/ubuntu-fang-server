@@ -3,7 +3,12 @@ const TARGET = /^#[a-z][a-z0-9_]{0,95}$/u;
 const OPERATION_VERSIONS = new Set(["1.0", "2.0"]);
 const OPERATION_CONTEXTS = new WeakMap();
 
-export const TRANSITION_CONTRACTS = Object.freeze(IDS.map((id) => Object.freeze({id, version: "1.0.0", finite: true})));
+export const TRANSITION_CONTRACTS = Object.freeze(IDS.map((id) => Object.freeze({
+  id,
+  version: "1.0.0",
+  finite: true,
+  identityRequired: id === "card_match_cut",
+})));
 
 export function applyTransition(options) {
   if (!plainRecord(options) || Object.prototype.hasOwnProperty.call(options, "identity")) throw new Error("transition_identity_unproven");

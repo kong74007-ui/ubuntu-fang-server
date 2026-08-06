@@ -245,10 +245,79 @@ class ProductionDirectorTests(unittest.TestCase):
         )
 
     def test_visual_program_rejects_missing_real_variant_catalog_before_provider_call(self):
+        from server.content_domains.ai_edit_v3.capability_catalog import (
+            load_visual_capability_catalog,
+            validate_visual_capability_catalog,
+        )
+        from server.content_domains.ai_edit_v3.overlay_catalog import (
+            load_overlay_placement_catalog,
+        )
         from server.content_domains.ai_edit_v3.production import visual_program_capabilities
 
         with self.assertRaisesRegex(ValueError, "visual_program_capabilities_incomplete"):
             visual_program_capabilities({"layout_capabilities": ["quote_reversal"]})
+
+        renderer = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+        capabilities = {
+            **load_visual_capability_catalog(renderer),
+            "overlay_placement_budgets": load_overlay_placement_catalog(renderer),
+            "output_ratio": "9:16",
+        }
+        for field, capability_id in (
+            ("layout_variants", "speaker_fullscreen"),
+            ("layout_animation_targets", "speaker_fullscreen"),
+            ("overlay_variants", "standard_caption"),
+            ("overlay_animation_targets", "standard_caption"),
+        ):
+            broken = json.loads(json.dumps(capabilities))
+            del broken[field][capability_id]
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, "visual_program_capabilities_incomplete"
+            ):
+                visual_program_capabilities(broken)
+
+        frozen_catalog = load_visual_capability_catalog(renderer)
+        for field, replacement in (
+            ("identity_match_capability", True),
+            (
+                "transition_capabilities",
+                [*frozen_catalog["transition_capabilities"], "card_match_cut"],
+            ),
+        ):
+            broken = json.loads(json.dumps(frozen_catalog))
+            broken[field] = replacement
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, "visual_capability_catalog_invalid"
+            ):
+                validate_visual_capability_catalog(broken)
+            broken.update({
+                "overlay_placement_budgets": load_overlay_placement_catalog(renderer),
+                "output_ratio": "9:16",
+            })
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, "visual_program_capabilities_incomplete"
+            ):
+                visual_program_capabilities(broken)
+
+        for field, capability_id, unsupported in (
+            ("overlay_variants", "standard_caption", "primary"),
+            ("overlay_animation_targets", "standard_caption", "caption"),
+            ("layout_animation_targets", "speaker_fullscreen", "root"),
+        ):
+            broken = json.loads(json.dumps(frozen_catalog))
+            broken[field][capability_id] = [unsupported]
+            with self.subTest(field=field, unsupported=unsupported), self.assertRaisesRegex(
+                ValueError, "visual_capability_catalog_invalid"
+            ):
+                validate_visual_capability_catalog(broken)
+            broken.update({
+                "overlay_placement_budgets": load_overlay_placement_catalog(renderer),
+                "output_ratio": "9:16",
+            })
+            with self.subTest(field=field, unsupported=unsupported), self.assertRaisesRegex(
+                ValueError, "visual_program_capabilities_incomplete"
+            ):
+                visual_program_capabilities(broken)
 
     def test_visual_program_gate_zero_keeps_legacy_director_path(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
@@ -272,6 +341,107 @@ class ProductionDirectorTests(unittest.TestCase):
         old_path.assert_called_once()
         visual_path.assert_not_called()
 
+    def test_visual_program_gate_one_uses_renderer_catalog_and_compiles_plan(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        captured_capabilities = []
+        decision = SimpleNamespace(
+            value={
+                "version": "1.0",
+                "creative_concept": "内容驱动的商业讲解",
+                "narrative_pattern": "question_proof",
+                "theme_profile_id": "editorial_clean",
+                "design_intent": {
+                    "density": "balanced",
+                    "motion_energy": "medium",
+                    "image_fit": "cover",
+                    "decoration_intensity": "medium",
+                },
+                "scene_directives": [{
+                    "scene_id": "candidate_01",
+                    "narrative_role": "hook",
+                    "layout_id": "speaker_fullscreen",
+                    "layout_variant": "clean_center",
+                    "headline": {
+                        "text_kind": "verbatim",
+                        "source_caption_ids": ["caption_001"],
+                    },
+                    "overlay_instances": [{
+                        "instance_id": "caption_overlay",
+                        "component_id": "standard_caption",
+                        "content_ref": "headline",
+                        "placement": "subtitle_safe",
+                    }],
+                    "material_bindings": [],
+                    "material_slot_directives": [],
+                    "animations": [{
+                        "target_id": "caption_overlay",
+                        "preset": "subtitle_pop",
+                        "direction": "up",
+                        "duration_ms": 400,
+                        "delay_ms": 0,
+                    }],
+                    "transition": "hard_cut",
+                    "sound_events": [],
+                }],
+                "audio_intent": {
+                    "bgm_description": "克制的无歌词电子氛围",
+                    "energy": "medium",
+                    "dialogue_priority": True,
+                },
+            },
+            decision_sha256="b" * 64,
+            provider_request_id="director-request-1",
+            raw_output_sha256="c" * 64,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"AI_EDIT_V3_VISUAL_PROGRAM_ENABLED": "1"}, clear=False
+        ):
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
+            coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
+            coordinator.director = object()
+            coordinator.renderer = SimpleNamespace(registry_sha256="sha256:" + "d" * 64)
+            root = coordinator._root("job-gate-one")
+            (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_video", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
+            (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000}], "source_segments": [{"id": "segment_01", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000, "protected": False, "output_start_ms": None, "output_end_ms": None}], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
+            def capture_decision(context, *_args, **_kwargs):
+                captured_capabilities.append(context.capabilities)
+                return decision
+            with patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision) as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
+                outcome = coordinator._stage(
+                    "planning",
+                    {
+                        "job_id": "job-gate-one",
+                        "owner_id": "alice",
+                        "request_sha256": "1" * 64,
+                        "stage_input_sha256": "0" * 64,
+                        "normalized_request_json": '{"input_type":"uploaded_video"}',
+                    },
+                    SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"),
+                )
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+
+        self.assertEqual("resolving_materials", outcome.next_state)
+        visual_path.assert_called_once()
+        legacy_path.assert_not_called()
+        self.assertEqual(1, len(captured_capabilities))
+        capabilities = captured_capabilities[0]
+        self.assertIn("clean_center", capabilities["layout_variants"]["speaker_fullscreen"])
+        self.assertEqual([], capabilities["overlay_variants"]["standard_caption"])
+        self.assertEqual([], capabilities["overlay_animation_targets"]["standard_caption"])
+        self.assertEqual([], capabilities["layout_animation_targets"]["speaker_fullscreen"])
+        self.assertIn("editorial_clean", capabilities["theme_profile_ids"])
+        self.assertFalse(capabilities["identity_match_capability"])
+        self.assertNotIn("card_match_cut", capabilities["transition_capabilities"])
+        self.assertEqual("overlay-placement-v1", capabilities["overlay_placement_budgets"]["version"])
+        self.assertEqual("9:16", capabilities["output_ratio"])
+        self.assertEqual("2.0", plan["version"])
+        self.assertEqual("1.0", plan["visual_program_version"])
+        self.assertEqual("speaker_fullscreen", plan["scenes"][0]["layout_id"])
+        self.assertEqual("clean_center", plan["scenes"][0]["layout_variant"])
+
     def test_visual_program_gate_one_fails_closed_before_real_director_call_when_catalog_is_incomplete(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
@@ -283,12 +453,19 @@ class ProductionDirectorTests(unittest.TestCase):
             coordinator.renderer_root = Path(__file__).resolve().parents[1] / "server" / "ai_edit_v3_renderer"
             coordinator.store = type("Store", (), {"environment": "test", "resolve_request_uploads_for_owner": lambda *_args, **_kwargs: {"materials": []}})()
             coordinator.director = object()
-            root = coordinator._root("job-gate-one")
+            incomplete_capabilities = {
+                "layout_capabilities": ["speaker_fullscreen"],
+                "overlay_capabilities": ["standard_caption"],
+                "animation_capabilities": ["subtitle_pop"],
+                "transition_capabilities": ["hard_cut"],
+                "theme_capabilities": {},
+            }
+            root = coordinator._root("job-gate-incomplete")
             (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
             (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000}], "source_segments": [{"id": "segment_01", "text": "authoritative caption", "start_ms": 0, "end_ms": 4000, "protected": False, "output_start_ms": None, "output_end_ms": None}], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
-            with patch("server.content_domains.ai_edit_v3.production.generate_director_decision") as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
+            with patch("server.content_domains.ai_edit_v3.production.load_visual_capability_catalog", return_value=incomplete_capabilities), patch("server.content_domains.ai_edit_v3.production.generate_director_decision") as visual_path, patch("server.content_domains.ai_edit_v3.production.generate_edit_plan") as legacy_path:
                 with self.assertRaisesRegex(ValueError, "visual_program_capabilities_incomplete"):
-                    coordinator._stage("planning", {"job_id": "job-gate-one", "owner_id": "alice", "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
+                    coordinator._stage("planning", {"job_id": "job-gate-incomplete", "owner_id": "alice", "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
 
         visual_path.assert_not_called()
         legacy_path.assert_not_called()

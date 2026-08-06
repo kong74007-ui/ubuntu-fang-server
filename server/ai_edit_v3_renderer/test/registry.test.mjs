@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import test from "node:test";
 
 import {
@@ -10,6 +11,7 @@ import {
   resolveOverlay,
   resolveTheme,
 } from "../src/registry/index.mjs";
+import {buildVisualCapabilitiesContract} from "../src/registry/visual-capabilities.mjs";
 
 const LAYOUTS = [
   "comparison_split", "cta_offer", "editorial_collage", "material_fullscreen_speaker_pip",
@@ -33,10 +35,24 @@ test("registry exposes only the frozen versioned capability set", () => {
   assert.deepEqual(contract.transitions.map(({id}) => id), [
     "card_match_cut", "directional_slide", "hard_cut", "light_flash", "soft_wipe",
   ]);
+  assert.equal(contract.transitions.find(({id}) => id === "card_match_cut").identityRequired, true);
+  assert(contract.transitions.filter(({id}) => id !== "card_match_cut").every(({identityRequired}) => identityRequired === false));
   assert(Object.isFrozen(contract));
   assert.match(getRegistrySha256(), /^sha256:[0-9a-f]{64}$/);
   assert.equal(getRegistrySha256(), getRegistrySha256());
   assert.equal(JSON.stringify(contract), JSON.stringify(getRegistryContract()));
+});
+
+test("visual capability artifact is derived from the renderer registry", () => {
+  const contract = getRegistryContract();
+  const artifact = JSON.parse(readFileSync(
+    new URL("../src/registry/visual-capabilities-v1.json", import.meta.url),
+    "utf8",
+  ));
+
+  assert.deepEqual(artifact, buildVisualCapabilitiesContract(contract));
+  assert.equal(artifact.identity_match_capability, false);
+  assert(!artifact.transition_capabilities.includes("card_match_cut"));
 });
 
 test("registry rejects duplicate IDs and never resolves aliases", () => {

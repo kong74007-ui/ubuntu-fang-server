@@ -1,0 +1,187 @@
+{
+  "version": "ai-edit-v3-visual-capabilities-v1",
+  "layout_capabilities": [
+    "comparison_split",
+    "cta_offer",
+    "editorial_collage",
+    "material_fullscreen_speaker_pip",
+    "method_timeline",
+    "number_proof",
+    "product_hero",
+    "quote_reversal",
+    "speaker_fullscreen",
+    "speaker_left_info_right",
+    "speaker_right_evidence_left",
+    "steps_stack"
+  ],
+  "layout_variants": {
+    "comparison_split": [
+      "vertical_divide",
+      "before_after_slider",
+      "score_compare"
+    ],
+    "cta_offer": [
+      "offer_card",
+      "qr_placeholder",
+      "action_steps"
+    ],
+    "editorial_collage": [
+      "magazine_grid",
+      "layered_cards",
+      "film_strip"
+    ],
+    "material_fullscreen_speaker_pip": [
+      "pip_round",
+      "pip_card",
+      "pip_edge"
+    ],
+    "method_timeline": [
+      "horizontal_timeline",
+      "vertical_milestones",
+      "chapter_route"
+    ],
+    "number_proof": [
+      "hero_number",
+      "metric_grid",
+      "chart_callout"
+    ],
+    "product_hero": [
+      "center_pedestal",
+      "split_copy",
+      "detail_gallery"
+    ],
+    "quote_reversal": [
+      "diagonal_statement",
+      "strike_reveal",
+      "question_answer"
+    ],
+    "speaker_fullscreen": [
+      "clean_center",
+      "headline_top",
+      "caption_sidebar"
+    ],
+    "speaker_left_info_right": [
+      "card_stack",
+      "number_focus",
+      "image_evidence"
+    ],
+    "speaker_right_evidence_left": [
+      "document_panel",
+      "comparison_panel",
+      "quote_evidence"
+    ],
+    "steps_stack": [
+      "vertical_steps",
+      "numbered_cards",
+      "progress_path"
+    ]
+  },
+  "overlay_capabilities": [
+    "bullet_list",
+    "chapter_label",
+    "cta_hold",
+    "emphasis_caption",
+    "headline_block",
+    "info_card",
+    "lower_third",
+    "number_proof",
+    "product_tag",
+    "quote_card",
+    "standard_caption",
+    "step_indicator"
+  ],
+  "overlay_variants": {
+    "bullet_list": [],
+    "chapter_label": [],
+    "cta_hold": [],
+    "emphasis_caption": [],
+    "headline_block": [],
+    "info_card": [],
+    "lower_third": [],
+    "number_proof": [],
+    "product_tag": [],
+    "quote_card": [],
+    "standard_caption": [],
+    "step_indicator": []
+  },
+  "overlay_animation_targets": {
+    "bullet_list": [],
+    "chapter_label": [],
+    "cta_hold": [],
+    "emphasis_caption": [],
+    "headline_block": [],
+    "info_card": [],
+    "lower_third": [],
+    "number_proof": [],
+    "product_tag": [],
+    "quote_card": [],
+    "standard_caption": [],
+    "step_indicator": []
+  },
+  "layout_animation_targets": {
+    "comparison_split": [],
+    "cta_offer": [],
+    "editorial_collage": [],
+    "material_fullscreen_speaker_pip": [],
+    "method_timeline": [],
+    "number_proof": [],
+    "product_hero": [],
+    "quote_reversal": [],
+    "speaker_fullscreen": [],
+    "speaker_left_info_right": [],
+    "speaker_right_evidence_left": [],
+    "steps_stack": []
+  },
+  "animation_capabilities": [
+    "card_reveal",
+    "count_up",
+    "fade",
+    "highlight_draw",
+    "image_pan_zoom",
+    "light_sweep",
+    "rotate",
+    "scale",
+    "slide",
+    "split_screen",
+    "stagger",
+    "stamp",
+    "subtitle_pop",
+    "wipe"
+  ],
+  "transition_capabilities": [
+    "directional_slide",
+    "hard_cut",
+    "light_flash",
+    "soft_wipe"
+  ],
+  "theme_capabilities": {
+    "palette_id": [
+      "midnight_gold"
+    ],
+    "typography_id": [
+      "editorial_sans"
+    ],
+    "density": [
+      "airy",
+      "balanced",
+      "dense"
+    ],
+    "motion_energy": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "image_fit": [
+      "contain",
+      "cover",
+      "smart_crop"
+    ]
+  },
+  "theme_profile_ids": [
+    "editorial_clean",
+    "commercial_energy",
+    "premium_dark",
+    "warm_lifestyle"
+  ],
+  "identity_match_capability": false
+}
