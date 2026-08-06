@@ -181,6 +181,15 @@ class ProductionDirectorTests(unittest.TestCase):
             for request in captured_requests
         ))
 
+        self.assertTrue(all(
+            request["scene_candidates"][0]["sound_event_max_offset_ms"] == 3_500
+            for request in captured_requests
+        ))
+        self.assertTrue(all(
+            request["scene_candidates"][0]["sound_events_allowed"] is True
+            for request in captured_requests
+        ))
+
     def test_visual_planning_rejects_missing_or_invalid_persisted_request_sha(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
 
@@ -948,6 +957,9 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertIn("minimum_distinct_signatures", client.system_prompt)
         self.assertIn("max_adjacent_identical", client.system_prompt)
         self.assertIn("max_hidden_ratio", client.system_prompt)
+        self.assertIn("relative to that scene's start", client.system_prompt)
+        self.assertIn("sound_events_allowed is false", client.system_prompt)
+        self.assertIn("sound_event_max_offset_ms", client.system_prompt)
         self.assertIn(
             "scene_signatures_meet_distinct_and_adjacency_policy",
             client.system_prompt,
@@ -2715,6 +2727,57 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertEqual("fail", checks["face_product_obstruction"]["result"])
         self.assertEqual("fail", checks["material_semantic_identity"]["result"])
         self.assertEqual("fail", checks["opening_hook_visual_consistency"]["result"])
+
+    def test_visual_inspector_accepts_two_scenes_when_three_are_timing_impossible(self):
+        from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector
+
+        manifest = {
+            "duration_ms": 14_000,
+            "source_video": {"path": "media/source.mp4", "silent": True},
+            "assets": [],
+            "compositions": [
+                {
+                    "id": "composition_001",
+                    "scene_id": "scene_01",
+                    "start_ms": 0,
+                    "end_ms": 8_600,
+                    "layout_id": "speaker_fullscreen",
+                    "layout_variant": "clean_center",
+                    "asset_ids": [],
+                },
+                {
+                    "id": "composition_002",
+                    "scene_id": "scene_02",
+                    "start_ms": 8_600,
+                    "end_ms": 14_000,
+                    "layout_id": "speaker_fullscreen",
+                    "layout_variant": "clean_center",
+                    "asset_ids": [],
+                },
+            ],
+            "captions": [
+                {"id": "caption_001", "start_ms": 0, "end_ms": 8_500, "text": "One"},
+                {"id": "caption_002", "start_ms": 8_600, "end_ms": 13_500, "text": "Two"},
+                {"id": "caption_003", "start_ms": 13_600, "end_ms": 13_950, "text": "Three"},
+            ],
+        }
+
+        checks = {
+            item["check_id"]: item
+            for item in DeterministicVisualInspector().inspect(
+                manifest=manifest,
+                render_report={},
+            )["checks"]
+        }
+
+        self.assertEqual(
+            "pass",
+            checks["safe_area_and_text_visibility"]["result"],
+        )
+        self.assertEqual(
+            "pass",
+            checks["opening_hook_visual_consistency"]["result"],
+        )
 
     def test_visual_inspector_blocks_three_identical_adjacent_scene_structures(self):
         from server.content_domains.ai_edit_v3.production import DeterministicVisualInspector

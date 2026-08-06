@@ -1270,6 +1270,16 @@ def validate_edit_plan(
                 field_path=f"{field}[{index}]",
                 error_code=f"{field}_timeline_invalid",
             )
+            if (
+                field == "audio_cues"
+                and value.get("type") == "sfx"
+                and value["end_ms"] - value["start_ms"] < 500
+            ):
+                _raise(
+                    "audio_cues_timeline_invalid",
+                    f"audio_cues[{index}]",
+                    "sound effects must be at least 500ms",
+                )
 
     theme_capabilities = timeline.get("theme_capabilities")
     if theme_capabilities is None:

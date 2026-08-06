@@ -6,9 +6,18 @@ import unittest
 from pathlib import Path
 
 from server.content_domains.ai_edit_v3.contracts import ContractError, canonical_json, validate_edit_plan
-from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
+from server.content_domains.ai_edit_v3.director_candidates import build_scene_candidates
+from server.content_domains.ai_edit_v3.director_compiler import (
+    _sound_cue,
+    compile_edit_plan,
+)
 from server.content_domains.ai_edit_v3.director_layout_policy import layout_requirements_for
 from server.content_domains.ai_edit_v3.overlay_catalog import load_overlay_placement_catalog
+from server.content_domains.ai_edit_v3.transcript import (
+    Caption,
+    SourceSegment,
+    TextTimeline,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +72,150 @@ class DirectorCompilerTests(unittest.TestCase):
         invalid["scene_directives"][0]["headline"]["source_caption_ids"] = ["caption_999"]
         with self.assertRaisesRegex(ValueError, "director_text_reference_invalid"):
             compile_edit_plan(invalid, candidates=CANDIDATES, timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"}, materials=[], capabilities=CAPABILITIES, variation_seed=11)
+
+    def test_sound_events_are_projected_to_full_500ms_scene_relative_windows(self):
+        cases = (
+            (0, 5_000, 10_000, 5_000, 5_500),
+            (4_500, 5_000, 10_000, 9_500, 10_000),
+            (4_999, 5_000, 10_000, 9_500, 10_000),
+            (5_000, 5_000, 10_000, 9_500, 10_000),
+            (600_000, 5_000, 10_000, 9_500, 10_000),
+            (600_000, 5_000, 5_500, 5_000, 5_500),
+        )
+        for offset, start_ms, end_ms, expected_start, expected_end in cases:
+            with self.subTest(offset=offset, start_ms=start_ms, end_ms=end_ms):
+                cue = _sound_cue(
+                    {"role": "transition", "priority": "optional", "offset_ms": offset},
+                    scene_index=2,
+                    event_index=3,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
+                self.assertEqual(
+                    (expected_start, expected_end),
+                    (cue["start_ms"], cue["end_ms"]),
+                )
+                self.assertEqual(500, cue["end_ms"] - cue["start_ms"])
+
+    def test_sound_event_projection_rejects_invalid_values_and_short_scenes(self):
+        for field, value in (
+            ("offset_ms", True),
+            ("offset_ms", "10"),
+            ("offset_ms", 1.5),
+            ("offset_ms", -1),
+            ("offset_ms", 600_001),
+            ("role", "unknown"),
+            ("priority", "best_effort"),
+        ):
+            with self.subTest(field=field, value=value):
+                event = {"role": "transition", "priority": "optional", "offset_ms": 0}
+                event[field] = value
+                with self.assertRaisesRegex(ValueError, "director_sound_event_invalid"):
+                    _sound_cue(
+                        event,
+                        scene_index=1,
+                        event_index=1,
+                        start_ms=0,
+                        end_ms=5_000,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "director_sound_event_timeline_invalid"):
+            _sound_cue(
+                {"role": "transition", "priority": "required", "offset_ms": 0},
+                scene_index=1,
+                event_index=1,
+                start_ms=0,
+                end_ms=499,
+            )
+
+    def test_compiler_clamps_late_sound_events_deterministically(self):
+        decision = copy.deepcopy(DECISION)
+        decision["scene_directives"][-1]["sound_events"][0]["offset_ms"] = 5_000
+
+        first = compile_edit_plan(
+            decision,
+            candidates=CANDIDATES,
+            timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"},
+            materials=[],
+            capabilities=CAPABILITIES,
+            variation_seed=11,
+        )
+        second = compile_edit_plan(
+            decision,
+            candidates=CANDIDATES,
+            timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"},
+            materials=[],
+            capabilities=CAPABILITIES,
+            variation_seed=11,
+        )
+
+        self.assertEqual(
+            (24_500, 25_000),
+            (
+                first["audio_cues"][-1]["start_ms"],
+                first["audio_cues"][-1]["end_ms"],
+            ),
+        )
+        self.assertEqual(canonical_json(first), canonical_json(second))
+
+    def test_real_short_tail_candidates_compile_to_a_contract_valid_plan(self):
+        text_timeline = TextTimeline(
+            9_000,
+            (
+                Caption("caption_001", "Authoritative statement.", 0, 8_500),
+                Caption("caption_002", "Short tail.", 8_600, 8_950),
+            ),
+            (
+                SourceSegment(
+                    "fact_001",
+                    0,
+                    9_000,
+                    False,
+                    "Authoritative statement. Short tail.",
+                ),
+            ),
+            "a" * 64,
+            1.0,
+        )
+        candidates = build_scene_candidates(
+            text_timeline,
+            (),
+            ratio="9:16",
+            input_type="uploaded_video",
+        )
+        decision = copy.deepcopy(DECISION)
+        decision["scene_directives"] = [decision["scene_directives"][0]]
+        timeline = {
+            "duration_ms": 9_000,
+            "ratio": "9:16",
+            "captions": [
+                {
+                    "id": caption.id,
+                    "start_ms": caption.start_ms,
+                    "end_ms": caption.end_ms,
+                    "text": caption.text,
+                }
+                for caption in text_timeline.captions
+            ],
+        }
+
+        plan = compile_edit_plan(
+            decision,
+            candidates=candidates,
+            timeline=timeline,
+            materials=[],
+            capabilities=CAPABILITIES,
+            variation_seed=11,
+        )
+
+        self.assertEqual([(0, 9_000)], [
+            (scene["start_ms"], scene["end_ms"])
+            for scene in plan["scenes"]
+        ])
+        self.assertTrue(all(
+            cue["type"] != "sfx" or cue["end_ms"] - cue["start_ms"] == 500
+            for cue in plan["audio_cues"]
+        ))
 
     def test_visual_overlay_projection_rejects_missing_reordered_and_mismatched_ids(self):
         plan = self.compile()

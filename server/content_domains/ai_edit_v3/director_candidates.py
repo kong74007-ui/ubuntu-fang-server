@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .transcript import TextTimeline
+
+
+_MIN_SCENE_DURATION_MS = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,25 +39,70 @@ def _partition_group_starts(
     duration_ms: int,
     budget_ms: int,
     max_scenes: int,
+    min_scenes: int = 1,
 ) -> list[int] | None:
+    if min_scenes < 1 or min_scenes > max_scenes:
+        raise ValueError("director_scene_partition_invalid")
     positions = [0] + [int(item["start_ms"]) for item in captions[1:]] + [duration_ms]
-    group_starts = [0]
-    position_index = 0
-    scene_count = 0
     last_index = len(positions) - 1
-    while position_index < last_index:
-        next_index = position_index + 1
-        while next_index < last_index and positions[next_index + 1] - positions[position_index] <= budget_ms:
-            next_index += 1
-        if positions[next_index] - positions[position_index] > budget_ms:
-            return None
-        position_index = next_index
-        scene_count += 1
-        if scene_count > max_scenes:
-            return None
-        if position_index < last_index:
-            group_starts.append(position_index)
-    return group_starts
+    reachable = [False] * len(positions)
+    reachable[0] = True
+    predecessor_layers: list[list[int]] = []
+
+    for scene_count in range(1, max_scenes + 1):
+        predecessors = [-1] * len(positions)
+        eligible: deque[int] = deque()
+        add_index = 0
+        for target_index in range(1, len(positions)):
+            earliest_position = positions[target_index] - budget_ms
+            latest_position = positions[target_index] - _MIN_SCENE_DURATION_MS
+            while (
+                add_index < target_index
+                and positions[add_index] <= latest_position
+            ):
+                if reachable[add_index]:
+                    eligible.append(add_index)
+                add_index += 1
+            while eligible and positions[eligible[0]] < earliest_position:
+                eligible.popleft()
+            if eligible:
+                predecessors[target_index] = eligible[-1]
+        predecessor_layers.append(predecessors)
+        if scene_count >= min_scenes and predecessors[last_index] >= 0:
+            path = [last_index]
+            current_index = last_index
+            for layer_index in range(scene_count - 1, -1, -1):
+                current_index = predecessor_layers[layer_index][current_index]
+                if current_index < 0:
+                    return None
+                path.append(current_index)
+            path.reverse()
+            return path[:-1]
+        reachable = [index >= 0 for index in predecessors]
+    return None
+
+
+def _scene_rhythm_minimum(
+    captions: list[Mapping[str, Any]],
+    *,
+    duration_ms: int,
+    max_scenes: int,
+) -> int:
+    desired = (
+        3
+        if max_scenes >= 3 and duration_ms >= 12_000 and len(captions) >= 3
+        else 1
+    )
+    if desired == 1:
+        return 1
+    feasible = _partition_group_starts(
+        captions,
+        duration_ms=duration_ms,
+        budget_ms=duration_ms,
+        max_scenes=max_scenes,
+        min_scenes=desired,
+    )
+    return desired if feasible is not None else 1
 
 
 def _natural_caption_groups(
@@ -109,7 +158,10 @@ def _ensure_minimum_scene_groups(
                 boundary = int(group[split_index]["start_ms"])
                 left = boundary - scene_start
                 right = scene_end - boundary
-                if left <= budget_ms and right <= budget_ms:
+                if (
+                    _MIN_SCENE_DURATION_MS <= left <= budget_ms
+                    and _MIN_SCENE_DURATION_MS <= right <= budget_ms
+                ):
                     candidates.append(((max(left, right), abs(left - right), group_index, split_index), group_index, split_index))
         if not candidates:
             raise ValueError("director_scene_partition_invalid")
@@ -132,12 +184,23 @@ def _scene_duration_budget(
     duration = ends[-1] if duration_ms is None else duration_ms
     if isinstance(duration, bool) or not isinstance(duration, int) or duration < ends[-1]:
         raise ValueError("director_duration_invalid")
+    min_scenes = _scene_rhythm_minimum(
+        captions,
+        duration_ms=duration,
+        max_scenes=max_scenes,
+    )
     baseline_budget_ms = max(8000, max(end - start for start, end in zip(starts, ends, strict=True)))
     lower = baseline_budget_ms
     upper = max(lower, duration)
     while lower < upper:
         candidate = (lower + upper) // 2
-        if _partition_group_starts(captions, duration_ms=duration, budget_ms=candidate, max_scenes=max_scenes) is not None:
+        if _partition_group_starts(
+            captions,
+            duration_ms=duration,
+            budget_ms=candidate,
+            max_scenes=max_scenes,
+            min_scenes=min_scenes,
+        ) is not None:
             upper = candidate
         else:
             lower = candidate + 1
@@ -151,15 +214,53 @@ def _build_caption_groups(
     max_scenes: int,
 ) -> list[list[Mapping[str, Any]]]:
     budget_ms = _scene_duration_budget(captions, duration_ms=duration_ms, max_scenes=max_scenes)
+    min_scenes = _scene_rhythm_minimum(
+        captions,
+        duration_ms=duration_ms,
+        max_scenes=max_scenes,
+    )
     groups = _natural_caption_groups(captions, duration_ms=duration_ms, budget_ms=budget_ms, max_scenes=max_scenes)
-    if len(groups) > max_scenes or max(_compiled_scene_spans(groups, duration_ms)) > budget_ms:
-        group_starts = _partition_group_starts(captions, duration_ms=duration_ms, budget_ms=budget_ms, max_scenes=max_scenes)
+    natural_spans = _compiled_scene_spans(groups, duration_ms)
+    if (
+        len(groups) > max_scenes
+        or len(groups) < min_scenes
+        or min(natural_spans) < _MIN_SCENE_DURATION_MS
+        or max(natural_spans) > budget_ms
+    ):
+        group_starts = _partition_group_starts(
+            captions,
+            duration_ms=duration_ms,
+            budget_ms=budget_ms,
+            max_scenes=max_scenes,
+            min_scenes=min_scenes,
+        )
         if group_starts is None:
             raise ValueError("director_scene_partition_invalid")
         groups = _groups_from_starts(captions, group_starts)
-    min_scenes = 3 if duration_ms >= 12000 and len(captions) >= 3 else 1
-    groups = _ensure_minimum_scene_groups(groups, duration_ms=duration_ms, budget_ms=budget_ms, min_scenes=min_scenes)
-    if len(groups) > max_scenes or max(_compiled_scene_spans(groups, duration_ms)) > budget_ms:
+    try:
+        groups = _ensure_minimum_scene_groups(
+            groups,
+            duration_ms=duration_ms,
+            budget_ms=budget_ms,
+            min_scenes=min_scenes,
+        )
+    except ValueError:
+        group_starts = _partition_group_starts(
+            captions,
+            duration_ms=duration_ms,
+            budget_ms=budget_ms,
+            max_scenes=max_scenes,
+            min_scenes=min_scenes,
+        )
+        if group_starts is None:
+            raise
+        groups = _groups_from_starts(captions, group_starts)
+    spans = _compiled_scene_spans(groups, duration_ms)
+    if (
+        len(groups) > max_scenes
+        or min(spans) < _MIN_SCENE_DURATION_MS
+        or max(spans) > budget_ms
+    ):
         raise ValueError("director_scene_partition_invalid")
     return groups
 

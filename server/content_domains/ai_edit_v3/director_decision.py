@@ -333,6 +333,11 @@ def validate_director_decision(
                 "director_candidates_invalid", f"$.scene_candidates[{index}]"
             )
         scene_duration_ms = end_ms - start_ms
+        if scene_duration_ms < 500 and directive["sound_events"]:
+            raise DirectorDecisionError(
+                "director_sound_event_timeline_invalid",
+                f"{path}.sound_events",
+            )
         total_duration_ms += scene_duration_ms
         if (
             source_has_speaker
@@ -854,6 +859,14 @@ def _repair_expected_constraint(error: DirectorDecisionError) -> str:
         is not None
     ):
         return "transition_from_capabilities_transition_capabilities"
+    if (
+        error.code == "director_sound_event_timeline_invalid"
+        and re.fullmatch(
+            r"\$\.scene_directives\[\d+\]\.sound_events", error.path
+        )
+        is not None
+    ):
+        return "sound_events_empty_when_candidate_shorter_than_500ms"
     if (
         error.code == "director_decision_schema_invalid"
         and error.path == "$.scene_directives"

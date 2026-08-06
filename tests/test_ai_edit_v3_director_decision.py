@@ -178,6 +178,34 @@ class DirectorDecisionValidationTests(unittest.TestCase):
     def test_valid_decision_is_canonical_and_complete(self):
         self.assertEqual(valid_decision(), validate_director_decision(valid_decision(), candidates=CANDIDATES, capabilities=CAPABILITIES))
 
+    def test_short_scene_rejects_sound_events_and_accepts_an_empty_list(self):
+        candidates = (replace(CANDIDATES[0], end_ms=400), CANDIDATES[1])
+        decision = valid_decision()
+
+        with self.assertRaisesRegex(
+            DirectorDecisionError,
+            "director_sound_event_timeline_invalid",
+        ) as caught:
+            validate_director_decision(
+                decision,
+                candidates=candidates,
+                capabilities=CAPABILITIES,
+            )
+        self.assertEqual(
+            "$.scene_directives[0].sound_events",
+            caught.exception.path,
+        )
+
+        decision["scene_directives"][0]["sound_events"] = []
+        self.assertEqual(
+            decision,
+            validate_director_decision(
+                decision,
+                candidates=candidates,
+                capabilities=CAPABILITIES,
+            ),
+        )
+
     def test_decision_accepts_in_direction_for_a_declared_animation_target(self):
         value = valid_decision()
         value["scene_directives"][0]["animations"][0]["direction"] = "in"
@@ -587,6 +615,51 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
                     "$.scene_directives[1].transition",
                 )
             ),
+        )
+        self.assertEqual(
+            "sound_events_empty_when_candidate_shorter_than_500ms",
+            _repair_expected_constraint(
+                DirectorDecisionError(
+                    "director_sound_event_timeline_invalid",
+                    "$.scene_directives[0].sound_events",
+                )
+            ),
+        )
+
+    def test_short_scene_sound_event_uses_the_single_targeted_repair(self):
+        candidates = (replace(CANDIDATES[0], end_ms=400), CANDIDATES[1])
+        initial = valid_decision()
+        repaired = copy.deepcopy(initial)
+        repaired["scene_directives"][0]["sound_events"] = []
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(copy.deepcopy(request))
+                payload = initial if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-short-scene-sfx-repair",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual([], result.value["scene_directives"][0]["sound_events"])
+        self.assertEqual(
+            "sound_events_empty_when_candidate_shorter_than_500ms",
+            calls[1]["repair"]["expected_constraint"],
         )
 
     def test_one_unknown_transition_is_canonicalized_without_spending_repair(self):

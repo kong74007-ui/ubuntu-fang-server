@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from server.content_domains.ai_edit_v3.director_candidates import (
+    _scene_duration_budget,
+    _scene_rhythm_minimum,
     build_scene_candidates,
 )
 from server.content_domains.ai_edit_v3.materials import MaterialDescriptor
@@ -98,6 +100,144 @@ class SceneCandidateTests(unittest.TestCase):
 
         self.assertLessEqual(len(candidates), 12)
         self.assertTrue(all(not item.speaker_available for item in candidates))
+
+    def test_caller_scene_cap_below_three_overrides_the_rhythm_target(self) -> None:
+        timeline = _timeline(duration_ms=18_000, count=6)
+
+        candidates = build_scene_candidates(
+            timeline,
+            (),
+            ratio="16:9",
+            input_type="uploaded_audio",
+            max_scenes=2,
+        )
+
+        self.assertLessEqual(len(candidates), 2)
+        self.assertTrue(all(
+            item.end_ms - item.start_ms >= 500 for item in candidates
+        ))
+
+    def test_sub_500ms_tail_is_merged_into_a_contract_valid_scene(self) -> None:
+        timeline = TextTimeline(
+            9_000,
+            (
+                Caption("caption_001", "Authoritative statement.", 0, 8_500),
+                Caption("caption_002", "Short tail.", 8_600, 8_950),
+            ),
+            (
+                SourceSegment(
+                    "fact_001",
+                    0,
+                    9_000,
+                    False,
+                    "Authoritative statement. Short tail.",
+                ),
+            ),
+            "a" * 64,
+            1.0,
+        )
+
+        first = build_scene_candidates(
+            timeline,
+            (),
+            ratio="9:16",
+            input_type="uploaded_video",
+        )
+        second = build_scene_candidates(
+            timeline,
+            (),
+            ratio="9:16",
+            input_type="uploaded_video",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual([(0, 9_000)], [(item.start_ms, item.end_ms) for item in first])
+        self.assertEqual(
+            ("caption_001", "caption_002"),
+            first[0].caption_ids,
+        )
+        self.assertTrue(
+            all(item.end_ms - item.start_ms >= 500 for item in first)
+        )
+
+    def test_minimum_duration_is_part_of_the_shared_scene_budget(self) -> None:
+        ranges = (
+            (30, 784),
+            (880, 3_937),
+            (4_341, 12_779),
+            (12_847, 21_283),
+            (21_854, 22_009),
+            (22_013, 22_139),
+        )
+        captions = tuple(
+            Caption(
+                f"caption_{index:03d}",
+                f"Caption {index}",
+                start_ms,
+                end_ms,
+            )
+            for index, (start_ms, end_ms) in enumerate(ranges, 1)
+        )
+        timeline = TextTimeline(22_255, captions, (), "a" * 64, 1.0)
+        raw_captions = [
+            {
+                "id": item.id,
+                "text": item.text,
+                "start_ms": item.start_ms,
+                "end_ms": item.end_ms,
+            }
+            for item in captions
+        ]
+
+        budget = _scene_duration_budget(raw_captions, duration_ms=22_255)
+        candidates = build_scene_candidates(
+            timeline,
+            (),
+            ratio="9:16",
+            input_type="uploaded_video",
+        )
+        spans = [item.end_ms - item.start_ms for item in candidates]
+
+        self.assertEqual(9_408, budget)
+        self.assertGreaterEqual(min(spans), 500)
+        self.assertLessEqual(max(spans), budget)
+
+    def test_impossible_three_scene_rhythm_degrades_to_two_valid_scenes(self) -> None:
+        captions = (
+            Caption("caption_001", "One", 0, 8_500),
+            Caption("caption_002", "Two", 8_600, 13_500),
+            Caption("caption_003", "Three", 13_600, 13_950),
+        )
+        raw_captions = [
+            {
+                "id": item.id,
+                "text": item.text,
+                "start_ms": item.start_ms,
+                "end_ms": item.end_ms,
+            }
+            for item in captions
+        ]
+        timeline = TextTimeline(14_000, captions, (), "a" * 64, 1.0)
+
+        self.assertEqual(
+            1,
+            _scene_rhythm_minimum(
+                raw_captions,
+                duration_ms=14_000,
+                max_scenes=12,
+            ),
+        )
+        candidates = build_scene_candidates(
+            timeline,
+            (),
+            ratio="9:16",
+            input_type="uploaded_video",
+        )
+
+        self.assertEqual(
+            [(0, 8_600), (8_600, 14_000)],
+            [(item.start_ms, item.end_ms) for item in candidates],
+        )
 
     def test_rejects_materials_without_frozen_identity(self) -> None:
         with self.assertRaisesRegex(ValueError, "director_material_identity_invalid"):

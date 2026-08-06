@@ -7,6 +7,44 @@ from . import contracts
 from .overlay_catalog import validate_overlay_projection
 
 _ARC = {"hook":"hook", "context":"problem", "problem":"problem", "method":"method", "proof":"evidence", "transition":"offer", "cta":"cta"}
+_SFX_DURATION_MS = 500
+
+
+def _sound_cue(
+    event: Any,
+    *,
+    scene_index: int,
+    event_index: int,
+    start_ms: int,
+    end_ms: int,
+) -> dict[str, Any]:
+    if (
+        not isinstance(event, Mapping)
+        or event.get("role")
+        not in {"reversal", "number", "method", "transition", "cta"}
+    ):
+        raise ValueError("director_sound_event_invalid")
+    priority = event.get("priority")
+    if priority not in {"required", "optional"}:
+        raise ValueError("director_sound_event_invalid")
+    offset = event.get("offset_ms")
+    if type(offset) is not int or offset < 0 or offset > 600_000:
+        raise ValueError("director_sound_event_invalid")
+    scene_duration_ms = end_ms - start_ms
+    if scene_duration_ms < _SFX_DURATION_MS:
+        raise ValueError("director_sound_event_timeline_invalid")
+    normalized_offset = min(offset, scene_duration_ms - _SFX_DURATION_MS)
+    cue_start = start_ms + normalized_offset
+    return {
+        "id": f"scene_{scene_index:02d}_sfx_{event_index:02d}",
+        "type": "sfx",
+        "priority": priority,
+        "role": event["role"],
+        "start_ms": cue_start,
+        "end_ms": cue_start + _SFX_DURATION_MS,
+        "description": f"{event['role']} cue",
+    }
+
 
 def _record(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping): return copy.deepcopy(dict(value))
@@ -93,8 +131,7 @@ def compile_edit_plan(decision: Mapping[str, Any], *, candidates: Sequence[Any],
         scenes.append({"id":f"scene_{index:02d}","start_ms":start,"end_ms":end,"intent":str(candidate.get("authoritative_text") or "authoritative scene")[:240],"layout_id":layout,"layout_variant":variant,"visual_type":"director_program","headline":headline,"highlight":highlight,"overlay_ids":[item["component_id"] for item in instances],"overlay_instances":instances,"material_slots":slots,"animations":anim,"transition":transition})
         arcs.append({"id":f"arc_{index:02d}","role":_ARC.get(directive.get("narrative_role"),"problem"),"start_ms":start,"end_ms":end,"summary":str(candidate.get("authoritative_text") or "authoritative scene")[:240]})
         for event_index,event in enumerate(directive.get("sound_events",()),1):
-            if not isinstance(event,Mapping) or event.get("role") not in {"reversal","number","method","transition","cta"}: raise ValueError("director_sound_event_invalid")
-            offset=int(event.get("offset_ms",0)); cue_start=start+offset; cues.append({"id":f"scene_{index:02d}_sfx_{event_index:02d}","type":"sfx","priority":event.get("priority","optional"),"role":event["role"],"start_ms":cue_start,"end_ms":min(end,cue_start+500),"description":f"{event['role']} cue"})
+            cues.append(_sound_cue(event, scene_index=index, event_index=event_index, start_ms=start, end_ms=end))
     intent=decision.get("design_intent",{})
     density={"minimal":"airy","balanced":"balanced","dense":"dense"}.get(intent.get("density","balanced"))
     if density is None: raise ValueError("director_density_unknown")

@@ -553,6 +553,55 @@ class EditPlanValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "director_id_duplicate"):
             validate_edit_plan(self.plan, timeline=self.timeline)
 
+        out_of_bounds = load_fixture("valid-edit-plan-2.0.json")
+        out_of_bounds["audio_cues"][0]["end_ms"] = 4_001
+        with self.assertRaisesRegex(
+            ContractError,
+            "audio_cues_timeline_invalid",
+        ) as caught:
+            validate_edit_plan(out_of_bounds, timeline=self.timeline)
+        self.assertEqual("audio_cues[0]", caught.exception.field_path)
+
+    def test_sfx_requires_a_full_500ms_window_without_restricting_volume_fades(self):
+        sfx = {
+            "id": "cue_sfx",
+            "type": "sfx",
+            "priority": "optional",
+            "role": "transition",
+            "start_ms": 1_000,
+            "end_ms": 1_499,
+            "description": "transition cue",
+        }
+        invalid = load_fixture("valid-edit-plan-2.0.json")
+        invalid["audio_cues"].append(sfx)
+        with self.assertRaisesRegex(
+            ContractError,
+            "audio_cues_timeline_invalid",
+        ) as caught:
+            validate_edit_plan(invalid, timeline=self.timeline)
+        self.assertEqual("audio_cues[1]", caught.exception.field_path)
+
+        valid = load_fixture("valid-edit-plan-2.0.json")
+        valid["audio_cues"].append({**sfx, "end_ms": 1_500})
+        self.assertEqual(valid, validate_edit_plan(valid, timeline=self.timeline))
+
+        volume_fade = load_fixture("valid-edit-plan-2.0.json")
+        volume_fade["audio_cues"].append({
+            "id": "cue_fade",
+            "type": "volume_fade",
+            "priority": "required",
+            "start_ms": 1_000,
+            "end_ms": 1_100,
+            "description": "brief duck",
+            "target": "bgm",
+            "from_db": -12,
+            "to_db": -18,
+        })
+        self.assertEqual(
+            volume_fade,
+            validate_edit_plan(volume_fade, timeline=self.timeline),
+        )
+
     def test_capability_inputs_cannot_enlarge_or_omit_frozen_registry(self):
         enlarged = copy.deepcopy(self.timeline)
         enlarged["layout_capabilities"].append("freeform_canvas")

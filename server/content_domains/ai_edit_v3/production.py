@@ -42,7 +42,12 @@ from .contracts import (
 )
 from .delivery import stage_private_delivery
 from .director import ValidatedPlan, build_director_request, generate_edit_plan
-from .director_candidates import _build_caption_groups, _scene_duration_budget, build_scene_candidates
+from .director_candidates import (
+    _build_caption_groups,
+    _scene_duration_budget,
+    _scene_rhythm_minimum,
+    build_scene_candidates,
+)
 from .director_compiler import compile_edit_plan
 from .director_decision import generate_director_decision
 from .director_layout_policy import (
@@ -913,6 +918,7 @@ class QwenCompiledDirector:
             "自动生成的 required 素材槽必须能由非人物安全配图满足：semantic 不得要求人物、人脸、讲师、团队、客户、口播者、特定品牌、真实产品包装、真实门店或事实证据；优先描述抽象概念图、流程示意图或非人物环境素材。product/evidence 槽若没有 current_materials 可精确匹配，只能表达非品牌概念或明确的示意图；若叙事必须出现人物或特定真实主体，应改用显示原口播人物的布局，不得要求生成新人物素材。",
             "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code、repair.field_path 和 repair.expected_constraint 修正结构；scene_directives_exact_candidate_order_and_count 表示数量、顺序与ID必须完全对应候选；scene_signatures_meet_distinct_and_adjacency_policy 表示重新编排布局、变体或overlay组合以同时满足 minimum_distinct_signatures 与 max_adjacent_identical；speaker_hidden_duration_within_max_ratio 表示减少无人物布局时长。",
             "For a repair, transition_from_capabilities_transition_capabilities means every transition must be copied from capabilities.transition_capabilities. Recheck every global constraint after the requested repair, not only the named field. Speaker visibility must use each candidate's exact end_ms-start_ms and the server-provided max_hidden_ratio; never estimate it from text length.",
+            "Every sound_events.offset_ms is relative to that scene's start, never an absolute timeline value. If scene_candidate.sound_events_allowed is false, sound_events must be empty. Otherwise keep each offset between 0 and scene_candidate.sound_event_max_offset_ms so the compiled sound effect has a full 500ms inside its scene.",
             "JSON Schema:",
             contract,
         ))
@@ -1322,7 +1328,11 @@ class DeterministicVisualInspector:
                     caption_scene_binding_valid = False
                 caption_ids.append(caption_id)
             caption_valid = caption_valid and len(caption_ids) == len(set(caption_ids))
-            requires_scene_rhythm = duration >= 12000 and len(captions) >= 3
+            requires_scene_rhythm = _scene_rhythm_minimum(
+                captions,
+                duration_ms=duration,
+                max_scenes=12,
+            ) >= 3
             scene_rhythm_valid = (
                 scene_flow_valid
                 and (
@@ -3030,6 +3040,13 @@ class ProductionStageCoordinator:
                     )
                     candidate = copy.deepcopy(candidate)
                     candidate["available_material_ids"] = []
+                    candidate["sound_events_allowed"] = (
+                        int(candidate["end_ms"]) - int(candidate["start_ms"]) >= 500
+                    )
+                    candidate["sound_event_max_offset_ms"] = max(
+                        0,
+                        int(candidate["end_ms"]) - int(candidate["start_ms"]) - 500,
+                    )
                     candidate["allowed_layout_ids"] = allowed_layout_ids(
                         layout_ids,
                         speaker_available=bool(candidate.get("speaker_available")),
