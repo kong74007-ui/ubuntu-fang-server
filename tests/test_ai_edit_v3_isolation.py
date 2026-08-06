@@ -63,7 +63,10 @@ def repository_v3_paths(repository: Path) -> list[str]:
         if value
     }
     return sorted(
-        path for path in paths if re.search(r"(?i)ai[_-]edit[_-]v3", path)
+        path
+        for path in paths
+        if re.search(r"(?i)ai[_-]edit[_-]v3", path)
+        and not re.search(r"(?:^|/)node_modules(?:/|$)", path)
     )
 
 
@@ -402,11 +405,25 @@ class V3IsolationTests(unittest.TestCase):
             (repository / "ai-edit-v3.env").write_text(
                 "PLACEHOLDER=1", encoding="utf-8"
             )
+            dependency = (
+                repository
+                / "server"
+                / "ai_edit_v3_renderer"
+                / "node_modules"
+                / "fixture"
+                / "secret.js"
+            )
+            dependency.parent.mkdir(parents=True)
+            dependency.write_text("vendored fixture", encoding="utf-8")
 
             discovered = repository_v3_paths(repository)
 
         self.assertIn("ai_edit_v3_private.db", discovered)
         self.assertIn("ai-edit-v3.env", discovered)
+        self.assertNotIn(
+            "server/ai_edit_v3_renderer/node_modules/fixture/secret.js",
+            discovered,
+        )
 
     def test_private_header_detection_handles_quoted_curl_and_cookie_lists(self):
         examples = {
