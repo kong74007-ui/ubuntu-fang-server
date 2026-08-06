@@ -4371,6 +4371,93 @@ def _bind_provider_result_tx(
     )
 
 
+def _release_material_analysis_submission_tx(
+    connection: sqlite3.Connection,
+    claim: LeaseClaim,
+    operation_key: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Re-arm only an unbound material-analysis call rejected by local validation."""
+
+    claim = _require_claim(claim)
+    operation_key = _require_nonblank("operation_key", operation_key)
+    now_ms = _require_now_ms(now_ms)
+    existing = connection.execute(
+        """SELECT p.* FROM edit_v3_provider_tasks AS p
+           JOIN edit_v3_jobs AS j ON j.job_id=p.job_id
+           WHERE p.job_id=? AND p.operation_key=?
+             AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?""",
+        (
+            claim.job_id,
+            operation_key,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    ).fetchone()
+    if existing is None:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "provider_intent_missing",
+            "material-analysis submission release requires its immutable intent",
+        )
+    if existing["capability"] != "material_analysis":
+        raise StoreConflictError(
+            "provider_validation_release_forbidden",
+            "only material-analysis validation failures may release a submission",
+        )
+    if (
+        existing["status"] != "submitting"
+        or existing["external_id"] is not None
+        or existing["result_json"] is not None
+    ):
+        raise StoreConflictError(
+            "provider_validation_release_forbidden",
+            "only an unbound material-analysis submission may be released",
+        )
+    updated = connection.execute(
+        """UPDATE edit_v3_provider_tasks
+           SET status='intent_recorded',last_checked_at=?,updated_at=?
+           WHERE id=? AND job_id=? AND operation_key=?
+             AND capability='material_analysis' AND status='submitting'
+             AND fencing_token=? AND external_id IS NULL AND result_json IS NULL
+             AND EXISTS(
+                 SELECT 1 FROM edit_v3_jobs AS j
+                 JOIN edit_v3_stage_attempts AS a ON a.job_id=j.job_id
+                 WHERE j.job_id=edit_v3_provider_tasks.job_id
+                   AND j.worker_id=? AND j.fencing_token=? AND j.lease_until>?
+                   AND a.id=edit_v3_provider_tasks.stage_attempt_id
+                   AND a.stage=edit_v3_provider_tasks.stage
+                   AND a.fencing_token=j.fencing_token AND a.status='running'
+             )""",
+        (
+            now_ms,
+            now_ms,
+            existing["id"],
+            claim.job_id,
+            operation_key,
+            claim.fencing_token,
+            claim.worker_id,
+            claim.fencing_token,
+            now_ms,
+        ),
+    )
+    if updated.rowcount != 1:
+        if not _lease_owned_tx(connection, claim, now_ms):
+            raise _lease_lost(claim)
+        raise StoreConflictError(
+            "provider_validation_release_conflict",
+            "material-analysis submission could not be safely released",
+        )
+    return dict(
+        connection.execute(
+            "SELECT * FROM edit_v3_provider_tasks WHERE id=?",
+            (existing["id"],),
+        ).fetchone()
+    )
+
+
 def _billing_row_for_claim_tx(
     connection: sqlite3.Connection,
     intent_id: str,
@@ -5063,6 +5150,21 @@ class V3Store:
                 external_id,
                 status,
                 result,
+                now_ms,
+            )
+        )
+
+    def release_material_analysis_submission(
+        self,
+        claim: LeaseClaim,
+        operation_key: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        return self._write(
+            lambda connection: _release_material_analysis_submission_tx(
+                connection,
+                claim,
+                operation_key,
                 now_ms,
             )
         )
@@ -8505,6 +8607,18 @@ def bind_provider_result(
 ) -> dict[str, Any]:
     return _configured_store(db_path).bind_provider_result(
         claim, operation_key, external_id, status, result, now_ms
+    )
+
+
+def release_material_analysis_submission(
+    claim: LeaseClaim,
+    operation_key: str,
+    now_ms: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    return _configured_store(db_path).release_material_analysis_submission(
+        claim, operation_key, now_ms
     )
 
 

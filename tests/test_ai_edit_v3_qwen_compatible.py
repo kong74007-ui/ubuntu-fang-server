@@ -193,6 +193,9 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
         body = bodies[0]
         self.assertEqual("qwen3.7-max-2026-06-08", body["model"])
         self.assertEqual({"type": "json_object"}, body["response_format"])
+        system_prompt = body["messages"][0]["content"]
+        self.assertIn("only allowed top-level key is descriptors", system_prompt)
+        self.assertIn("Never return the key output_contract", system_prompt)
         content = body["messages"][1]["content"]
         self.assertEqual(["text", "image_url", "image_url"], [item["type"] for item in content])
         prompt = content[0]["text"]
@@ -200,6 +203,10 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
         self.assertIn("upload_02", prompt)
         self.assertNotIn("data:image", prompt)
         self.assertNotIn("material-real", prompt)
+        self.assertNotIn('"output_contract"', prompt)
+        self.assertIn('"descriptors"', prompt)
+        self.assertIn("only top-level key", prompt)
+        self.assertIn("one to three unique values", prompt)
         self.assertEqual(
             ["data:image/jpeg;base64,/9j/AA==", "data:image/jpeg;base64,/9j/BB=="],
             [item["image_url"]["url"] for item in content[1:]],

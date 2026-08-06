@@ -86,6 +86,10 @@ _NEXT = {
 }
 
 
+class MaterialDescriptorContractError(MaterialError):
+    """A provider response arrived but failed the local descriptor contract."""
+
+
 def visual_program_capabilities(capabilities: Mapping[str, Any]) -> dict[str, Any]:
     """Admit visual-v1 only after a versioned registry supplies real variants."""
     variants = capabilities.get("layout_variants") if isinstance(capabilities, Mapping) else None
@@ -1515,6 +1519,8 @@ def _material_descriptor_payload(
         payload = dict(raw)
     else:
         raise MaterialError("material_descriptor_invalid")
+    if not isinstance(payload, Mapping):
+        raise MaterialError("material_descriptor_invalid")
     if set(payload) != {"descriptors"} or not isinstance(payload["descriptors"], list):
         raise MaterialError("material_descriptor_invalid")
     by_alias: dict[str, dict[str, Any]] = {}
@@ -1532,15 +1538,22 @@ def _material_descriptor_payload(
             not isinstance(alias, str)
             or alias not in expected_aliases
             or alias in by_alias
+            or not isinstance(subject_type, str)
             or subject_type not in _MATERIAL_SUBJECT_TYPES
             or not isinstance(ratios, list)
             or not ratios
             or len(ratios) > len(_MATERIAL_RATIOS)
-            or any(item not in _MATERIAL_RATIOS for item in ratios)
+            or any(
+                not isinstance(item, str) or item not in _MATERIAL_RATIOS
+                for item in ratios
+            )
             or len(set(ratios)) != len(ratios)
             or not isinstance(risks, list)
             or len(risks) > len(_MATERIAL_RISK_LABELS)
-            or any(item not in _MATERIAL_RISK_LABELS for item in risks)
+            or any(
+                not isinstance(item, str) or item not in _MATERIAL_RISK_LABELS
+                for item in risks
+            )
             or len(set(risks)) != len(risks)
         ):
             raise MaterialError("material_descriptor_invalid")
@@ -1672,11 +1685,16 @@ class QwenMaterialReviewer(DeterministicVisualInspector):
         )
         request_id = getattr(result, "request_id", None)
         if not isinstance(request_id, str) or not request_id:
-            raise ValueError("material_descriptor_response_invalid")
-        normalized = _material_descriptor_payload(
-            result,
-            expected_aliases=tuple(aliases),
-        )
+            raise MaterialDescriptorContractError(
+                "material_descriptor_response_invalid"
+            )
+        try:
+            normalized = _material_descriptor_payload(
+                result,
+                expected_aliases=tuple(aliases),
+            )
+        except MaterialError as exc:
+            raise MaterialDescriptorContractError(exc.code) from exc
         return _MaterialReviewMapping(normalized, request_id=request_id)
 
 
@@ -1782,6 +1800,18 @@ def invoke_provider_once(
 
     try:
         result = call()
+    except MaterialDescriptorContractError:
+        if capability != "material_analysis":
+            raise
+        release = getattr(store, "release_material_analysis_submission", None)
+        if not callable(release):
+            raise ValueError("provider_validation_release_unavailable")
+        release(
+            context.claim,
+            operation_key,
+            now_ms,
+        )
+        raise
     except DefinitiveNotAccepted as exc:
         external_id = "failure-" + hashlib.sha256(
             f"{operation_key}:{exc.reason_code}".encode("utf-8")
@@ -2487,10 +2517,20 @@ class ProductionStageCoordinator:
                 })
 
             def call_analyzer() -> Mapping[str, Any]:
-                return describe_materials(
-                    analysis_images,
-                    deadline_at=float(deadline_at),
-                )
+                try:
+                    raw = describe_materials(
+                        analysis_images,
+                        deadline_at=float(deadline_at),
+                    )
+                    _material_descriptor_payload(
+                        raw,
+                        expected_aliases=tuple(aliases),
+                    )
+                    return raw
+                except MaterialDescriptorContractError:
+                    raise
+                except MaterialError as exc:
+                    raise MaterialDescriptorContractError(exc.code) from exc
 
             receipt_request = {
                 "aliases": aliases,

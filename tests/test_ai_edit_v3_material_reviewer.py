@@ -492,6 +492,200 @@ class MaterialReviewerTests(unittest.TestCase):
         self.assertEqual(1, len(store.intent_calls))
         self.assertEqual(1, len(store.claim_calls))
 
+    def test_invalid_descriptor_contract_releases_receipt_without_caching_raw_response(self):
+        class DescriptorQwen:
+            def __init__(self):
+                self.calls = 0
+
+            def inspect_image(self, *_args, **_kwargs):
+                raise AssertionError("descriptor analysis must not use signed-URL review")
+
+            def describe_images(self, _request, *, deadline_at):
+                self.calls += 1
+                if self.calls == 1:
+                    content = json.dumps({
+                        "output_contract": {"descriptors": []},
+                    })
+                elif self.calls == 2:
+                    content = json.dumps({"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": "green product package",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": [[]],
+                        "risk_labels": [],
+                    }]})
+                else:
+                    content = json.dumps({"descriptors": [{
+                        "upload_alias": "upload_01",
+                        "semantic": "green product package",
+                        "subject_type": "product",
+                        "composition": "centered close-up",
+                        "supported_ratios": ["9:16"],
+                        "risk_labels": [],
+                    }]})
+                return ProviderResult(
+                    provider="dashscope",
+                    capability="material_analysis",
+                    request_id=f"descriptor-request-{self.calls}",
+                    payload={"content": content},
+                    usage={},
+                    elapsed_ms=1,
+                )
+
+        class Store:
+            def __init__(self):
+                self.task = None
+                self.bind_calls = []
+                self.release_calls = []
+
+            def get_provider_task_for_claim(self, *_args):
+                return self.task
+
+            def record_provider_intent(self, *args):
+                if self.task is None:
+                    self.task = {
+                        "status": "intent_recorded",
+                        "stage": args[1],
+                        "provider": args[3],
+                        "capability": args[4],
+                        "request_sha256": args[6],
+                    }
+                return self.task
+
+            def claim_provider_submission(self, *_args):
+                if self.task["status"] != "intent_recorded":
+                    return False
+                self.task = {**self.task, "status": "submitting"}
+                return True
+
+            def release_material_analysis_submission(self, *args):
+                self.release_calls.append(args)
+                if self.task["status"] != "submitting":
+                    raise AssertionError("only an unbound submission may be released")
+                self.task = {**self.task, "status": "intent_recorded"}
+                return self.task
+
+            def bind_provider_result(self, *args):
+                self.bind_calls.append(args)
+                self.task = {
+                    **self.task,
+                    "status": args[3],
+                    "external_id": args[2],
+                    "result_json": json.dumps(args[4]),
+                }
+                return self.task
+
+        qwen = DescriptorQwen()
+        reviewer = production.QwenMaterialReviewer(cos=_Cos(), client=qwen)
+        store = Store()
+        context = SimpleNamespace(
+            claim=object(), stage_attempt_id="stage-attempt-1"
+        )
+        images = [{
+            "upload_alias": "upload_01",
+            "width": 320,
+            "height": 512,
+            "jpeg_bytes": b"\xff\xd8sanitized-pixels",
+        }]
+
+        def call():
+            return reviewer.describe_materials(images, deadline_at=123.0)
+
+        kwargs = dict(
+            store=store,
+            context=context,
+            stage="planning",
+            provider="dashscope",
+            capability="material_analysis",
+            operation_key="ai-edit-v3:job-1:material-analysis:0",
+            request_sha256="b" * 64,
+            call=call,
+            now_ms=1000,
+        )
+
+        with self.assertRaisesRegex(
+            production.MaterialError, "material_descriptor_invalid",
+        ):
+            production.invoke_provider_once(**kwargs)
+
+        self.assertEqual("intent_recorded", store.task["status"])
+        self.assertNotIn("external_id", store.task)
+        self.assertNotIn("result_json", store.task)
+        self.assertEqual([], store.bind_calls)
+        self.assertEqual(1, len(store.release_calls))
+        self.assertEqual(
+            (
+                context.claim,
+                "ai-edit-v3:job-1:material-analysis:0",
+                1000,
+            ),
+            store.release_calls[0],
+        )
+
+        with self.assertRaisesRegex(
+            production.MaterialError, "material_descriptor_invalid",
+        ):
+            production.invoke_provider_once(**kwargs)
+
+        self.assertEqual("intent_recorded", store.task["status"])
+        self.assertNotIn("external_id", store.task)
+        self.assertNotIn("result_json", store.task)
+        self.assertEqual([], store.bind_calls)
+        self.assertEqual(2, len(store.release_calls))
+
+        result = production.invoke_provider_once(**kwargs)
+
+        self.assertEqual("green product package", result["descriptors"][0]["semantic"])
+        self.assertEqual(3, qwen.calls)
+        self.assertEqual(1, len(store.bind_calls))
+
+    def test_descriptor_nested_model_values_never_escape_as_type_error(self):
+        descriptor = {
+            "upload_alias": "upload_01",
+            "semantic": "green product package",
+            "subject_type": "product",
+            "composition": "centered close-up",
+            "supported_ratios": ["9:16"],
+            "risk_labels": [],
+        }
+        malformed = (
+            ("subject_type_list", "subject_type", []),
+            ("subject_type_number", "subject_type", 1),
+            ("ratio_nested_list", "supported_ratios", [[]]),
+            ("ratio_number", "supported_ratios", [1]),
+            ("risk_nested_object", "risk_labels", [{}]),
+            ("risk_null", "risk_labels", [None]),
+        )
+
+        for case, field, value in malformed:
+            candidate = {**descriptor, field: value}
+            with self.subTest(case=case), self.assertRaisesRegex(
+                production.MaterialError,
+                "material_descriptor_invalid",
+            ):
+                production._material_descriptor_payload(
+                    {"descriptors": [candidate]},
+                    expected_aliases=("upload_01",),
+                )
+
+        provider_result = ProviderResult(
+            provider="dashscope",
+            capability="material_analysis",
+            request_id="descriptor-root-list",
+            payload={"content": json.dumps([{}])},
+            usage={},
+            elapsed_ms=1,
+        )
+        with self.assertRaisesRegex(
+            production.MaterialError,
+            "material_descriptor_invalid",
+        ):
+            production._material_descriptor_payload(
+                provider_result,
+                expected_aliases=("upload_01",),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

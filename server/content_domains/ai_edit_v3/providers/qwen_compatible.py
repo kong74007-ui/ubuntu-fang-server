@@ -227,27 +227,29 @@ class DashScopeCompatibleQwenClient:
         api_key = os.environ.get("DASHSCOPE_API_KEY", "")
         if not api_key:
             raise ProviderError("dashscope_not_configured")
-        prompt = json.dumps(
-            {
-                "images": prompt_images,
-                "task": (
-                    "Describe only the visible product, place, object, document, or graphic and its composition. "
-                    "Do not identify people or infer sensitive attributes. Use one concise Chinese semantic string."
-                ),
-                "output_contract": {
-                    "descriptors": [{
-                        "upload_alias": "upload_XX copied exactly",
-                        "semantic": "single safe plain-text string",
-                        "subject_type": "product|store|venue|document|object|environment|graphic|person|other",
-                        "composition": "short plain-text composition",
-                        "supported_ratios": ["16:9|9:16|1:1"],
-                        "risk_labels": ["person|face|text|logo|sensitive|uncertain"],
-                    }],
-                },
-            },
+        input_manifest = json.dumps(
+            prompt_images,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
+        )
+        prompt = (
+            "Analyze every attached image in image_order. Describe only visible products, places, "
+            "objects, documents, graphics, people, and composition. Do not identify a person or "
+            "infer sensitive attributes. Use one concise Chinese semantic string per image. "
+            "Return JSON only. The response object must use descriptors as its only top-level key; "
+            "never return output_contract, schema, task, or images as top-level keys. Return exactly "
+            "one descriptor per input, preserve input order, and copy each upload_alias exactly. "
+            "Every descriptor must contain exactly upload_alias, semantic, subject_type, composition, "
+            "supported_ratios, and risk_labels. subject_type must be one of product, store, venue, "
+            "document, object, environment, graphic, person, or other. supported_ratios must contain "
+            "one to three unique values chosen only from 16:9, 9:16, and 1:1. risk_labels may contain "
+            "only person, face, text, logo, sensitive, "
+            "or uncertain. Required JSON shape: "
+            '{"descriptors":[{"upload_alias":"upload_01","semantic":"简短中文语义",'
+            '"subject_type":"object","composition":"居中近景","supported_ratios":["1:1"],'
+            '"risk_labels":[]}]}. '
+            f"Input manifest: {input_manifest}"
         )
         body = json.dumps(
             {
@@ -256,7 +258,8 @@ class DashScopeCompatibleQwenClient:
                     {
                         "role": "system",
                         "content": (
-                            "Return only the exact JSON contract. Never echo image bytes, URLs, paths, "
+                            "Return JSON only; the only allowed top-level key is descriptors. "
+                            "Never return the key output_contract or echo image bytes, URLs, paths, "
                             "credentials, hashes, or hidden identifiers."
                         ),
                     },

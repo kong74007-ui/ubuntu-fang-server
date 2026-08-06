@@ -5661,6 +5661,87 @@ class V3LeaseTests(unittest.TestCase):
             ),
         )
 
+    def test_only_unbound_material_analysis_submission_can_be_released_for_retry(self):
+        self.seed_job("job-provider-validation-retry")
+        claim = self.store.claim_next_job("worker-a", 30, 100_000)
+        attempt = self.store.start_stage_attempt(
+            claim,
+            "queued",
+            "a" * 64,
+            101_000,
+        )
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_analysis",
+            "op-material-analysis-validation-retry",
+            "b" * 64,
+            102_000,
+        )
+        self.assertTrue(self.store.claim_provider_submission(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_analysis",
+            "op-material-analysis-validation-retry",
+            "b" * 64,
+            103_000,
+        ))
+
+        released = self.store.release_material_analysis_submission(
+            claim,
+            "op-material-analysis-validation-retry",
+            104_000,
+        )
+
+        self.assertEqual("intent_recorded", released["status"])
+        self.assertIsNone(released["external_id"])
+        self.assertIsNone(released["result_json"])
+        self.assertTrue(self.store.claim_provider_submission(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_analysis",
+            "op-material-analysis-validation-retry",
+            "b" * 64,
+            105_000,
+        ))
+
+        self.store.record_provider_intent(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-no-validation-release",
+            "c" * 64,
+            106_000,
+        )
+        self.assertTrue(self.store.claim_provider_submission(
+            claim,
+            "queued",
+            attempt["id"],
+            "dashscope",
+            "material_review",
+            "op-material-review-no-validation-release",
+            "c" * 64,
+            107_000,
+        ))
+        with self.assertRaises(StoreConflictError) as raised:
+            self.store.release_material_analysis_submission(
+                claim,
+                "op-material-review-no-validation-release",
+                108_000,
+            )
+        self.assertEqual(
+            "provider_validation_release_forbidden",
+            raised.exception.error_code,
+        )
+
     def test_provider_submission_claim_rejects_divergent_intent_identity(self):
         self.seed_job("job-provider-identity")
         claim = self.store.claim_next_job("worker-a", 30, 100_000)
