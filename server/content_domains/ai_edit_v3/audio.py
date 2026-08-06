@@ -77,6 +77,7 @@ class AudioGenerationPlan:
     volume_fades: tuple[VolumeFade, ...]
     protected_ranges: tuple[TimeRange, ...]
     duration_ms: int
+    omitted_optional_sfx: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +167,8 @@ def compile_audio_plan(
     sfx: list[SfxGenerationRequest] = []
     sfx_ids: set[str] = set()
     sfx_ranges: dict[str, TimeRange] = {}
+    omitted_optional_sfx: list[str] = []
+    omitted_optional_sfx_ids: set[str] = set()
     bgm_descriptions: list[str] = []
     raw_fades: list[Mapping[str, Any]] = []
     for raw in cues:
@@ -198,6 +201,10 @@ def compile_audio_plan(
                 raise AudioPlanError("sfx_role_invalid")
             cue_range = TimeRange(start, end)
             if any(_ranges_overlap(cue_range, item) for item in protected):
+                if priority == "optional":
+                    omitted_optional_sfx.append(cue_id)
+                    omitted_optional_sfx_ids.add(cue_id)
+                    continue
                 raise AudioPlanError("sfx_protected_overlap")
             sfx_ids.add(cue_id)
             sfx_ranges[cue_id] = cue_range
@@ -220,6 +227,8 @@ def compile_audio_plan(
     by_target: dict[str, list[TimeRange]] = {}
     for raw in raw_fades:
         target = raw.get("target")
+        if target in omitted_optional_sfx_ids and raw.get("priority") == "optional":
+            continue
         if target != "bgm" and target not in sfx_ids:
             raise AudioPlanError("volume_fade_target_invalid")
         start = int(raw["start_ms"])
@@ -245,6 +254,7 @@ def compile_audio_plan(
         volume_fades=tuple(sorted(fades, key=lambda item: (item.start_ms, item.target, item.cue_id))),
         protected_ranges=protected,
         duration_ms=duration_ms,
+        omitted_optional_sfx=tuple(omitted_optional_sfx),
     )
 
 

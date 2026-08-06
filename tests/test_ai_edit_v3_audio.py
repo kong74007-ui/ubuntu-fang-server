@@ -138,6 +138,134 @@ class AudioPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(AudioPlanError, "sfx_protected_overlap"):
             compile_audio_plan(_edit_plan([{**base, "role": "number", "start_ms": 500, "end_ms": 1_000}]), _timeline())
 
+    def test_optional_protected_sfx_degrades_before_provider_generation(self):
+        plan = compile_audio_plan(
+            _edit_plan([
+                {
+                    "id": "sfx_protected_optional",
+                    "type": "sfx",
+                    "priority": "optional",
+                    "role": "transition",
+                    "start_ms": 500,
+                    "end_ms": 1_000,
+                    "description": "optional protected accent",
+                },
+                {
+                    "id": "fade_protected_optional",
+                    "type": "volume_fade",
+                    "priority": "optional",
+                    "target": "sfx_protected_optional",
+                    "start_ms": 500,
+                    "end_ms": 800,
+                    "from_db": -18,
+                    "to_db": -6,
+                    "description": "optional omitted fade",
+                },
+                {
+                    "id": "sfx_safe_optional",
+                    "type": "sfx",
+                    "priority": "optional",
+                    "role": "method",
+                    "start_ms": 1_500,
+                    "end_ms": 2_000,
+                    "description": "safe boundary accent",
+                },
+            ]),
+            _timeline(),
+        )
+
+        self.assertEqual(
+            ("sfx_protected_optional",), plan.omitted_optional_sfx
+        )
+        self.assertEqual(
+            ["sfx_safe_optional"], [item.cue_id for item in plan.sfx]
+        )
+        self.assertEqual((), plan.volume_fades)
+
+        with self.assertRaisesRegex(AudioPlanError, "volume_fade_target_invalid"):
+            compile_audio_plan(
+                _edit_plan([
+                    {
+                        "id": "sfx_protected_optional",
+                        "type": "sfx",
+                        "priority": "optional",
+                        "role": "transition",
+                        "start_ms": 500,
+                        "end_ms": 1_000,
+                        "description": "optional protected accent",
+                    },
+                    {
+                        "id": "fade_protected_required",
+                        "type": "volume_fade",
+                        "priority": "required",
+                        "target": "sfx_protected_optional",
+                        "start_ms": 500,
+                        "end_ms": 800,
+                        "from_db": -18,
+                        "to_db": -6,
+                        "description": "required fade cannot dangle",
+                    },
+                ]),
+                _timeline(),
+            )
+
+    def test_real_failure_shape_omits_only_the_conflicting_optional_sfx(self):
+        timeline = TextTimeline(
+            duration_ms=26_000,
+            captions=(Caption("caption_01", "safe", 0, 26_000),),
+            source_segments=(
+                SourceSegment(
+                    "segment_protected",
+                    10_205,
+                    16_460,
+                    True,
+                    "protected",
+                    10_205,
+                    16_460,
+                ),
+            ),
+            authoritative_text_sha256="b" * 64,
+            alignment_coverage=1.0,
+        )
+        cues = [
+            {
+                "id": cue_id,
+                "type": "sfx",
+                "priority": priority,
+                "role": role,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "description": "bounded accent",
+            }
+            for cue_id, role, priority, start_ms, end_ms in (
+                ("scene_01_sfx_01", "transition", "required", 0, 500),
+                ("scene_02_sfx_01", "method", "optional", 6_545, 7_045),
+                ("scene_03_sfx_01", "transition", "optional", 10_405, 10_905),
+                ("scene_04_sfx_01", "method", "optional", 16_760, 17_260),
+                ("scene_05_sfx_01", "cta", "required", 19_938, 20_438),
+            )
+        ]
+
+        plan = compile_audio_plan(
+            {
+                "duration_ms": 26_000,
+                "creative_concept": "bounded commercial edit",
+                "audio_cues": cues,
+            },
+            timeline,
+        )
+
+        self.assertEqual(("scene_03_sfx_01",), plan.omitted_optional_sfx)
+        self.assertEqual(
+            [
+                "scene_01_sfx_01",
+                "scene_02_sfx_01",
+                "scene_04_sfx_01",
+                "scene_05_sfx_01",
+            ],
+            [item.cue_id for item in plan.sfx],
+        )
+
     def test_volume_fades_are_strict_non_overlapping_and_target_declared_audio(self):
         cues = [
             {"id": "sfx_method", "type": "sfx", "priority": "optional", "role": "method", "start_ms": 2_000, "end_ms": 2_600, "description": "步骤"},

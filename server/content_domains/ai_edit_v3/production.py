@@ -3088,6 +3088,14 @@ class ProductionStageCoordinator:
                     SimpleNamespace(request=director_request, timeline=timeline, capabilities=capabilities, job_id=job_id, deadline_at=context.deadline_at),
                     self.director,
                 )
+            compile_audio_plan(
+                generated.value,
+                (
+                    _timeline_with_full_source_map(timeline)
+                    if timeline.source_segments
+                    else timeline
+                ),
+            )
             digest = _write_json(root / "plan.json", generated.value)
             save = getattr(self.store, "save_director_plan", None)
             if callable(save):
@@ -3404,8 +3412,24 @@ class ProductionStageCoordinator:
                 }
                 for item in generated
             ]
-            digest = _write_json(root / "generated-audio.json", {"items": values})
-            return StageOutcome(_NEXT[name], {"audio_assets_sha256": digest, "audio_asset_count": len(values)}, input_sha)
+            digest = _write_json(
+                root / "generated-audio.json",
+                {
+                    "items": values,
+                    "omitted_optional_sfx": list(audio_plan.omitted_optional_sfx),
+                },
+            )
+            return StageOutcome(
+                _NEXT[name],
+                {
+                    "audio_assets_sha256": digest,
+                    "audio_asset_count": len(values),
+                    "omitted_optional_sfx_count": len(
+                        audio_plan.omitted_optional_sfx
+                    ),
+                },
+                input_sha,
+            )
         if name == "mixing_audio":
             normalized, _ = self._normalized(job_id)
             plan = _json(root / "plan.json")

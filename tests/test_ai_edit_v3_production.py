@@ -146,7 +146,7 @@ class ProductionDirectorTests(unittest.TestCase):
                     captured_capabilities.append(context.request["capabilities"])
                     captured_requests.append(context.request)
                     return decision
-                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}):
+                with patch("server.content_domains.ai_edit_v3.production.build_director_request", return_value={}), patch("server.content_domains.ai_edit_v3.production.generate_director_decision", side_effect=capture_decision), patch("server.content_domains.ai_edit_v3.production.compile_edit_plan", return_value={"version": "2.0", "visual_program_version": "1.0"}), patch("server.content_domains.ai_edit_v3.production.compile_audio_plan"):
                     coordinator._stage("planning", job, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
                 return json.loads((root / "visual-program.json").read_text(encoding="utf-8"))["variation_seed"]
 
@@ -402,12 +402,13 @@ class ProductionDirectorTests(unittest.TestCase):
             (root / "normalized.json").write_text(json.dumps({"input_type": "uploaded_audio", "ratio": "9:16", "sha256": "a" * 64}), encoding="utf-8")
             (root / "timeline.json").write_text(json.dumps({"duration_ms": 4000, "captions": [{"id": "caption_001", "text": "权威字幕", "start_ms": 0, "end_ms": 4000}], "source_segments": [{"id": "segment_01", "text": "权威字幕", "start_ms": 0, "end_ms": 4000, "protected": False, "output_start_ms": None, "output_end_ms": None}], "authoritative_text_sha256": None, "alignment_coverage": 1.0}), encoding="utf-8")
             legacy = SimpleNamespace(value={"version": "2.0"}, provider_request_id="legacy-request")
-            with patch("server.content_domains.ai_edit_v3.production.generate_edit_plan", return_value=legacy) as old_path, patch("server.content_domains.ai_edit_v3.production.generate_director_decision") as visual_path:
+            with patch("server.content_domains.ai_edit_v3.production.generate_edit_plan", return_value=legacy) as old_path, patch("server.content_domains.ai_edit_v3.production.generate_director_decision") as visual_path, patch("server.content_domains.ai_edit_v3.production.compile_audio_plan") as audio_preflight:
                 outcome = coordinator._stage("planning", {"job_id": "job-gate-zero", "owner_id": "alice", "stage_input_sha256": "0" * 64, "normalized_request_json": '{"input_type":"uploaded_audio"}'}, SimpleNamespace(deadline_at=time.time() + 60, claim=None, stage_attempt_id="attempt"))
 
         self.assertEqual("resolving_materials", outcome.next_state)
         old_path.assert_called_once()
         visual_path.assert_not_called()
+        audio_preflight.assert_called_once()
 
     def test_visual_program_gate_one_uses_renderer_catalog_and_compiles_plan(self):
         from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
@@ -3683,6 +3684,8 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             ), patch(
                 "server.content_domains.ai_edit_v3.production.generate_director_decision",
                 side_effect=capture_decision,
+            ), patch(
+                "server.content_domains.ai_edit_v3.production.compile_audio_plan",
             ):
                 first = coordinator._stage(
                     "planning", job,
@@ -3990,6 +3993,8 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             ), patch(
                 "server.content_domains.ai_edit_v3.production.compile_edit_plan",
                 return_value={"version": "2.0", "visual_program_version": "1.0"},
+            ), patch(
+                "server.content_domains.ai_edit_v3.production.compile_audio_plan",
             ):
                 coordinator._stage(
                     "planning", job,
