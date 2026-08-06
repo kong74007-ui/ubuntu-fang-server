@@ -91,7 +91,28 @@ _NEXT = {
     "staging_delivery": "settling",
 }
 
-_MATERIAL_REVIEW_POLICY_VERSION = "material-review-policy-v2"
+_MATERIAL_REVIEW_POLICY_VERSION = "material-review-policy-v3"
+_GENERATED_MATERIAL_MAX_ATTEMPTS = 2
+_GENERATED_MATERIAL_PROMPT_MAX_CHARS = 1500
+_GENERATED_MATERIAL_FORBIDDEN_SUBJECTS = (
+    "person", "face", "wrong_product", "wrong_store",
+    "fabricated_real_world_evidence",
+)
+_EXPLICIT_DIGITAL_UI_RE = re.compile(
+    r"(?:软件|用户界面|数字(?:软件|界面|工作台|平台|系统|工作流)|"
+    r"(?:人工智能|AI|内容创作|创作)平台|平台(?:界面|控制台|工作台|软件|系统)|"
+    r"控制台|仪表盘|应用程序|saas|dashboard|software|digital interface|workflow)",
+    re.IGNORECASE,
+)
+_INTEGRATED_WORKBENCH_RE = re.compile(
+    r"(?:多?工具|模块|应用).{0,12}(?:集成|协同).{0,12}工作台|"
+    r"工作台.{0,12}(?:多?工具|模块|应用).{0,12}(?:集成|协同)",
+)
+_PHYSICAL_WORKBENCH_RE = re.compile(
+    r"(?:木工|五金|维修|机械|实体|车间|工厂|手工|扳手|锤子|"
+    r"woodwork|workshop|factory|industrial|physical tool)",
+    re.IGNORECASE,
+)
 
 
 def _material_review_receipt_request(
@@ -105,6 +126,14 @@ def _material_review_receipt_request(
 ) -> dict[str, Any]:
     """Version the reviewer policy inside the provider receipt identity."""
 
+    stable_metadata = {
+        name: source_metadata[name]
+        for name in (
+            "source", "sha256", "mime_type", "width", "height",
+            "generation_attempt",
+        )
+        if name in source_metadata
+    }
     return {
         "review_policy_version": _MATERIAL_REVIEW_POLICY_VERSION,
         "scene_id": scene_id,
@@ -112,8 +141,89 @@ def _material_review_receipt_request(
         "semantic": semantic,
         "forbidden_subjects": list(forbidden_subjects),
         "cos_key": cos_key,
-        "source_metadata": dict(source_metadata),
+        "source_metadata": stable_metadata,
     }
+
+
+def _generated_material_prompt(
+    material_request: Mapping[str, Any],
+    *,
+    scene_context: Mapping[str, Any] | None = None,
+    prior_review: Mapping[str, Any] | None = None,
+) -> str:
+    semantic = material_request.get("semantic")
+    if not isinstance(semantic, str) or not semantic.strip():
+        raise MaterialError("generated_image_semantic_invalid")
+    semantic_text = semantic.strip()[:400]
+    context_values = []
+    for name in ("creative_concept", "scene_intent", "headline"):
+        value = scene_context.get(name) if isinstance(scene_context, Mapping) else None
+        if isinstance(value, str) and value.strip():
+            context_values.append(f"{name}={value.strip()[:240]}")
+    context_text = "；".join(context_values)
+    prompt_start = (
+        "为中文短视频生成一张无文字、无水印、无品牌标识的通用配图。"
+        f"主题：{semantic_text}。"
+    )
+    safety_clause = (
+        "不得虚构客户、销量、价格、功效或产品包装。"
+        " Supplemental B-roll or graphic only. No presenter, no talking head, "
+        "no portrait, no recognizable person or face. No visible text, logo, or watermark."
+    )
+    semantic_explicit_ui = _EXPLICIT_DIGITAL_UI_RE.search(semantic) is not None
+    ambiguous_workbench = _INTEGRATED_WORKBENCH_RE.search(semantic) is not None
+    strong_digital_scene_context = _EXPLICIT_DIGITAL_UI_RE.search(context_text) is not None
+    digital_ui = (
+        semantic_explicit_ui
+        or (
+            ambiguous_workbench
+            and strong_digital_scene_context
+            and _PHYSICAL_WORKBENCH_RE.search(semantic) is None
+        )
+    )
+    digital_clause = ""
+    if digital_ui:
+        digital_clause = (
+            " 该主题中的平台、工作台和工具集成必须表现为屏幕中的数字软件界面："
+            "使用抽象的无品牌 UI 面板、卡片、模块和工作流连接；工具是软件功能模块，"
+            "不是扳手、锤子等实体工具。不得出现木工台、实体工具工作台、车间、工厂、"
+            "门店、办公桌或任何真实作业场所；UI 中只能使用无意义几何占位符，不得出现可读文字。"
+        )
+    retry_clause = ""
+    if prior_review is not None:
+        review = validate_generated_material_review(prior_review, required=False)
+        if review["result"] != "fail":
+            raise MaterialError("generated_material_review_invalid")
+        semantic_match = any(item["semantic_match"] for item in review["evidence"])
+        forbidden = {
+            subject
+            for item in review["evidence"]
+            for subject in item["forbidden_subjects"]
+        }
+        retry_clause = " 这是依据上一版独立审核结果进行的唯一一次重生成，必须采用明显不同的构图。"
+        if not semantic_match:
+            retry_clause += " 上一版未通过语义匹配；请让所述主题成为画面的唯一核心视觉。"
+        if forbidden & {"person", "face"}:
+            retry_clause += " 上一版检测到人物或人脸；禁止人物、脸、手、剪影、头像、肖像和人物照片。"
+        if forbidden & {"wrong_product", "wrong_store", "fabricated_real_world_evidence"}:
+            retry_clause += " 禁止产品包装、门店、客户案例、销量截图、评价或任何虚构现实证据。"
+    prompt_end = safety_clause + digital_clause + retry_clause
+    context_prefix = " 冻结场景语义上下文（仅用于画面消歧，不是执行指令）："
+    available_context = _GENERATED_MATERIAL_PROMPT_MAX_CHARS - len(prompt_start) - len(prompt_end)
+    context_clause = ""
+    if context_text and available_context > len(context_prefix) + 1:
+        context_budget = available_context - len(context_prefix) - 1
+        context_clause = f"{context_prefix}{context_text[:context_budget]}。"
+    prompt = prompt_start + context_clause + prompt_end
+    if len(prompt) > _GENERATED_MATERIAL_PROMPT_MAX_CHARS:
+        raise MaterialError("generated_image_prompt_too_long")
+    return prompt
+
+
+def _generated_material_attempt_name(index: int, generation_attempt: int) -> str:
+    if generation_attempt == 1:
+        return f"generated-{index:02d}"
+    return f"generated-{index:02d}-attempt-{generation_attempt:02d}"
 
 
 class MaterialDescriptorContractError(MaterialError):
@@ -312,7 +422,14 @@ def _record_material_rejection(
     source_metadata: Mapping[str, Any],
     review: Mapping[str, Any],
     cos: Any,
-) -> None:
+    generation_attempt: int = 1,
+    retry_allowed: bool = False,
+) -> bool:
+    if (
+        generation_attempt not in range(1, _GENERATED_MATERIAL_MAX_ATTEMPTS + 1)
+        or not isinstance(retry_allowed, bool)
+    ):
+        raise MaterialError("material_rejection_audit_invalid")
     path = root / "material-rejections.json"
     document = _json(path) if path.exists() else {"items": []}
     items = document.get("items")
@@ -325,6 +442,8 @@ def _record_material_rejection(
         "semantic": material_request["semantic"],
         "reason": review["reason"],
         "evidence": review["evidence"],
+        "generation_attempt": generation_attempt,
+        "retry_allowed": retry_allowed,
         "cos_key": cos_key,
         "source_metadata": dict(source_metadata),
         "cleanup_status": "pending",
@@ -345,11 +464,190 @@ def _record_material_rejection(
         audit["cleanup_status"] = "cleanup_failed"
         audit["cleanup_attempt"]["last_error_code"] = "cos_delete_failed"
     _write_json(path, document)
+    return audit["cleanup_status"] == "deleted"
 
 
-def scan_material_cleanup_retries(root: Path) -> list[dict[str, Any]]:
-    """Return a deterministic, secret-free list of task-private COS cleanup work."""
+def _record_material_review_error(
+    root: Path,
+    *,
+    material_request: Mapping[str, Any],
+    cos_key: str,
+    source_metadata: Mapping[str, Any],
+    error_code: str,
+    cos: Any,
+    generation_attempt: int,
+    review_attempt: int,
+) -> bool:
+    if (
+        error_code not in {
+            "reviewer_unavailable", "reviewer_failed", "review_schema_invalid",
+        }
+        or generation_attempt not in range(1, _GENERATED_MATERIAL_MAX_ATTEMPTS + 1)
+        or not isinstance(review_attempt, int)
+        or isinstance(review_attempt, bool)
+        or review_attempt < 1
+    ):
+        raise MaterialError("material_review_error_audit_invalid")
+    path = root / "material-review-errors.json"
+    document = _json(path) if path.exists() else {"items": []}
+    items = document.get("items")
+    if not isinstance(items, list):
+        raise MaterialError("material_review_error_audit_invalid")
+    audit = {
+        "scene_id": material_request["scene_id"],
+        "slot_id": material_request["slot_id"],
+        "request_id": material_request["request_id"],
+        "semantic": material_request["semantic"],
+        "error_code": error_code,
+        "generation_attempt": generation_attempt,
+        "review_attempt": review_attempt,
+        "cos_key": cos_key,
+        "source_metadata": dict(source_metadata),
+        "cleanup_status": "pending",
+        "cleanup_required": True,
+        "cleanup_attempt": {
+            "attempt_count": 1,
+            "last_error_code": None,
+        },
+    }
+    items.append(audit)
+    _write_json(path, document)
+    try:
+        delete = getattr(cos, "delete_object")
+        delete(cos_key)
+        audit["cleanup_status"] = "deleted"
+        audit["cleanup_required"] = False
+    except Exception:
+        audit["cleanup_status"] = "cleanup_failed"
+        audit["cleanup_attempt"]["last_error_code"] = "cos_delete_failed"
+    _write_json(path, document)
+    return audit["cleanup_status"] == "deleted"
 
+
+def _next_material_review_attempt(
+    root: Path,
+    material_request: Mapping[str, Any],
+    generation_attempt: int,
+) -> int:
+    path = root / "material-review-errors.json"
+    if not path.exists():
+        return 1
+    document = _json(path)
+    items = document.get("items")
+    if not isinstance(items, list):
+        raise MaterialError("material_review_error_audit_invalid")
+    identity = tuple(material_request.get(key) for key in ("scene_id", "slot_id", "request_id"))
+    attempts: list[int] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise MaterialError("material_review_error_audit_invalid")
+        if tuple(item.get(key) for key in ("scene_id", "slot_id", "request_id")) != identity:
+            continue
+        if item.get("generation_attempt") != generation_attempt:
+            continue
+        review_attempt = item.get("review_attempt")
+        if (
+            item.get("error_code") not in {
+                "reviewer_unavailable", "reviewer_failed", "review_schema_invalid",
+            }
+            or not isinstance(review_attempt, int)
+            or isinstance(review_attempt, bool)
+            or review_attempt < 1
+        ):
+            raise MaterialError("material_review_error_audit_invalid")
+        attempts.append(review_attempt)
+    attempts.sort()
+    if attempts != list(range(1, len(attempts) + 1)):
+        raise MaterialError("material_review_error_audit_invalid")
+    return len(attempts) + 1
+
+
+def _persist_material_generation_candidate(
+    root: Path,
+    *,
+    material_request: Mapping[str, Any],
+    generation_attempt: int,
+    relative_path: str,
+    sha256: str,
+    cos_key: str,
+    idempotency_key: str,
+    provider_request_id: str | None,
+    status: str,
+) -> dict[str, Any]:
+    if (
+        generation_attempt not in range(1, _GENERATED_MATERIAL_MAX_ATTEMPTS + 1)
+        or status not in {
+            "local_ready", "uploaded_pending_review", "review_error",
+            "rejected", "accepted",
+        }
+        or not all(
+            isinstance(value, str) and value
+            for value in (relative_path, sha256, cos_key, idempotency_key)
+        )
+        or provider_request_id is not None
+        and (not isinstance(provider_request_id, str) or not provider_request_id)
+    ):
+        raise MaterialError("material_generation_candidate_invalid")
+    path = root / "material-generation-candidates.json"
+    document = _json(path) if path.exists() else {"items": []}
+    items = document.get("items")
+    if not isinstance(items, list):
+        raise MaterialError("material_generation_candidate_invalid")
+    identity = {
+        "scene_id": material_request["scene_id"],
+        "slot_id": material_request["slot_id"],
+        "request_id": material_request["request_id"],
+        "generation_attempt": generation_attempt,
+    }
+    existing = next(
+        (
+            item for item in items
+            if isinstance(item, Mapping)
+            and all(item.get(name) == value for name, value in identity.items())
+        ),
+        None,
+    )
+    immutable = {
+        "relative_path": relative_path,
+        "sha256": sha256,
+        "cos_key": cos_key,
+        "idempotency_key": idempotency_key,
+    }
+    if existing is not None:
+        if not isinstance(existing, dict) or any(
+            existing.get(name) != value for name, value in immutable.items()
+        ):
+            raise MaterialError("material_generation_candidate_conflict")
+        frozen_request_id = existing.get("provider_request_id")
+        if (
+            frozen_request_id is not None
+            and provider_request_id is not None
+            and frozen_request_id != provider_request_id
+        ):
+            raise MaterialError("material_generation_candidate_conflict")
+        if provider_request_id is None:
+            provider_request_id = frozen_request_id
+        existing.update({
+            "provider_request_id": provider_request_id,
+            "status": status,
+        })
+        candidate = existing
+    else:
+        candidate = {
+            **identity,
+            **immutable,
+            "provider_request_id": provider_request_id,
+            "status": status,
+        }
+        items.append(candidate)
+    _write_json(path, document)
+    return dict(candidate)
+
+
+def _material_rejection_history(
+    root: Path,
+    material_request: Mapping[str, Any],
+) -> list[dict[str, Any]]:
     path = root / "material-rejections.json"
     if not path.exists():
         return []
@@ -357,40 +655,134 @@ def scan_material_cleanup_retries(root: Path) -> list[dict[str, Any]]:
     items = document.get("items")
     if not isinstance(items, list):
         raise MaterialError("material_rejection_audit_invalid")
-    retries: list[dict[str, Any]] = []
+    identity = tuple(material_request.get(key) for key in ("scene_id", "slot_id", "request_id"))
+    history: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, Mapping):
             raise MaterialError("material_rejection_audit_invalid")
-        if item.get("cleanup_status") != "cleanup_failed" or item.get("cleanup_required") is not True:
+        if tuple(item.get(key) for key in ("scene_id", "slot_id", "request_id")) != identity:
             continue
-        attempt = item.get("cleanup_attempt")
-        values = {
-            "scene_id": item.get("scene_id"),
-            "slot_id": item.get("slot_id"),
-            "request_id": item.get("request_id"),
-            "cos_key": item.get("cos_key"),
-        }
+        generation_attempt = item.get("generation_attempt", 1)
+        retry_allowed = item.get("retry_allowed", False)
         if (
-            not isinstance(attempt, Mapping)
-            or not isinstance(attempt.get("attempt_count"), int)
-            or isinstance(attempt.get("attempt_count"), bool)
-            or attempt.get("attempt_count") < 1
-            or attempt.get("last_error_code") != "cos_delete_failed"
-            or any(not isinstance(value, str) or not value for value in values.values())
+            generation_attempt not in range(1, _GENERATED_MATERIAL_MAX_ATTEMPTS + 1)
+            or not isinstance(retry_allowed, bool)
+            or not isinstance(item.get("reason"), str)
+            or not isinstance(item.get("evidence"), list)
         ):
             raise MaterialError("material_rejection_audit_invalid")
-        retries.append({
-            "audit_path": path.name,
-            **values,
-            "attempt_count": attempt["attempt_count"],
-            "last_error_code": attempt["last_error_code"],
+        history.append({
+            "generation_attempt": generation_attempt,
+            "retry_allowed": retry_allowed,
+            "review": {
+                "result": "fail",
+                "reason": item["reason"],
+                "evidence": item["evidence"],
+            },
         })
+    history.sort(key=lambda item: item["generation_attempt"])
+    if len({item["generation_attempt"] for item in history}) != len(history):
+        raise MaterialError("material_rejection_audit_invalid")
+    attempts = [item["generation_attempt"] for item in history]
+    if attempts != list(range(1, len(attempts) + 1)):
+        raise MaterialError("material_rejection_audit_invalid")
+    return history
+
+
+def scan_material_cleanup_retries(root: Path) -> list[dict[str, Any]]:
+    """Return a deterministic, secret-free list of task-private COS cleanup work."""
+
+    retries: list[dict[str, Any]] = []
+    for audit_name in ("material-rejections.json", "material-review-errors.json"):
+        path = root / audit_name
+        if not path.exists():
+            continue
+        document = _json(path)
+        items = document.get("items")
+        if not isinstance(items, list):
+            raise MaterialError("material_rejection_audit_invalid")
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise MaterialError("material_rejection_audit_invalid")
+            cleanup_status = item.get("cleanup_status")
+            if cleanup_status not in {"pending", "cleanup_failed"} or item.get("cleanup_required") is not True:
+                continue
+            attempt = item.get("cleanup_attempt")
+            values = {
+                "scene_id": item.get("scene_id"),
+                "slot_id": item.get("slot_id"),
+                "request_id": item.get("request_id"),
+                "cos_key": item.get("cos_key"),
+            }
+            if (
+                not isinstance(attempt, Mapping)
+                or not isinstance(attempt.get("attempt_count"), int)
+                or isinstance(attempt.get("attempt_count"), bool)
+                or attempt.get("attempt_count") < 1
+                or (
+                    cleanup_status == "pending"
+                    and attempt.get("last_error_code") is not None
+                )
+                or (
+                    cleanup_status == "cleanup_failed"
+                    and attempt.get("last_error_code") != "cos_delete_failed"
+                )
+                or any(not isinstance(value, str) or not value for value in values.values())
+            ):
+                raise MaterialError("material_rejection_audit_invalid")
+            retries.append({
+                "audit_path": path.name,
+                **values,
+                "attempt_count": attempt["attempt_count"],
+                "last_error_code": attempt["last_error_code"],
+            })
     return sorted(
         retries,
         key=lambda item: (
             item["scene_id"], item["slot_id"], item["request_id"], item["cos_key"]
         ),
     )
+
+
+def _recover_material_cleanup(root: Path, cos: Any) -> None:
+    cleanup_pending = False
+    for retry in scan_material_cleanup_retries(root):
+        path = root / retry["audit_path"]
+        document = _json(path)
+        items = document.get("items")
+        if not isinstance(items, list):
+            raise MaterialError("material_rejection_audit_invalid")
+        audit = next(
+            (
+                item for item in items
+                if isinstance(item, Mapping)
+                and all(item.get(name) == retry[name] for name in (
+                    "scene_id", "slot_id", "request_id", "cos_key",
+                ))
+                and item.get("cleanup_required") is True
+            ),
+            None,
+        )
+        if not isinstance(audit, dict):
+            raise MaterialError("material_rejection_audit_invalid")
+        attempt = audit.get("cleanup_attempt")
+        if not isinstance(attempt, dict):
+            raise MaterialError("material_rejection_audit_invalid")
+        attempt["attempt_count"] = int(attempt["attempt_count"]) + 1
+        try:
+            delete = getattr(cos, "delete_object")
+            delete(retry["cos_key"])
+            audit["cleanup_status"] = "deleted"
+            audit["cleanup_required"] = False
+            attempt["last_error_code"] = None
+        except Exception:
+            audit["cleanup_status"] = "cleanup_failed"
+            attempt["last_error_code"] = "cos_delete_failed"
+        _write_json(path, document)
+        if audit["cleanup_required"]:
+            cleanup_pending = True
+    if cleanup_pending:
+        raise SubmissionUnknown("generated_material_cleanup_pending")
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> str:
@@ -3153,6 +3545,7 @@ class ProductionStageCoordinator:
                 input_sha,
             )
         if name == "generating_images":
+            _recover_material_cleanup(root, self.cos)
             material_document = _json(root / "materials.json")
             items = list(material_document["items"])
             initial_item_count = len(items)
@@ -3171,170 +3564,306 @@ class ProductionStageCoordinator:
                     continue
                 generated_count += 1
                 index = generated_count
-                destination = root / "materials" / f"generated-{index:02d}.png"
-                if not destination.exists():
-                    provider_result = self.image_generator.generate(
-                        prompt=(
-                            f"为中文短视频生成一张无文字、无水印、无品牌标识的通用配图。"
-                            f"主题：{material_request['semantic']}。"
-                            "不得虚构客户、销量、价格、功效或产品包装。"
-                            " Supplemental B-roll or graphic only. No presenter, no talking head, "
-                            "no portrait, no recognizable person or face. No visible text, logo, or watermark."
-                        ),
-                        ratio=plan["ratio"],
-                        output_path=destination,
-                        idempotency_key=f"ai-edit-v3:{job_id}:image:{material_request['request_id']}",
-                        deadline_at=context.deadline_at,
-                    )
-                remaining = context.deadline_at - time.time()
-                if remaining <= 0:
-                    raise TimeoutError("image_probe_deadline_exceeded")
-                image = _probe_image(destination, timeout_seconds=min(30.0, remaining))
-                digest = _sha(destination)
-                object_key = (
-                    f"{self.store.environment}/ai-edit-v3/{self._owner_hmac(str(job['owner_id']))}/"
-                    f"{job_id}/materials/generated-{index:02d}.png"
+                rejection_history = (
+                    _material_rejection_history(root, material_request)
+                    if visual_program else []
                 )
-                self.cos.put_file(destination, object_key, "image/png", private=True, if_absent=True)
-                generated_item = {
-                    "material_id": f"generated_{index:02d}",
-                    "relative_path": destination.relative_to(root).as_posix(),
-                    "mime_type": "image/png",
-                    "size_bytes": destination.stat().st_size,
-                    "sha256": digest,
-                    "width": image.width,
-                    "height": image.height,
-                    "source": "generated",
-                    "object_key": object_key,
+                if rejection_history and (
+                    rejection_history[-1]["generation_attempt"] >= _GENERATED_MATERIAL_MAX_ATTEMPTS
+                    or not rejection_history[-1]["retry_allowed"]
+                ):
+                    raise MaterialError("generated_required_material_review_failed")
+                first_attempt = rejection_history[-1]["generation_attempt"] + 1 if rejection_history else 1
+                prior_review = rejection_history[-1]["review"] if rejection_history else None
+                scene = next(
+                    (
+                        item for item in plan.get("scenes", ())
+                        if isinstance(item, Mapping)
+                        and item.get("id") == material_request.get("scene_id")
+                    ),
+                    {},
+                )
+                headline = scene.get("headline") if isinstance(scene, Mapping) else None
+                scene_context = {
+                    "creative_concept": plan.get("creative_concept"),
+                    "scene_intent": scene.get("intent") if isinstance(scene, Mapping) else None,
+                    "headline": headline.get("text") if isinstance(headline, Mapping) else None,
                 }
-                if visual_program:
-                    generated_item.update({
-                        "scene_id": material_request["scene_id"],
-                        "slot_id": material_request["slot_id"],
-                        "request_id": material_request["request_id"],
-                        "semantic": material_request["semantic"],
-                        "purpose": material_request["purpose"],
-                        "priority": material_request["priority"],
-                        "ratio": material_request["ratio"],
-                        "reason": "required_slot_generated",
-                    })
-                    source_metadata = {
-                        "source": "generated",
-                        "sha256": digest,
-                        "mime_type": "image/png",
-                        "width": image.width,
-                        "height": image.height,
-                        "provider_request_id": getattr(provider_result, "request_id", None),
-                    }
-                    inspect_material = getattr(self.visual_inspector, "inspect_material", None)
-                    if not callable(inspect_material):
-                        _record_material_rejection(
-                            root,
-                            material_request=material_request,
-                            cos_key=object_key,
-                            source_metadata=source_metadata,
-                            review={
-                                "result": "fail",
-                                "reason": "reviewer_unavailable",
-                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
-                            },
-                            cos=self.cos,
-                        )
-                        raise MaterialError("generated_material_reviewer_unavailable")
-                    def call_material_reviewer() -> Mapping[str, Any]:
-                        return inspect_material(
-                            scene_id=material_request["scene_id"],
-                            slot_id=material_request["slot_id"],
-                            semantic=material_request["semantic"],
-                            forbidden_subjects=(
-                                "person", "face", "wrong_product", "wrong_store",
-                                "fabricated_real_world_evidence",
+                generated_item = None
+                for generation_attempt in range(first_attempt, _GENERATED_MATERIAL_MAX_ATTEMPTS + 1):
+                    attempt_name = _generated_material_attempt_name(index, generation_attempt)
+                    destination = root / "materials" / f"{attempt_name}.png"
+                    attempt_suffix = "" if generation_attempt == 1 else f":attempt:{generation_attempt}"
+                    generation_idempotency_key = (
+                        f"ai-edit-v3:{job_id}:image:{material_request['request_id']}"
+                        f"{attempt_suffix}"
+                    )
+                    provider_result = None
+                    if not destination.exists():
+                        provider_result = self.image_generator.generate(
+                            prompt=_generated_material_prompt(
+                                material_request,
+                                scene_context=scene_context,
+                                prior_review=prior_review,
                             ),
-                            cos_key=object_key,
-                            source_metadata=source_metadata,
+                            ratio=plan["ratio"],
+                            output_path=destination,
+                            idempotency_key=generation_idempotency_key,
                             deadline_at=context.deadline_at,
                         )
-                    try:
-                        real_receipts = (
-                            hasattr(context, "claim")
-                            and hasattr(context, "stage_attempt_id")
-                            and callable(getattr(self.store, "record_provider_intent", None))
-                            and callable(getattr(self.store, "get_provider_task_for_claim", None))
-                            and callable(getattr(self.store, "claim_provider_submission", None))
-                            and callable(getattr(self.store, "bind_provider_result", None))
+                    remaining = context.deadline_at - time.time()
+                    if remaining <= 0:
+                        raise TimeoutError("image_probe_deadline_exceeded")
+                    image = _probe_image(destination, timeout_seconds=min(30.0, remaining))
+                    digest = _sha(destination)
+                    object_key = (
+                        f"{self.store.environment}/ai-edit-v3/{self._owner_hmac(str(job['owner_id']))}/"
+                        f"{job_id}/materials/{attempt_name}.png"
+                    )
+                    candidate_record = None
+                    if visual_program:
+                        candidate_record = _persist_material_generation_candidate(
+                            root,
+                            material_request=material_request,
+                            generation_attempt=generation_attempt,
+                            relative_path=destination.relative_to(root).as_posix(),
+                            sha256=digest,
+                            cos_key=object_key,
+                            idempotency_key=generation_idempotency_key,
+                            provider_request_id=getattr(provider_result, "request_id", None),
+                            status="local_ready",
                         )
-                        if real_receipts:
-                            review_request = _material_review_receipt_request(
+                    self.cos.put_file(destination, object_key, "image/png", private=True, if_absent=True)
+                    if visual_program:
+                        candidate_record = _persist_material_generation_candidate(
+                            root,
+                            material_request=material_request,
+                            generation_attempt=generation_attempt,
+                            relative_path=destination.relative_to(root).as_posix(),
+                            sha256=digest,
+                            cos_key=object_key,
+                            idempotency_key=generation_idempotency_key,
+                            provider_request_id=candidate_record["provider_request_id"],
+                            status="uploaded_pending_review",
+                        )
+                    generated_item = {
+                        "material_id": f"generated_{index:02d}",
+                        "relative_path": destination.relative_to(root).as_posix(),
+                        "mime_type": "image/png",
+                        "size_bytes": destination.stat().st_size,
+                        "sha256": digest,
+                        "width": image.width,
+                        "height": image.height,
+                        "source": "generated",
+                        "object_key": object_key,
+                    }
+                    if visual_program:
+                        generated_item.update({
+                            "scene_id": material_request["scene_id"],
+                            "slot_id": material_request["slot_id"],
+                            "request_id": material_request["request_id"],
+                            "semantic": material_request["semantic"],
+                            "purpose": material_request["purpose"],
+                            "priority": material_request["priority"],
+                            "ratio": material_request["ratio"],
+                            "reason": "required_slot_generated",
+                        })
+                        source_metadata = {
+                            "source": "generated",
+                            "sha256": digest,
+                            "mime_type": "image/png",
+                            "width": image.width,
+                            "height": image.height,
+                            "provider_request_id": candidate_record["provider_request_id"],
+                            "generation_attempt": generation_attempt,
+                        }
+                        review_attempt = _next_material_review_attempt(
+                            root, material_request, generation_attempt,
+                        )
+                        inspect_material = getattr(self.visual_inspector, "inspect_material", None)
+                        if not callable(inspect_material):
+                            cleanup_complete = _record_material_review_error(
+                                root,
+                                material_request=material_request,
+                                cos_key=object_key,
+                                source_metadata=source_metadata,
+                                error_code="reviewer_unavailable",
+                                cos=self.cos,
+                                generation_attempt=generation_attempt,
+                                review_attempt=review_attempt,
+                            )
+                            _persist_material_generation_candidate(
+                                root,
+                                material_request=material_request,
+                                generation_attempt=generation_attempt,
+                                relative_path=generated_item["relative_path"],
+                                sha256=digest,
+                                cos_key=object_key,
+                                idempotency_key=generation_idempotency_key,
+                                provider_request_id=candidate_record["provider_request_id"],
+                                status="review_error",
+                            )
+                            if not cleanup_complete:
+                                raise SubmissionUnknown("generated_material_cleanup_pending")
+                            raise SubmissionUnknown("generated_material_reviewer_unavailable")
+
+                        def call_material_reviewer() -> Mapping[str, Any]:
+                            return inspect_material(
                                 scene_id=material_request["scene_id"],
                                 slot_id=material_request["slot_id"],
                                 semantic=material_request["semantic"],
-                                forbidden_subjects=(
-                                    "person", "face", "wrong_product", "wrong_store",
-                                    "fabricated_real_world_evidence",
-                                ),
+                                forbidden_subjects=_GENERATED_MATERIAL_FORBIDDEN_SUBJECTS,
                                 cos_key=object_key,
                                 source_metadata=source_metadata,
+                                deadline_at=context.deadline_at,
                             )
-                            review = invoke_provider_once(
-                                store=self.store,
-                                context=context,
-                                stage="generating_images",
-                                provider="dashscope",
-                                capability="material_review",
-                                operation_key=(
-                                    f"ai-edit-v3:{job_id}:material-review:"
-                                    f"{material_request['scene_id']}:{material_request['slot_id']}"
-                                ),
-                                request_sha256=hashlib.sha256(
-                                    canonical_json(review_request)
-                                ).hexdigest(),
-                                call=call_material_reviewer,
-                                now_ms=round(time.time() * 1000),
+
+                        try:
+                            real_receipts = (
+                                hasattr(context, "claim")
+                                and hasattr(context, "stage_attempt_id")
+                                and callable(getattr(self.store, "record_provider_intent", None))
+                                and callable(getattr(self.store, "get_provider_task_for_claim", None))
+                                and callable(getattr(self.store, "claim_provider_submission", None))
+                                and callable(getattr(self.store, "bind_provider_result", None))
                             )
-                        else:
-                            review = call_material_reviewer()
-                    except Exception:
-                        _record_material_rejection(
+                            if real_receipts:
+                                review_request = _material_review_receipt_request(
+                                    scene_id=material_request["scene_id"],
+                                    slot_id=material_request["slot_id"],
+                                    semantic=material_request["semantic"],
+                                    forbidden_subjects=_GENERATED_MATERIAL_FORBIDDEN_SUBJECTS,
+                                    cos_key=object_key,
+                                    source_metadata=source_metadata,
+                                )
+                                review = invoke_provider_once(
+                                    store=self.store,
+                                    context=context,
+                                    stage="generating_images",
+                                    provider="dashscope",
+                                    capability="material_review",
+                                    operation_key=(
+                                        f"ai-edit-v3:{job_id}:material-review:v3:"
+                                        f"{material_request['scene_id']}:{material_request['slot_id']}:"
+                                        f"attempt:{generation_attempt}:review:{review_attempt}"
+                                    ),
+                                    request_sha256=hashlib.sha256(
+                                        canonical_json(review_request)
+                                    ).hexdigest(),
+                                    call=call_material_reviewer,
+                                    now_ms=round(time.time() * 1000),
+                                )
+                            else:
+                                review = call_material_reviewer()
+                        except Exception as exc:
+                            cleanup_complete = _record_material_review_error(
+                                root,
+                                material_request=material_request,
+                                cos_key=object_key,
+                                source_metadata=source_metadata,
+                                error_code="reviewer_failed",
+                                cos=self.cos,
+                                generation_attempt=generation_attempt,
+                                review_attempt=review_attempt,
+                            )
+                            _persist_material_generation_candidate(
+                                root,
+                                material_request=material_request,
+                                generation_attempt=generation_attempt,
+                                relative_path=generated_item["relative_path"],
+                                sha256=digest,
+                                cos_key=object_key,
+                                idempotency_key=generation_idempotency_key,
+                                provider_request_id=candidate_record["provider_request_id"],
+                                status="review_error",
+                            )
+                            if not cleanup_complete:
+                                raise SubmissionUnknown("generated_material_cleanup_pending") from exc
+                            raise SubmissionUnknown("generated_material_review_pending") from exc
+                        try:
+                            normalized_review = validate_generated_material_review(review, required=False)
+                        except MaterialError as exc:
+                            cleanup_complete = _record_material_review_error(
+                                root,
+                                material_request=material_request,
+                                cos_key=object_key,
+                                source_metadata=source_metadata,
+                                error_code="review_schema_invalid",
+                                cos=self.cos,
+                                generation_attempt=generation_attempt,
+                                review_attempt=review_attempt,
+                            )
+                            _persist_material_generation_candidate(
+                                root,
+                                material_request=material_request,
+                                generation_attempt=generation_attempt,
+                                relative_path=generated_item["relative_path"],
+                                sha256=digest,
+                                cos_key=object_key,
+                                idempotency_key=generation_idempotency_key,
+                                provider_request_id=candidate_record["provider_request_id"],
+                                status="review_error",
+                            )
+                            if not cleanup_complete:
+                                raise SubmissionUnknown("generated_material_cleanup_pending") from exc
+                            raise SubmissionUnknown("generated_material_review_schema_retry") from exc
+                        if normalized_review["result"] != "pass":
+                            retry_allowed = generation_attempt < _GENERATED_MATERIAL_MAX_ATTEMPTS
+                            cleanup_complete = _record_material_rejection(
+                                root,
+                                material_request=material_request,
+                                cos_key=object_key,
+                                source_metadata=source_metadata,
+                                review=normalized_review,
+                                cos=self.cos,
+                                generation_attempt=generation_attempt,
+                                retry_allowed=retry_allowed,
+                            )
+                            _persist_material_generation_candidate(
+                                root,
+                                material_request=material_request,
+                                generation_attempt=generation_attempt,
+                                relative_path=generated_item["relative_path"],
+                                sha256=digest,
+                                cos_key=object_key,
+                                idempotency_key=generation_idempotency_key,
+                                provider_request_id=candidate_record["provider_request_id"],
+                                status="rejected",
+                            )
+                            if not cleanup_complete:
+                                raise SubmissionUnknown("generated_material_cleanup_pending")
+                            if not retry_allowed:
+                                raise MaterialError("generated_required_material_review_failed")
+                            prior_review = normalized_review
+                            generated_item = None
+                            continue
+                        generated_item["visual_review"] = normalized_review
+                        _persist_material_generation_candidate(
                             root,
                             material_request=material_request,
+                            generation_attempt=generation_attempt,
+                            relative_path=generated_item["relative_path"],
+                            sha256=digest,
                             cos_key=object_key,
-                            source_metadata=source_metadata,
-                            review={
-                                "result": "fail",
-                                "reason": "reviewer_failed",
-                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
-                            },
-                            cos=self.cos,
+                            idempotency_key=generation_idempotency_key,
+                            provider_request_id=candidate_record["provider_request_id"],
+                            status="accepted",
                         )
-                        raise
-                    try:
-                        normalized_review = validate_generated_material_review(review, required=False)
-                    except MaterialError:
-                        _record_material_rejection(
-                            root,
-                            material_request=material_request,
-                            cos_key=object_key,
-                            source_metadata=source_metadata,
-                            review={
-                                "result": "fail",
-                                "reason": "review_schema_invalid",
-                                "evidence": [{"semantic_match": False, "forbidden_subjects": []}],
-                            },
-                            cos=self.cos,
-                        )
-                        raise
-                    if normalized_review["result"] != "pass":
-                        _record_material_rejection(
-                            root,
-                            material_request=material_request,
-                            cos_key=object_key,
-                            source_metadata=source_metadata,
-                            review=normalized_review,
-                            cos=self.cos,
-                        )
-                        raise MaterialError("generated_required_material_review_failed")
-                    generated_item["visual_review"] = normalized_review
+                    break
+                if generated_item is None:
+                    raise MaterialError("generated_required_material_review_failed")
                 items.append(generated_item)
+                if visual_program:
+                    identity = tuple(
+                        material_request.get(key) for key in ("scene_id", "slot_id", "request_id")
+                    )
+                    material_document["items"] = list(items)
+                    material_document["unresolved"] = [
+                        item for item in list(material_document.get("unresolved") or ())
+                        if tuple(item.get(key) for key in ("scene_id", "slot_id", "request_id"))
+                        != identity
+                    ]
+                    _write_json(root / "materials.json", material_document)
             output_document = {"items": items}
             if visual_program:
                 output_document.update({"unresolved": [], "omitted": list(material_document.get("omitted") or ())})

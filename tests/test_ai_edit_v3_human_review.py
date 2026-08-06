@@ -32,7 +32,7 @@ def scores(*, facts: int = 2, materials: int = 2, hook: int = 2,
     }
 
 
-REGISTRY_SHA256 = "24e8fe3df5763b1e95e621afb766316fc32e90494f64ebfdcdb757b9e8a395d0"
+REGISTRY_SHA256 = "ed1cec075c2037d70ccdce6525f93f71ad5240bc740e7e5295bc54f0c0e18b7d"
 LAYOUT_VARIANTS = {
     "speaker_fullscreen": ("clean_center", "headline_top"),
     "speaker_left_info_right": ("card_stack", "number_focus"),

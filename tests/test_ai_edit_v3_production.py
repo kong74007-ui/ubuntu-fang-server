@@ -1381,7 +1381,7 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
             source_metadata={"sha256": "a" * 64},
         )
         self.assertEqual(
-            "material-review-policy-v2",
+            "material-review-policy-v3",
             payload["review_policy_version"],
         )
         legacy_payload = dict(payload)
@@ -1389,6 +1389,32 @@ class ProductionStageCoordinatorTests(unittest.TestCase):
         self.assertNotEqual(
             hashlib.sha256(production.canonical_json(payload)).hexdigest(),
             hashlib.sha256(production.canonical_json(legacy_payload)).hexdigest(),
+        )
+        resumed_payload = production._material_review_receipt_request(
+            scene_id="scene_01",
+            slot_id="evidence",
+            semantic="abstract workflow diagram",
+            forbidden_subjects=("person", "face"),
+            cos_key="test/ai-edit-v3/owner/job/materials/generated-01.png",
+            source_metadata={
+                "sha256": "a" * 64,
+                "provider_request_id": None,
+            },
+        )
+        first_run_payload = production._material_review_receipt_request(
+            scene_id="scene_01",
+            slot_id="evidence",
+            semantic="abstract workflow diagram",
+            forbidden_subjects=("person", "face"),
+            cos_key="test/ai-edit-v3/owner/job/materials/generated-01.png",
+            source_metadata={
+                "sha256": "a" * 64,
+                "provider_request_id": "provider-request-is-not-stable-on-resume",
+            },
+        )
+        self.assertEqual(
+            hashlib.sha256(production.canonical_json(first_run_payload)).hexdigest(),
+            hashlib.sha256(production.canonical_json(resumed_payload)).hexdigest(),
         )
 
     def test_quality_auto_repair_gate_routes_pass_and_preserves_failed_first_render(self):
