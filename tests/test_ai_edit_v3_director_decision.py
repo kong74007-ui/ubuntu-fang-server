@@ -487,6 +487,88 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         self.assertEqual({"frozen_request", "previous_response_sha256", "repair"}, set(repair))
         self.assertNotIn("previous_response", repair)
 
+    def test_visible_text_schema_repair_names_the_safe_reference_shape(self):
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                if len(calls) == 1:
+                    invalid = valid_decision()
+                    invalid["scene_directives"][0]["highlight"] = "model-authored copy"
+                    return ProviderResult(
+                        "dashscope",
+                        "director",
+                        "request-1",
+                        {"content": json.dumps(invalid, ensure_ascii=False)},
+                        {},
+                        1,
+                    )
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-2",
+                    {"content": json.dumps(valid_decision(), ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-1",
+            request={"safe": True},
+            candidates=CANDIDATES,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+
+        result = generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual("1.0", result.value["version"])
+        self.assertEqual(
+            "visible_text_reference_object_or_omit",
+            calls[1]["repair"]["expected_constraint"],
+        )
+        self.assertNotIn("model-authored copy", json.dumps(calls[1], ensure_ascii=False))
+
+    def test_nested_visible_text_schema_repair_uses_the_same_safe_constraint(self):
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                if len(calls) == 1:
+                    invalid = valid_decision()
+                    invalid["scene_directives"][0]["highlight"] = {
+                        "text_kind": "compressed",
+                        "source_caption_ids": "caption_001",
+                    }
+                    payload = invalid
+                else:
+                    payload = valid_decision()
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-1",
+            request={"safe": True},
+            candidates=CANDIDATES,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+
+        generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual(
+            "visible_text_reference_object_or_omit",
+            calls[1]["repair"]["expected_constraint"],
+        )
+
     def test_second_invalid_response_fails(self):
         calls = []
         class Provider:

@@ -863,9 +863,10 @@ class QwenCompiledDirector:
         return "\n".join((
             "你是中文短视频导演。只返回一个 JSON 对象，不得输出 Markdown、解释、路径、URL、代码或提供商字段。",
             "输出必须严格满足下方 director-decision-v1 JSON Schema；additionalProperties=false 表示不得增加任何字段。",
+            "顶层只能包含 version、creative_concept、narrative_pattern、theme_profile_id、design_intent、scene_directives、audio_intent；不得包装在 output_contract、schema、$schema、$defs、properties、task、result、data 或 decision 中，也不得返回 Schema 本身。",
             "scene_directives 必须与 scene_candidates 一一对应、顺序一致且不遗漏；scene_id 必须原样使用候选 ID。",
             "每个场景的 layout_id 必须来自该 scene_candidate.allowed_layout_ids；layout_variant、component_id、preset、transition 和 theme_profile_id 只能从请求 capabilities 的对应白名单选择。",
-            "headline/highlight 若存在，只能包含 text_kind 与该候选 caption_ids 中的 source_caption_ids；不得复制或改写字幕文字。",
+            "headline/highlight 若存在，必须是只含 text_kind 与 source_caption_ids 两个键的 JSON 对象，例如 {\"text_kind\":\"compressed\",\"source_caption_ids\":[\"caption_001\"]}；这个例子只展示结构，实际 ID 必须使用当前 scene_candidate.caption_ids。若不使用就完全省略该字段，不得输出 null、字符串、数组或 text 字段，不得复制或改写字幕文字。",
             "overlay 的 content_ref 必须指向同场景已声明的 headline 或 highlight；placement 必须等于 capabilities.overlay_placements[component_id] 中某项的 placement，引用字幕拼接后的字符数和行数不得超过该项 max_chars 与 max_lines。",
             "overlay_variants 中对应列表为空时省略 variant；每个 animation.target_id 必须等于同场景 overlay instance_id，除非 capabilities 明确声明公开 target；没有 overlay 时 animations 必须为空。",
             "material_bindings 必须为空。只用 material_slot_directives 表达语义素材需求；slot_id 必须采用 candidate_XX_purpose 形式并在整条视频中唯一。",
@@ -873,7 +874,7 @@ class QwenCompiledDirector:
             "整条视频的素材槽总数不得超过 max_total_material_slots。视频口播的第一场必须保留人物；无人物布局累计时长不得超过 speaker_visibility_policy.max_hidden_ratio。",
             "达到 scene_structure_policy 的时长和场景门槛后，结构签名(layout_id、layout_variant、overlay组件集合)必须达到最小种类数，且连续相同签名不得超过上限。",
             "current_materials 只是可优先匹配的安全语义摘要，不代表所有槽都已满足；若某素材槽意图复用其中一项，semantic 必须逐字复制该项 semantic，未匹配的 required 槽由后续素材解析器生成。所有必需数组即使为空也必须输出。",
-            "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code 和 field_path 修正结构。",
+            "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code、repair.field_path 和 repair.expected_constraint 修正结构。",
             "JSON Schema:",
             contract,
         ))

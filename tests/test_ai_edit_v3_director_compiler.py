@@ -38,6 +38,23 @@ class DirectorCompilerTests(unittest.TestCase):
         self.assertEqual("in", plan["scenes"][-1]["animations"][0]["direction"])
         validate_edit_plan(plan, timeline={"duration_ms": 25000, "accurate_captions": CAPTIONS, **CAPABILITIES})
 
+    def test_compiler_maps_director_minimal_density_to_edit_plan_airy(self):
+        decision = copy.deepcopy(DECISION)
+        decision["design_intent"]["density"] = "minimal"
+        capabilities = copy.deepcopy(CAPABILITIES)
+        capabilities["theme_capabilities"]["density"] = ["airy", "balanced", "dense"]
+
+        plan = compile_edit_plan(
+            decision,
+            candidates=CANDIDATES,
+            timeline={"duration_ms": 25000, "captions": CAPTIONS, "ratio": "9:16"},
+            materials=[],
+            capabilities=capabilities,
+            variation_seed=11,
+        )
+
+        self.assertEqual("airy", plan["theme"]["density"])
+
     def test_compiler_is_canonical_and_rejects_invented_caption_reference(self):
         first = self.compile()
         second = self.compile()

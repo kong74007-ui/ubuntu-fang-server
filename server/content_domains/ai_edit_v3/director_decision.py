@@ -554,6 +554,19 @@ def _provider_response_sha256(raw: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _repair_expected_constraint(error: DirectorDecisionError) -> str:
+    if (
+        error.code == "director_decision_schema_invalid"
+        and re.fullmatch(
+            r"\$\.scene_directives\[\d+\]\.(?:headline|highlight)(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
+            error.path,
+        )
+        is not None
+    ):
+        return "visible_text_reference_object_or_omit"
+    return "follow_director_decision_schema_exactly"
+
+
 def generate_director_decision(context: Any, provider: Any, *, max_repairs: int = 1) -> ValidatedDecision:
     if max_repairs != 1:
         raise ValueError("director_repair_budget_invalid")
@@ -566,7 +579,11 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
         request = frozen_request if attempt == 0 else {
             "frozen_request": frozen_request,
             "previous_response_sha256": previous_sha,
-            "repair": {"error_code": last_error.code, "field_path": last_error.path},
+            "repair": {
+                "error_code": last_error.code,
+                "field_path": last_error.path,
+                "expected_constraint": _repair_expected_constraint(last_error),
+            },
         }
         raw = provider.generate_decision(
             request,

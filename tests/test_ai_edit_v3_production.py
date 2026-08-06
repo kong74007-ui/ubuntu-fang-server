@@ -909,6 +909,16 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertIn("必须等于同场景 overlay instance_id", client.system_prompt)
         self.assertIn("max_chars", client.system_prompt)
         self.assertIn("semantic 必须逐字复制", client.system_prompt)
+        self.assertIn("repair.expected_constraint", client.system_prompt)
+        self.assertIn("顶层只能包含", client.system_prompt)
+        self.assertIn("不得包装在 output_contract", client.system_prompt)
+        self.assertIn("不得输出 null、字符串、数组或 text 字段", client.system_prompt)
+        self.assertIn(
+            '{"text_kind":"compressed","source_caption_ids":["caption_001"]}',
+            client.system_prompt,
+        )
+        self.assertIn("例子只展示结构", client.system_prompt)
+        self.assertIn("必须使用当前 scene_candidate.caption_ids", client.system_prompt)
 
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()
