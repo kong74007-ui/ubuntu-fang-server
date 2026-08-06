@@ -43,6 +43,10 @@ _MATERIAL_PURPOSE_PATH = re.compile(
     r"\$\.scene_directives\[(?P<scene_index>\d+)\]"
     r"\.material_slot_directives\[(?P<slot_index>\d+)\]\.purpose"
 )
+_OVERLAY_VARIANT_PATH = re.compile(
+    r"\$\.scene_directives\[(?P<scene_index>\d+)\]"
+    r"\.overlay_instances\[(?P<overlay_index>\d+)\]\.variant"
+)
 
 
 def _safe_field_path(value: Any) -> str:
@@ -607,6 +611,50 @@ def _with_hard_cut_transition(
     return recovered
 
 
+def _without_unsupported_overlay_variant(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Drop a variant only when the frozen component catalog has no variants."""
+
+    if error.code != "director_overlay_variant_unknown":
+        raise error
+    match = _OVERLAY_VARIANT_PATH.fullmatch(error.path)
+    variants_by_component = capabilities.get("overlay_variants")
+    if match is None or not isinstance(variants_by_component, Mapping):
+        raise error
+    scene_index = int(match.group("scene_index"))
+    overlay_index = int(match.group("overlay_index"))
+    recovered = copy.deepcopy(dict(value))
+    directives = recovered.get("scene_directives")
+    if not isinstance(directives, list) or scene_index >= len(directives):
+        raise error
+    directive = directives[scene_index]
+    overlays = (
+        directive.get("overlay_instances")
+        if isinstance(directive, Mapping)
+        else None
+    )
+    if not isinstance(overlays, list) or overlay_index >= len(overlays):
+        raise error
+    overlay = overlays[overlay_index]
+    if not isinstance(overlay, Mapping):
+        raise error
+    component_id = overlay.get("component_id")
+    allowed_variants = variants_by_component.get(component_id)
+    if (
+        not isinstance(component_id, str)
+        or _SAFE_CODE.fullmatch(component_id) is None
+        or not isinstance(allowed_variants, (list, tuple))
+        or len(allowed_variants) != 0
+        or "variant" not in overlay
+    ):
+        raise error
+    overlay.pop("variant")
+    return recovered
+
+
 def _material_purpose_context(
     value: Mapping[str, Any],
     error: DirectorDecisionError,
@@ -958,6 +1006,7 @@ def _validate_with_local_recoveries(
     candidate_value: Mapping[str, Any] = value
     normalized_transition = False
     normalized_material_purpose = False
+    normalized_overlay_variant_paths: set[str] = set()
     while True:
         try:
             return (
@@ -969,6 +1018,19 @@ def _validate_with_local_recoveries(
                 None,
             )
         except DirectorDecisionError as error:
+            if (
+                error.code == "director_overlay_variant_unknown"
+                and error.path not in normalized_overlay_variant_paths
+                and _OVERLAY_VARIANT_PATH.fullmatch(error.path) is not None
+            ):
+                try:
+                    candidate_value = _without_unsupported_overlay_variant(
+                        candidate_value, error, capabilities
+                    )
+                except DirectorDecisionError:
+                    return copy.deepcopy(dict(candidate_value)), error
+                normalized_overlay_variant_paths.add(error.path)
+                continue
             if (
                 not normalized_material_purpose
                 and error.code == "director_material_purpose_invalid"

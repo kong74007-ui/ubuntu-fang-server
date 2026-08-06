@@ -890,6 +890,94 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         )
         self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
 
+    def test_variants_are_removed_when_overlay_catalog_explicitly_has_none(self):
+        candidates, capabilities, decision = production_video_case()
+        capabilities["overlay_variants"] = {
+            component_id: []
+            for component_id in capabilities["overlay_capabilities"]
+        }
+        for directive in decision["scene_directives"]:
+            directive["overlay_instances"][0]["variant"] = "default"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append((request, kwargs))
+                if len(calls) != 1:
+                    raise AssertionError(
+                        "empty overlay variant catalog must not spend repair"
+                    )
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-1",
+                    {"content": json.dumps(decision, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-empty-overlay-variants",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(1, len(calls))
+        self.assertTrue(all(
+            "variant" not in directive["overlay_instances"][0]
+            for directive in result.value["scene_directives"]
+        ))
+        self.assertIn('"variant":"default"', result.raw_output_json)
+        self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
+
+    def test_unknown_variant_in_nonempty_overlay_catalog_still_uses_repair(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["overlay_instances"][0][
+            "variant"
+        ] = "unknown_variant"
+        repaired = copy.deepcopy(initial)
+        repaired["scene_directives"][0]["overlay_instances"][0][
+            "variant"
+        ] = "default"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append((request, kwargs))
+                payload = initial if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-unknown-overlay-variant",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "director_overlay_variant_unknown",
+            calls[1][0]["repair"]["error_code"],
+        )
+        self.assertEqual(
+            "default",
+            result.value["scene_directives"][0]["overlay_instances"][0][
+                "variant"
+            ],
+        )
+
     def test_transition_fallback_exposes_visibility_error_to_targeted_repair(self):
         candidates, capabilities, invalid = production_video_case(
             ("speaker_fullscreen", "quote_reversal", "quote_reversal")
