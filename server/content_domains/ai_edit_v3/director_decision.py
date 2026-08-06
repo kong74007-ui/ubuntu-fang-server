@@ -1109,6 +1109,68 @@ def _without_visible_text_schema_regression(
     return guarded
 
 
+def _without_visible_text_extra_fields(
+    value: Mapping[str, Any],
+    *,
+    candidates: Sequence[Any],
+) -> dict[str, Any]:
+    """Strip only extra keys from otherwise-valid caption references."""
+
+    # Never discard provider text before checking the entire raw response.
+    _reject_unsafe_text(value)
+    recovered = copy.deepcopy(dict(value))
+    normalized_targets: set[tuple[int, str]] = set()
+    while True:
+        try:
+            contracts.validate_director_decision_schema(recovered)
+        except ContractError as exc:
+            error = DirectorDecisionError(exc.error_code, exc.field_path)
+        else:
+            return recovered
+
+        match = _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path)
+        if error.code != "director_decision_schema_invalid" or match is None:
+            raise error
+        scene_index = int(match.group("scene_index"))
+        field = match.group("field")
+        target_key = (scene_index, field)
+        if target_key in normalized_targets:
+            raise error
+        target = _visible_text_target_context(recovered, error, candidates)
+        directives = recovered.get("scene_directives")
+        if (
+            not isinstance(directives, list)
+            or scene_index >= len(directives)
+            or not isinstance(directives[scene_index], Mapping)
+        ):
+            raise error
+        directive = dict(directives[scene_index])
+        raw_field = directive.get(field)
+        if not isinstance(raw_field, Mapping):
+            raise error
+        text_kind = raw_field.get("text_kind")
+        source_caption_ids = raw_field.get("source_caption_ids")
+        allowed_ids = tuple(target["allowed_source_caption_ids"])
+        extra_fields = set(raw_field) - {"text_kind", "source_caption_ids"}
+        if not (
+            text_kind in {"verbatim", "compressed"}
+            and isinstance(source_caption_ids, list)
+            and 1 <= len(source_caption_ids) <= 8
+            and all(isinstance(item, str) for item in source_caption_ids)
+            and len(source_caption_ids) == len(set(source_caption_ids))
+            and all(item in allowed_ids for item in source_caption_ids)
+            and extra_fields == {"text"}
+            and isinstance(raw_field.get("text"), str)
+        ):
+            raise error
+        directive[field] = {
+            "text_kind": text_kind,
+            "source_caption_ids": list(source_caption_ids),
+        }
+        directives[scene_index] = directive
+        normalized_targets.add(target_key)
+
+
 def _visible_text_target_context(
     value: Mapping[str, Any],
     error: DirectorDecisionError,
@@ -1169,10 +1231,10 @@ def _apply_scoped_visible_text_repair(
 ) -> dict[str, Any]:
     """Take only one repaired visible-text field and freeze all other fields."""
 
-    try:
-        contracts.validate_director_decision_schema(repair_value)
-    except ContractError as exc:
-        raise DirectorDecisionError(exc.error_code, exc.field_path) from None
+    # The repair response is an extraction envelope, not a replacement
+    # decision.  Validate every raw string before ignoring unrelated fields,
+    # then copy only the requested target into the frozen initial value.  The
+    # caller performs full strict validation on that recovered decision.
     _reject_unsafe_text(repair_value)
     target = _visible_text_target_context(initial_value, error, candidates)
     match = _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path)
@@ -1349,6 +1411,15 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
             value, request_id, raw_json, previous_sha = parsed_output
             response_sha256 = previous_sha
             if attempt == 0:
+                try:
+                    value = _without_visible_text_extra_fields(
+                        value,
+                        candidates=context.candidates,
+                    )
+                except DirectorDecisionError:
+                    pass
+                else:
+                    parsed_output = (value, request_id, raw_json, previous_sha)
                 try:
                     validate_director_decision(
                         value,

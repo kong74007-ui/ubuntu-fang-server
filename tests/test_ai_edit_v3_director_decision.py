@@ -1015,6 +1015,157 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
             [item["layout_id"] for item in compiled["scenes"]],
         )
 
+    def test_visible_text_extra_fields_are_stripped_without_qwen_repair(self):
+        initial = valid_decision()
+        initial["scene_directives"][0]["headline"]["text"] = "ignored copy"
+        initial["scene_directives"][1]["highlight"]["text"] = "ignored copy"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                if len(calls) != 1:
+                    raise AssertionError("lossless normalization must not call Qwen repair")
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-1",
+                    {"content": json.dumps(initial, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-extra-fields",
+            request={"safe": True},
+            candidates=CANDIDATES,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(1, len(calls))
+        for directive, field in zip(
+            result.value["scene_directives"], ("headline", "highlight"), strict=True
+        ):
+            self.assertEqual(
+                {"text_kind", "source_caption_ids"}, set(directive[field])
+            )
+        self.assertEqual(canonical_json(initial).decode("utf-8"), result.raw_output_json)
+        self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
+
+    def test_visible_text_extra_fields_keep_single_call_speaker_fallback(self):
+        candidates, capabilities, initial = production_video_case(
+            ("speaker_fullscreen", "quote_reversal", "quote_reversal")
+        )
+        initial["scene_directives"][0]["headline"]["text"] = "ignored copy"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                if len(calls) != 1:
+                    raise AssertionError("speaker fallback must remain single-call")
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-1",
+                    {"content": json.dumps(initial, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-extra-fields-speaker-fallback",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
+            [item["layout_id"] for item in result.value["scene_directives"]],
+        )
+        self.assertEqual(
+            {"text_kind", "source_caption_ids"},
+            set(result.value["scene_directives"][0]["headline"]),
+        )
+
+    def test_visible_text_unknown_extra_field_still_uses_strict_repair(self):
+        initial = valid_decision()
+        initial["scene_directives"][0]["headline"]["unknown"] = "safe"
+        repaired = valid_decision()
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-unknown-extra-field",
+            request={"safe": True},
+            candidates=CANDIDATES,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "director_decision_schema_invalid", calls[1]["repair"]["error_code"]
+        )
+        self.assertEqual(repaired, result.value)
+
+    def test_visible_text_non_hashable_caption_reference_fails_closed(self):
+        initial = valid_decision()
+        initial["scene_directives"][0]["headline"] = {
+            "text_kind": "verbatim",
+            "source_caption_ids": [{"id": "caption_001"}],
+            "text": "ignored copy",
+        }
+        repaired = valid_decision()
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-non-hashable-caption-reference",
+            request={"safe": True},
+            candidates=CANDIDATES,
+            capabilities=CAPABILITIES,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "director_decision_schema_invalid", calls[1]["repair"]["error_code"]
+        )
+        self.assertEqual(repaired, result.value)
+
     def test_scene_structure_error_precedes_speaker_fast_path(self):
         layouts = (
             "speaker_fullscreen",
@@ -1672,6 +1823,57 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
             result.raw_output_sha256,
         )
         self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
+        self.assertEqual(
+            result.value,
+            validate_director_decision(
+                result.value,
+                candidates=candidates,
+                capabilities=capabilities,
+            ),
+        )
+
+    def test_visible_text_scoped_repair_ignores_unrelated_schema_regression(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["highlight"] = "model-authored copy"
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["highlight"] = {
+            "text_kind": "verbatim",
+            "source_caption_ids": ["caption_001"],
+        }
+        repair["scene_directives"][1]["highlight"] = "new unrelated regression"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-visible-text-unrelated-schema-regression",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider(), max_repairs=1)
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            repair["scene_directives"][0]["highlight"],
+            result.value["scene_directives"][0]["highlight"],
+        )
+        self.assertNotIn("highlight", result.value["scene_directives"][1])
+        self.assertEqual(
+            canonical_json(repair).decode("utf-8"), result.raw_output_json
+        )
         self.assertEqual(
             result.value,
             validate_director_decision(
