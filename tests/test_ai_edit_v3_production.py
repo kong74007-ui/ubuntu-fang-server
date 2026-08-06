@@ -919,6 +919,17 @@ class ProductionDirectorTests(unittest.TestCase):
         )
         self.assertIn("例子只展示结构", client.system_prompt)
         self.assertIn("必须使用当前 scene_candidate.caption_ids", client.system_prompt)
+        self.assertIn(
+            "scene_directives.length 必须等于 scene_candidates.length",
+            client.system_prompt,
+        )
+        self.assertIn("minimum_distinct_signatures", client.system_prompt)
+        self.assertIn("max_adjacent_identical", client.system_prompt)
+        self.assertIn("max_hidden_ratio", client.system_prompt)
+        self.assertIn(
+            "scene_signatures_meet_distinct_and_adjacency_policy",
+            client.system_prompt,
+        )
 
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()

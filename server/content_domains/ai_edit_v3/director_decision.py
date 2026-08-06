@@ -555,6 +555,24 @@ def _provider_response_sha256(raw: Any) -> str:
 
 
 def _repair_expected_constraint(error: DirectorDecisionError) -> str:
+    scene_constraints = {
+        "director_scene_coverage_invalid": (
+            "scene_directives_exact_candidate_order_and_count"
+        ),
+        "director_scene_structure_repetitive": (
+            "scene_signatures_meet_distinct_and_adjacency_policy"
+        ),
+        "director_speaker_visibility_exceeded": (
+            "speaker_hidden_duration_within_max_ratio"
+        ),
+    }
+    if error.path == "$.scene_directives" and error.code in scene_constraints:
+        return scene_constraints[error.code]
+    if (
+        error.code == "director_decision_schema_invalid"
+        and error.path == "$.scene_directives"
+    ):
+        return "scene_directives_array_matches_schema_and_candidates"
     if (
         error.code == "director_decision_schema_invalid"
         and re.fullmatch(

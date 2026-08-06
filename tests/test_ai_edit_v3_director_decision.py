@@ -13,6 +13,7 @@ from server.content_domains.ai_edit_v3.director_candidates import SceneCandidate
 from server.content_domains.ai_edit_v3.director_decision import (
     DirectorDecisionError,
     ValidatedDecision,
+    _repair_expected_constraint,
     generate_director_decision,
     validate_director_decision,
 )
@@ -472,6 +473,22 @@ class DirectorDecisionValidationTests(unittest.TestCase):
 
 
 class DirectorDecisionGenerationTests(unittest.TestCase):
+    def test_scene_directive_repair_constraints_are_specific_and_safe(self):
+        cases = {
+            "director_scene_coverage_invalid": "scene_directives_exact_candidate_order_and_count",
+            "director_scene_structure_repetitive": "scene_signatures_meet_distinct_and_adjacency_policy",
+            "director_speaker_visibility_exceeded": "speaker_hidden_duration_within_max_ratio",
+        }
+
+        for error_code, expected in cases.items():
+            with self.subTest(error_code=error_code):
+                self.assertEqual(
+                    expected,
+                    _repair_expected_constraint(
+                        DirectorDecisionError(error_code, "$.scene_directives")
+                    ),
+                )
+
     def test_one_bounded_repair_contains_only_safe_evidence(self):
         calls = []
         class Provider:
