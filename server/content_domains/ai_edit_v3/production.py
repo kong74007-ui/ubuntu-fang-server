@@ -900,6 +900,7 @@ class QwenCompiledDirector:
             "current_materials 只是可优先匹配的安全语义摘要，不代表所有槽都已满足；若某素材槽意图复用其中一项，semantic 必须逐字复制该项 semantic，未匹配的 required 槽由后续素材解析器生成。所有必需数组即使为空也必须输出。",
             "自动生成的 required 素材槽必须能由非人物安全配图满足：semantic 不得要求人物、人脸、讲师、团队、客户、口播者、特定品牌、真实产品包装、真实门店或事实证据；优先描述抽象概念图、流程示意图或非人物环境素材。product/evidence 槽若没有 current_materials 可精确匹配，只能表达非品牌概念或明确的示意图；若叙事必须出现人物或特定真实主体，应改用显示原口播人物的布局，不得要求生成新人物素材。",
             "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code、repair.field_path 和 repair.expected_constraint 修正结构；scene_directives_exact_candidate_order_and_count 表示数量、顺序与ID必须完全对应候选；scene_signatures_meet_distinct_and_adjacency_policy 表示重新编排布局、变体或overlay组合以同时满足 minimum_distinct_signatures 与 max_adjacent_identical；speaker_hidden_duration_within_max_ratio 表示减少无人物布局时长。",
+            "For a repair, transition_from_capabilities_transition_capabilities means every transition must be copied from capabilities.transition_capabilities. Recheck every global constraint after the requested repair, not only the named field. Speaker visibility must use each candidate's exact end_ms-start_ms and the server-provided max_hidden_ratio; never estimate it from text length.",
             "JSON Schema:",
             contract,
         ))

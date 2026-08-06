@@ -554,6 +554,277 @@ def _provider_response_sha256(raw: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _with_hard_cut_transition(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply one narrow, frozen transition fallback after strict validation."""
+
+    if error.code not in {
+        "director_transition_unknown",
+        "director_identity_transition_invalid",
+    }:
+        raise error
+    match = re.fullmatch(
+        r"\$\.scene_directives\[(\d+)\]\.transition", error.path
+    )
+    transitions = _sequence(capabilities, "transition_capabilities")
+    if match is None or "hard_cut" not in transitions:
+        raise error
+    scene_index = int(match.group(1))
+    recovered = copy.deepcopy(dict(value))
+    directives = recovered.get("scene_directives")
+    if not isinstance(directives, list) or scene_index >= len(directives):
+        raise error
+    directive = directives[scene_index]
+    transition = directive.get("transition") if isinstance(directive, Mapping) else None
+    if not isinstance(transition, str) or _SAFE_CODE.fullmatch(transition) is None:
+        raise error
+    if error.code == "director_transition_unknown" and transition in transitions:
+        raise error
+    if (
+        error.code == "director_identity_transition_invalid"
+        and transition != "card_match_cut"
+    ):
+        raise error
+    directive["transition"] = "hard_cut"
+    return recovered
+
+
+def _speaker_layout_fallback(
+    directive: Mapping[str, Any],
+    *,
+    scene_index: int,
+    layout_sequence: Sequence[str],
+    layout_requirements: Mapping[str, Any],
+    layout_variants: Mapping[str, Any],
+    layout_targets: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return a speaker-visible directive without changing text or material meaning."""
+
+    slots = directive.get("material_slot_directives")
+    bindings = directive.get("material_bindings")
+    if not isinstance(slots, list) or bindings != []:
+        return None
+    original_layout = directive.get("layout_id")
+    product_like = original_layout in {
+        "product_hero",
+        "editorial_collage",
+        "comparison_split",
+    }
+    preferred = (
+        ["material_fullscreen_speaker_pip", "speaker_fullscreen"]
+        if product_like
+        else ["speaker_fullscreen", "speaker_left_info_right", "speaker_right_evidence_left"]
+    )
+    ordered_layouts = [
+        layout_id
+        for layout_id in (*preferred, *layout_sequence)
+        if layout_id in layout_sequence
+    ]
+    seen: set[str] = set()
+    for layout_id in ordered_layouts:
+        if layout_id in seen:
+            continue
+        seen.add(layout_id)
+        policy = layout_requirements.get(layout_id)
+        variants = layout_variants.get(layout_id)
+        if (
+            not isinstance(policy, Mapping)
+            or policy.get("speaker_required") is not True
+            or not isinstance(variants, (list, tuple))
+            or not variants
+            or any(not isinstance(item, str) for item in variants)
+        ):
+            continue
+        semantic_slots = policy.get("semantic_slots")
+        if not isinstance(semantic_slots, (list, tuple)):
+            continue
+        by_purpose = {
+            item.get("purpose"): item
+            for item in semantic_slots
+            if isinstance(item, Mapping) and isinstance(item.get("purpose"), str)
+        }
+        if any(
+            not isinstance(slot, Mapping)
+            or slot.get("purpose") not in by_purpose
+            for slot in slots
+        ):
+            continue
+        required_purposes = {
+            purpose
+            for purpose, item in by_purpose.items()
+            if item.get("required_for_layout") is True
+        }
+        satisfied = {
+            slot.get("purpose")
+            for slot in slots
+            if isinstance(slot, Mapping) and slot.get("priority") == "required"
+        }
+        if not required_purposes.issubset(satisfied):
+            continue
+
+        recovered = copy.deepcopy(dict(directive))
+        recovered["layout_id"] = layout_id
+        recovered["layout_variant"] = variants[scene_index % len(variants)]
+        overlay_ids = {
+            item.get("instance_id")
+            for item in recovered.get("overlay_instances", ())
+            if isinstance(item, Mapping) and isinstance(item.get("instance_id"), str)
+        }
+        public_targets = layout_targets.get(layout_id, ())
+        if not isinstance(public_targets, (list, tuple)):
+            return None
+        allowed_targets = overlay_ids | {
+            item for item in public_targets if isinstance(item, str)
+        }
+        recovered["animations"] = [
+            animation
+            for animation in recovered.get("animations", ())
+            if isinstance(animation, Mapping)
+            and animation.get("target_id") in allowed_targets
+        ]
+        return recovered
+    return None
+
+
+def _with_speaker_visibility_fallback(
+    value: Mapping[str, Any],
+    *,
+    candidates: Sequence[Any],
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Minimally expose the source speaker while preserving required semantics."""
+
+    recovered = copy.deepcopy(dict(value))
+    directives = recovered.get("scene_directives")
+    candidate_records = tuple(_record(item) for item in candidates)
+    if not isinstance(directives, list) or len(directives) != len(candidate_records):
+        raise DirectorDecisionError(
+            "director_speaker_visibility_exceeded", "$.scene_directives"
+        )
+    if not candidate_records or any(
+        candidate.get("speaker_available") is not True
+        for candidate in candidate_records
+    ):
+        raise DirectorDecisionError(
+            "director_speaker_visibility_exceeded", "$.scene_directives"
+        )
+    layout_sequence = _sequence(capabilities, "layout_capabilities")
+    try:
+        layout_requirements = validate_layout_requirements(
+            layout_sequence, capabilities.get("layout_requirements")
+        )
+    except ValueError:
+        raise DirectorDecisionError(
+            "director_capabilities_invalid", "$.capabilities.layout_requirements"
+        ) from None
+    layout_variants = capabilities.get("layout_variants")
+    layout_targets = capabilities.get("layout_animation_targets")
+    if not isinstance(layout_variants, Mapping) or not isinstance(layout_targets, Mapping):
+        raise DirectorDecisionError("director_capabilities_invalid", "$.capabilities")
+
+    total_duration_ms = sum(
+        int(candidate["end_ms"]) - int(candidate["start_ms"])
+        for candidate in candidate_records
+    )
+    hidden: list[tuple[int, int, dict[str, Any] | None]] = []
+    for index, (directive, candidate) in enumerate(
+        zip(directives, candidate_records, strict=True)
+    ):
+        policy = layout_requirements.get(directive.get("layout_id"))
+        if isinstance(policy, Mapping) and policy.get("speaker_required") is not True:
+            duration_ms = int(candidate["end_ms"]) - int(candidate["start_ms"])
+            hidden.append((
+                index,
+                duration_ms,
+                _speaker_layout_fallback(
+                    directive,
+                    scene_index=index,
+                    layout_sequence=layout_sequence,
+                    layout_requirements=layout_requirements,
+                    layout_variants=layout_variants,
+                    layout_targets=layout_targets,
+                ),
+            ))
+    hidden_duration_ms = sum(duration for _, duration, _ in hidden)
+    max_hidden_ms = int(
+        total_duration_ms * SPEAKER_VISIBILITY_POLICY["max_hidden_ratio"]
+    )
+    required_reduction_ms = hidden_duration_ms - max_hidden_ms
+    if required_reduction_ms <= 0:
+        return recovered
+
+    convertible = [item for item in hidden if item[2] is not None]
+    best: tuple[tuple[int, int, tuple[int, ...]], tuple[int, ...]] | None = None
+    for mask in range(1, 1 << len(convertible)):
+        selected = tuple(
+            item_index
+            for item_index in range(len(convertible))
+            if mask & (1 << item_index)
+        )
+        reduction_ms = sum(convertible[item_index][1] for item_index in selected)
+        if reduction_ms < required_reduction_ms:
+            continue
+        scene_indices = tuple(convertible[item_index][0] for item_index in selected)
+        key = (len(selected), reduction_ms - required_reduction_ms, scene_indices)
+        if best is None or key < best[0]:
+            best = (key, selected)
+    if best is None:
+        raise DirectorDecisionError(
+            "director_speaker_visibility_exceeded", "$.scene_directives"
+        )
+    for item_index in best[1]:
+        scene_index, _, fallback = convertible[item_index]
+        if fallback is None:
+            raise DirectorDecisionError(
+                "director_speaker_visibility_exceeded", "$.scene_directives"
+            )
+        directives[scene_index] = fallback
+    return recovered
+
+
+def _validate_generated_decision(
+    value: Mapping[str, Any],
+    *,
+    candidates: Sequence[Any],
+    capabilities: Mapping[str, Any],
+    allow_speaker_fallback: bool,
+) -> dict[str, Any]:
+    candidate_value: Mapping[str, Any] = value
+    try:
+        return validate_director_decision(
+            candidate_value, candidates=candidates, capabilities=capabilities
+        )
+    except DirectorDecisionError as error:
+        if error.code in {
+            "director_transition_unknown",
+            "director_identity_transition_invalid",
+        }:
+            candidate_value = _with_hard_cut_transition(
+                candidate_value, error, capabilities
+            )
+            try:
+                return validate_director_decision(
+                    candidate_value,
+                    candidates=candidates,
+                    capabilities=capabilities,
+                )
+            except DirectorDecisionError as recovered_error:
+                error = recovered_error
+        if allow_speaker_fallback and error.code == "director_speaker_visibility_exceeded":
+            candidate_value = _with_speaker_visibility_fallback(
+                candidate_value,
+                candidates=candidates,
+                capabilities=capabilities,
+            )
+            return validate_director_decision(
+                candidate_value, candidates=candidates, capabilities=capabilities
+            )
+        raise error
+
+
 def _repair_expected_constraint(error: DirectorDecisionError) -> str:
     scene_constraints = {
         "director_scene_coverage_invalid": (
@@ -568,6 +839,17 @@ def _repair_expected_constraint(error: DirectorDecisionError) -> str:
     }
     if error.path == "$.scene_directives" and error.code in scene_constraints:
         return scene_constraints[error.code]
+    if (
+        error.code in {
+            "director_transition_unknown",
+            "director_identity_transition_invalid",
+        }
+        and re.fullmatch(
+            r"\$\.scene_directives\[\d+\]\.transition", error.path
+        )
+        is not None
+    ):
+        return "transition_from_capabilities_transition_capabilities"
     if (
         error.code == "director_decision_schema_invalid"
         and error.path == "$.scene_directives"
@@ -614,7 +896,12 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
         try:
             value, request_id, raw_json, previous_sha = _provider_output(raw)
             response_sha256 = previous_sha
-            normalized = validate_director_decision(value, candidates=context.candidates, capabilities=context.capabilities)
+            normalized = _validate_generated_decision(
+                value,
+                candidates=context.candidates,
+                capabilities=context.capabilities,
+                allow_speaker_fallback=attempt == max_repairs,
+            )
             normalized_json = contracts.canonical_json(normalized)
             candidate_json = contracts.canonical_json([_record(item) for item in context.candidates])
             return ValidatedDecision(

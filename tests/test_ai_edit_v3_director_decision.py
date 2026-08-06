@@ -17,6 +17,7 @@ from server.content_domains.ai_edit_v3.director_decision import (
     generate_director_decision,
     validate_director_decision,
 )
+from server.content_domains.ai_edit_v3.director_compiler import compile_edit_plan
 from server.content_domains.ai_edit_v3.director_layout_policy import (
     MAX_REQUIRED_MATERIAL_SLOTS,
     MAX_TOTAL_MATERIAL_SLOTS,
@@ -82,6 +83,95 @@ def valid_decision():
         ],
         "audio_intent": {"bgm_description": "克制的无歌词电子氛围", "energy": "medium", "dialogue_priority": True},
     }
+
+
+def production_video_case(layouts=("speaker_fullscreen", "quote_reversal", "speaker_fullscreen")):
+    candidates = tuple(
+        SceneCandidate(
+            f"candidate_{index:02d}",
+            (index - 1) * 4000,
+            index * 4000,
+            (f"caption_{index:03d}",),
+            f"authoritative sentence {index}",
+            (),
+            (),
+            True,
+            ((f"caption_{index:03d}", f"authoritative sentence {index}"),),
+        )
+        for index in range(1, 4)
+    )
+    capabilities = copy.deepcopy(CAPABILITIES)
+    capabilities["material_binding_mode"] = "semantic_slots_only"
+    capabilities["layout_requirements"] = layout_requirements_for(
+        capabilities["layout_capabilities"]
+    )
+    capabilities["max_required_material_slots"] = MAX_REQUIRED_MATERIAL_SLOTS
+    capabilities["max_total_material_slots"] = MAX_TOTAL_MATERIAL_SLOTS
+    capabilities["speaker_visibility_policy"] = copy.deepcopy(
+        SPEAKER_VISIBILITY_POLICY
+    )
+    capabilities["scene_structure_policy"] = copy.deepcopy(
+        SCENE_STRUCTURE_POLICY
+    )
+    capabilities["theme_capabilities"] = {
+        "palette_id": ["midnight_gold"],
+        "typography_id": ["editorial_sans"],
+        "density": ["airy", "balanced", "dense"],
+        "motion_energy": ["low", "medium", "high"],
+        "image_fit": ["contain", "cover", "smart_crop"],
+    }
+    directives = []
+    for index, layout_id in enumerate(layouts, 1):
+        directives.append({
+            "scene_id": f"candidate_{index:02d}",
+            "narrative_role": "hook" if index == 1 else "proof",
+            "layout_id": layout_id,
+            "layout_variant": (
+                "clean_center"
+                if layout_id == "speaker_fullscreen"
+                else "diagonal_statement"
+            ),
+            "headline": {
+                "text_kind": "verbatim",
+                "source_caption_ids": [f"caption_{index:03d}"],
+            },
+            "overlay_instances": [{
+                "instance_id": f"caption_{index:02d}",
+                "component_id": "standard_caption",
+                "content_ref": "headline",
+                "placement": "subtitle_safe",
+            }],
+            "material_bindings": [],
+            "material_slot_directives": [],
+            "animations": [{
+                "target_id": f"caption_{index:02d}",
+                "preset": "fade",
+                "direction": "none",
+                "duration_ms": 300,
+                "delay_ms": 0,
+            }],
+            "transition": "hard_cut",
+            "sound_events": [],
+        })
+    decision = {
+        "version": "1.0",
+        "creative_concept": "speaker-led evidence rhythm",
+        "narrative_pattern": "speaker_evidence",
+        "theme_profile_id": "editorial_clean",
+        "design_intent": {
+            "density": "balanced",
+            "motion_energy": "medium",
+            "image_fit": "smart_crop",
+            "decoration_intensity": "medium",
+        },
+        "scene_directives": directives,
+        "audio_intent": {
+            "bgm_description": "restrained instrumental bed",
+            "energy": "medium",
+            "dialogue_priority": True,
+        },
+    }
+    return candidates, capabilities, decision
 
 
 class DirectorDecisionValidationTests(unittest.TestCase):
@@ -488,6 +578,296 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
                         DirectorDecisionError(error_code, "$.scene_directives")
                     ),
                 )
+
+        self.assertEqual(
+            "transition_from_capabilities_transition_capabilities",
+            _repair_expected_constraint(
+                DirectorDecisionError(
+                    "director_transition_unknown",
+                    "$.scene_directives[1].transition",
+                )
+            ),
+        )
+
+    def test_one_unknown_transition_is_canonicalized_without_spending_repair(self):
+        candidates, capabilities, decision = production_video_case()
+        decision["scene_directives"][0]["transition"] = "cross_fade"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append((request, kwargs))
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-1",
+                    {"content": json.dumps(decision, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-transition-fallback",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("hard_cut", result.value["scene_directives"][0]["transition"])
+        self.assertIn("cross_fade", result.raw_output_json)
+        self.assertEqual(
+            hashlib.sha256(canonical_json(result.value)).hexdigest(),
+            result.decision_sha256,
+        )
+        self.assertNotEqual(result.raw_output_sha256, result.decision_sha256)
+
+    def test_transition_fallback_exposes_visibility_error_to_targeted_repair(self):
+        candidates, capabilities, invalid = production_video_case(
+            ("speaker_fullscreen", "quote_reversal", "quote_reversal")
+        )
+        invalid["scene_directives"][0]["transition"] = "cross_fade"
+        _, _, repaired = production_video_case()
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                payload = invalid if len(calls) == 1 else repaired
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-targeted-repair",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "speaker_hidden_duration_within_max_ratio",
+            calls[1]["repair"]["expected_constraint"],
+        )
+        self.assertEqual("speaker_fullscreen", result.value["scene_directives"][2]["layout_id"])
+
+    def test_second_visibility_failure_gets_minimal_deterministic_speaker_fallback(self):
+        candidates, capabilities, invalid = production_video_case(
+            ("speaker_fullscreen", "quote_reversal", "quote_reversal")
+        )
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(invalid, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-speaker-fallback",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
+            [item["layout_id"] for item in result.value["scene_directives"]],
+        )
+        self.assertEqual(
+            "clean_center", result.value["scene_directives"][1]["layout_variant"]
+        )
+        self.assertEqual(
+            invalid["scene_directives"][1]["headline"],
+            result.value["scene_directives"][1]["headline"],
+        )
+        self.assertEqual(
+            invalid["scene_directives"][1]["overlay_instances"],
+            result.value["scene_directives"][1]["overlay_instances"],
+        )
+        timeline = {
+            "duration_ms": 12000,
+            "ratio": "9:16",
+            "captions": [
+                {
+                    "id": f"caption_{index:03d}",
+                    "start_ms": (index - 1) * 4000,
+                    "end_ms": index * 4000,
+                    "text": f"authoritative sentence {index}",
+                }
+                for index in range(1, 4)
+            ],
+        }
+        compiled = compile_edit_plan(
+            result.value,
+            candidates=candidates,
+            timeline=timeline,
+            materials=[],
+            capabilities=capabilities,
+            variation_seed=1,
+        )
+        self.assertEqual(
+            ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
+            [item["layout_id"] for item in compiled["scenes"]],
+        )
+
+    def test_speaker_fallback_preserves_required_product_slot(self):
+        candidates, capabilities, decision = production_video_case(
+            ("speaker_fullscreen", "product_hero", "product_hero")
+        )
+        capabilities["layout_capabilities"] = [
+            "speaker_fullscreen",
+            "product_hero",
+            "material_fullscreen_speaker_pip",
+        ]
+        capabilities["layout_variants"].update({
+            "product_hero": ["center_pedestal"],
+            "material_fullscreen_speaker_pip": ["pip_round", "pip_card"],
+        })
+        capabilities["layout_animation_targets"].update({
+            "product_hero": [],
+            "material_fullscreen_speaker_pip": [],
+        })
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        for index in (1, 2):
+            directive = decision["scene_directives"][index]
+            directive["layout_variant"] = "center_pedestal"
+            directive["material_slot_directives"] = [{
+                "slot_id": f"candidate_{index + 1:02d}_product",
+                "semantic": "non-branded product concept",
+                "purpose": "product",
+                "priority": "required",
+                "ratio": "auto",
+            }]
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(decision, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-product-fallback",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        changed = result.value["scene_directives"][1]
+        self.assertEqual("material_fullscreen_speaker_pip", changed["layout_id"])
+        self.assertEqual(
+            decision["scene_directives"][1]["material_slot_directives"],
+            changed["material_slot_directives"],
+        )
+
+    def test_speaker_fallback_fails_closed_when_material_semantics_are_incompatible(self):
+        candidates, capabilities, decision = production_video_case(
+            ("speaker_fullscreen", "steps_stack", "steps_stack")
+        )
+        capabilities["layout_capabilities"] = ["speaker_fullscreen", "steps_stack"]
+        capabilities["layout_variants"]["steps_stack"] = ["vertical_steps"]
+        capabilities["layout_animation_targets"]["steps_stack"] = []
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        for index in (1, 2):
+            directive = decision["scene_directives"][index]
+            directive["layout_variant"] = "vertical_steps"
+            directive["material_slot_directives"] = [{
+                "slot_id": f"candidate_{index + 1:02d}_decoration",
+                "semantic": "required decorative process marker",
+                "purpose": "decoration",
+                "priority": "required",
+                "ratio": "auto",
+            }]
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-incompatible",
+                    {"content": json.dumps(decision, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-incompatible-fallback",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider())
+
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual(
+            "director_speaker_visibility_exceeded", raised.exception.detail_code
+        )
+
+    def test_only_one_unknown_transition_is_locally_normalized_per_response(self):
+        candidates, capabilities, decision = production_video_case()
+        decision["scene_directives"][0]["transition"] = "cross_fade"
+        decision["scene_directives"][1]["transition"] = "dissolve"
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(request)
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(decision, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-two-transition-failures",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        with self.assertRaises(DirectorDecisionError) as raised:
+            generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual("director_decision_invalid", raised.exception.code)
+        self.assertEqual("director_transition_unknown", raised.exception.detail_code)
 
     def test_one_bounded_repair_contains_only_safe_evidence(self):
         calls = []
