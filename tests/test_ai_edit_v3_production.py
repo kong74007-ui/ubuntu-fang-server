@@ -957,6 +957,12 @@ class ProductionDirectorTests(unittest.TestCase):
         self.assertIn("minimum_distinct_signatures", client.system_prompt)
         self.assertIn("max_adjacent_identical", client.system_prompt)
         self.assertIn("max_hidden_ratio", client.system_prompt)
+        self.assertIn(
+            "material_purpose_matches_selected_layout_semantic_slots",
+            client.system_prompt,
+        )
+        self.assertIn("repair.constraint_envelope", client.system_prompt)
+        self.assertIn("preserve_all_other_fields", client.system_prompt)
         self.assertIn("relative to that scene's start", client.system_prompt)
         self.assertIn("sound_events_allowed is false", client.system_prompt)
         self.assertIn("sound_event_max_offset_ms", client.system_prompt)

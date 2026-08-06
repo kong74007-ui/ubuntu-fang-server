@@ -13,6 +13,7 @@ from server.content_domains.ai_edit_v3.director_candidates import SceneCandidate
 from server.content_domains.ai_edit_v3.director_decision import (
     DirectorDecisionError,
     ValidatedDecision,
+    _apply_scoped_material_purpose_repair,
     _repair_expected_constraint,
     generate_director_decision,
     validate_director_decision,
@@ -625,6 +626,15 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
                 )
             ),
         )
+        self.assertEqual(
+            "material_purpose_matches_selected_layout_semantic_slots",
+            _repair_expected_constraint(
+                DirectorDecisionError(
+                    "director_material_purpose_invalid",
+                    "$.scene_directives[2].material_slot_directives[1].purpose",
+                )
+            ),
+        )
 
     def test_short_scene_sound_event_uses_the_single_targeted_repair(self):
         candidates = (replace(CANDIDATES[0], end_ms=400), CANDIDATES[1])
@@ -660,6 +670,189 @@ class DirectorDecisionGenerationTests(unittest.TestCase):
         self.assertEqual(
             "sound_events_empty_when_candidate_shorter_than_500ms",
             calls[1]["repair"]["expected_constraint"],
+        )
+
+    def test_unambiguous_material_purpose_is_canonicalized_without_repair(self):
+        candidates, capabilities, initial = production_video_case()
+        initial["scene_directives"][0]["material_slot_directives"] = [{
+            "slot_id": "candidate_01_evidence",
+            "semantic": "abstract platform evidence",
+            "purpose": "context",
+            "priority": "optional",
+            "ratio": "auto",
+        }]
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(copy.deepcopy(request))
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    "request-material-local",
+                    {"content": json.dumps(initial, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-material-local",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            "evidence",
+            result.value["scene_directives"][0]["material_slot_directives"][0][
+                "purpose"
+            ],
+        )
+        self.assertEqual(
+            result.value,
+            validate_director_decision(
+                result.value,
+                candidates=candidates,
+                capabilities=capabilities,
+            ),
+        )
+
+    def test_material_purpose_scoped_merge_discards_non_target_changes(self):
+        candidates, capabilities, initial = production_video_case(
+            ("material_fullscreen_speaker_pip", "speaker_fullscreen", "speaker_fullscreen")
+        )
+        capabilities["layout_capabilities"].append(
+            "material_fullscreen_speaker_pip"
+        )
+        capabilities["layout_variants"]["material_fullscreen_speaker_pip"] = [
+            "pip_round"
+        ]
+        capabilities["layout_animation_targets"][
+            "material_fullscreen_speaker_pip"
+        ] = []
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        initial["scene_directives"][0]["layout_variant"] = "pip_round"
+        initial["scene_directives"][0]["material_slot_directives"] = [{
+            "slot_id": "candidate_01_product",
+            "semantic": "generic product concept",
+            "purpose": "evidence",
+            "priority": "required",
+            "ratio": "auto",
+        }]
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["material_slot_directives"][0][
+            "purpose"
+        ] = "product"
+        repair["creative_concept"] = "discarded whole-response rewrite"
+        repair["scene_directives"][1]["layout_id"] = "quote_reversal"
+        repair["scene_directives"][1]["layout_variant"] = "diagonal_statement"
+        error = DirectorDecisionError(
+            "director_material_purpose_invalid",
+            "$.scene_directives[0].material_slot_directives[0].purpose",
+        )
+
+        recovered = _apply_scoped_material_purpose_repair(
+            repair, initial, error, capabilities
+        )
+        expected = copy.deepcopy(initial)
+        expected["scene_directives"][0]["material_slot_directives"][0][
+            "purpose"
+        ] = "product"
+
+        self.assertEqual(expected, recovered)
+        self.assertEqual(
+            recovered,
+            validate_director_decision(
+                recovered,
+                candidates=candidates,
+                capabilities=capabilities,
+            ),
+        )
+
+    def test_material_then_visibility_repair_uses_frozen_envelope_and_initial_fallback(self):
+        candidates, capabilities, initial = production_video_case(
+            ("speaker_fullscreen", "quote_reversal", "quote_reversal")
+        )
+        capabilities["layout_capabilities"].append("steps_stack")
+        capabilities["layout_variants"]["steps_stack"] = ["vertical_steps"]
+        capabilities["layout_animation_targets"]["steps_stack"] = []
+        capabilities["layout_requirements"] = layout_requirements_for(
+            capabilities["layout_capabilities"]
+        )
+        initial["scene_directives"][0]["material_slot_directives"] = [{
+            "slot_id": "candidate_01_evidence",
+            "semantic": "abstract platform evidence",
+            "purpose": "context",
+            "priority": "optional",
+            "ratio": "auto",
+        }]
+        repair = copy.deepcopy(initial)
+        repair["scene_directives"][0]["material_slot_directives"][0][
+            "purpose"
+        ] = "evidence"
+        for index in (1, 2):
+            directive = repair["scene_directives"][index]
+            directive["layout_id"] = "steps_stack"
+            directive["layout_variant"] = "vertical_steps"
+            directive["material_slot_directives"] = [{
+                "slot_id": f"candidate_{index + 1:02d}_decoration",
+                "semantic": "required decorative process marker",
+                "purpose": "decoration",
+                "priority": "required",
+                "ratio": "auto",
+            }]
+        calls = []
+
+        class Provider:
+            def generate_decision(self, request, **kwargs):
+                calls.append(copy.deepcopy(request))
+                payload = initial if len(calls) == 1 else repair
+                return ProviderResult(
+                    "dashscope",
+                    "director",
+                    f"request-{len(calls)}",
+                    {"content": json.dumps(payload, ensure_ascii=False)},
+                    {},
+                    1,
+                )
+
+        context = SimpleNamespace(
+            job_id="job-material-visibility-chain",
+            request={"safe": True},
+            candidates=candidates,
+            capabilities=capabilities,
+            deadline_at=123.0,
+        )
+        result = generate_director_decision(context, Provider())
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(
+            "speaker_hidden_duration_within_max_ratio",
+            calls[1]["repair"]["expected_constraint"],
+        )
+        envelope = calls[1]["repair"]["constraint_envelope"]
+        self.assertEqual(12000, envelope["total_duration_ms"])
+        self.assertEqual(4800, envelope["max_hidden_ms"])
+        self.assertEqual([4000, 4000, 4000], [
+            item["duration_ms"] for item in envelope["scene_candidate_bounds"]
+        ])
+        self.assertEqual(
+            ["speaker_fullscreen", "speaker_fullscreen", "quote_reversal"],
+            [item["layout_id"] for item in result.value["scene_directives"]],
+        )
+        self.assertEqual("request-1", result.provider_request_id)
+        self.assertEqual(
+            result.value,
+            validate_director_decision(
+                result.value,
+                candidates=candidates,
+                capabilities=capabilities,
+            ),
         )
 
     def test_one_unknown_transition_is_canonicalized_without_spending_repair(self):

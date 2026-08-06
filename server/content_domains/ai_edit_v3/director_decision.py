@@ -39,6 +39,10 @@ _VISIBLE_TEXT_REFERENCE_PATH = re.compile(
     r"\$\.scene_directives\[(?P<scene_index>\d+)\]\.(?P<field>headline|highlight)"
     r"(?:\.[A-Za-z_][A-Za-z0-9_]*)?"
 )
+_MATERIAL_PURPOSE_PATH = re.compile(
+    r"\$\.scene_directives\[(?P<scene_index>\d+)\]"
+    r"\.material_slot_directives\[(?P<slot_index>\d+)\]\.purpose"
+)
 
 
 def _safe_field_path(value: Any) -> str:
@@ -601,6 +605,153 @@ def _with_hard_cut_transition(
     return recovered
 
 
+def _material_purpose_context(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    """Resolve one material-purpose target from frozen layout policy only."""
+
+    match = _MATERIAL_PURPOSE_PATH.fullmatch(error.path)
+    if error.code != "director_material_purpose_invalid" or match is None:
+        raise error
+    if capabilities.get("material_binding_mode") != "semantic_slots_only":
+        raise error
+    layout_sequence = _sequence(capabilities, "layout_capabilities")
+    try:
+        layout_requirements = validate_layout_requirements(
+            layout_sequence, capabilities.get("layout_requirements")
+        )
+    except ValueError:
+        raise DirectorDecisionError(
+            "director_capabilities_invalid", "$.capabilities.layout_requirements"
+        ) from None
+
+    scene_index = int(match.group("scene_index"))
+    slot_index = int(match.group("slot_index"))
+    directives = value.get("scene_directives")
+    if not isinstance(directives, list) or scene_index >= len(directives):
+        raise error
+    directive = directives[scene_index]
+    if not isinstance(directive, Mapping):
+        raise error
+    slots = directive.get("material_slot_directives")
+    if not isinstance(slots, list) or slot_index >= len(slots):
+        raise error
+    slot = slots[slot_index]
+    if not isinstance(slot, Mapping):
+        raise error
+    layout_id = directive.get("layout_id")
+    policy = layout_requirements.get(layout_id)
+    semantic_slots = policy.get("semantic_slots") if isinstance(policy, Mapping) else None
+    if not isinstance(semantic_slots, (list, tuple)):
+        raise error
+    allowed = tuple(
+        item["purpose"]
+        for item in semantic_slots
+        if isinstance(item, Mapping) and isinstance(item.get("purpose"), str)
+    )
+    required = tuple(
+        item["purpose"]
+        for item in semantic_slots
+        if isinstance(item, Mapping)
+        and isinstance(item.get("purpose"), str)
+        and item.get("required_for_layout") is True
+    )
+    if not allowed or len(set(allowed)) != len(allowed):
+        raise DirectorDecisionError(
+            "director_capabilities_invalid", "$.capabilities.layout_requirements"
+        )
+    return dict(directive), dict(slot), allowed, required
+
+
+def _with_layout_compatible_material_purpose(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize one unambiguous purpose without spending the repair call."""
+
+    directive, slot, allowed, required = _material_purpose_context(
+        value, error, capabilities
+    )
+    match = _MATERIAL_PURPOSE_PATH.fullmatch(error.path)
+    if match is None:
+        raise error
+    scene_index = int(match.group("scene_index"))
+    slot_index = int(match.group("slot_index"))
+    slots = directive.get("material_slot_directives")
+    if not isinstance(slots, list):
+        raise error
+    used = {
+        item.get("purpose")
+        for index, item in enumerate(slots)
+        if index != slot_index
+        and isinstance(item, Mapping)
+        and isinstance(item.get("purpose"), str)
+        and item.get("purpose") in allowed
+    }
+    choices = tuple(purpose for purpose in allowed if purpose not in used)
+    if slot.get("priority") == "required":
+        required_choices = tuple(purpose for purpose in choices if purpose in required)
+        if len(required_choices) == 1:
+            choices = required_choices
+    if len(choices) != 1:
+        raise error
+
+    recovered = copy.deepcopy(dict(value))
+    recovered["scene_directives"][scene_index]["material_slot_directives"][
+        slot_index
+    ]["purpose"] = choices[0]
+    return recovered
+
+
+def _apply_scoped_material_purpose_repair(
+    repair_value: Mapping[str, Any],
+    initial_value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Take only the repaired purpose; keep every other initial field frozen."""
+
+    try:
+        contracts.validate_director_decision_schema(repair_value)
+    except ContractError as exc:
+        raise DirectorDecisionError(exc.error_code, exc.field_path) from None
+    _reject_unsafe_text(repair_value)
+    initial_directive, initial_slot, allowed, _ = _material_purpose_context(
+        initial_value, error, capabilities
+    )
+    match = _MATERIAL_PURPOSE_PATH.fullmatch(error.path)
+    if match is None:
+        raise error
+    scene_index = int(match.group("scene_index"))
+    slot_index = int(match.group("slot_index"))
+    repair_directives = repair_value.get("scene_directives")
+    if not isinstance(repair_directives, list) or scene_index >= len(repair_directives):
+        raise error
+    repair_directive = repair_directives[scene_index]
+    if not isinstance(repair_directive, Mapping):
+        raise error
+    repair_slots = repair_directive.get("material_slot_directives")
+    if not isinstance(repair_slots, list) or slot_index >= len(repair_slots):
+        raise error
+    repair_slot = repair_slots[slot_index]
+    if (
+        not isinstance(repair_slot, Mapping)
+        or repair_directive.get("scene_id") != initial_directive.get("scene_id")
+        or repair_slot.get("slot_id") != initial_slot.get("slot_id")
+        or repair_slot.get("purpose") not in allowed
+    ):
+        raise error
+
+    recovered = copy.deepcopy(dict(initial_value))
+    recovered["scene_directives"][scene_index]["material_slot_directives"][
+        slot_index
+    ]["purpose"] = repair_slot["purpose"]
+    return recovered
+
+
 def _speaker_layout_fallback(
     directive: Mapping[str, Any],
     *,
@@ -794,6 +945,59 @@ def _with_speaker_visibility_fallback(
     return recovered
 
 
+def _validate_with_local_recoveries(
+    value: Mapping[str, Any],
+    *,
+    candidates: Sequence[Any],
+    capabilities: Mapping[str, Any],
+) -> tuple[dict[str, Any], DirectorDecisionError | None]:
+    """Apply at most one bounded normalization of each locally safe kind."""
+
+    candidate_value: Mapping[str, Any] = value
+    normalized_transition = False
+    normalized_material_purpose = False
+    while True:
+        try:
+            return (
+                validate_director_decision(
+                    candidate_value,
+                    candidates=candidates,
+                    capabilities=capabilities,
+                ),
+                None,
+            )
+        except DirectorDecisionError as error:
+            if (
+                not normalized_material_purpose
+                and error.code == "director_material_purpose_invalid"
+                and _MATERIAL_PURPOSE_PATH.fullmatch(error.path) is not None
+            ):
+                try:
+                    candidate_value = _with_layout_compatible_material_purpose(
+                        candidate_value, error, capabilities
+                    )
+                except DirectorDecisionError:
+                    return copy.deepcopy(dict(candidate_value)), error
+                normalized_material_purpose = True
+                continue
+            if (
+                not normalized_transition
+                and error.code in {
+                    "director_transition_unknown",
+                    "director_identity_transition_invalid",
+                }
+            ):
+                try:
+                    candidate_value = _with_hard_cut_transition(
+                        candidate_value, error, capabilities
+                    )
+                except DirectorDecisionError:
+                    return copy.deepcopy(dict(candidate_value)), error
+                normalized_transition = True
+                continue
+            return copy.deepcopy(dict(candidate_value)), error
+
+
 def _validate_generated_decision(
     value: Mapping[str, Any],
     *,
@@ -801,37 +1005,21 @@ def _validate_generated_decision(
     capabilities: Mapping[str, Any],
     allow_speaker_fallback: bool,
 ) -> dict[str, Any]:
-    candidate_value: Mapping[str, Any] = value
-    try:
+    candidate_value, error = _validate_with_local_recoveries(
+        value, candidates=candidates, capabilities=capabilities
+    )
+    if error is None:
+        return candidate_value
+    if allow_speaker_fallback and error.code == "director_speaker_visibility_exceeded":
+        candidate_value = _with_speaker_visibility_fallback(
+            candidate_value,
+            candidates=candidates,
+            capabilities=capabilities,
+        )
         return validate_director_decision(
             candidate_value, candidates=candidates, capabilities=capabilities
         )
-    except DirectorDecisionError as error:
-        if error.code in {
-            "director_transition_unknown",
-            "director_identity_transition_invalid",
-        }:
-            candidate_value = _with_hard_cut_transition(
-                candidate_value, error, capabilities
-            )
-            try:
-                return validate_director_decision(
-                    candidate_value,
-                    candidates=candidates,
-                    capabilities=capabilities,
-                )
-            except DirectorDecisionError as recovered_error:
-                error = recovered_error
-        if allow_speaker_fallback and error.code == "director_speaker_visibility_exceeded":
-            candidate_value = _with_speaker_visibility_fallback(
-                candidate_value,
-                candidates=candidates,
-                capabilities=capabilities,
-            )
-            return validate_director_decision(
-                candidate_value, candidates=candidates, capabilities=capabilities
-            )
-        raise error
+    raise error
 
 
 def _repair_expected_constraint(error: DirectorDecisionError) -> str:
@@ -867,6 +1055,11 @@ def _repair_expected_constraint(error: DirectorDecisionError) -> str:
         is not None
     ):
         return "sound_events_empty_when_candidate_shorter_than_500ms"
+    if (
+        error.code == "director_material_purpose_invalid"
+        and _MATERIAL_PURPOSE_PATH.fullmatch(error.path) is not None
+    ):
+        return "material_purpose_matches_selected_layout_semantic_slots"
     if (
         error.code == "director_decision_schema_invalid"
         and error.path == "$.scene_directives"
@@ -914,6 +1107,87 @@ def _without_visible_text_schema_regression(
     return guarded
 
 
+def _repair_constraint_envelope(
+    candidates: Sequence[Any], capabilities: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Project authoritative timing constraints without transcript or media data."""
+
+    policy = capabilities.get("speaker_visibility_policy")
+    if policy is None:
+        return None
+    if policy != SPEAKER_VISIBILITY_POLICY:
+        raise DirectorDecisionError(
+            "director_capabilities_invalid",
+            "$.capabilities.speaker_visibility_policy",
+        )
+    bounds = []
+    total_duration_ms = 0
+    for index, candidate_value in enumerate(candidates):
+        candidate = _record(candidate_value)
+        scene_id = candidate.get("id")
+        start_ms = candidate.get("start_ms")
+        end_ms = candidate.get("end_ms")
+        speaker_available = candidate.get("speaker_available")
+        if (
+            not isinstance(scene_id, str)
+            or _SAFE_CODE.fullmatch(scene_id) is None
+            or type(start_ms) is not int
+            or type(end_ms) is not int
+            or start_ms < 0
+            or end_ms <= start_ms
+            or type(speaker_available) is not bool
+        ):
+            raise DirectorDecisionError(
+                "director_candidates_invalid", f"$.scene_candidates[{index}]"
+            )
+        duration_ms = end_ms - start_ms
+        total_duration_ms += duration_ms
+        bounds.append({
+            "scene_id": scene_id,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "duration_ms": duration_ms,
+            "speaker_available": speaker_available,
+        })
+    return {
+        "speaker_visibility_policy": copy.deepcopy(dict(policy)),
+        "scene_candidate_bounds": bounds,
+        "total_duration_ms": total_duration_ms,
+        "max_hidden_ms": int(
+            total_duration_ms * SPEAKER_VISIBILITY_POLICY["max_hidden_ratio"]
+        ),
+    }
+
+
+def _material_purpose_target_context(
+    value: Mapping[str, Any],
+    error: DirectorDecisionError,
+    capabilities: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Expose only safe enum/identity data required for one scoped repair."""
+
+    directive, slot, allowed, required = _material_purpose_context(
+        value, error, capabilities
+    )
+    scene_id = directive.get("scene_id")
+    layout_id = directive.get("layout_id")
+    slot_id = slot.get("slot_id")
+    priority = slot.get("priority")
+    if any(
+        not isinstance(item, str) or _SAFE_CODE.fullmatch(item) is None
+        for item in (scene_id, layout_id, slot_id, priority)
+    ):
+        raise error
+    return {
+        "scene_id": scene_id,
+        "layout_id": layout_id,
+        "slot_id": slot_id,
+        "slot_priority": priority,
+        "allowed_purposes": list(allowed),
+        "required_purposes": list(required),
+    }
+
+
 def generate_director_decision(context: Any, provider: Any, *, max_repairs: int = 1) -> ValidatedDecision:
     if max_repairs != 1:
         raise ValueError("director_repair_budget_invalid")
@@ -923,16 +1197,38 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
     last_error = DirectorDecisionError("director_decision_invalid")
     attempts: list[dict[str, Any]] = []
     initial_speaker_candidate: tuple[dict[str, Any], str | None, str, str] | None = None
+    initial_material_candidate: tuple[dict[str, Any], DirectorDecisionError] | None = None
+    constraint_envelope = _repair_constraint_envelope(
+        context.candidates, context.capabilities
+    )
     for attempt in range(max_repairs + 1):
-        request = frozen_request if attempt == 0 else {
-            "frozen_request": frozen_request,
-            "previous_response_sha256": previous_sha,
-            "repair": {
+        if attempt == 0:
+            request = frozen_request
+        else:
+            repair_request: dict[str, Any] = {
                 "error_code": last_error.code,
                 "field_path": last_error.path,
                 "expected_constraint": _repair_expected_constraint(last_error),
-            },
-        }
+            }
+            if constraint_envelope is not None:
+                repair_request["constraint_envelope"] = copy.deepcopy(
+                    constraint_envelope
+                )
+            if initial_material_candidate is not None:
+                initial_material_value, initial_material_error = (
+                    initial_material_candidate
+                )
+                repair_request["target_context"] = _material_purpose_target_context(
+                    initial_material_value,
+                    initial_material_error,
+                    context.capabilities,
+                )
+                repair_request["preserve_all_other_fields"] = True
+            request = {
+                "frozen_request": frozen_request,
+                "previous_response_sha256": previous_sha,
+                "repair": repair_request,
+            }
         raw = provider.generate_decision(
             request,
             purpose="initial" if attempt == 0 else "repair",
@@ -946,6 +1242,16 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
             parsed_output = _provider_output(raw)
             value, request_id, raw_json, previous_sha = parsed_output
             response_sha256 = previous_sha
+            if attempt == max_repairs and initial_material_candidate is not None:
+                initial_material_value, initial_material_error = (
+                    initial_material_candidate
+                )
+                value = _apply_scoped_material_purpose_repair(
+                    value,
+                    initial_material_value,
+                    initial_material_error,
+                    context.capabilities,
+                )
             normalized = _validate_generated_decision(
                 value,
                 candidates=context.candidates,
@@ -966,28 +1272,37 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
         except DirectorDecisionError as exc:
             if (
                 attempt == 0
+                and exc.code == "director_material_purpose_invalid"
+                and _MATERIAL_PURPOSE_PATH.fullmatch(exc.path) is not None
+                and parsed_output is not None
+            ):
+                initial_material_candidate = (
+                    copy.deepcopy(parsed_output[0]),
+                    exc,
+                )
+            elif (
+                attempt == 0
                 and exc.code == "director_speaker_visibility_exceeded"
                 and exc.path == "$.scene_directives"
                 and parsed_output is not None
             ):
                 value, request_id, raw_json, initial_sha = parsed_output
-                try:
-                    validate_director_decision(
-                        value,
-                        candidates=context.candidates,
-                        capabilities=context.capabilities,
+                initial_value, initial_error = _validate_with_local_recoveries(
+                    value,
+                    candidates=context.candidates,
+                    capabilities=context.capabilities,
+                )
+                if (
+                    initial_error is not None
+                    and initial_error.code == "director_speaker_visibility_exceeded"
+                    and initial_error.path == "$.scene_directives"
+                ):
+                    initial_speaker_candidate = (
+                        initial_value,
+                        request_id,
+                        raw_json,
+                        initial_sha,
                     )
-                except DirectorDecisionError as initial_error:
-                    if (
-                        initial_error.code == "director_speaker_visibility_exceeded"
-                        and initial_error.path == "$.scene_directives"
-                    ):
-                        initial_speaker_candidate = (
-                            copy.deepcopy(value),
-                            request_id,
-                            raw_json,
-                            initial_sha,
-                        )
             elif (
                 attempt == max_repairs
                 and initial_speaker_candidate is not None
@@ -1011,6 +1326,40 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
                         candidates=context.candidates,
                         capabilities=context.capabilities,
                     )
+                    normalized = _validate_generated_decision(
+                        initial_value,
+                        candidates=context.candidates,
+                        capabilities=context.capabilities,
+                        allow_speaker_fallback=True,
+                    )
+                except DirectorDecisionError:
+                    pass
+                else:
+                    normalized_json = contracts.canonical_json(normalized)
+                    candidate_json = contracts.canonical_json(
+                        [_record(item) for item in context.candidates]
+                    )
+                    return ValidatedDecision(
+                        normalized,
+                        initial_request_id,
+                        initial_raw_json,
+                        initial_sha,
+                        hashlib.sha256(normalized_json).hexdigest(),
+                        contracts.schema_sha256("director-decision-v1.schema.json"),
+                        hashlib.sha256(candidate_json).hexdigest(),
+                    )
+            elif (
+                attempt == max_repairs
+                and initial_speaker_candidate is not None
+                and parsed_output is not None
+                and exc.code == "director_speaker_visibility_exceeded"
+                and exc.path == "$.scene_directives"
+            ):
+                initial_value, initial_request_id, initial_raw_json, initial_sha = (
+                    initial_speaker_candidate
+                )
+                try:
+                    _reject_unsafe_text(parsed_output[0])
                     normalized = _validate_generated_decision(
                         initial_value,
                         candidates=context.candidates,
