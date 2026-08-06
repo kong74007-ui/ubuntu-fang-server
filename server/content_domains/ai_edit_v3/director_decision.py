@@ -35,6 +35,10 @@ _SAFE_FIELD_PATH = re.compile(
 )
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_VISIBLE_TEXT_REFERENCE_PATH = re.compile(
+    r"\$\.scene_directives\[(?P<scene_index>\d+)\]\.(?P<field>headline|highlight)"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)?"
+)
 
 
 def _safe_field_path(value: Any) -> str:
@@ -857,14 +861,44 @@ def _repair_expected_constraint(error: DirectorDecisionError) -> str:
         return "scene_directives_array_matches_schema_and_candidates"
     if (
         error.code == "director_decision_schema_invalid"
-        and re.fullmatch(
-            r"\$\.scene_directives\[\d+\]\.(?:headline|highlight)(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
-            error.path,
-        )
-        is not None
+        and _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path) is not None
     ):
         return "visible_text_reference_object_or_omit"
     return "follow_director_decision_schema_exactly"
+
+
+def _without_visible_text_schema_regression(
+    repair_value: Mapping[str, Any],
+    initial_value: Mapping[str, Any],
+    error: DirectorDecisionError,
+) -> dict[str, Any]:
+    """Restore one trusted visible-text field so all other repair rules can run."""
+
+    match = _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(error.path)
+    if error.code != "director_decision_schema_invalid" or match is None:
+        raise error
+    scene_index = int(match.group("scene_index"))
+    field = match.group("field")
+    guarded = copy.deepcopy(dict(repair_value))
+    guarded_directives = guarded.get("scene_directives")
+    initial_directives = initial_value.get("scene_directives")
+    if (
+        not isinstance(guarded_directives, list)
+        or not isinstance(initial_directives, list)
+        or scene_index >= len(guarded_directives)
+        or scene_index >= len(initial_directives)
+        or not isinstance(guarded_directives[scene_index], Mapping)
+        or not isinstance(initial_directives[scene_index], Mapping)
+    ):
+        raise error
+    guarded_directive = dict(guarded_directives[scene_index])
+    initial_directive = initial_directives[scene_index]
+    if field in initial_directive:
+        guarded_directive[field] = copy.deepcopy(initial_directive[field])
+    else:
+        guarded_directive.pop(field, None)
+    guarded_directives[scene_index] = guarded_directive
+    return guarded
 
 
 def generate_director_decision(context: Any, provider: Any, *, max_repairs: int = 1) -> ValidatedDecision:
@@ -875,6 +909,7 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
     previous_sha = None
     last_error = DirectorDecisionError("director_decision_invalid")
     attempts: list[dict[str, Any]] = []
+    initial_speaker_candidate: tuple[dict[str, Any], str | None, str, str] | None = None
     for attempt in range(max_repairs + 1):
         request = frozen_request if attempt == 0 else {
             "frozen_request": frozen_request,
@@ -893,8 +928,10 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
         )
         request_id = _provider_request_id(raw)
         response_sha256 = _provider_response_sha256(raw)
+        parsed_output: tuple[dict[str, Any], str | None, str, str] | None = None
         try:
-            value, request_id, raw_json, previous_sha = _provider_output(raw)
+            parsed_output = _provider_output(raw)
+            value, request_id, raw_json, previous_sha = parsed_output
             response_sha256 = previous_sha
             normalized = _validate_generated_decision(
                 value,
@@ -914,6 +951,75 @@ def generate_director_decision(context: Any, provider: Any, *, max_repairs: int 
                 hashlib.sha256(candidate_json).hexdigest(),
             )
         except DirectorDecisionError as exc:
+            if (
+                attempt == 0
+                and exc.code == "director_speaker_visibility_exceeded"
+                and exc.path == "$.scene_directives"
+                and parsed_output is not None
+            ):
+                value, request_id, raw_json, initial_sha = parsed_output
+                try:
+                    validate_director_decision(
+                        value,
+                        candidates=context.candidates,
+                        capabilities=context.capabilities,
+                    )
+                except DirectorDecisionError as initial_error:
+                    if (
+                        initial_error.code == "director_speaker_visibility_exceeded"
+                        and initial_error.path == "$.scene_directives"
+                    ):
+                        initial_speaker_candidate = (
+                            copy.deepcopy(value),
+                            request_id,
+                            raw_json,
+                            initial_sha,
+                        )
+            elif (
+                attempt == max_repairs
+                and initial_speaker_candidate is not None
+                and parsed_output is not None
+                and exc.code == "director_decision_schema_invalid"
+                and _VISIBLE_TEXT_REFERENCE_PATH.fullmatch(exc.path) is not None
+            ):
+                initial_value, initial_request_id, initial_raw_json, initial_sha = (
+                    initial_speaker_candidate
+                )
+                try:
+                    repair_value = parsed_output[0]
+                    _reject_unsafe_text(repair_value)
+                    guarded_repair = _without_visible_text_schema_regression(
+                        repair_value,
+                        initial_value,
+                        exc,
+                    )
+                    validate_director_decision(
+                        guarded_repair,
+                        candidates=context.candidates,
+                        capabilities=context.capabilities,
+                    )
+                    normalized = _validate_generated_decision(
+                        initial_value,
+                        candidates=context.candidates,
+                        capabilities=context.capabilities,
+                        allow_speaker_fallback=True,
+                    )
+                except DirectorDecisionError:
+                    pass
+                else:
+                    normalized_json = contracts.canonical_json(normalized)
+                    candidate_json = contracts.canonical_json(
+                        [_record(item) for item in context.candidates]
+                    )
+                    return ValidatedDecision(
+                        normalized,
+                        initial_request_id,
+                        initial_raw_json,
+                        initial_sha,
+                        hashlib.sha256(normalized_json).hexdigest(),
+                        contracts.schema_sha256("director-decision-v1.schema.json"),
+                        hashlib.sha256(candidate_json).hexdigest(),
+                    )
             last_error = exc
             previous_sha = response_sha256
             attempts.append({
