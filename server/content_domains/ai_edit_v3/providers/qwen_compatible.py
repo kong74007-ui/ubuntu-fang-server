@@ -21,6 +21,17 @@ from server.content_domains.ai_edit_v2_providers.base import (
 
 _ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 _MODEL = "qwen3.7-max-2026-06-08"
+_MATERIAL_REVIEW_SYSTEM_PROMPT = " ".join((
+    "Review the image independently and return exactly one JSON object with the exact root keys result, reason, and evidence; do not add a wrapper such as output_contract, schema, result_data, or data.",
+    "The evidence value must be a non-empty array and every evidence item must contain exactly semantic_match (a boolean) and forbidden_subjects (an array of strings).",
+    "Each evidence.forbidden_subjects value may contain only the subset of forbidden_subjects_to_detect that is actually visible in the image; it must be [] when none are detected.",
+    "Never copy the candidate list into evidence.forbidden_subjects and never treat a category to inspect as a detected category.",
+    "Set result to pass if and only if at least one evidence item has semantic_match=true and every evidence.forbidden_subjects array is empty; otherwise set result to fail.",
+    "Use wrong_product or wrong_store when requested_semantic identifies a specific product or store but the image visibly depicts a different identifiable one, or when requested_semantic asks for a generic or non-branded illustration but the image contains an identifiable branded product or real store; uncertainty alone is not a match.",
+    "Use fabricated_real_world_evidence only for an image visibly presented as authentic documentary proof of a factual claim, not for a clearly illustrative concept graphic.",
+    "The following is a structure-only pass example, not a conclusion about the supplied image: {\"result\":\"pass\",\"reason\":\"semantic matched and no forbidden subject detected\",\"evidence\":[{\"semantic_match\":true,\"forbidden_subjects\":[]}]}",
+    "The reason must be plain text and must never echo URLs, credentials, signed parameters, or private storage identifiers.",
+))
 
 
 class DashScopeCompatibleQwenClient:
@@ -97,17 +108,10 @@ class DashScopeCompatibleQwenClient:
             raise ProviderError("dashscope_not_configured")
         prompt = json.dumps(
             {
-                "semantic": semantic.strip(),
-                "forbidden_subjects": forbidden,
+                "contract_version": "material-review-v1",
+                "requested_semantic": semantic.strip(),
+                "forbidden_subjects_to_detect": forbidden,
                 "source_metadata": metadata,
-                "output_contract": {
-                    "result": "pass|fail",
-                    "reason": "plain text without URL or credentials",
-                    "evidence": [{
-                        "semantic_match": "boolean",
-                        "forbidden_subjects": forbidden,
-                    }],
-                },
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -119,7 +123,7 @@ class DashScopeCompatibleQwenClient:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Review the image independently. Return only the exact JSON contract; never echo URLs, credentials, or signed parameters.",
+                        "content": _MATERIAL_REVIEW_SYSTEM_PROMPT,
                     },
                     {
                         "role": "user",

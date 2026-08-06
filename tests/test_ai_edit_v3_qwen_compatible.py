@@ -101,7 +101,7 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
             bodies.append(json.loads(body.decode("utf-8")))
             return {
                 "id": "material-review-1",
-                "choices": [{"message": {"content": '{"result":"pass","reason":"ok","evidence":[]}'}}],
+                "choices": [{"message": {"content": '{"result":"pass","reason":"ok","evidence":[{"semantic_match":true,"forbidden_subjects":[]}]}'}}],
                 "usage": {},
             }
 
@@ -125,11 +125,38 @@ class DashScopeCompatibleQwenClientTests(unittest.TestCase):
         body = bodies[0]
         self.assertEqual("qwen3.7-max-2026-06-08", body["model"])
         self.assertEqual({"type": "json_object"}, body["response_format"])
+        system_prompt = body["messages"][0]["content"]
         content = body["messages"][1]["content"]
         self.assertEqual("image_url", content[1]["type"])
         self.assertEqual(
             "https://private.example/image.png?q-signature=secret",
             content[1]["image_url"]["url"],
+        )
+        review_request = json.loads(content[0]["text"])
+        self.assertEqual("material-review-v1", review_request["contract_version"])
+        self.assertEqual(
+            "abstract airflow diagram",
+            review_request["requested_semantic"],
+        )
+        self.assertEqual(
+            ["person", "face"],
+            review_request["forbidden_subjects_to_detect"],
+        )
+        self.assertNotIn("output_contract", review_request)
+        self.assertNotIn("forbidden_subjects", review_request)
+        self.assertIn("exact root keys result, reason, and evidence", system_prompt)
+        self.assertIn("actually visible in the image", system_prompt)
+        self.assertIn("must be [] when none are detected", system_prompt)
+        self.assertIn("Never copy the candidate list", system_prompt)
+        self.assertIn("generic or non-branded", system_prompt)
+        self.assertIn("identifiable branded product or real store", system_prompt)
+        self.assertIn(
+            '"semantic_match":true,"forbidden_subjects":[]',
+            system_prompt,
+        )
+        self.assertNotIn(
+            '"forbidden_subjects":["person","face"]',
+            system_prompt,
         )
         self.assertNotIn("https://", json.dumps(result.payload, ensure_ascii=False))
 

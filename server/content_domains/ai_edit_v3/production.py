@@ -85,6 +85,30 @@ _NEXT = {
     "staging_delivery": "settling",
 }
 
+_MATERIAL_REVIEW_POLICY_VERSION = "material-review-policy-v2"
+
+
+def _material_review_receipt_request(
+    *,
+    scene_id: str,
+    slot_id: str,
+    semantic: str,
+    forbidden_subjects: tuple[str, ...] | list[str],
+    cos_key: str,
+    source_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Version the reviewer policy inside the provider receipt identity."""
+
+    return {
+        "review_policy_version": _MATERIAL_REVIEW_POLICY_VERSION,
+        "scene_id": scene_id,
+        "slot_id": slot_id,
+        "semantic": semantic,
+        "forbidden_subjects": list(forbidden_subjects),
+        "cos_key": cos_key,
+        "source_metadata": dict(source_metadata),
+    }
+
 
 class MaterialDescriptorContractError(MaterialError):
     """A provider response arrived but failed the local descriptor contract."""
@@ -874,6 +898,7 @@ class QwenCompiledDirector:
             "整条视频的素材槽总数不得超过 max_total_material_slots。视频口播的第一场必须选择 speaker_required=true 的布局；把所有 speaker_required!=true 场景的(end_ms-start_ms)相加，必须不超过整片时长乘 speaker_visibility_policy.max_hidden_ratio。",
             "输出前必须按 scene_structure_policy 自检：当总时长和场景数达到门槛时，结构签名(layout_id、layout_variant、排序后的overlay组件集合)的不同数量必须不少于 minimum_distinct_signatures，任何连续相同签名的数量不得超过 max_adjacent_identical。",
             "current_materials 只是可优先匹配的安全语义摘要，不代表所有槽都已满足；若某素材槽意图复用其中一项，semantic 必须逐字复制该项 semantic，未匹配的 required 槽由后续素材解析器生成。所有必需数组即使为空也必须输出。",
+            "自动生成的 required 素材槽必须能由非人物安全配图满足：semantic 不得要求人物、人脸、讲师、团队、客户、口播者、特定品牌、真实产品包装、真实门店或事实证据；优先描述抽象概念图、流程示意图或非人物环境素材。product/evidence 槽若没有 current_materials 可精确匹配，只能表达非品牌概念或明确的示意图；若叙事必须出现人物或特定真实主体，应改用显示原口播人物的布局，不得要求生成新人物素材。",
             "audio_intent.dialogue_priority 必须为 true；创意可以自由，但不得改变权威文案事实。修复请求出现时，根据 repair.error_code、repair.field_path 和 repair.expected_constraint 修正结构；scene_directives_exact_candidate_order_and_count 表示数量、顺序与ID必须完全对应候选；scene_signatures_meet_distinct_and_adjacency_policy 表示重新编排布局、变体或overlay组合以同时满足 minimum_distinct_signatures 与 max_adjacent_identical；speaker_hidden_duration_within_max_ratio 表示减少无人物布局时长。",
             "JSON Schema:",
             contract,
@@ -2928,17 +2953,17 @@ class ProductionStageCoordinator:
                             and callable(getattr(self.store, "bind_provider_result", None))
                         )
                         if real_receipts:
-                            review_request = {
-                                "scene_id": material_request["scene_id"],
-                                "slot_id": material_request["slot_id"],
-                                "semantic": material_request["semantic"],
-                                "forbidden_subjects": [
+                            review_request = _material_review_receipt_request(
+                                scene_id=material_request["scene_id"],
+                                slot_id=material_request["slot_id"],
+                                semantic=material_request["semantic"],
+                                forbidden_subjects=(
                                     "person", "face", "wrong_product", "wrong_store",
                                     "fabricated_real_world_evidence",
-                                ],
-                                "cos_key": object_key,
-                                "source_metadata": source_metadata,
-                            }
+                                ),
+                                cos_key=object_key,
+                                source_metadata=source_metadata,
+                            )
                             review = invoke_provider_once(
                                 store=self.store,
                                 context=context,

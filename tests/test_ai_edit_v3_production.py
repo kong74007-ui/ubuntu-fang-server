@@ -930,6 +930,10 @@ class ProductionDirectorTests(unittest.TestCase):
             "scene_signatures_meet_distinct_and_adjacency_policy",
             client.system_prompt,
         )
+        self.assertIn("自动生成的 required 素材槽", client.system_prompt)
+        self.assertIn("不得要求人物、人脸、讲师、团队、客户", client.system_prompt)
+        self.assertIn("特定品牌、真实产品包装、真实门店或事实证据", client.system_prompt)
+        self.assertIn("抽象概念图、流程示意图或非人物环境素材", client.system_prompt)
 
     def test_qwen_creativity_is_compiled_to_the_strict_plan(self):
         client = _Qwen()
@@ -1324,6 +1328,28 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_material_review_receipt_hash_includes_policy_version(self):
+        from server.content_domains.ai_edit_v3 import production
+
+        payload = production._material_review_receipt_request(
+            scene_id="scene_01",
+            slot_id="evidence",
+            semantic="abstract workflow diagram",
+            forbidden_subjects=("person", "face"),
+            cos_key="test/ai-edit-v3/owner/job/materials/generated-01.png",
+            source_metadata={"sha256": "a" * 64},
+        )
+        self.assertEqual(
+            "material-review-policy-v2",
+            payload["review_policy_version"],
+        )
+        legacy_payload = dict(payload)
+        legacy_payload.pop("review_policy_version")
+        self.assertNotEqual(
+            hashlib.sha256(production.canonical_json(payload)).hexdigest(),
+            hashlib.sha256(production.canonical_json(legacy_payload)).hexdigest(),
+        )
+
     def test_material_descriptor_text_rejects_secret_prefixes_and_control_characters(self):
         from server.content_domains.ai_edit_v3 import production
 
