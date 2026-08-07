@@ -44,10 +44,12 @@ class DashScopeCompatibleQwenClient:
         | None = None,
         timeout_seconds: int = 45,
         clock_ms: Callable[[], int] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._http_request = http_request or self._stdlib_request
         self._timeout_seconds = int(timeout_seconds)
         self._clock_ms = clock_ms or (lambda: round(time.monotonic() * 1000))
+        self._sleep = sleep or time.sleep
 
     def generate_edit_plan(
         self,
@@ -345,24 +347,48 @@ class DashScopeCompatibleQwenClient:
             ):
                 raise ValueError("dashscope_timeout_invalid")
             request_timeout = min(request_timeout, timeout_seconds)
-        try:
-            response = self._http_request(
-                "POST",
-                os.environ.get("DASHSCOPE_QWEN_COMPATIBLE_URL", _ENDPOINT),
-                {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                body,
-                request_timeout,
-            )
-        except (TimeoutError, socket.timeout) as exc:
-            raise RetryableProviderError("dashscope_director_unavailable") from exc
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-            status = getattr(exc, "code", None)
-            if status is None or status in {408, 429} or int(status) >= 500:
-                raise RetryableProviderError("dashscope_director_unavailable") from exc
-            raise ProviderError("dashscope_director_request_rejected") from exc
+        endpoint = os.environ.get("DASHSCOPE_QWEN_COMPATIBLE_URL", _ENDPOINT)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        deadline_ms = started_at + request_timeout * 1000
+        current_timeout = request_timeout
+        response: dict[str, Any] | None = None
+        last_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                response = self._http_request(
+                    "POST",
+                    endpoint,
+                    headers,
+                    body,
+                    current_timeout,
+                )
+                break
+            except (TimeoutError, socket.timeout) as exc:
+                last_error = exc
+            except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+                last_error = exc
+                status = getattr(exc, "code", None)
+                if not (
+                    status is None
+                    or status in {408, 429}
+                    or int(status) >= 500
+                ):
+                    raise ProviderError("dashscope_director_request_rejected") from exc
+
+            if attempt == 1:
+                raise RetryableProviderError("dashscope_director_unavailable") from last_error
+            if deadline_ms - self._clock_ms() <= 1_000:
+                raise RetryableProviderError("dashscope_director_unavailable") from last_error
+            self._sleep(0.5)
+            current_timeout = int((deadline_ms - self._clock_ms()) // 1000)
+            if current_timeout < 1:
+                raise RetryableProviderError("dashscope_director_unavailable") from last_error
+
+        if response is None:
+            raise RetryableProviderError("dashscope_director_unavailable")
 
         request_id, content, tokens = self._normalize_response(response)
         return ProviderResult(
