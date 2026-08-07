@@ -1369,6 +1369,103 @@ class ProductionDirectorTests(unittest.TestCase):
 
 
 class ProductionStageCoordinatorTests(unittest.TestCase):
+    def test_normalizing_stage_converts_authoritative_text_line_breaks_to_spaces(self):
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            source = Path(directory) / "source.mp4"
+            normalized = SimpleNamespace(
+                relative_path="normalized.mp4",
+                sha256="a" * 64,
+                duration_ms=26_000,
+                ratio="9:16",
+            )
+            probe = SimpleNamespace(media_type="video", width=1080, height=1920)
+            with (
+                patch.object(
+                    coordinator,
+                    "_source",
+                    return_value=(source, "第一段\n第二段\r\n第三段\t结尾"),
+                ),
+                patch(
+                    "server.content_domains.ai_edit_v3.production.normalize_primary_media",
+                    return_value=normalized,
+                ),
+                patch(
+                    "server.content_domains.ai_edit_v3.production.probe_media",
+                    return_value=probe,
+                ),
+            ):
+                outcome = coordinator._stage(
+                    "normalizing",
+                    {
+                        "job_id": "job-authoritative-newlines",
+                        "owner_id": "alice",
+                        "stage_input_sha256": "0" * 64,
+                        "normalized_request_json": {
+                            "input_type": "platform_talking_head",
+                            "ratio": "9:16",
+                        },
+                    },
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+
+            payload = json.loads(
+                (coordinator._root("job-authoritative-newlines") / "normalized.json")
+                .read_text(encoding="utf-8")
+            )
+
+        self.assertEqual("transcribing", outcome.next_state)
+        self.assertEqual("第一段 第二段 第三段 结尾", payload["authoritative_text"])
+
+    def test_normalizing_stage_still_rejects_abnormal_authoritative_controls(self):
+        from server.content_domains.ai_edit_v3.contracts import ContractError
+        from server.content_domains.ai_edit_v3.production import ProductionStageCoordinator
+
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = object.__new__(ProductionStageCoordinator)
+            coordinator.work_root = Path(directory)
+            normalized = SimpleNamespace(
+                relative_path="normalized.mp4",
+                sha256="a" * 64,
+                duration_ms=26_000,
+                ratio="9:16",
+            )
+            probe = SimpleNamespace(media_type="video", width=1080, height=1920)
+            with (
+                patch.object(
+                    coordinator,
+                    "_source",
+                    return_value=(Path(directory) / "source.mp4", "正常文本\x00异常"),
+                ),
+                patch(
+                    "server.content_domains.ai_edit_v3.production.normalize_primary_media",
+                    return_value=normalized,
+                ),
+                patch(
+                    "server.content_domains.ai_edit_v3.production.probe_media",
+                    return_value=probe,
+                ),
+                self.assertRaises(ContractError) as raised,
+            ):
+                coordinator._stage(
+                    "normalizing",
+                    {
+                        "job_id": "job-authoritative-control",
+                        "owner_id": "alice",
+                        "stage_input_sha256": "0" * 64,
+                        "normalized_request_json": {
+                            "input_type": "platform_talking_head",
+                            "ratio": "9:16",
+                        },
+                    },
+                    SimpleNamespace(deadline_at=time.time() + 60),
+                )
+
+        self.assertEqual("control_character_forbidden", raised.exception.error_code)
+
     def test_material_review_receipt_hash_includes_policy_version(self):
         from server.content_domains.ai_edit_v3 import production
 

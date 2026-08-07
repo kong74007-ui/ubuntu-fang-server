@@ -794,6 +794,13 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _normalize_authoritative_text_whitespace(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    normalized = value.translate(str.maketrans({"\t": " ", "\n": " ", "\r": " "}))
+    return re.sub(r" +", " ", normalized).strip()
+
+
 def _provider_payload_json(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _provider_payload_json(item) for key, item in value.items()}
@@ -3356,7 +3363,8 @@ class ProductionStageCoordinator:
             payload = {
                 "input_type": request["input_type"], "relative_path": path.relative_to(root).as_posix(),
                 "sha256": normalized.sha256, "duration_ms": normalized.duration_ms,
-                "ratio": normalized.ratio or request["ratio"], "authoritative_text": authoritative_text,
+                "ratio": normalized.ratio or request["ratio"],
+                "authoritative_text": _normalize_authoritative_text_whitespace(authoritative_text),
                 "media_type": probe.media_type, "width": probe.width, "height": probe.height,
             }
             digest = _write_json(root / "normalized.json", payload)
