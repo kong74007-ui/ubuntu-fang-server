@@ -55,6 +55,17 @@ fi
 
 sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" \
   "${RUNTIME_ROOT}/bin/uv" python install 3.11
+
+# uv.lock records immutable wheel URLs. Rewrite only the package CDN host to
+# the byte-identical regional mirror; uv still verifies every locked SHA256.
+LOCK_FILE="${SOURCE_DIR}/uv.lock"
+LOCKED_WHEEL_COUNT="$(grep -c 'https://files.pythonhosted.org/packages/' "${LOCK_FILE}" || true)"
+if [[ "${LOCKED_WHEEL_COUNT}" -lt 1 ]]; then
+  echo "unexpected uv.lock: no files.pythonhosted.org package URLs" >&2
+  exit 2
+fi
+sed -i 's#https://files.pythonhosted.org/packages/#https://mirrors.aliyun.com/pypi/packages/#g' "${LOCK_FILE}"
+
 sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" UV_DEFAULT_INDEX="${PYPI_INDEX}" \
   "${RUNTIME_ROOT}/bin/uv" --directory "${SOURCE_DIR}" sync --frozen --python 3.11
 sudo -u admin env PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" \
