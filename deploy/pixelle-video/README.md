@@ -33,8 +33,8 @@ curl --fail --silent http://127.0.0.1:8103/health
 
 The installer is idempotent and refuses an unexpected runtime path. It pins
 Pixelle-Video to the commit declared in `install.sh`, installs Python 3.11 with
-uv, syncs the locked dependencies, overlays the reviewed templates, installs
-Chromium for Playwright, and restarts the service.
+uv, syncs the locked dependencies through the Aliyun PyPI mirror, overlays the
+reviewed templates, installs Chromium for Playwright, and restarts the service.
 
 ## Capacity and persistence
 

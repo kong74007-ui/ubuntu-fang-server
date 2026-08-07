@@ -33,6 +33,8 @@ class PixelleDeploymentTests(unittest.TestCase):
     def test_installer_pins_upstream_and_refuses_missing_config(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
         self.assertIn("848b054e4fae40dabc62ec58e960b573e83793ac", installer)
+        self.assertIn("https://mirrors.aliyun.com/pypi/simple", installer)
+        self.assertIn('UV_DEFAULT_INDEX="${PYPI_INDEX}"', installer)
         self.assertIn('if [[ ! -s "${CONFIG_PATH}" ]]', installer)
         self.assertIn("max_concurrent_tasks: int = 1", installer)
 
