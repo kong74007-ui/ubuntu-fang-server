@@ -8,6 +8,7 @@ SOURCE_DIR="${RUNTIME_ROOT}/source"
 BROWSER_DIR="${RUNTIME_ROOT}/browsers"
 CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
+PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [[ "${RUNTIME_ROOT}" != "/opt/huangque/pixelle-video" ]]; then
@@ -54,7 +55,7 @@ fi
 
 sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" \
   "${RUNTIME_ROOT}/bin/uv" python install 3.11
-sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" \
+sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" UV_DEFAULT_INDEX="${PYPI_INDEX}" \
   "${RUNTIME_ROOT}/bin/uv" --directory "${SOURCE_DIR}" sync --frozen --python 3.11
 sudo -u admin env PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" \
   "${SOURCE_DIR}/.venv/bin/python" -m playwright install chromium
