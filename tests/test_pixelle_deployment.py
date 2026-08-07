@@ -43,6 +43,10 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("unexpected uv.lock", installer)
         self.assertIn('if [[ ! -s "${CONFIG_PATH}" ]]', installer)
         self.assertIn("max_concurrent_tasks: int = 1", installer)
+        self.assertIn('STATE_ROOT="/var/lib/huangque-pixelle-video"', installer)
+        self.assertIn('cp -a "${SOURCE_DIR}/output/." "${OUTPUT_DIR}/"', installer)
+        self.assertIn('ln -sfn "${OUTPUT_DIR}" "${SOURCE_DIR}/output"', installer)
+        self.assertIn('ln -sfn "${DATA_DIR}" "${SOURCE_DIR}/data"', installer)
 
     def test_config_renderer_requires_keys_and_does_not_eval_env(self):
         renderer = load_renderer()
