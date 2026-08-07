@@ -28,6 +28,7 @@ HUANGQUE_LOOPBACK_PORTS = {
     8098: "admin",
     8100: "leadgen-api",
     8101: "imggen-api",
+    8103: "pixelle-video",
 }
 DECISION_REQUIRED_PORTS = {
     631: "cups",
