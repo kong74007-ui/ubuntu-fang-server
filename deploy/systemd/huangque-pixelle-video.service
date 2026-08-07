@@ -1,0 +1,26 @@
+[Unit]
+Description=Huangque Pixelle video generation API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/huangque/pixelle-video/source
+Environment=HOME=/home/admin
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/huangque/pixelle-video/browsers
+ExecStart=/opt/huangque/pixelle-video/source/.venv/bin/python api/app.py --host 127.0.0.1 --port 8103
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+CPUQuota=150%
+MemoryHigh=1200M
+MemoryMax=1800M
+TasksMax=512
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

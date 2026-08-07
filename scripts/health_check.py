@@ -27,6 +27,7 @@ SERVICES = [
     ("huangque-admin",        8098, "/api/admin/health"),
     ("huangque-leadgen-api",  8100, "/"),
     ("huangque-imggen-api",   8101, "/"),
+    ("huangque-pixelle-video", 8103, "/health"),
     ("xiaotan",               8501, "/docs"),
 ]
 
