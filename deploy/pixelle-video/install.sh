@@ -6,6 +6,9 @@ UPSTREAM_COMMIT="848b054e4fae40dabc62ec58e960b573e83793ac"
 RUNTIME_ROOT="/opt/huangque/pixelle-video"
 SOURCE_DIR="${RUNTIME_ROOT}/source"
 BROWSER_DIR="${RUNTIME_ROOT}/browsers"
+STATE_ROOT="/var/lib/huangque-pixelle-video"
+OUTPUT_DIR="${STATE_ROOT}/output"
+DATA_DIR="${STATE_ROOT}/data"
 CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
 PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
@@ -28,14 +31,29 @@ chown root:admin "${CONFIG_PATH}"
 chmod 0640 "${CONFIG_PATH}"
 
 install -d -o admin -g admin -m 0755 "${RUNTIME_ROOT}" "${BROWSER_DIR}"
+install -d -o admin -g admin -m 0750 "${STATE_ROOT}" "${OUTPUT_DIR}" "${DATA_DIR}"
 
 if [[ ! -d "${SOURCE_DIR}/.git" ]]; then
   sudo -u admin git clone "${UPSTREAM_URL}" "${SOURCE_DIR}"
 fi
+
+# Preserve outputs created by deployments that predate the persistent state
+# layout before resetting the upstream checkout.
+if [[ -d "${SOURCE_DIR}/output" && ! -L "${SOURCE_DIR}/output" ]]; then
+  cp -a "${SOURCE_DIR}/output/." "${OUTPUT_DIR}/"
+fi
+if [[ -d "${SOURCE_DIR}/data" && ! -L "${SOURCE_DIR}/data" ]]; then
+  cp -a "${SOURCE_DIR}/data/." "${DATA_DIR}/"
+fi
+
 sudo -u admin git -C "${SOURCE_DIR}" fetch --prune origin
 sudo -u admin git -C "${SOURCE_DIR}" checkout --detach "${UPSTREAM_COMMIT}"
 sudo -u admin git -C "${SOURCE_DIR}" reset --hard "${UPSTREAM_COMMIT}"
 sudo -u admin git -C "${SOURCE_DIR}" clean -fdx
+
+ln -sfn "${OUTPUT_DIR}" "${SOURCE_DIR}/output"
+ln -sfn "${DATA_DIR}" "${SOURCE_DIR}/data"
+chown -h admin:admin "${SOURCE_DIR}/output" "${SOURCE_DIR}/data"
 
 install -o admin -g admin -m 0644 \
   "${DEPLOY_ROOT}"/deploy/pixelle-video/templates/1080x1920/*.html \

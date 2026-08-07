@@ -9,6 +9,8 @@ third-party source remains in its upstream Git repository.
 
 - Source and virtual environment: `/opt/huangque/pixelle-video/source`
 - Playwright browsers: `/opt/huangque/pixelle-video/browsers`
+- Persistent outputs: `/var/lib/huangque-pixelle-video/output`
+- Persistent task data: `/var/lib/huangque-pixelle-video/data`
 - Secret config: `/etc/huangque/pixelle-video.yaml` (`root:admin`, `0640`)
 - Service: `huangque-pixelle-video.service`
 - Address: `http://127.0.0.1:8103`
@@ -37,6 +39,8 @@ Pixelle-Video to the commit declared in `install.sh`, installs Python 3.11 with
 uv, rewrites only the locked PyPI package host to the byte-identical Aliyun
 mirror, syncs dependencies with the upstream SHA256 checks intact, overlays the
 reviewed templates, installs Chromium for Playwright, and restarts the service.
+Existing output and task data are migrated to `/var/lib` on first deployment
+of this layout and survive later source resets and service redeployments.
 
 ## Capacity and persistence
 
@@ -44,4 +48,5 @@ This host has limited memory, so RunningHub concurrency and local API task
 concurrency are both set to one. Pixelle's task registry is process-local;
 clients must treat service restarts as task loss and retain their own job
 records. Generated files remain under the runtime output directory until the
-website publication/retention worker removes them.
+website publication/retention worker removes them. The runtime `output` and
+`data` paths are links to the persistent directories under `/var/lib`.
