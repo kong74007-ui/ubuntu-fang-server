@@ -1,7 +1,7 @@
 [Unit]
 Description=Huangque Pixelle video generation API
-After=network-online.target
-Wants=network-online.target
+After=network-online.target huangque-egress-tunnel.service
+Wants=network-online.target huangque-egress-tunnel.service
 
 [Service]
 Type=simple
@@ -11,6 +11,14 @@ WorkingDirectory=/opt/huangque/pixelle-video/source
 Environment=HOME=/home/admin
 Environment=PYTHONUNBUFFERED=1
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/huangque/pixelle-video/browsers
+Environment=HTTP_PROXY=http://127.0.0.1:7999
+Environment=HTTPS_PROXY=http://127.0.0.1:7999
+Environment=ALL_PROXY=http://127.0.0.1:7999
+Environment=NO_PROXY=127.0.0.1,localhost
+Environment=http_proxy=http://127.0.0.1:7999
+Environment=https_proxy=http://127.0.0.1:7999
+Environment=all_proxy=http://127.0.0.1:7999
+Environment=no_proxy=127.0.0.1,localhost
 ExecStart=/opt/huangque/pixelle-video/source/.venv/bin/python api/app.py --host 127.0.0.1 --port 8103
 Restart=on-failure
 RestartSec=5

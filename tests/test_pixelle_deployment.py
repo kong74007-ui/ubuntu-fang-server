@@ -27,6 +27,9 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1 --port 8103", unit)
         self.assertIn("MemoryMax=1800M", unit)
         self.assertIn("CPUQuota=150%", unit)
+        self.assertIn("After=network-online.target huangque-egress-tunnel.service", unit)
+        self.assertIn("Environment=HTTPS_PROXY=http://127.0.0.1:7999", unit)
+        self.assertIn("Environment=NO_PROXY=127.0.0.1,localhost", unit)
         self.assertNotIn("Environment=OPENAI_API_KEY", unit)
         self.assertNotIn("Environment=RUNNINGHUB_API_KEY", unit)
 

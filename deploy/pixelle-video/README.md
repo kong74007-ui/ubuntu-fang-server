@@ -13,6 +13,7 @@ third-party source remains in its upstream Git repository.
 - Service: `huangque-pixelle-video.service`
 - Address: `http://127.0.0.1:8103`
 - Health: `GET /health`
+- Egress: local `huangque-egress-tunnel.service` proxy on `127.0.0.1:7999`
 
 The API is intentionally not routed through nginx. Website integration must
 use a Huangque backend proxy with authentication, point charging, rate limits,
