@@ -17,9 +17,11 @@ third-party source remains in its upstream Git repository.
 - Health: `GET /health`
 - Egress: local `huangque-egress-tunnel.service` proxy on `127.0.0.1:7999`
 
-The API is intentionally not routed through nginx. Website integration must
-use a Huangque backend proxy with authentication, point charging, rate limits,
-and output publication rather than exposing Pixelle directly to browsers.
+The API is not exposed as a public browser API. The generated nginx config
+provides `/internal/pixelle/` as a backend-only bridge, restricted to the
+production website server IP. Website requests still pass through the Huangque
+content backend for authentication, point charging, rate limits, and output
+publication before that backend calls Pixelle.
 
 ## Deploy
 
