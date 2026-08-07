@@ -92,6 +92,15 @@ class PixelleDeploymentTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
 
+    def test_nginx_bridge_is_backend_only_and_strips_private_prefix(self):
+        nginx = (ROOT / "deploy/nginx-fang-locations.conf").read_text(encoding="utf-8")
+        self.assertIn("location ^~ /internal/pixelle/", nginx)
+        self.assertIn("allow 129.204.166.13;", nginx)
+        self.assertIn("deny all;", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:8103/;", nginx)
+        self.assertIn("proxy_read_timeout 1800s;", nginx)
+        self.assertIn("proxy_request_buffering off;", nginx)
+
 
 if __name__ == "__main__":
     unittest.main()
