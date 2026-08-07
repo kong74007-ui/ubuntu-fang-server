@@ -3,14 +3,117 @@ from __future__ import annotations
 import json
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 
+from server.content_domains.ai_edit_v2_providers.base import (
+    ProviderError,
+    RetryableProviderError,
+)
 from server.content_domains.ai_edit_v3.providers.qwen_compatible import (
     DashScopeCompatibleQwenClient,
 )
 
 
 class DashScopeCompatibleQwenClientTests(unittest.TestCase):
+    def test_director_retries_one_transient_gateway_failure_within_total_budget(self):
+        calls = []
+        clock_values = iter((1_000, 1_200, 1_700, 2_000))
+
+        def transient_then_success(method, url, headers, body, timeout):
+            calls.append((body, timeout))
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+            return {
+                "id": "decision-after-retry",
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {},
+            }
+
+        client = DashScopeCompatibleQwenClient(
+            http_request=transient_then_success,
+            timeout_seconds=10,
+            clock_ms=lambda: next(clock_values),
+            sleep=lambda _seconds: None,
+        )
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            result = client.generate_director_decision(
+                "system",
+                "user",
+                timeout_seconds=10,
+            )
+
+        self.assertEqual("decision-after-retry", result.request_id)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(calls[0][0], calls[1][0])
+        self.assertEqual(10, calls[0][1])
+        self.assertLess(calls[1][1], calls[0][1])
+
+    def test_director_does_not_retry_a_rejected_request(self):
+        calls = []
+
+        def rejected(method, url, headers, body, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError(url, 400, "bad request", {}, None)
+
+        client = DashScopeCompatibleQwenClient(
+            http_request=rejected,
+            timeout_seconds=10,
+            sleep=lambda _seconds: None,
+        )
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            with self.assertRaisesRegex(ProviderError, "dashscope_director_request_rejected"):
+                client.generate_director_decision("system", "user")
+
+        self.assertEqual([10], calls)
+
+    def test_director_stops_after_one_bounded_retry(self):
+        calls = []
+        clock_values = iter((1_000, 1_100, 1_700, 2_000))
+
+        def unavailable(method, url, headers, body, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+
+        client = DashScopeCompatibleQwenClient(
+            http_request=unavailable,
+            timeout_seconds=10,
+            clock_ms=lambda: next(clock_values),
+            sleep=lambda _seconds: None,
+        )
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            with self.assertRaisesRegex(
+                RetryableProviderError,
+                "dashscope_director_unavailable",
+            ):
+                client.generate_director_decision("system", "user")
+
+        self.assertEqual(2, len(calls))
+        self.assertLess(calls[1], calls[0])
+
+    def test_director_does_not_retry_after_the_total_budget_is_exhausted(self):
+        calls = []
+        clock_values = iter((1_000, 10_500))
+
+        def timed_out(method, url, headers, body, timeout):
+            calls.append(timeout)
+            raise TimeoutError("timed out")
+
+        client = DashScopeCompatibleQwenClient(
+            http_request=timed_out,
+            timeout_seconds=10,
+            clock_ms=lambda: next(clock_values),
+            sleep=lambda _seconds: None,
+        )
+        with patch.dict(os.environ, {"DASHSCOPE_API_KEY": "test-key"}, clear=False):
+            with self.assertRaisesRegex(
+                RetryableProviderError,
+                "dashscope_director_unavailable",
+            ):
+                client.generate_director_decision("system", "user")
+
+        self.assertEqual([10], calls)
+
     def test_uses_exact_v3_model_on_openai_compatible_endpoint(self):
         requests = []
 
