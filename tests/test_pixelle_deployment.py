@@ -45,19 +45,29 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertNotIn("sed -i 's/max_concurrent_tasks", installer)
         self.assertIn('TASK_CAPACITY_OVERRIDE=', installer)
         self.assertIn('TASK_CAPACITY_PATCH=', installer)
+        self.assertIn('RELEASES_DIR=', installer)
+        self.assertIn('RELEASE_DIR="$(mktemp -d', installer)
         self.assertIn('install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}"', installer)
         self.assertIn(
-            'git -C "${SOURCE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"',
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"',
             installer,
         )
         self.assertIn(
-            'git -C "${SOURCE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"',
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"',
             installer,
         )
+        self.assertNotIn('git -C "${SOURCE_DIR}" reset --hard', installer)
+        self.assertNotIn('git -C "${SOURCE_DIR}" clean -fdx', installer)
+        self.assertNotIn('git -C "${SOURCE_DIR}" apply', installer)
+        self.assertIn('mv -Tf "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"', installer)
         self.assertIn('STATE_ROOT="/var/lib/huangque-pixelle-video"', installer)
         self.assertIn('cp -a "${SOURCE_DIR}/output/." "${OUTPUT_DIR}/"', installer)
-        self.assertIn('ln -sfn "${OUTPUT_DIR}" "${SOURCE_DIR}/output"', installer)
-        self.assertIn('ln -sfn "${DATA_DIR}" "${SOURCE_DIR}/data"', installer)
+        self.assertIn('ln -s "${OUTPUT_DIR}" "${RELEASE_DIR}/output"', installer)
+        self.assertIn('ln -s "${DATA_DIR}" "${RELEASE_DIR}/data"', installer)
+        self.assertIn(
+            '"${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api"',
+            installer,
+        )
 
     def test_capacity_patch_covers_sync_and_async_video_execution(self):
         patch = (
@@ -72,6 +82,25 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("execute_video_generation", patch)
         self.assertIn("TaskQueueFullError", patch)
         self.assertIn("status_code=429", patch)
+
+    def test_installer_validates_release_before_live_source_switch(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"'
+        )
+        dependency_sync = installer.index('"${RUNTIME_ROOT}/bin/uv" --directory "${RELEASE_DIR}" sync')
+        compile_check = installer.index(
+            '"${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api"'
+        )
+        stop_service = installer.rindex('systemctl stop "${SERVICE_NAME}" || true')
+        switch_source = installer.index('mv -Tf "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"')
+
+        self.assertLess(patch_check, stop_service)
+        self.assertLess(dependency_sync, stop_service)
+        self.assertLess(compile_check, stop_service)
+        self.assertLess(stop_service, switch_source)
+        self.assertIn('trap cleanup EXIT', installer)
+        self.assertIn('mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"', installer)
 
     def test_config_renderer_requires_keys_and_does_not_eval_env(self):
         renderer = load_renderer()

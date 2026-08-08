@@ -7,7 +7,8 @@ third-party source remains in its upstream Git repository.
 
 ## Runtime layout
 
-- Source and virtual environment: `/opt/huangque/pixelle-video/source`
+- Active source link: `/opt/huangque/pixelle-video/source`
+- Immutable source releases and virtual environments: `/opt/huangque/pixelle-video/releases`
 - Playwright browsers: `/opt/huangque/pixelle-video/browsers`
 - Persistent outputs: `/var/lib/huangque-pixelle-video/output`
 - Persistent task data: `/var/lib/huangque-pixelle-video/data`
@@ -43,7 +44,11 @@ locked PyPI package host to the byte-identical Aliyun mirror, syncs dependencies
 with the upstream SHA256 checks intact, overlays the reviewed templates,
 installs Chromium for Playwright, and restarts the service.
 Existing output and task data are migrated to `/var/lib` on first deployment
-of this layout and survive later source resets and service redeployments.
+of this layout and survive later source releases and service redeployments.
+Every candidate release is patched, dependency-synced, and compile-checked in
+an isolated release directory before the service is stopped. The installer then
+switches the `source` link to that release and restores the previous source if
+startup or the health check fails.
 
 ## Capacity and persistence
 

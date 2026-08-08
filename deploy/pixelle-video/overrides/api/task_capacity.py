@@ -35,12 +35,13 @@ class TaskCapacityReservation:
         await self.release()
 
     async def release(self) -> None:
-        if self._released:
-            return
-        self._released = True
-        if self._execution_acquired:
-            self._limiter._execution_slots.release()
-        await self._limiter._release()
+        async with self._limiter._admission_lock:
+            if self._released:
+                return
+            if self._execution_acquired:
+                self._limiter._execution_slots.release()
+            self._limiter._release_locked()
+            self._released = True
 
 
 class TaskCapacityLimiter:
@@ -65,9 +66,8 @@ class TaskCapacityLimiter:
                 raise TaskQueueFullError()
             self._admitted += 1
 
-    async def _release(self) -> None:
-        async with self._admission_lock:
-            self._admitted -= 1
+    def _release_locked(self) -> None:
+        self._admitted -= 1
 
     async def reserve(self) -> TaskCapacityReservation:
         await self._admit()

@@ -125,6 +125,24 @@ class PixelleTaskCapacityTests(unittest.IsolatedAsyncioTestCase):
         await running
         self.assertEqual(0, limiter.admitted)
 
+    async def test_cancelled_release_can_be_retried_without_leaking_capacity(self):
+        capacity = load_capacity_module()
+        limiter = capacity.TaskCapacityLimiter(max_running=1, max_waiting=0)
+        reservation = await limiter.reserve()
+        await reservation.__aenter__()
+
+        await limiter._admission_lock.acquire()
+        release_task = asyncio.create_task(reservation.release())
+        await asyncio.sleep(0)
+        release_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await release_task
+        limiter._admission_lock.release()
+
+        self.assertEqual(1, limiter.admitted)
+        await reservation.release()
+        self.assertEqual(0, limiter.admitted)
+
 
 if __name__ == "__main__":
     unittest.main()
