@@ -32,4 +32,3 @@ the limit.
 Unit tests prove serialization, queue overflow, and cancellation cleanup. The
 deployment contract test proves the installer checks and applies the pinned
 patch and that both API routes use the shared limiter.
-

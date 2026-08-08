@@ -119,4 +119,3 @@ Run: `git diff --check` and `git diff --stat origin/main...HEAD`.
 
 Commit only the planned files, push `codex/pixelle-concurrency-one-20260808`,
 and open a pull request against `main`.
-
