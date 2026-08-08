@@ -16,6 +16,7 @@ PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
+VIDEO_TEMPLATE_BRANDING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0002-remove-video-template-branding.patch"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
@@ -96,8 +97,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" ]]; then
-  echo "missing Pixelle task capacity deployment files" >&2
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" ]]; then
+  echo "missing Pixelle deployment files" >&2
   exit 2
 fi
 
@@ -136,6 +137,8 @@ install -o admin -g admin -m 0644 \
 # concurrency patch. The override permits one running task plus 20 waiters.
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${VIDEO_TEMPLATE_BRANDING_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${VIDEO_TEMPLATE_BRANDING_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 rm -f "${RELEASE_DIR}/config.yaml"

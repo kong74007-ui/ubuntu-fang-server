@@ -225,6 +225,34 @@ class PixelleDeploymentTests(unittest.TestCase):
             text = template.read_text(encoding="utf-8")
             self.assertFalse(any(marker in text for marker in markers), template.name)
 
+    def test_video_templates_remove_upstream_branding_during_install(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0002-remove-video-template-branding.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("VIDEO_TEMPLATE_BRANDING_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${VIDEO_TEMPLATE_BRANDING_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${VIDEO_TEMPLATE_BRANDING_PATCH}"',
+            installer,
+        )
+        self.assertIn("templates/1080x1920/video_default.html", patch)
+        self.assertIn("templates/1080x1920/video_healing.html", patch)
+        for marker in ("@Pixelle.AI", "Pixelle-Video", "Open Source Omnimodal AI Creative Agent"):
+            self.assertTrue(
+                any(line.startswith("-") and marker in line for line in patch.splitlines()),
+                marker,
+            )
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:
