@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,6 +12,38 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def find_bash() -> str:
+    bash = shutil.which("bash")
+    if bash:
+        return bash
+    for candidate in (Path("D:/Git/bin/bash.exe"), Path("C:/Program Files/Git/bin/bash.exe")):
+        if candidate.exists():
+            return str(candidate)
+    raise unittest.SkipTest("bash is required for Pixelle installer tests")
+
+
+def run_stop_helper(fake_systemctl: str, trace: Path) -> subprocess.CompletedProcess[str]:
+    helper = ROOT / "deploy" / "pixelle-video" / "lib" / "service_control.sh"
+    command = f'''source "{helper.as_posix()}"
+systemctl() {{
+{fake_systemctl}
+}}
+mark_source_switch() {{
+  printf "switch\\n" >> "$TRACE"
+}}
+pixelle_run_with_service_stopped huangque-pixelle-video.service mark_source_switch
+'''
+    env = os.environ.copy()
+    env["TRACE"] = trace.as_posix()
+    return subprocess.run(
+        [find_bash(), "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 def load_renderer():
@@ -42,11 +76,133 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("https://mirrors.aliyun.com/pypi/packages/", installer)
         self.assertIn("unexpected uv.lock", installer)
         self.assertIn('if [[ ! -s "${CONFIG_PATH}" ]]', installer)
-        self.assertIn("max_concurrent_tasks: int = 1", installer)
+        self.assertNotIn("sed -i 's/max_concurrent_tasks", installer)
+        self.assertIn('TASK_CAPACITY_OVERRIDE=', installer)
+        self.assertIn('TASK_CAPACITY_PATCH=', installer)
+        self.assertIn('RELEASES_DIR=', installer)
+        self.assertIn('RELEASE_DIR="$(mktemp -d', installer)
+        self.assertIn('install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}"', installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"',
+            installer,
+        )
+        self.assertNotIn('git -C "${SOURCE_DIR}" reset --hard', installer)
+        self.assertNotIn('git -C "${SOURCE_DIR}" clean -fdx', installer)
+        self.assertNotIn('git -C "${SOURCE_DIR}" apply', installer)
+        self.assertIn('mv -Tf "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"', installer)
         self.assertIn('STATE_ROOT="/var/lib/huangque-pixelle-video"', installer)
         self.assertIn('cp -a "${SOURCE_DIR}/output/." "${OUTPUT_DIR}/"', installer)
-        self.assertIn('ln -sfn "${OUTPUT_DIR}" "${SOURCE_DIR}/output"', installer)
-        self.assertIn('ln -sfn "${DATA_DIR}" "${SOURCE_DIR}/data"', installer)
+        self.assertIn('ln -s "${OUTPUT_DIR}" "${RELEASE_DIR}/output"', installer)
+        self.assertIn('ln -s "${DATA_DIR}" "${RELEASE_DIR}/data"', installer)
+        self.assertIn(
+            '"${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api"',
+            installer,
+        )
+
+    def test_capacity_patch_covers_sync_and_async_video_execution(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0001-enforce-video-task-capacity.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn("video_task_capacity.slot()", patch)
+        self.assertIn("generate_video_sync", patch)
+        self.assertIn("execute_video_generation", patch)
+        self.assertIn("TaskQueueFullError", patch)
+        self.assertIn("status_code=429", patch)
+
+    def test_installer_validates_release_before_live_source_switch(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"'
+        )
+        dependency_sync = installer.index('"${RUNTIME_ROOT}/bin/uv" --directory "${RELEASE_DIR}" sync')
+        compile_check = installer.index(
+            '"${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api"'
+        )
+        stop_service = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+
+        self.assertLess(patch_check, stop_service)
+        self.assertLess(dependency_sync, stop_service)
+        self.assertLess(compile_check, stop_service)
+        self.assertIn('trap cleanup EXIT', installer)
+        self.assertIn('mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"', installer)
+
+    def test_installer_confirms_service_is_inactive_before_switch(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        stop_call = 'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        if stop_call not in installer:
+            self.fail("installer must require confirmed service stop before switching source")
+
+        self.assertIn('source "${SERVICE_CONTROL_LIB}"', installer)
+        self.assertIn('activate_release() {', installer)
+        self.assertIn(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" rollback_release',
+            installer,
+        )
+        self.assertNotIn('systemctl stop "${SERVICE_NAME}" || true', installer)
+
+    def test_stop_failure_prevents_service_stop_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "systemctl.log"
+            trace.touch()
+            result = run_stop_helper(
+                'printf "%s\\n" "$*" >> "$TRACE"\n'
+                'if [[ "$1" == "stop" ]]; then return 1; fi',
+                trace,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(["stop huangque-pixelle-video.service"], trace.read_text().splitlines())
+
+    def test_active_service_prevents_service_stop_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "systemctl.log"
+            trace.touch()
+            result = run_stop_helper(
+                'printf "%s\\n" "$*" >> "$TRACE"\n'
+                'if [[ "$1" == "show" ]]; then printf "active\\n"; fi\n'
+                'return 0',
+                trace,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(
+                [
+                    "stop huangque-pixelle-video.service",
+                    "show --property=ActiveState --value huangque-pixelle-video.service",
+                ],
+                trace.read_text().splitlines(),
+            )
+
+    def test_inactive_service_allows_source_switch_callback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "systemctl.log"
+            trace.touch()
+            result = run_stop_helper(
+                'printf "%s\\n" "$*" >> "$TRACE"\n'
+                'if [[ "$1" == "show" ]]; then printf "inactive\\n"; fi\n'
+                'return 0',
+                trace,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(
+                [
+                    "stop huangque-pixelle-video.service",
+                    "show --property=ActiveState --value huangque-pixelle-video.service",
+                    "switch",
+                ],
+                trace.read_text().splitlines(),
+            )
 
     def test_config_renderer_requires_keys_and_does_not_eval_env(self):
         renderer = load_renderer()
