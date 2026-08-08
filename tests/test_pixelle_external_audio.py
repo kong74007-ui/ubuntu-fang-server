@@ -11,8 +11,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+try:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+except ModuleNotFoundError:
+    FastAPI = None
+    TestClient = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,6 +130,17 @@ class ExternalAudioRegistryTests(unittest.TestCase):
             }], self.module.public_voice_catalog())
 
 
+class VoiceAssetRouterSourceTests(unittest.TestCase):
+    def test_router_contract_is_present_without_requiring_deployment_dependencies(self):
+        source = ROUTER_PATH.read_text(encoding="utf-8")
+        self.assertIn('@router.get("/voices/public")', source)
+        self.assertIn('@router.post("/audio-assets"', source)
+        self.assertIn('alias="X-Request-Id"', source)
+        self.assertIn('status_code=status.HTTP_201_CREATED', source)
+        self.assertIn('external_audio.store_audio_asset', source)
+
+
+@unittest.skipIf(FastAPI is None or TestClient is None, "FastAPI deployment dependency is not installed")
 class VoiceAssetRouterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
