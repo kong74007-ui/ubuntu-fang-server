@@ -1,0 +1,48 @@
+diff --git a/api/routers/video.py b/api/routers/video.py
+index d033006..566d372 100644
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -29,0 +30 @@ from api.tasks import task_manager, TaskType
++from api.task_capacity import TaskQueueFullError, video_task_capacity
+@@ -159 +160,2 @@ async def generate_video_sync(
+-        result = await pixelle_video.generate_video(**video_params)
++        async with video_task_capacity.slot():
++            result = await pixelle_video.generate_video(**video_params)
+@@ -172,0 +175,6 @@ async def generate_video_sync(
++    except TaskQueueFullError as e:
++        logger.warning("Sync video task queue is full")
++        raise HTTPException(
++            status_code=429,
++            detail={"code": e.code, "message": "Video task queue is full"},
++        )
+@@ -200,0 +209 @@ async def generate_video_async(
++    reservation = None
+@@ -202,0 +212,3 @@ async def generate_video_async(
++
++        # Reserve capacity before returning a task ID so overflow is immediate.
++        reservation = await video_task_capacity.reserve()
+@@ -277 +289,7 @@ async def generate_video_async(
+-        # Start execution
++        async def execute_video_generation_with_capacity(
++            reserved_slot=reservation,
++        ):
++            async with reserved_slot:
++                return await execute_video_generation()
++
++        # Start execution and transfer reservation ownership to the task.
+@@ -280 +298 @@ async def generate_video_async(
+-            coro_func=execute_video_generation
++            coro_func=execute_video_generation_with_capacity
+@@ -281,0 +300 @@ async def generate_video_async(
++        reservation = None
+@@ -286,0 +306,6 @@ async def generate_video_async(
++    except TaskQueueFullError as e:
++        logger.warning("Async video task queue is full")
++        raise HTTPException(
++            status_code=429,
++            detail={"code": e.code, "message": "Video task queue is full"},
++        )
+@@ -289,0 +315,3 @@ async def generate_video_async(
++    finally:
++        if reservation is not None:
++            await reservation.release()

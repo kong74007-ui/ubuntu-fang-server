@@ -42,11 +42,36 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("https://mirrors.aliyun.com/pypi/packages/", installer)
         self.assertIn("unexpected uv.lock", installer)
         self.assertIn('if [[ ! -s "${CONFIG_PATH}" ]]', installer)
-        self.assertIn("max_concurrent_tasks: int = 1", installer)
+        self.assertNotIn("sed -i 's/max_concurrent_tasks", installer)
+        self.assertIn('TASK_CAPACITY_OVERRIDE=', installer)
+        self.assertIn('TASK_CAPACITY_PATCH=', installer)
+        self.assertIn('install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}"', installer)
+        self.assertIn(
+            'git -C "${SOURCE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${SOURCE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"',
+            installer,
+        )
         self.assertIn('STATE_ROOT="/var/lib/huangque-pixelle-video"', installer)
         self.assertIn('cp -a "${SOURCE_DIR}/output/." "${OUTPUT_DIR}/"', installer)
         self.assertIn('ln -sfn "${OUTPUT_DIR}" "${SOURCE_DIR}/output"', installer)
         self.assertIn('ln -sfn "${DATA_DIR}" "${SOURCE_DIR}/data"', installer)
+
+    def test_capacity_patch_covers_sync_and_async_video_execution(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0001-enforce-video-task-capacity.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn("video_task_capacity.slot()", patch)
+        self.assertIn("generate_video_sync", patch)
+        self.assertIn("execute_video_generation", patch)
+        self.assertIn("TaskQueueFullError", patch)
+        self.assertIn("status_code=429", patch)
 
     def test_config_renderer_requires_keys_and_does_not_eval_env(self):
         renderer = load_renderer()

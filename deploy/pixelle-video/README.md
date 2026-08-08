@@ -37,18 +37,22 @@ curl --fail --silent http://127.0.0.1:8103/health
 ```
 
 The installer is idempotent and refuses an unexpected runtime path. It pins
-Pixelle-Video to the commit declared in `install.sh`, installs Python 3.11 with
-uv, rewrites only the locked PyPI package host to the byte-identical Aliyun
-mirror, syncs dependencies with the upstream SHA256 checks intact, overlays the
-reviewed templates, installs Chromium for Playwright, and restarts the service.
+Pixelle-Video to the commit declared in `install.sh`, verifies and applies the
+reviewed video-capacity patch, installs Python 3.11 with uv, rewrites only the
+locked PyPI package host to the byte-identical Aliyun mirror, syncs dependencies
+with the upstream SHA256 checks intact, overlays the reviewed templates,
+installs Chromium for Playwright, and restarts the service.
 Existing output and task data are migrated to `/var/lib` on first deployment
 of this layout and survive later source resets and service redeployments.
 
 ## Capacity and persistence
 
-This host has limited memory, so RunningHub concurrency and local API task
-concurrency are both set to one. Pixelle's task registry is process-local;
-clients must treat service restarts as task loss and retain their own job
-records. Generated files remain under the runtime output directory until the
-website publication/retention worker removes them. The runtime `output` and
-`data` paths are links to the persistent directories under `/var/lib`.
+This host has limited memory, so the video API permits exactly one running
+video-generation task and up to 20 waiting requests across both synchronous and
+asynchronous routes. Further submissions receive HTTP 429 with code
+`task_queue_full`. RunningHub scene concurrency also remains one. Pixelle's task
+registry and waiting queue are process-local; clients must treat service
+restarts as task loss and retain their own job records. Generated files remain
+under the runtime output directory until the website publication/retention
+worker removes them. The runtime `output` and `data` paths are links to the
+persistent directories under `/var/lib`.

@@ -13,6 +13,8 @@ CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
 PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
+TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
 
 if [[ "${RUNTIME_ROOT}" != "/opt/huangque/pixelle-video" ]]; then
   echo "refusing unexpected runtime root: ${RUNTIME_ROOT}" >&2
@@ -59,9 +61,17 @@ install -o admin -g admin -m 0644 \
   "${DEPLOY_ROOT}"/deploy/pixelle-video/templates/1080x1920/*.html \
   "${SOURCE_DIR}/templates/1080x1920/"
 
-# The public API keeps an in-memory task registry. Limit it to one task on this
-# 2-core, low-memory host; RunningHub is also configured with concurrency one.
-sed -i 's/max_concurrent_tasks: int = 5/max_concurrent_tasks: int = 1/' "${SOURCE_DIR}/api/config.py"
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" ]]; then
+  echo "missing Pixelle task capacity deployment files" >&2
+  exit 2
+fi
+
+# Fail closed if the pinned upstream source no longer matches the reviewed
+# concurrency patch. The override permits one running task plus 20 waiters.
+sudo -u admin git -C "${SOURCE_DIR}" apply --unidiff-zero --check "${TASK_CAPACITY_PATCH}"
+sudo -u admin git -C "${SOURCE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"
+install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
+  "${SOURCE_DIR}/api/task_capacity.py"
 ln -sfn "${CONFIG_PATH}" "${SOURCE_DIR}/config.yaml"
 chown -h admin:admin "${SOURCE_DIR}/config.yaml"
 
