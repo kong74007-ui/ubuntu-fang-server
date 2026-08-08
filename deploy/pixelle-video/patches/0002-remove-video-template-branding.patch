@@ -1,0 +1,19 @@
+diff --git a/templates/1080x1920/video_default.html b/templates/1080x1920/video_default.html
+--- a/templates/1080x1920/video_default.html
++++ b/templates/1080x1920/video_default.html
+@@ -177,10 +176,0 @@
+-        <!-- Footer - positioned below video -->
+-        <div class="footer">
+-            <div class="author-section">
+-                <div class="author">{{author=@Pixelle.AI}}</div>
+-                <div class="author-desc">{{describe=Open Source Omnimodal AI Creative Agent}}</div>
+-            </div>
+-            <div class="logo-section">
+-                <div class="logo">{{brand=Pixelle-Video}}</div>
+-            </div>
+-        </div>
+diff --git a/templates/1080x1920/video_healing.html b/templates/1080x1920/video_healing.html
+--- a/templates/1080x1920/video_healing.html
++++ b/templates/1080x1920/video_healing.html
+@@ -152 +151,0 @@
+-    <div class="signature">{{signature=@Pixelle.AI}}</div>
