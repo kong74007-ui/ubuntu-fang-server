@@ -47,8 +47,9 @@ Existing output and task data are migrated to `/var/lib` on first deployment
 of this layout and survive later source releases and service redeployments.
 Every candidate release is patched, dependency-synced, and compile-checked in
 an isolated release directory before the service is stopped. The installer then
-switches the `source` link to that release and restores the previous source if
-startup or the health check fails.
+confirms the service is inactive before switching the `source` link to that
+release. Startup or health-check failure restores the previous source only
+after the service is again confirmed inactive.
 
 ## Capacity and persistence
 

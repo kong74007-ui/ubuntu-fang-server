@@ -16,6 +16,7 @@ PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
+SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
 PREVIOUS_SOURCE_TARGET=""
@@ -23,23 +24,53 @@ LEGACY_SOURCE_BACKUP=""
 SOURCE_SWITCHED=0
 DEPLOY_SUCCEEDED=0
 
+if [[ ! -s "${SERVICE_CONTROL_LIB}" ]]; then
+  echo "missing Pixelle service control library" >&2
+  exit 2
+fi
+source "${SERVICE_CONTROL_LIB}"
+
+rollback_release() {
+  if [[ -n "${PREVIOUS_SOURCE_TARGET}" ]]; then
+    local rollback_link="${RUNTIME_ROOT}/.source.rollback.$$"
+    ln -s "${PREVIOUS_SOURCE_TARGET}" "${rollback_link}"
+    mv -Tf "${rollback_link}" "${SOURCE_DIR}"
+  elif [[ -n "${LEGACY_SOURCE_BACKUP}" && -d "${LEGACY_SOURCE_BACKUP}" ]]; then
+    rm -f "${SOURCE_DIR}"
+    mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"
+  else
+    rm -f "${SOURCE_DIR}"
+  fi
+}
+
+activate_release() {
+  NEXT_SOURCE_LINK="${RUNTIME_ROOT}/.source.next.$$"
+  ln -s "${RELEASE_DIR}" "${NEXT_SOURCE_LINK}"
+  if [[ -L "${SOURCE_DIR}" ]]; then
+    PREVIOUS_SOURCE_TARGET="$(readlink -f "${SOURCE_DIR}")"
+    SOURCE_SWITCHED=1
+    mv -Tf "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
+  elif [[ -e "${SOURCE_DIR}" ]]; then
+    LEGACY_SOURCE_BACKUP="${RUNTIME_ROOT}/source.pre-release.$(date +%s)"
+    mv "${SOURCE_DIR}" "${LEGACY_SOURCE_BACKUP}"
+    SOURCE_SWITCHED=1
+    mv -T "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
+  else
+    SOURCE_SWITCHED=1
+    mv -T "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
+  fi
+}
+
 cleanup() {
   local exit_code=$?
   set +e
 
   if [[ "${SOURCE_SWITCHED}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 ]]; then
-    systemctl stop "${SERVICE_NAME}" || true
-    if [[ -n "${PREVIOUS_SOURCE_TARGET}" ]]; then
-      local rollback_link="${RUNTIME_ROOT}/.source.rollback.$$"
-      ln -s "${PREVIOUS_SOURCE_TARGET}" "${rollback_link}"
-      mv -Tf "${rollback_link}" "${SOURCE_DIR}"
-    elif [[ -n "${LEGACY_SOURCE_BACKUP}" && -d "${LEGACY_SOURCE_BACKUP}" ]]; then
-      rm -f "${SOURCE_DIR}"
-      mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"
+    if pixelle_run_with_service_stopped "${SERVICE_NAME}" rollback_release; then
+      systemctl start "${SERVICE_NAME}" || true
     else
-      rm -f "${SOURCE_DIR}"
+      echo "rollback skipped because ${SERVICE_NAME} could not be confirmed inactive" >&2
     fi
-    systemctl start "${SERVICE_NAME}" || true
   fi
 
   if [[ -n "${NEXT_SOURCE_LINK}" && -L "${NEXT_SOURCE_LINK}" ]]; then
@@ -142,22 +173,7 @@ install -o root -g root -m 0644 \
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 
-systemctl stop "${SERVICE_NAME}" || true
-NEXT_SOURCE_LINK="${RUNTIME_ROOT}/.source.next.$$"
-ln -s "${RELEASE_DIR}" "${NEXT_SOURCE_LINK}"
-if [[ -L "${SOURCE_DIR}" ]]; then
-  PREVIOUS_SOURCE_TARGET="$(readlink -f "${SOURCE_DIR}")"
-  SOURCE_SWITCHED=1
-  mv -Tf "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
-elif [[ -e "${SOURCE_DIR}" ]]; then
-  LEGACY_SOURCE_BACKUP="${RUNTIME_ROOT}/source.pre-release.$(date +%s)"
-  mv "${SOURCE_DIR}" "${LEGACY_SOURCE_BACKUP}"
-  SOURCE_SWITCHED=1
-  mv -T "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
-else
-  SOURCE_SWITCHED=1
-  mv -T "${NEXT_SOURCE_LINK}" "${SOURCE_DIR}"
-fi
+pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release
 systemctl start "${SERVICE_NAME}"
 
 for _ in $(seq 1 60); do
