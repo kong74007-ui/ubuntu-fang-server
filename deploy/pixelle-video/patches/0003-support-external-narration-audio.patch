@@ -1,0 +1,184 @@
+diff --git a/api/app.py b/api/app.py
+index fa402ed..23171e6 100644
+--- a/api/app.py
++++ b/api/app.py
+@@ -41,0 +42 @@ from api.config import api_config
++from api import external_audio
+@@ -56,0 +58 @@ from api.routers import (
++    voice_assets_router,
+@@ -69,0 +72 @@ async def lifespan(app: FastAPI):
++    await external_audio.start_cleanup_scheduler()
+@@ -75,0 +79 @@ async def lifespan(app: FastAPI):
++    await external_audio.stop_cleanup_scheduler()
+@@ -135,0 +140 @@ app.include_router(frame_router, prefix=api_config.api_prefix)
++app.include_router(voice_assets_router, prefix=api_config.api_prefix)
+diff --git a/api/routers/__init__.py b/api/routers/__init__.py
+index d7951d8..648a9a3 100644
+--- a/api/routers/__init__.py
++++ b/api/routers/__init__.py
+@@ -26,0 +27 @@ from api.routers.frame import router as frame_router
++from api.routers.voice_assets import router as voice_assets_router
+@@ -38,0 +40 @@ __all__ = [
++    "voice_assets_router",
+diff --git a/api/routers/video.py b/api/routers/video.py
+index 566d372..e01bcae 100644
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -19,0 +20 @@ import os
++import uuid
+@@ -30,0 +32 @@ from api.task_capacity import TaskQueueFullError, video_task_capacity
++from api import external_audio
+@@ -34,0 +37,18 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
++def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
++    segments = request_body.narration_segments or []
++    if not segments:
++        return [], []
++    asset_ids = [segment.audio_asset_id for segment in segments]
++    try:
++        paths = external_audio.lease_audio_assets(asset_ids, task_id)
++    except FileNotFoundError as exc:
++        raise HTTPException(status_code=404, detail="narration audio asset not found") from exc
++    except external_audio.AudioLeaseError as exc:
++        raise HTTPException(status_code=409, detail="narration audio asset is already in use") from exc
++    resolved = [
++        {"text": segment.text, "audio_path": str(path)}
++        for segment, path in zip(segments, paths)
++    ]
++    return asset_ids, resolved
++
++
+@@ -107,0 +128 @@ async def generate_video_sync(
++    asset_ids = []
+@@ -140,0 +162,5 @@ async def generate_video_sync(
++        asset_ids, external_segments = _lease_external_segments(
++            request_body, f"sync-{uuid.uuid4().hex}"
++        )
++        if external_segments:
++            video_params["external_narration_segments"] = external_segments
+@@ -180,0 +207,2 @@ async def generate_video_sync(
++    except HTTPException:
++        raise
+@@ -183,0 +212,3 @@ async def generate_video_sync(
++    finally:
++        if asset_ids:
++            external_audio.release_audio_assets(asset_ids)
+@@ -209,0 +241,2 @@ async def generate_video_async(
++    asset_ids = []
++    lease_owned_by_route = False
+@@ -214 +246,0 @@ async def generate_video_async(
+-        reservation = await video_task_capacity.reserve()
+@@ -216,5 +248,20 @@ async def generate_video_async(
+-        # Create task
+-        task = task_manager.create_task(
+-            task_type=TaskType.VIDEO_GENERATION,
+-            request_params=request_body.model_dump()
+-        )
++        try:
++            task, reservation, asset_ids, external_segments = (
++                await external_audio.prepare_async_audio_submission(
++                    request_body.narration_segments,
++                    video_task_capacity.reserve,
++                    lambda: task_manager.create_task(
++                        task_type=TaskType.VIDEO_GENERATION,
++                        request_params=request_body.model_dump(),
++                    ),
++                )
++            )
++        except FileNotFoundError as exc:
++            raise HTTPException(
++                status_code=404, detail="narration audio asset not found"
++            ) from exc
++        except external_audio.AudioLeaseError as exc:
++            raise HTTPException(
++                status_code=409, detail="narration audio asset is already in use"
++            ) from exc
++        lease_owned_by_route = bool(asset_ids)
+@@ -256,0 +304,2 @@ async def generate_video_async(
++            if external_segments:
++                video_params["external_narration_segments"] = external_segments
+@@ -292,2 +341,6 @@ async def generate_video_async(
+-            async with reserved_slot:
+-                return await execute_video_generation()
++            try:
++                async with reserved_slot:
++                    return await execute_video_generation()
++            finally:
++                if asset_ids:
++                    external_audio.release_audio_assets(asset_ids)
+@@ -300,0 +354 @@ async def generate_video_async(
++        lease_owned_by_route = False
+@@ -311,0 +366,2 @@ async def generate_video_async(
++    except HTTPException:
++        raise
+@@ -315,0 +372,2 @@ async def generate_video_async(
++        if lease_owned_by_route and asset_ids:
++            external_audio.release_audio_assets(asset_ids)
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+index faecd19..6ecf5e9 100644
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -18 +18,6 @@ from typing import Optional, Literal, Dict, Any
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, Field, model_validator
++
++
++class NarrationSegment(BaseModel):
++    text: str = Field(..., min_length=1, max_length=1000)
++    audio_asset_id: str = Field(..., pattern=r"^audio_[0-9a-f]{32}$")
+@@ -51,0 +57,7 @@ class VideoGenerateRequest(BaseModel):
++    tts_voice: Optional[str] = Field(None, description="TTS voice name")
++    narration_segments: Optional[list[NarrationSegment]] = Field(
++        None,
++        min_length=1,
++        max_length=20,
++        description="Pre-synthesized narration segments uploaded through /api/audio-assets",
++    )
+@@ -85,0 +98,10 @@ class VideoGenerateRequest(BaseModel):
++    @model_validator(mode="after")
++    def validate_external_narration(self):
++        if not self.narration_segments:
++            return self
++        if self.mode != "fixed":
++            raise ValueError("narration_segments requires mode='fixed'")
++        if any((self.voice_id, self.tts_workflow, self.ref_audio, self.tts_voice)):
++            raise ValueError("narration_segments cannot be combined with TTS or reference-audio fields")
++        return self
++
+diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
+index 08f0aac..55ba4ab 100644
+--- a/pixelle_video/models/storyboard.py
++++ b/pixelle_video/models/storyboard.py
+@@ -47,0 +48 @@ class StoryboardConfig:
++    external_audio_paths: Optional[List[str]] = None  # Pre-synthesized narration audio paths
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+index 5bef4a6..e3895f2 100644
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -107,0 +108,6 @@ class StandardPipeline(LinearVideoPipeline):
++        external_segments = ctx.params.get("external_narration_segments")
++        if external_segments:
++            ctx.narrations = [segment["text"] for segment in external_segments]
++            logger.info(f"Using {len(ctx.narrations)} external narration segments")
++            return
++
+@@ -267,0 +274,4 @@ class StandardPipeline(LinearVideoPipeline):
++            external_audio_paths=[
++                segment["audio_path"]
++                for segment in (ctx.params.get("external_narration_segments") or [])
++            ] or None,
+@@ -289,0 +300 @@ class StandardPipeline(LinearVideoPipeline):
++                audio_path=(ctx.config.external_audio_paths or [None] * len(ctx.narrations))[i],
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index 52c9fa4..09402d8 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -94,0 +95 @@ class FrameProcessor:
++                frame.duration = await self._get_audio_duration(frame.audio_path)
+diff --git a/pixelle_video/services/persistence.py b/pixelle_video/services/persistence.py
+index ea10d66..6f5cb06 100644
+--- a/pixelle_video/services/persistence.py
++++ b/pixelle_video/services/persistence.py
+@@ -345,0 +346 @@ class PersistenceService:
++            "external_audio_paths": config.external_audio_paths,
+@@ -367,0 +369 @@ class PersistenceService:
++            external_audio_paths=data.get("external_audio_paths"),

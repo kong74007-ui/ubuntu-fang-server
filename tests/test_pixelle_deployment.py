@@ -253,6 +253,56 @@ class PixelleDeploymentTests(unittest.TestCase):
                 marker,
             )
 
+    def test_external_narration_patch_and_overrides_are_fail_closed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0003-support-external-narration-audio.patch"
+        patch = patch_path.read_text(encoding="utf-8")
+
+        for marker in (
+            "EXTERNAL_AUDIO_OVERRIDE=",
+            "VOICE_ASSETS_ROUTER_OVERRIDE=",
+            "EXTERNAL_NARRATION_PATCH=",
+        ):
+            self.assertIn(marker, installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${EXTERNAL_NARRATION_PATCH}"',
+            installer,
+        )
+        self.assertIn('"${RELEASE_DIR}/api/external_audio.py"', installer)
+        self.assertIn('"${RELEASE_DIR}/api/routers/voice_assets.py"', installer)
+        self.assertIn(
+            "Environment=PIXELLE_EXTERNAL_AUDIO_ROOT=/var/lib/huangque-pixelle-video/data/external_audio",
+            unit,
+        )
+        self.assertIn("narration_segments", patch)
+        self.assertIn("external_narration_segments", patch)
+        self.assertIn("release_audio_assets", patch)
+        self.assertIn("start_cleanup_scheduler", patch)
+        self.assertIn("stop_cleanup_scheduler", patch)
+        self.assertIn('status_code=404, detail="narration audio asset not found"', patch)
+        self.assertIn('status_code=409, detail="narration audio asset is already in use"', patch)
+        added = "\n".join(
+            line[1:] for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertLess(
+            added.index("prepare_async_audio_submission"),
+            added.index("task_manager.create_task"),
+        )
+
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:

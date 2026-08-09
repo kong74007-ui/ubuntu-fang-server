@@ -11,6 +11,7 @@ WorkingDirectory=/opt/huangque/pixelle-video/source
 Environment=HOME=/home/admin
 Environment=PYTHONUNBUFFERED=1
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/huangque/pixelle-video/browsers
+Environment=PIXELLE_EXTERNAL_AUDIO_ROOT=/var/lib/huangque-pixelle-video/data/external_audio
 Environment=HTTP_PROXY=http://127.0.0.1:7999
 Environment=HTTPS_PROXY=http://127.0.0.1:7999
 Environment=ALL_PROXY=http://127.0.0.1:7999

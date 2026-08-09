@@ -10,6 +10,7 @@ BROWSER_DIR="${RUNTIME_ROOT}/browsers"
 STATE_ROOT="/var/lib/huangque-pixelle-video"
 OUTPUT_DIR="${STATE_ROOT}/output"
 DATA_DIR="${STATE_ROOT}/data"
+EXTERNAL_AUDIO_DIR="${DATA_DIR}/external_audio"
 CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
 PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
@@ -17,6 +18,9 @@ DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
 VIDEO_TEMPLATE_BRANDING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0002-remove-video-template-branding.patch"
+EXTERNAL_NARRATION_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0003-support-external-narration-audio.patch"
+EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
+VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
@@ -97,7 +101,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -107,6 +111,7 @@ chmod 0640 "${CONFIG_PATH}"
 
 install -d -o admin -g admin -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}" "${BROWSER_DIR}"
 install -d -o admin -g admin -m 0750 "${STATE_ROOT}" "${OUTPUT_DIR}" "${DATA_DIR}"
+install -d -o admin -g admin -m 0700 "${EXTERNAL_AUDIO_DIR}"
 
 # Preserve outputs created by deployments that predate the persistent state
 # layout before preparing the replacement release.
@@ -139,8 +144,14 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TASK_CAPAC
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${TASK_CAPACITY_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${VIDEO_TEMPLATE_BRANDING_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${VIDEO_TEMPLATE_BRANDING_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${EXTERNAL_NARRATION_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
+install -o admin -g admin -m 0644 "${EXTERNAL_AUDIO_OVERRIDE}" \
+  "${RELEASE_DIR}/api/external_audio.py"
+install -o admin -g admin -m 0644 "${VOICE_ASSETS_ROUTER_OVERRIDE}" \
+  "${RELEASE_DIR}/api/routers/voice_assets.py"
 rm -f "${RELEASE_DIR}/config.yaml"
 ln -s "${CONFIG_PATH}" "${RELEASE_DIR}/config.yaml"
 chown -h admin:admin "${RELEASE_DIR}/config.yaml"
@@ -168,7 +179,7 @@ sudo -u admin env UV_PYTHON_INSTALL_DIR="${RUNTIME_ROOT}/python" UV_DEFAULT_INDE
   "${RUNTIME_ROOT}/bin/uv" --directory "${RELEASE_DIR}" sync --frozen --python 3.11
 sudo -u admin env PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" \
   "${RELEASE_DIR}/.venv/bin/python" -m playwright install chromium
-sudo -u admin "${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api"
+sudo -u admin "${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api" "${RELEASE_DIR}/pixelle_video"
 
 install -o root -g root -m 0644 \
   "${DEPLOY_ROOT}/deploy/systemd/${SERVICE_NAME}" \

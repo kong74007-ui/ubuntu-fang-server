@@ -62,3 +62,22 @@ restarts as task loss and retain their own job records. Generated files remain
 under the runtime output directory until the website publication/retention
 worker removes them. The runtime `output` and `data` paths are links to the
 persistent directories under `/var/lib`.
+
+## External narration audio
+
+Trusted backend callers can list Pixelle's sanitized public voice catalog with
+`GET /api/voices/public` and upload a synthesized MP3 with
+`POST /api/audio-assets`. Uploads require `Content-Type: audio/mpeg` and an
+`X-Request-Id`, are limited to 20 MiB, and return an opaque `audio_*` asset ID.
+The files are stored privately under
+`/var/lib/huangque-pixelle-video/data/external_audio`; they are not served by
+the public files router.
+
+A fixed-mode video request may provide one to 20 `narration_segments`, each
+containing `text` and an uploaded `audio_asset_id`. External narration cannot
+be combined with Pixelle TTS, voice, or reference-audio parameters. Assets are
+leased exclusively to one task, removed on every terminal task path, and
+removed after 24 hours as crash recovery if they were uploaded but never used.
+Cleanup runs once at service startup and every 15 minutes, and always skips
+assets with an active task lease. Startup first reclaims leases left by the
+previous process because Pixelle's task registry is in memory.
