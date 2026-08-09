@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -12,11 +13,13 @@ from pathlib import Path
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 AUDIO_TTL_SECONDS = 24 * 60 * 60
+CLEANUP_INTERVAL_SECONDS = 15 * 60
 EXTERNAL_AUDIO_ROOT = Path(os.environ.get("PIXELLE_EXTERNAL_AUDIO_ROOT", "data/external_audio"))
 ASSET_ID_RE = re.compile(r"^audio_[0-9a-f]{32}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _LOCK = threading.RLock()
+_CLEANUP_TASK: asyncio.Task | None = None
 
 
 class AudioTooLargeError(ValueError):
@@ -190,6 +193,36 @@ def lease_audio_assets(asset_ids: list[str], task_id: str) -> list[Path]:
         return [audio_path for audio_path, _, _ in resolved]
 
 
+def _segment_value(segment, name: str):
+    if isinstance(segment, dict):
+        return segment[name]
+    return getattr(segment, name)
+
+
+async def prepare_async_audio_submission(segments, reserve, create_task):
+    """Reserve capacity and lease audio before an async task can be created."""
+    reservation = await reserve()
+    asset_ids = [_segment_value(segment, "audio_asset_id") for segment in (segments or [])]
+    resolved = []
+    leased = False
+    try:
+        if asset_ids:
+            lease_id = f"submission-{uuid.uuid4().hex}"
+            paths = lease_audio_assets(asset_ids, lease_id)
+            leased = True
+            resolved = [
+                {"text": _segment_value(segment, "text"), "audio_path": str(path)}
+                for segment, path in zip(segments, paths)
+            ]
+        task = create_task()
+    except Exception:
+        if leased:
+            release_audio_assets(asset_ids)
+        await reservation.release()
+        raise
+    return task, reservation, asset_ids, resolved
+
+
 def release_audio_assets(asset_ids: list[str]) -> int:
     removed = 0
     with _LOCK:
@@ -214,6 +247,8 @@ def cleanup_expired_audio_assets(now: float | None = None) -> int:
                 metadata = _read_metadata(metadata_path)
                 created_at = float(metadata.get("created_at", 0))
                 asset_id = metadata_path.stem
+                if metadata.get("lease_task_id"):
+                    continue
                 if current - created_at <= AUDIO_TTL_SECONDS:
                     continue
                 audio_path, _ = _paths(asset_id)
@@ -223,6 +258,51 @@ def cleanup_expired_audio_assets(now: float | None = None) -> int:
             metadata_path.unlink(missing_ok=True)
             removed += 1
     return removed
+
+
+def reclaim_stale_audio_leases() -> int:
+    """Clear leases left by a previous process; Pixelle tasks are in-memory."""
+    reclaimed = 0
+    with _LOCK:
+        for metadata_path in _root().glob("audio_*.json"):
+            try:
+                metadata = _read_metadata(metadata_path)
+            except FileNotFoundError:
+                continue
+            if not metadata.get("lease_task_id"):
+                continue
+            metadata["lease_task_id"] = None
+            metadata.pop("leased_at", None)
+            _write_metadata(metadata_path, metadata)
+            reclaimed += 1
+    return reclaimed
+
+
+async def _cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        await asyncio.to_thread(cleanup_expired_audio_assets)
+
+
+async def start_cleanup_scheduler() -> None:
+    global _CLEANUP_TASK
+    reclaim_stale_audio_leases()
+    cleanup_expired_audio_assets()
+    if _CLEANUP_TASK is None or _CLEANUP_TASK.done():
+        _CLEANUP_TASK = asyncio.create_task(_cleanup_loop())
+
+
+async def stop_cleanup_scheduler() -> None:
+    global _CLEANUP_TASK
+    task = _CLEANUP_TASK
+    _CLEANUP_TASK = None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def public_voice_catalog() -> list[dict]:

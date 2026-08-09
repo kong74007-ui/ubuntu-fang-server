@@ -78,3 +78,6 @@ containing `text` and an uploaded `audio_asset_id`. External narration cannot
 be combined with Pixelle TTS, voice, or reference-audio parameters. Assets are
 leased exclusively to one task, removed on every terminal task path, and
 removed after 24 hours as crash recovery if they were uploaded but never used.
+Cleanup runs once at service startup and every 15 minutes, and always skips
+assets with an active task lease. Startup first reclaims leases left by the
+previous process because Pixelle's task registry is in memory.

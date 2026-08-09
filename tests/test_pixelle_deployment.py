@@ -282,6 +282,18 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("narration_segments", patch)
         self.assertIn("external_narration_segments", patch)
         self.assertIn("release_audio_assets", patch)
+        self.assertIn("start_cleanup_scheduler", patch)
+        self.assertIn("stop_cleanup_scheduler", patch)
+        self.assertIn('status_code=404, detail="narration audio asset not found"', patch)
+        self.assertIn('status_code=409, detail="narration audio asset is already in use"', patch)
+        added = "\n".join(
+            line[1:] for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertLess(
+            added.index("prepare_async_audio_submission"),
+            added.index("task_manager.create_task"),
+        )
 
         patch_check = installer.index(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"'
