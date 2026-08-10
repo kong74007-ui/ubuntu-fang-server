@@ -19,6 +19,7 @@ TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_c
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
 VIDEO_TEMPLATE_BRANDING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0002-remove-video-template-branding.patch"
 EXTERNAL_NARRATION_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0003-support-external-narration-audio.patch"
+DEEPSEEK_V4_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0004-disable-deepseek-v4-thinking.patch"
 EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
 VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
@@ -101,7 +102,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -146,6 +147,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${VIDEO_TEMP
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${VIDEO_TEMPLATE_BRANDING_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${EXTERNAL_NARRATION_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --check "${DEEPSEEK_V4_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply "${DEEPSEEK_V4_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${EXTERNAL_AUDIO_OVERRIDE}" \

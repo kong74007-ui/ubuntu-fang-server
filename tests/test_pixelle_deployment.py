@@ -294,7 +294,6 @@ class PixelleDeploymentTests(unittest.TestCase):
             added.index("prepare_async_audio_submission"),
             added.index("task_manager.create_task"),
         )
-
         patch_check = installer.index(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_NARRATION_PATCH}"'
         )
@@ -302,6 +301,42 @@ class PixelleDeploymentTests(unittest.TestCase):
             'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
         )
         self.assertLess(patch_check, source_switch)
+
+    def test_deepseek_v4_patch_disables_thinking_for_json_compatible_output(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy/pixelle-video/patches/0004-disable-deepseek-v4-thinking.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("DEEPSEEK_V4_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --check "${DEEPSEEK_V4_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply "${DEEPSEEK_V4_PATCH}"',
+            installer,
+        )
+        self.assertIn("pixelle_video/services/llm_service.py", patch)
+        self.assertIn('hostname == "api.deepseek.com"', patch)
+        self.assertIn('model.startswith("deepseek-v4-")', patch)
+        self.assertIn(
+            'extra_body.setdefault("thinking", {"type": "disabled"})',
+            patch,
+        )
+        self.assertGreaterEqual(
+            patch.count("request_kwargs = self._prepare_request_kwargs"), 2
+        )
+
+        deepseek_patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --check "${DEEPSEEK_V4_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(deepseek_patch_check, source_switch)
 
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
