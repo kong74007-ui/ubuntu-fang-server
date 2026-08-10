@@ -214,8 +214,18 @@ class PixelleDeploymentTests(unittest.TestCase):
             rendered = renderer.render(values, {"RUNNINGHUB_API_KEY": "rh-secret"})
             self.assertIn('api_key: "$(touch should-not-run)"', rendered)
             self.assertIn('model: "gpt-4o-mini"', rendered)
+            self.assertIn("runninghub_concurrent_limit: 5", rendered)
         with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
             renderer.render({}, {"RUNNINGHUB_API_KEY": "rh-secret"})
+
+    def test_pixelle_config_allows_five_runninghub_scenes_per_video(self):
+        example = (ROOT / "deploy/pixelle-video/config.yaml.example").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(encoding="utf-8")
+
+        self.assertIn("runninghub_concurrent_limit: 5", example)
+        self.assertIn("up to five RunningHub scenes", readme)
 
     def test_template_overrides_have_no_pixelle_branding(self):
         templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("*.html"))
@@ -355,7 +365,9 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertIn("pixelle_video/services/frame_processor.py", patch)
         self.assertIn("retry_async", patch)
-        self.assertIn("max_attempts=3 if media_type == \"image\" else 1", patch)
+        self.assertIn("max_attempts=4", patch)
+        self.assertIn("attempt_timeout=180 if media_type == \"image\" else 600", patch)
+        self.assertIn("RetryBudget(max_retries=10)", patch)
 
         retry_check = installer.index(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"'
@@ -401,6 +413,40 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertLess(disconnect_install, source_switch)
         self.assertLess(guard_install, source_switch)
+
+    def test_parallel_frame_fail_fast_is_installed_before_service_activation(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0007-fail-fast-parallel-frames.patch"
+        helper_path = (
+            ROOT
+            / "deploy/pixelle-video/overrides/pixelle_video/services/fail_fast.py"
+        )
+
+        self.assertTrue(patch_path.is_file())
+        self.assertTrue(helper_path.is_file())
+        self.assertIn("PARALLEL_FAIL_FAST_PATCH=", installer)
+        self.assertIn("FAIL_FAST_OVERRIDE=", installer)
+        self.assertIn("gather_cancel_on_error", patch_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}"',
+            installer,
+        )
+
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"'
+        )
+        helper_install = installer.index(
+            'install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+        self.assertLess(helper_install, source_switch)
 
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()

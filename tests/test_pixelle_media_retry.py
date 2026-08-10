@@ -27,6 +27,77 @@ def load_retry_module():
 
 
 class PixelleMediaRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_attempt_timeout_is_retried_then_raised(self):
+        retry = load_retry_module()
+        attempts = 0
+
+        async def operation():
+            nonlocal attempts
+            attempts += 1
+            await asyncio.Event().wait()
+
+        async def no_sleep(_delay: float):
+            return None
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await retry.retry_async(
+                operation,
+                operation_name="image generation for frame 1",
+                max_attempts=3,
+                attempt_timeout=0.01,
+                initial_delay=0,
+                sleep=no_sleep,
+            )
+
+        self.assertEqual(3, attempts)
+
+    async def test_shared_task_budget_stops_additional_retries(self):
+        retry = load_retry_module()
+        budget = retry.RetryBudget(max_retries=2)
+        attempts = 0
+
+        async def operation():
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("provider failed")
+
+        async def no_sleep(_delay: float):
+            return None
+
+        with self.assertRaisesRegex(RuntimeError, "provider failed"):
+            await retry.retry_async(
+                operation,
+                operation_name="image generation for frame 1",
+                max_attempts=3,
+                retry_budget=budget,
+                initial_delay=0,
+                sleep=no_sleep,
+            )
+
+        with self.assertRaises(retry.RetryBudgetExceededError):
+            await retry.retry_async(
+                operation,
+                operation_name="image generation for frame 2",
+                max_attempts=3,
+                retry_budget=budget,
+                initial_delay=0,
+                sleep=no_sleep,
+            )
+
+        self.assertEqual(4, attempts)
+        self.assertEqual(2, budget.used_retries)
+
+    async def test_shared_task_budget_is_atomic_under_concurrency(self):
+        retry = load_retry_module()
+        budget = retry.RetryBudget(max_retries=10)
+
+        reservations = await asyncio.gather(
+            *(budget.reserve_retry() for _ in range(25))
+        )
+
+        self.assertEqual(10, sum(reservations))
+        self.assertEqual(10, budget.used_retries)
+
     async def test_image_generation_retries_twice_then_returns_success(self):
         retry = load_retry_module()
         attempts = 0
