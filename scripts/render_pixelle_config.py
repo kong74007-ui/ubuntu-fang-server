@@ -78,7 +78,7 @@ comfyui:
   comfyui_url: "http://127.0.0.1:8188"
   comfyui_api_key: ""
   runninghub_api_key: {quoted(runninghub_key)}
-  runninghub_concurrent_limit: 1
+  runninghub_concurrent_limit: 5
   tts:
     default_workflow: "selfhost/tts_edge.json"
   image:

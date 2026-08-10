@@ -214,8 +214,18 @@ class PixelleDeploymentTests(unittest.TestCase):
             rendered = renderer.render(values, {"RUNNINGHUB_API_KEY": "rh-secret"})
             self.assertIn('api_key: "$(touch should-not-run)"', rendered)
             self.assertIn('model: "gpt-4o-mini"', rendered)
+            self.assertIn("runninghub_concurrent_limit: 5", rendered)
         with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
             renderer.render({}, {"RUNNINGHUB_API_KEY": "rh-secret"})
+
+    def test_pixelle_config_allows_five_runninghub_scenes_per_video(self):
+        example = (ROOT / "deploy/pixelle-video/config.yaml.example").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(encoding="utf-8")
+
+        self.assertIn("runninghub_concurrent_limit: 5", example)
+        self.assertIn("up to five RunningHub scenes", readme)
 
     def test_template_overrides_have_no_pixelle_branding(self):
         templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("*.html"))

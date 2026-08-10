@@ -56,8 +56,10 @@ after the service is again confirmed inactive.
 This host has limited memory, so the video API permits exactly one running
 video-generation task and up to 20 waiting requests across both synchronous and
 asynchronous routes. Further submissions receive HTTP 429 with code
-`task_queue_full`. RunningHub scene concurrency also remains one. Pixelle's task
-registry and waiting queue are process-local; clients must treat service
+`task_queue_full`. Each accepted video can process up to five RunningHub scenes
+in parallel; additional scenes wait for the next available slot. The video-task
+capacity itself remains one. Pixelle's task registry and waiting queue are
+process-local; clients must treat service
 restarts as task loss and retain their own job records. Generated files remain
 under the runtime output directory until the website publication/retention
 worker removes them. The runtime `output` and `data` paths are links to the
