@@ -20,8 +20,10 @@ TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-vi
 VIDEO_TEMPLATE_BRANDING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0002-remove-video-template-branding.patch"
 EXTERNAL_NARRATION_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0003-support-external-narration-audio.patch"
 DEEPSEEK_V4_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0004-disable-deepseek-v4-thinking.patch"
+IMAGE_RETRY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0005-retry-image-generation.patch"
 EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
 VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
+MEDIA_RETRY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/media_retry.py"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
@@ -102,7 +104,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -149,12 +151,16 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_N
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${EXTERNAL_NARRATION_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --check "${DEEPSEEK_V4_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${DEEPSEEK_V4_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --check "${IMAGE_RETRY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply "${IMAGE_RETRY_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${EXTERNAL_AUDIO_OVERRIDE}" \
   "${RELEASE_DIR}/api/external_audio.py"
 install -o admin -g admin -m 0644 "${VOICE_ASSETS_ROUTER_OVERRIDE}" \
   "${RELEASE_DIR}/api/routers/voice_assets.py"
+install -o admin -g admin -m 0644 "${MEDIA_RETRY_OVERRIDE}" \
+  "${RELEASE_DIR}/pixelle_video/services/media_retry.py"
 rm -f "${RELEASE_DIR}/config.yaml"
 ln -s "${CONFIG_PATH}" "${RELEASE_DIR}/config.yaml"
 chown -h admin:admin "${RELEASE_DIR}/config.yaml"
