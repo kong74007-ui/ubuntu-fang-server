@@ -1,0 +1,53 @@
+diff --git a/pixelle_video/service.py b/pixelle_video/service.py
+index b369ba6..2e9b1cf 100644
+--- a/pixelle_video/service.py
++++ b/pixelle_video/service.py
+@@ -33,2 +33,3 @@ from pixelle_video.services.video_analysis import VideoAnalysisService
+ from pixelle_video.services.api_asset_analysis import APIAssetAnalysisService
++from pixelle_video.services.runninghub_guard import install_runninghub_guard
+ from pixelle_video.services.video import VideoService
+@@ -43,1 +44,4 @@ from pixelle_video.pipelines.asset_based import AssetBasedPipeline
++install_runninghub_guard()
++
++
+ class PixelleVideoCore:
+diff --git a/api/routers/image.py b/api/routers/image.py
+index f11d5f5..4454f37 100644
+--- a/api/routers/image.py
++++ b/api/routers/image.py
+@@ -17,2 +17,2 @@ Image generation endpoints
+-from fastapi import APIRouter, HTTPException
++from fastapi import APIRouter, HTTPException, Request
+ from loguru import logger
+@@ -20,2 +20,3 @@ from loguru import logger
+ from api.dependencies import PixelleVideoDep
++from api.disconnect import ClientDisconnectedError, await_with_disconnect
+ from api.schemas.image import ImageGenerateRequest, ImageGenerateResponse
+@@ -27,4 +28,5 @@ router = APIRouter(prefix="/image", tags=["Basic Services"])
+ async def image_generate(
+     request: ImageGenerateRequest,
++    http_request: Request,
+     pixelle_video: PixelleVideoDep
+ ):
+@@ -46,7 +48,10 @@ async def image_generate(
+         # Call media service (backward compatible with image API)
+-        media_result = await pixelle_video.media(
+-            prompt=request.prompt,
+-            width=request.width,
+-            height=request.height,
+-            workflow=request.workflow
++        media_result = await await_with_disconnect(
++            pixelle_video.media(
++                prompt=request.prompt,
++                width=request.width,
++                height=request.height,
++                workflow=request.workflow
++            ),
++            http_request,
+         )
+@@ -65,2 +70,5 @@ async def image_generate(
++    except ClientDisconnectedError as e:
++        logger.info(f"Image generation cancelled: {e}")
++        raise HTTPException(status_code=499, detail=str(e))
+     except HTTPException:
+         raise

@@ -338,6 +338,70 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertLess(deepseek_patch_check, source_switch)
 
+    def test_image_generation_retry_is_installed_and_scoped_to_images(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0005-retry-image-generation.patch"
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("MEDIA_RETRY_OVERRIDE=", installer)
+        self.assertIn("IMAGE_RETRY_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${MEDIA_RETRY_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn("pixelle_video/services/frame_processor.py", patch)
+        self.assertIn("retry_async", patch)
+        self.assertIn("max_attempts=3 if media_type == \"image\" else 1", patch)
+
+        retry_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(retry_check, source_switch)
+
+    def test_runninghub_poll_guard_is_installed_before_service_activation(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0006-guard-runninghub-polling.patch"
+        guard_path = (
+            ROOT
+            / "deploy/pixelle-video/overrides/pixelle_video/services/runninghub_guard.py"
+        )
+        disconnect_path = ROOT / "deploy/pixelle-video/overrides/api/disconnect.py"
+
+        self.assertTrue(patch_path.is_file())
+        self.assertTrue(guard_path.is_file())
+        self.assertTrue(disconnect_path.is_file())
+        self.assertIn("RUNNINGHUB_GUARD_PATCH=", installer)
+        self.assertIn("RUNNINGHUB_GUARD_OVERRIDE=", installer)
+        self.assertIn("PIXELLE_DISCONNECT_OVERRIDE=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --check "${RUNNINGHUB_GUARD_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${RUNNINGHUB_GUARD_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn('"${RELEASE_DIR}/api/disconnect.py"', installer)
+        self.assertIn("install_runninghub_guard", patch_path.read_text(encoding="utf-8"))
+        self.assertIn("await_with_disconnect", patch_path.read_text(encoding="utf-8"))
+
+        disconnect_install = installer.index('"${RELEASE_DIR}/api/disconnect.py"')
+        guard_install = installer.index(
+            'install -o admin -g admin -m 0644 "${RUNNINGHUB_GUARD_OVERRIDE}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(disconnect_install, source_switch)
+        self.assertLess(guard_install, source_switch)
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:
