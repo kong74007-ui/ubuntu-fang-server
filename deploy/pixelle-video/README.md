@@ -69,6 +69,13 @@ provider call, so completed sibling scenes and narration audio are not
 generated again. Task cancellation is never retried; after the third failed
 attempt, the last provider error remains the task failure reason.
 
+RunningHub status polling is bounded to 15 minutes, with each status request
+bounded to 60 seconds. A missing task response (`APIKEY_TASK_NOT_FOUND`) is
+terminal and returns immediately instead of entering another polling cycle.
+Cancellation is propagated without conversion to a retry.
+The direct image endpoint also monitors client disconnects and cancels its
+provider wait, so an abandoned HTTP request cannot leave a background poller.
+
 ## External narration audio
 
 Trusted backend callers can list Pixelle's sanitized public voice catalog with
