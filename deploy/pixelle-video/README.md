@@ -65,11 +65,16 @@ under the runtime output directory until the website publication/retention
 worker removes them. The runtime `output` and `data` paths are links to the
 persistent directories under `/var/lib`.
 
-Each image scene is attempted up to three times with bounded exponential
-backoff (2 seconds, then 4 seconds). Retries are scoped to the failed image
-provider call, so completed sibling scenes and narration audio are not
-generated again. Task cancellation is never retried; after the third failed
-attempt, the last provider error remains the task failure reason.
+Each image or video scene gets one initial attempt plus at most three retries
+with bounded exponential backoff (2 seconds, 4 seconds, then 8 seconds). An
+image provider attempt is abandoned locally after 180 seconds and a video
+provider attempt after 600 seconds. The initial attempt does not consume retry
+budget; all failed scenes in one video task share at most ten additional
+retries. When that budget is exhausted, no scene may start another retry.
+Completed sibling scenes and narration audio are not generated again. Task
+cancellation is never retried. The provider coroutine is cancelled on timeout,
+although an upstream provider job may continue remotely when its API does not
+expose cancellation.
 
 RunningHub status polling is bounded to 15 minutes, with each status request
 bounded to 60 seconds. A missing task response (`APIKEY_TASK_NOT_FOUND`) is

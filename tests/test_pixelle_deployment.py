@@ -365,7 +365,9 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertIn("pixelle_video/services/frame_processor.py", patch)
         self.assertIn("retry_async", patch)
-        self.assertIn("max_attempts=3 if media_type == \"image\" else 1", patch)
+        self.assertIn("max_attempts=4", patch)
+        self.assertIn("attempt_timeout=180 if media_type == \"image\" else 600", patch)
+        self.assertIn("RetryBudget(max_retries=10)", patch)
 
         retry_check = installer.index(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"'

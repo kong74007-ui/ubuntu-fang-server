@@ -2,11 +2,18 @@ diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
 @@ -29,0 +30,1 @@
-+from pixelle_video.services.media_retry import retry_async
-@@ -243,1 +244,5 @@
++from pixelle_video.services.media_retry import RetryBudget, retry_async
+@@ -243,1 +244,12 @@
 -        media_result = await self.core.media(**media_params)
++        retry_budget = getattr(config, "_huangque_media_retry_budget", None)
++        if retry_budget is None:
++            retry_budget = RetryBudget(max_retries=10)
++            setattr(config, "_huangque_media_retry_budget", retry_budget)
++
 +        media_result = await retry_async(
 +            lambda: self.core.media(**media_params),
 +            operation_name=f"{media_type} generation for frame {frame.index + 1}",
-+            max_attempts=3 if media_type == "image" else 1,
++            max_attempts=4,
++            attempt_timeout=180 if media_type == "image" else 600,
++            retry_budget=retry_budget,
 +        )
