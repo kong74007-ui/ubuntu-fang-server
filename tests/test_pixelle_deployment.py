@@ -414,6 +414,40 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertLess(disconnect_install, source_switch)
         self.assertLess(guard_install, source_switch)
 
+    def test_parallel_frame_fail_fast_is_installed_before_service_activation(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0007-fail-fast-parallel-frames.patch"
+        helper_path = (
+            ROOT
+            / "deploy/pixelle-video/overrides/pixelle_video/services/fail_fast.py"
+        )
+
+        self.assertTrue(patch_path.is_file())
+        self.assertTrue(helper_path.is_file())
+        self.assertIn("PARALLEL_FAIL_FAST_PATCH=", installer)
+        self.assertIn("FAIL_FAST_OVERRIDE=", installer)
+        self.assertIn("gather_cancel_on_error", patch_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}"',
+            installer,
+        )
+
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"'
+        )
+        helper_install = installer.index(
+            'install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+        self.assertLess(helper_install, source_switch)
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:

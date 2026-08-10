@@ -22,11 +22,13 @@ EXTERNAL_NARRATION_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0003-suppo
 DEEPSEEK_V4_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0004-disable-deepseek-v4-thinking.patch"
 IMAGE_RETRY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0005-retry-image-generation.patch"
 RUNNINGHUB_GUARD_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0006-guard-runninghub-polling.patch"
+PARALLEL_FAIL_FAST_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0007-fail-fast-parallel-frames.patch"
 PIXELLE_DISCONNECT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/disconnect.py"
 EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
 VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
 MEDIA_RETRY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/media_retry.py"
 RUNNINGHUB_GUARD_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/runninghub_guard.py"
+FAIL_FAST_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/fail_fast.py"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
@@ -107,7 +109,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -158,6 +160,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETR
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${IMAGE_RETRY_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --check "${RUNNINGHUB_GUARD_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${RUNNINGHUB_GUARD_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${PARALLEL_FAIL_FAST_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${PIXELLE_DISCONNECT_OVERRIDE}" \
@@ -170,6 +174,8 @@ install -o admin -g admin -m 0644 "${MEDIA_RETRY_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/media_retry.py"
 install -o admin -g admin -m 0644 "${RUNNINGHUB_GUARD_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/runninghub_guard.py"
+install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}" \
+  "${RELEASE_DIR}/pixelle_video/services/fail_fast.py"
 rm -f "${RELEASE_DIR}/config.yaml"
 ln -s "${CONFIG_PATH}" "${RELEASE_DIR}/config.yaml"
 chown -h admin:admin "${RELEASE_DIR}/config.yaml"

@@ -1,0 +1,11 @@
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -50,0 +51,1 @@
++from pixelle_video.services.fail_fast import FailFastSemaphore, gather_cancel_on_error
+@@ -323,1 +324,1 @@
+-            semaphore = asyncio.Semaphore(runninghub_concurrent_limit)
++            semaphore = FailFastSemaphore(runninghub_concurrent_limit)
+@@ -370,1 +371,1 @@
+-            results = await asyncio.gather(*tasks)
++            results = await gather_cancel_on_error(*tasks)

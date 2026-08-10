@@ -76,6 +76,11 @@ cancellation is never retried. The provider coroutine is cancelled on timeout,
 although an upstream provider job may continue remotely when its API does not
 expose cancellation.
 
+Parallel frame generation is fail-fast. If any frame fails or the parent task
+is cancelled, every running or semaphore-waiting sibling frame is cancelled
+and awaited before the original exception is propagated. Cancelled siblings do
+not enter provider retry handling or reserve additional task retry budget.
+
 RunningHub status polling is bounded to 15 minutes, with each status request
 bounded to 60 seconds. A missing task response (`APIKEY_TASK_NOT_FOUND`) is
 terminal and returns immediately instead of entering another polling cycle.
