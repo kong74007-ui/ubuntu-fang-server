@@ -151,8 +151,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${EXTERNAL_N
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${EXTERNAL_NARRATION_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --check "${DEEPSEEK_V4_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${DEEPSEEK_V4_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply --check "${IMAGE_RETRY_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply "${IMAGE_RETRY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${IMAGE_RETRY_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${EXTERNAL_AUDIO_OVERRIDE}" \

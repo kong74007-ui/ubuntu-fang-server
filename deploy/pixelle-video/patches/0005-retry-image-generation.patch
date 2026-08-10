@@ -1,27 +1,12 @@
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
-@@ -27,6 +27,7 @@ from loguru import logger
- 
- from pixelle_video.models.progress import ProgressEvent
- from pixelle_video.models.storyboard import Storyboard, StoryboardFrame, StoryboardConfig
+@@ -29,0 +30,1 @@
 +from pixelle_video.services.media_retry import retry_async
- 
- 
- class FrameProcessor:
-@@ -239,8 +240,13 @@ class FrameProcessor:
-             media_params["duration"] = frame.duration
-             logger.info(f"  → Generating video with target duration: {frame.duration:.2f}s (from TTS audio)")
-         
--        # Call Media generation
+@@ -243,1 +244,5 @@
 -        media_result = await self.core.media(**media_params)
-+        # Retry only image generation. Audio is already complete at this point,
-+        # so retrying here does not repeat TTS or successful sibling frames.
 +        media_result = await retry_async(
 +            lambda: self.core.media(**media_params),
 +            operation_name=f"{media_type} generation for frame {frame.index + 1}",
 +            max_attempts=3 if media_type == "image" else 1,
 +        )
-         
-         # Store media type
-         frame.media_type = media_result.media_type

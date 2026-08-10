@@ -346,7 +346,7 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("MEDIA_RETRY_OVERRIDE=", installer)
         self.assertIn("IMAGE_RETRY_PATCH=", installer)
         self.assertIn(
-            'git -C "${RELEASE_DIR}" apply --check "${IMAGE_RETRY_PATCH}"',
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"',
             installer,
         )
         self.assertIn(
@@ -358,7 +358,7 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("max_attempts=3 if media_type == \"image\" else 1", patch)
 
         retry_check = installer.index(
-            'git -C "${RELEASE_DIR}" apply --check "${IMAGE_RETRY_PATCH}"'
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${IMAGE_RETRY_PATCH}"'
         )
         source_switch = installer.rindex(
             'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
