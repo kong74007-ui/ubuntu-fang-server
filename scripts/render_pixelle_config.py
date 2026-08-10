@@ -40,11 +40,18 @@ def render(llm: dict[str, str], runninghub: dict[str, str]) -> str:
 
     base_url = llm.get("OPENAI_BASE", "").strip() or "https://api.openai.com/v1"
     model = llm.get("PIXELLE_LLM_MODEL", "").strip() or "gpt-4o-mini"
+    people_context = (
+        "When people appear, depict contemporary Chinese or East Asian people "
+        "unless the user text explicitly specifies another ethnicity, nationality, or region."
+    )
     image_prefix = (
         "Professional Chinese social media editorial illustration, clean composition, "
-        "cinematic lighting, no text, no logo, no watermark"
+        "cinematic lighting, no text, no logo, no watermark. " + people_context
     )
-    video_prefix = "Professional cinematic visual, clean composition, no text, no logo, no watermark"
+    video_prefix = (
+        "Professional cinematic visual, clean composition, no text, no logo, no watermark. "
+        + people_context
+    )
     return f"""project_name: Huangque-Text-Video
 
 llm:
