@@ -1,0 +1,58 @@
+diff --git a/pixelle_video/services/llm_service.py b/pixelle_video/services/llm_service.py
+index f170843..58b06d0 100644
+--- a/pixelle_video/services/llm_service.py
++++ b/pixelle_video/services/llm_service.py
+@@ -114,6 +114,21 @@ class LLMService:
+             client_kwargs["base_url"] = final_base_url
+         
+         return AsyncOpenAI(**client_kwargs)
++
++    def _prepare_request_kwargs(
++        self,
++        client: AsyncOpenAI,
++        model: str,
++        kwargs: dict,
++    ) -> dict:
++        """Apply provider-specific request options without affecting other APIs."""
++        request_kwargs = dict(kwargs)
++        hostname = getattr(client.base_url, "host", None)
++        if hostname == "api.deepseek.com" and model.startswith("deepseek-v4-"):
++            extra_body = dict(request_kwargs.get("extra_body") or {})
++            extra_body.setdefault("thinking", {"type": "disabled"})
++            request_kwargs["extra_body"] = extra_body
++        return request_kwargs
+     
+     async def __call__(
+         self,
+@@ -185,12 +200,15 @@ class LLMService:
+                 )
+             else:
+                 # Standard text output mode
++                request_kwargs = self._prepare_request_kwargs(
++                    client, final_model, kwargs
++                )
+                 response = await client.chat.completions.create(
+                     model=final_model,
+                     messages=[{"role": "user", "content": prompt}],
+                     temperature=temperature,
+                     max_tokens=max_tokens,
+-                    **kwargs
++                    **request_kwargs
+                 )
+                 
+                 raw_content = response.choices[0].message.content
+@@ -240,12 +258,13 @@ class LLMService:
+         enhanced_prompt = f"{prompt}\n\n{json_schema_instruction}"
+         
+         # Call LLM with enhanced prompt
++        request_kwargs = self._prepare_request_kwargs(client, model, kwargs)
+         response = await client.chat.completions.create(
+             model=model,
+             messages=[{"role": "user", "content": enhanced_prompt}],
+             temperature=temperature,
+             max_tokens=max_tokens,
+-            **kwargs
++            **request_kwargs
+         )
+         raw_content = response.choices[0].message.content
+         content = raw_content if isinstance(raw_content, str) else ""
