@@ -38,10 +38,10 @@ comfyui:
     default_workflow: "selfhost/tts_edge.json"
   image:
     default_workflow: "runninghub/image_flux.json"
-    prompt_prefix: "Professional Chinese social media editorial illustration, clean composition, cinematic lighting, no text, no logo, no watermark"
+    prompt_prefix: "Professional Chinese social media editorial illustration, clean composition, cinematic lighting, no text, no logo, no watermark. When people appear, depict contemporary Chinese or East Asian people unless the user text explicitly specifies another ethnicity, nationality, or region."
   video:
     default_workflow: "runninghub/video_wan2.1_fusionx.json"
-    prompt_prefix: "Professional cinematic visual, clean composition, no text, no logo, no watermark"
+    prompt_prefix: "Professional cinematic visual, clean composition, no text, no logo, no watermark. When people appear, depict contemporary Chinese or East Asian people unless the user text explicitly specifies another ethnicity, nationality, or region."
 
 template:
   default_template: "1080x1920/image_default.html"

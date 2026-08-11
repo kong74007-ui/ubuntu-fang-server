@@ -218,6 +218,18 @@ class PixelleDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
             renderer.render({}, {"RUNNINGHUB_API_KEY": "rh-secret"})
 
+    def test_rendered_media_prompts_default_people_to_chinese_or_east_asian(self):
+        renderer = load_renderer()
+        rendered = renderer.render(
+            {"OPENAI_API_KEY": "openai-secret"},
+            {"RUNNINGHUB_API_KEY": "rh-secret"},
+        )
+        people_context = (
+            "When people appear, depict contemporary Chinese or East Asian people "
+            "unless the user text explicitly specifies another ethnicity, nationality, or region."
+        )
+        self.assertEqual(2, rendered.count(people_context))
+
     def test_pixelle_config_allows_five_runninghub_scenes_per_video(self):
         example = (ROOT / "deploy/pixelle-video/config.yaml.example").read_text(
             encoding="utf-8"
