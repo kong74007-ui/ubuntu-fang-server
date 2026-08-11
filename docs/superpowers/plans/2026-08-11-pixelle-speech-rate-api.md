@@ -73,4 +73,3 @@ Run the targeted unit tests again, `git diff --check origin/main...HEAD`, and co
 - [ ] **Step 2: Push the branch and open a PR**
 
 Push `codex/pixelle-speech-rate` and open a PR targeting `main`, explicitly documenting that it only exposes existing Pixelle behavior and is a prerequisite for the main-site PR.
-
