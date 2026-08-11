@@ -467,10 +467,15 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("api/schemas/video.py", patch)
         self.assertIn("api/routers/video.py", patch)
         self.assertIn(
-            "tts_speed: float = Field(default=1.0, ge=0.5, le=2.0",
+            "tts_speed: Optional[float] = Field(default=None, ge=0.5, le=2.0",
             patch,
         )
-        self.assertEqual(2, patch.count('"tts_speed": request_body.tts_speed'))
+        self.assertEqual(2, patch.count("if request_body.tts_speed is not None:"))
+        self.assertEqual(
+            2,
+            patch.count('video_params["tts_speed"] = request_body.tts_speed'),
+        )
+        self.assertNotIn('"tts_speed": request_body.tts_speed', patch)
 
         patch_check = installer.index(
             'git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"'
