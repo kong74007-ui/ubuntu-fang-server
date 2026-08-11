@@ -23,6 +23,7 @@ DEEPSEEK_V4_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0004-disable-deep
 IMAGE_RETRY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0005-retry-image-generation.patch"
 RUNNINGHUB_GUARD_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0006-guard-runninghub-polling.patch"
 PARALLEL_FAIL_FAST_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0007-fail-fast-parallel-frames.patch"
+TTS_SPEED_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0008-support-tts-speed-api.patch"
 PIXELLE_DISCONNECT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/disconnect.py"
 EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
 VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
@@ -109,7 +110,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -162,6 +163,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --check "${RUNNINGHUB_GUARD_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${RUNNINGHUB_GUARD_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_FAIL_FAST_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${PARALLEL_FAIL_FAST_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply "${TTS_SPEED_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${PIXELLE_DISCONNECT_OVERRIDE}" \

@@ -460,6 +460,43 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertLess(patch_check, source_switch)
         self.assertLess(helper_install, source_switch)
 
+    def test_tts_speed_patch_is_fail_closed_and_covers_sync_and_async(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0008-support-tts-speed-api.patch"
+
+        self.assertTrue(patch_path.is_file())
+        self.assertIn("TTS_SPEED_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply "${TTS_SPEED_PATCH}"',
+            installer,
+        )
+
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertIn("api/schemas/video.py", patch)
+        self.assertIn("api/routers/video.py", patch)
+        self.assertIn(
+            "tts_speed: Optional[float] = Field(default=None, ge=0.5, le=2.0",
+            patch,
+        )
+        self.assertEqual(2, patch.count("if request_body.tts_speed is not None:"))
+        self.assertEqual(
+            2,
+            patch.count('video_params["tts_speed"] = request_body.tts_speed'),
+        )
+        self.assertNotIn('"tts_speed": request_body.tts_speed', patch)
+
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:

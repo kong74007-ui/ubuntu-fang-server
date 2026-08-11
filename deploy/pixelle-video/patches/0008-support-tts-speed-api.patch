@@ -1,0 +1,27 @@
+diff --git a/api/routers/video.py b/api/routers/video.py
+index e01bcae..c307a6f 100644
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -161,5 +161,7 @@ async def generate_video_sync(
+         asset_ids, external_segments = _lease_external_segments(
+             request_body, f"sync-{uuid.uuid4().hex}"
+         )
++        if request_body.tts_speed is not None:
++            video_params["tts_speed"] = request_body.tts_speed
+         if external_segments:
+             video_params["external_narration_segments"] = external_segments
+@@ -301,4 +303,6 @@ async def generate_video_async(
+                 # "progress_callback": lambda event: task_manager.update_progress(...)
+             }
++            if request_body.tts_speed is not None:
++                video_params["tts_speed"] = request_body.tts_speed
+             if external_segments:
+                 video_params["external_narration_segments"] = external_segments
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+index 6ecf5e9..28faf9b 100644
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -57,2 +57,3 @@ class VideoGenerateRequest(BaseModel):
++    tts_speed: Optional[float] = Field(default=None, ge=0.5, le=2.0, description="TTS playback speed multiplier")
+     tts_voice: Optional[str] = Field(None, description="TTS voice name")
+     narration_segments: Optional[list[NarrationSegment]] = Field(
