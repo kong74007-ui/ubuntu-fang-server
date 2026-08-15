@@ -14,6 +14,15 @@ def display_units(text: str) -> int:
     return sum(1 if ord(char) < 128 else 2 for char in text)
 
 
+def validate_caption_cue_text(text: str) -> str:
+    """Validate the authoritative one-line contract for caller-provided cues."""
+    if not isinstance(text, str) or not text:
+        raise ValueError("caption cue text must be a non-empty string")
+    if display_units(text) > MAX_CAPTION_UNITS:
+        raise ValueError("caption cue exceeds the single-line display width")
+    return text
+
+
 def _split_after_boundaries(text: str, boundaries: frozenset[str]) -> list[str]:
     parts: list[str] = []
     start = 0
@@ -45,19 +54,34 @@ def _hard_split(text: str, max_units: int) -> list[str]:
     return parts
 
 
+def _pack_fragments(fragments: list[str], max_units: int) -> list[str]:
+    """Greedily pack adjacent bounded fragments without changing their text."""
+    packed: list[str] = []
+    current = ""
+    for fragment in fragments:
+        if current and display_units(current + fragment) > max_units:
+            packed.append(current)
+            current = ""
+        current += fragment
+    if current:
+        packed.append(current)
+    return packed
+
+
 def _split_clause(text: str, max_units: int) -> list[str]:
     if display_units(text) <= max_units:
         return [text]
     clauses = _split_after_boundaries(text, _CLAUSE_BOUNDARIES)
     if len(clauses) == 1:
         return _hard_split(text, max_units)
-    result: list[str] = []
+    bounded: list[str] = []
     for clause in clauses:
         if display_units(clause) <= max_units:
-            result.append(clause)
+            bounded.append(clause)
         else:
-            result.extend(_hard_split(clause, max_units))
-    return result
+            bounded.extend(_hard_split(clause, max_units))
+
+    return _pack_fragments(bounded, max_units)
 
 
 def split_caption_text(text: str, max_units: int = MAX_CAPTION_UNITS) -> list[str]:
@@ -73,6 +97,7 @@ def split_caption_text(text: str, max_units: int = MAX_CAPTION_UNITS) -> list[st
     result: list[str] = []
     for sentence in sentences:
         result.extend(_split_clause(sentence, max_units))
+    result = _pack_fragments(result, max_units)
 
     if "".join(result) != text:
         raise ValueError("caption segmentation changed the narration text")
@@ -117,3 +142,12 @@ def caption_video_slices(cues: list[dict]) -> list[tuple[float, float]]:
         (float(cue["start_time"]), float(cue["duration"]))
         for cue in cues
     ]
+
+
+def required_video_padding(source_duration: float, target_duration: float) -> float:
+    """Return freeze-frame padding needed before cumulative cue slicing."""
+    if not isinstance(source_duration, (int, float)) or source_duration <= 0:
+        raise ValueError("source video duration must be positive")
+    if not isinstance(target_duration, (int, float)) or target_duration <= 0:
+        raise ValueError("target video duration must be positive")
+    return max(0.0, float(target_duration) - float(source_duration))

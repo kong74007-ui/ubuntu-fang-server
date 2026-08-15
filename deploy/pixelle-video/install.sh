@@ -167,8 +167,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${PARALLEL_F
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${PARALLEL_FAIL_FAST_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${TTS_SPEED_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply --check "${CAPTION_CUES_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply "${CAPTION_CUES_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${CAPTION_CUES_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${CAPTION_CUES_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${PIXELLE_DISCONNECT_OVERRIDE}" \

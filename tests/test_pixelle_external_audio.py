@@ -22,9 +22,13 @@ except ModuleNotFoundError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "deploy" / "pixelle-video" / "overrides" / "api" / "external_audio.py"
-ROUTER_PATH = ROOT / "deploy" / "pixelle-video" / "overrides" / "api" / "routers" / "voice_assets.py"
+OVERRIDES_ROOT = ROOT / "deploy" / "pixelle-video" / "overrides"
+MODULE_PATH = OVERRIDES_ROOT / "api" / "external_audio.py"
+ROUTER_PATH = OVERRIDES_ROOT / "api" / "routers" / "voice_assets.py"
 MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + (b"audio" * 20)
+
+if str(OVERRIDES_ROOT) not in sys.path:
+    sys.path.insert(0, str(OVERRIDES_ROOT))
 
 
 def load_module(name: str, path: Path):
@@ -166,15 +170,30 @@ class ExternalAudioRegistryTests(unittest.TestCase):
     def test_legacy_audio_asset_becomes_one_resolved_cue(self):
         record = self.store("legacy-scene")
         asset_ids, resolved = self.module.lease_narration_segments(
-            [{"text": "短旁白", "audio_asset_id": record["asset_id"]}],
+            [{"text": "旧版长旁白" * 20, "audio_asset_id": record["asset_id"]}],
             "task-legacy",
         )
 
         self.assertEqual([record["asset_id"]], asset_ids)
         self.assertEqual(
-            [{"text": "短旁白", "audio_path": str(self.root / f'{record["asset_id"]}.mp3')}],
+            [{
+                "text": "旧版长旁白" * 20,
+                "audio_path": str(self.root / f'{record["asset_id"]}.mp3'),
+            }],
             resolved[0]["cues"],
         )
+
+    def test_nested_cue_rejects_text_wider_than_single_line(self):
+        record = self.store("nested-overlong")
+        text = "一" * 15
+        with self.assertRaisesRegex(ValueError, "single-line display width"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": text,
+                    "cues": [{"text": text, "audio_asset_id": record["asset_id"]}],
+                }],
+                "task-overlong",
+            )
 
     def test_public_catalog_is_sanitized(self):
         voices = types.ModuleType("pixelle_video.tts_voices")

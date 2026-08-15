@@ -10,6 +10,8 @@ import time
 import uuid
 from pathlib import Path
 
+from pixelle_video.services.caption_cues import validate_caption_cue_text
+
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 AUDIO_TTL_SECONDS = 24 * 60 * 60
@@ -218,6 +220,8 @@ def _normalize_narration_segments(segments) -> list[dict]:
                 }
                 for cue in raw_cues
             ]
+            for cue in cues:
+                validate_caption_cue_text(cue["text"])
         else:
             cues = [{
                 "text": scene_text,

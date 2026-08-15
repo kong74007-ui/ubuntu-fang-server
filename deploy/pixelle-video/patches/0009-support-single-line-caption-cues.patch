@@ -1,48 +1,27 @@
-warning: in the working copy of 'api/routers/video.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'api/schemas/video.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/models/storyboard.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/pipelines/standard.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/services/frame_html.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/services/frame_processor.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/services/persistence.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'pixelle_video/services/video.py', LF will be replaced by CRLF the next time Git touches it
 diff --git a/api/routers/video.py b/api/routers/video.py
 index 8b67d67..abf2111 100644
 --- a/api/routers/video.py
 +++ b/api/routers/video.py
-@@ -38,17 +38,12 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
-     segments = request_body.narration_segments or []
-     if not segments:
-         return [], []
+@@ -41 +40,0 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
 -    asset_ids = [segment.audio_asset_id for segment in segments]
-     try:
+@@ -43 +42 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
 -        paths = external_audio.lease_audio_assets(asset_ids, task_id)
 +        asset_ids, resolved = external_audio.lease_narration_segments(segments, task_id)
-     except FileNotFoundError as exc:
-         raise HTTPException(status_code=404, detail="narration audio asset not found") from exc
-     except external_audio.AudioLeaseError as exc:
-         raise HTTPException(status_code=409, detail="narration audio asset is already in use") from exc
+@@ -48,4 +46,0 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
 -    resolved = [
 -        {"text": segment.text, "audio_path": str(path)}
 -        for segment, path in zip(segments, paths)
 -    ]
-     return asset_ids, resolved
- 
- 
 diff --git a/api/schemas/video.py b/api/schemas/video.py
-index 88348d5..09af9ed 100644
+index 88348d5..986bafa 100644
 --- a/api/schemas/video.py
 +++ b/api/schemas/video.py
-@@ -18,11 +18,25 @@ from typing import Optional, Literal, Dict, Any
- from pydantic import BaseModel, Field, model_validator
- 
- 
+@@ -18,0 +19 @@ from pydantic import BaseModel, Field, model_validator
++from pixelle_video.services.caption_cues import validate_caption_cue_text
+@@ -21 +22 @@ from pydantic import BaseModel, Field, model_validator
 -class NarrationSegment(BaseModel):
 +class NarrationCue(BaseModel):
-     text: str = Field(..., min_length=1, max_length=1000)
-     audio_asset_id: str = Field(..., pattern=r"^audio_[0-9a-f]{32}$")
- 
- 
+@@ -25,0 +27,16 @@ class NarrationSegment(BaseModel):
 +class NarrationSegment(BaseModel):
 +    text: str = Field(..., min_length=1, max_length=1000)
 +    audio_asset_id: Optional[str] = Field(None, pattern=r"^audio_[0-9a-f]{32}$")
@@ -52,22 +31,18 @@ index 88348d5..09af9ed 100644
 +    def validate_audio_shape(self):
 +        if bool(self.audio_asset_id) == bool(self.cues):
 +            raise ValueError("exactly one of audio_asset_id or cues is required")
++        for cue in self.cues or []:
++            validate_caption_cue_text(cue.text)
 +        if self.cues and "".join(cue.text for cue in self.cues) != self.text:
 +            raise ValueError("narration cue text must preserve the scene text")
 +        return self
 +
 +
- class VideoGenerateRequest(BaseModel):
-     """Video generation request"""
-     
 diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
 index 55ba4ab..fafb7f1 100644
 --- a/pixelle_video/models/storyboard.py
 +++ b/pixelle_video/models/storyboard.py
-@@ -56,6 +56,17 @@ class StoryboardConfig:
-     template_params: Optional[Dict[str, Any]] = None  # Custom template parameters (e.g., {"accent_color": "#ff0000"})
- 
- 
+@@ -58,0 +59,11 @@ class StoryboardConfig:
 +@dataclass
 +class CaptionCue:
 +    """One timed caption and its narration audio inside a storyboard frame."""
@@ -79,55 +54,25 @@ index 55ba4ab..fafb7f1 100644
 +    end_time: float = 0.0
 +
 +
- @dataclass
- class StoryboardFrame:
-     """Single storyboard frame"""
-@@ -73,6 +84,7 @@ class StoryboardFrame:
-     
-     # Metadata
-     duration: float = 0.0                      # Frame duration (seconds, from audio or video)
+@@ -75,0 +87 @@ class StoryboardFrame:
 +    caption_cues: List[CaptionCue] = field(default_factory=list)
-     created_at: Optional[datetime] = None
-     
-     def __post_init__(self):
 diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
 index 1d3a93c..5ca8f47 100644
 --- a/pixelle_video/pipelines/standard.py
 +++ b/pixelle_video/pipelines/standard.py
-@@ -30,6 +30,7 @@ from pixelle_video.pipelines.linear import LinearVideoPipeline, PipelineContext
- from pixelle_video.models.progress import ProgressEvent
- from pixelle_video.models.storyboard import (
-     Storyboard,
+@@ -32,0 +33 @@ from pixelle_video.models.storyboard import (
 +    CaptionCue,
-     StoryboardFrame,
-     StoryboardConfig,
-     ContentMetadata,
-@@ -46,6 +47,7 @@ from pixelle_video.utils.os_util import (
-     get_task_final_video_path
- )
- from pixelle_video.utils.template_util import get_template_type
+@@ -48,0 +50 @@ from pixelle_video.utils.template_util import get_template_type
 +from pixelle_video.services.caption_cues import split_caption_text
- from pixelle_video.utils.prompt_helper import build_image_prompt
- from pixelle_video.services.video import VideoService
- from pixelle_video.services.fail_fast import FailFastSemaphore, gather_cancel_on_error
-@@ -272,10 +274,7 @@ class StandardPipeline(LinearVideoPipeline):
-             tts_workflow=final_tts_workflow,
-             tts_speed=ctx.params.get("tts_speed", 1.2),
-             ref_audio=ctx.params.get("ref_audio"),
+@@ -275,4 +277 @@ class StandardPipeline(LinearVideoPipeline):
 -            external_audio_paths=[
 -                segment["audio_path"]
 -                for segment in (ctx.params.get("external_narration_segments") or [])
 -            ] or None,
 +            external_audio_paths=None,
-             media_width=ctx.params.get("media_width"),
-             media_height=ctx.params.get("media_height"),
-             media_workflow=ctx.params.get("media_workflow"),
-@@ -293,12 +292,24 @@ class StandardPipeline(LinearVideoPipeline):
-         )
-         
-         # Create frames
+@@ -295,0 +295 @@ class StandardPipeline(LinearVideoPipeline):
 +        external_segments = ctx.params.get("external_narration_segments") or []
-         for i, (narration, image_prompt) in enumerate(zip(ctx.narrations, ctx.image_prompts)):
+@@ -296,0 +297,11 @@ class StandardPipeline(LinearVideoPipeline):
 +            if external_segments:
 +                cue_values = external_segments[i]["cues"]
 +                caption_cues = [
@@ -139,23 +84,14 @@ index 1d3a93c..5ca8f47 100644
 +                    CaptionCue(text=text)
 +                    for text in split_caption_text(narration)
 +                ]
-             frame = StoryboardFrame(
-                 index=i,
-                 narration=narration,
-                 image_prompt=image_prompt,
+@@ -301 +312 @@ class StandardPipeline(LinearVideoPipeline):
 -                audio_path=(ctx.config.external_audio_paths or [None] * len(ctx.narrations))[i],
 +                caption_cues=caption_cues,
-                 created_at=datetime.now()
-             )
-             ctx.storyboard.frames.append(frame)
 diff --git a/pixelle_video/services/frame_html.py b/pixelle_video/services/frame_html.py
 index c437d33..181b86e 100644
 --- a/pixelle_video/services/frame_html.py
 +++ b/pixelle_video/services/frame_html.py
-@@ -297,7 +297,14 @@ class HTMLFrameGenerator:
-                 value = values[param_name]
-                 if isinstance(value, bool):
-                     return 'true' if value else 'false'
+@@ -300 +300,8 @@ class HTMLFrameGenerator:
 -                return str(value) if value is not None else ''
 +                rendered = str(value) if value is not None else ''
 +                if param_name == "text":
@@ -165,25 +101,14 @@ index c437d33..181b86e 100644
 +                        f'{rendered}</span>'
 +                    )
 +                return rendered
-             
-             elif default_value_str:
-                 return default_value_str
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
-index 1ead3a1..2086cc1 100644
+index 1ead3a1..c0c9cee 100644
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
-@@ -20,13 +20,20 @@ Key Feature:
-   to ensure perfect sync between audio and video (no padding, no trimming needed)
- """
- 
+@@ -22,0 +23,2 @@ Key Feature:
 +import copy
 +from pathlib import Path
- from typing import Callable, Optional
- 
- import httpx
- from loguru import logger
- 
- from pixelle_video.models.progress import ProgressEvent
+@@ -29 +31,6 @@ from pixelle_video.models.progress import ProgressEvent
 -from pixelle_video.models.storyboard import Storyboard, StoryboardFrame, StoryboardConfig
 +from pixelle_video.models.storyboard import CaptionCue, Storyboard, StoryboardFrame, StoryboardConfig
 +from pixelle_video.services.caption_cues import (
@@ -191,13 +116,7 @@ index 1ead3a1..2086cc1 100644
 +    caption_timeline_duration,
 +    split_caption_text,
 +)
- from pixelle_video.services.media_retry import RetryBudget, retry_async
- 
- 
-@@ -79,21 +86,18 @@ class FrameProcessor:
-         needs_generation = frame.image_prompt is not None
-         
-         try:
+@@ -82,15 +89,12 @@ class FrameProcessor:
 -            # Step 1: Generate audio (TTS)
 -            if not frame.audio_path:
 -                if progress_callback:
@@ -225,43 +144,19 @@ index 1ead3a1..2086cc1 100644
 +                ))
 +            await self._prepare_caption_audio(frame, config)
 +            narration_duration = frame.duration
-             
-             # Step 2: Generate media (image or video, conditional)
-             if needs_generation:
-@@ -107,6 +111,7 @@ class FrameProcessor:
-                         action="media"
-                     ))
-                 await self._step_generate_media(frame, config)
+@@ -109,0 +114 @@ class FrameProcessor:
 +                frame.duration = narration_duration
-             elif has_existing_media:
-                 # Log appropriate message based on media type
-                 if frame.video_path:
-@@ -128,7 +133,8 @@ class FrameProcessor:
-                     step=3,
-                     action="compose"
-                 ))
+@@ -131 +136,2 @@ class FrameProcessor:
 -            await self._step_compose_frame(frame, storyboard, config)
 +            if len(frame.caption_cues) == 1:
 +                await self._step_compose_frame(frame, storyboard, config)
-             
-             # Step 4: Create video segment
-             if progress_callback:
-@@ -141,7 +147,10 @@ class FrameProcessor:
-                     action="video"
-                 ))
-             
+@@ -144 +150,4 @@ class FrameProcessor:
 -            await self._step_create_video_segment(frame, config)
 +            if len(frame.caption_cues) == 1:
 +                await self._step_create_video_segment(frame, config)
 +            else:
 +                await self._create_caption_carousel_segment(frame, storyboard, config)
-             
-             logger.info(f"✅ Frame {frame.index} completed")
-             return frame
-@@ -196,6 +205,144 @@ class FrameProcessor:
-         
-         logger.debug(f"  ✓ Audio generated: {audio_path} ({frame.duration:.2f}s)")
-     
+@@ -198,0 +208,144 @@ class FrameProcessor:
 +    async def _prepare_caption_audio(
 +        self,
 +        frame: StoryboardFrame,
@@ -359,6 +254,12 @@ index 1ead3a1..2086cc1 100644
 +        base_segment = Path(get_task_frame_path(config.task_id, frame.index, "segment"))
 +        cue_segments = []
 +
++        if frame.media_type == "video":
++            frame.video_path = video_service.ensure_video_duration(
++                frame.video_path,
++                frame.duration,
++            )
++
 +        for cue_index, cue in enumerate(frame.caption_cues):
 +            cue_frame = copy.copy(frame)
 +            cue_frame.narration = cue.text
@@ -400,31 +301,14 @@ index 1ead3a1..2086cc1 100644
 +            str(base_segment),
 +        )
 +
-     async def _step_generate_media(
-         self,
-         frame: StoryboardFrame,
-@@ -395,14 +542,15 @@ class FrameProcessor:
-     async def _step_create_video_segment(
-         self,
-         frame: StoryboardFrame,
+@@ -398 +551,2 @@ class FrameProcessor:
 -        config: StoryboardConfig
 +        config: StoryboardConfig,
 +        output_path: Optional[str] = None,
-     ):
-         """Step 4: Create video segment from media + audio"""
-         logger.debug(f"  4/4: Creating video segment for frame {frame.index}...")
-         
-         # Generate output path using task_id
-         from pixelle_video.utils.os_util import get_task_frame_path
+@@ -405 +559 @@ class FrameProcessor:
 -        output_path = get_task_frame_path(config.task_id, frame.index, "segment")
 +        output_path = output_path or get_task_frame_path(config.task_id, frame.index, "segment")
-         
-         from pixelle_video.services.video import VideoService
-         video_service = VideoService()
-@@ -473,6 +621,19 @@ class FrameProcessor:
-             # Assume ~16kbps for MP3, so 2KB per second
-             estimated_duration = file_size / 2000
-             return max(1.0, estimated_duration)  # At least 1 second
+@@ -475,0 +630,13 @@ class FrameProcessor:
 +
 +    async def _get_audio_duration_strict(self, audio_path: str) -> float:
 +        """Probe a positive real duration; caption timing must never be estimated."""
@@ -438,26 +322,14 @@ index 1ead3a1..2086cc1 100644
 +        if duration <= 0:
 +            raise RuntimeError(f"Caption audio has non-positive duration: {audio_path}")
 +        return duration
-     
-     async def _download_media(
-         self,
 diff --git a/pixelle_video/services/persistence.py b/pixelle_video/services/persistence.py
 index 6f5cb06..6308664 100644
 --- a/pixelle_video/services/persistence.py
 +++ b/pixelle_video/services/persistence.py
-@@ -22,7 +22,7 @@ from typing import List, Optional, Dict, Any
- from datetime import datetime
- from loguru import logger
- 
+@@ -25 +25 @@ from loguru import logger
 -from pixelle_video.models.storyboard import Storyboard, StoryboardFrame, StoryboardConfig, ContentMetadata
 +from pixelle_video.models.storyboard import CaptionCue, Storyboard, StoryboardFrame, StoryboardConfig, ContentMetadata
- 
- 
- class PersistenceService:
-@@ -387,6 +387,16 @@ class PersistenceService:
-             "composed_image_path": frame.composed_image_path,
-             "video_segment_path": frame.video_segment_path,
-             "duration": frame.duration,
+@@ -389,0 +390,10 @@ class PersistenceService:
 +            "caption_cues": [
 +                {
 +                    "text": cue.text,
@@ -468,25 +340,15 @@ index 6f5cb06..6308664 100644
 +                }
 +                for cue in frame.caption_cues
 +            ],
-             "created_at": frame.created_at.isoformat() if frame.created_at else None,
-         }
-     
-@@ -403,6 +413,7 @@ class PersistenceService:
-             composed_image_path=data.get("composed_image_path"),
-             video_segment_path=data.get("video_segment_path"),
-             duration=data.get("duration", 0.0),
+@@ -405,0 +416 @@ class PersistenceService:
 +            caption_cues=[CaptionCue(**cue) for cue in data.get("caption_cues", [])],
-             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
-         )
-     
 diff --git a/pixelle_video/services/video.py b/pixelle_video/services/video.py
-index 425619a..435c2be 100644
+index 425619a..e59d5b4 100644
 --- a/pixelle_video/services/video.py
 +++ b/pixelle_video/services/video.py
-@@ -165,6 +165,58 @@ class VideoService:
-                 return self._concat_demuxer(videos, output)
-             else:
-                 return self._concat_filter(videos, output)
+@@ -36,0 +37 @@ from loguru import logger
++from pixelle_video.services.caption_cues import required_video_padding
+@@ -167,0 +169,67 @@ class VideoService:
 +
 +    def concat_audios(self, audios: List[str], output: str) -> str:
 +        """Concatenate narration cue audio into one frame-level track."""
@@ -508,6 +370,21 @@ index 425619a..435c2be 100644
 +        except ffmpeg.Error as exc:
 +            error_msg = exc.stderr.decode() if exc.stderr else str(exc)
 +            raise RuntimeError(f"Failed to concatenate audio: {error_msg}") from exc
++
++    def ensure_video_duration(
++        self,
++        video: str,
++        target_duration: float,
++        pad_strategy: str = "freeze",
++    ) -> str:
++        """Pad a short provider video before cumulative caption slicing."""
++        self._ensure_ffmpeg()
++        source_duration = self._get_video_duration(video)
++        if source_duration <= 0 or target_duration <= 0:
++            raise ValueError("Video duration must be positive")
++        if required_video_padding(source_duration, target_duration) > 0:
++            return self._pad_video_to_duration(video, target_duration, pad_strategy)
++        return video
 +
 +    def extract_video_clip(
 +        self,
@@ -539,7 +416,3 @@ index 425619a..435c2be 100644
 +        except ffmpeg.Error as exc:
 +            error_msg = exc.stderr.decode() if exc.stderr else str(exc)
 +            raise RuntimeError(f"Failed to extract video clip: {error_msg}") from exc
-     
-     def _concat_demuxer(self, videos: List[str], output: str) -> str:
-         """
-

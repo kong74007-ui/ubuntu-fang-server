@@ -69,7 +69,10 @@ class PixelleDeploymentTests(unittest.TestCase):
         patch = patch_path.read_text(encoding="utf-8")
         self.assertIn('CAPTION_CUES_PATCH=', installer)
         self.assertIn('CAPTION_CUES_OVERRIDE=', installer)
-        self.assertIn('git -C "${RELEASE_DIR}" apply --check "${CAPTION_CUES_PATCH}"', installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${CAPTION_CUES_PATCH}"',
+            installer,
+        )
         self.assertGreater(
             installer.index('"${CAPTION_CUES_PATCH}"'),
             installer.index('"${TTS_SPEED_PATCH}"'),
@@ -77,6 +80,15 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("class CaptionCue", patch)
         self.assertIn("caption_cues", patch)
         self.assertIn("pixelle_video/services/frame_html.py", patch)
+        self.assertIn("validate_caption_cue_text(cue.text)", patch)
+        self.assertIn("ensure_video_duration(", patch)
+        self.assertLess(
+            patch.index("ensure_video_duration("),
+            patch.index("extract_video_clip("),
+        )
+        for line in patch.splitlines():
+            self.assertEqual(line.rstrip(), line)
+        self.assertFalse(patch.endswith("\n\n"))
 
     def test_service_is_loopback_only_and_resource_limited(self):
         unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")

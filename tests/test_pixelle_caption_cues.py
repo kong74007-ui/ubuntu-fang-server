@@ -73,6 +73,30 @@ class CaptionSplitterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.split_caption_text("一" * 300)
 
+    def test_greedily_packs_short_english_and_cjk_fragments(self):
+        for text in (
+            "a " * 21,
+            "一，" * 21,
+            "一。" * 21,
+            " ".join(["word"] * 50),
+        ):
+            with self.subTest(text=text):
+                cues = self.assert_lossless_and_single_line(text)
+                self.assertLessEqual(len(cues), 20)
+
+    def test_twenty_cue_boundary_is_enforced_after_packing(self):
+        accepted = self.module.split_caption_text("一，" * 140)
+        self.assertEqual(len(accepted), 20)
+        with self.assertRaises(ValueError):
+            self.module.split_caption_text("一，" * 141)
+
+    def test_nested_cue_width_contract_handles_cjk_and_ascii_boundaries(self):
+        self.assertEqual("一" * 14, self.module.validate_caption_cue_text("一" * 14))
+        self.assertEqual("a" * 28, self.module.validate_caption_cue_text("a" * 28))
+        for text in ("一" * 15, "a" * 29):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.module.validate_caption_cue_text(text)
+
 
 class CaptionTimelineTests(unittest.TestCase):
     @classmethod
@@ -116,6 +140,20 @@ class CaptionTimelineTests(unittest.TestCase):
         for durations in ([], [0], [-1], [None]):
             with self.subTest(durations=durations), self.assertRaises(ValueError):
                 self.module.build_caption_timeline(cues, durations)
+
+    def test_reports_padding_when_later_cue_would_start_after_video_eof(self):
+        timed = self.module.build_caption_timeline(
+            [{"text": "first"}, {"text": "second"}],
+            [6.0, 5.0],
+        )
+        self.assertGreater(timed[1]["start_time"], 5.0)
+        self.assertEqual(
+            6.0,
+            self.module.required_video_padding(
+                5.0,
+                self.module.caption_timeline_duration(timed),
+            ),
+        )
 
 
 if __name__ == "__main__":
