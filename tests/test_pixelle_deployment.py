@@ -978,6 +978,30 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("proxy_read_timeout 1800s;", nginx)
         self.assertIn("proxy_request_buffering off;", nginx)
 
+    def test_talking_material_runtime_contract_is_documented(self):
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_readme = " ".join(readme.split()).casefold()
+        required_contract = (
+            "/etc/huangque/pixelle-talking.env",
+            "http://127.0.0.1:8096/api/internal/pixelle/talking-clip",
+            "24-hour avatar TTL",
+            "two-slot bridge limit",
+            "15-minute provider deadline",
+            "20-minute client timeout",
+            "at most three attempts",
+            "billed outcomes are never retried",
+            "ordinary visual fallback",
+            "approximately six seconds",
+            "not a hard duration limit",
+            "original narration and caption timeline remain authoritative",
+            "Linux validation",
+        )
+        for contract in required_contract:
+            with self.subTest(contract=contract):
+                self.assertIn(contract.casefold(), normalized_readme)
+
 
 if __name__ == "__main__":
     unittest.main()

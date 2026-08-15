@@ -113,3 +113,37 @@ recovery if they were uploaded but never used.
 Cleanup runs once at service startup and every 15 minutes, and always skips
 assets with an active task lease. Startup first reclaims leases left by the
 previous process because Pixelle's task registry is in memory.
+
+## Optional talking material scenes
+
+Talking material is opt-in. When enabled, selected storyboard scenes use an
+uploaded avatar image and that scene's already-generated narration audio to
+create a talking-head visual. Avatar files are private leased assets with a
+24-hour avatar TTL for unused-upload crash recovery. Identical avatar content
+is uploaded to the provider once and reused by its content fingerprint while
+the cache entry remains valid.
+
+Pixelle and the Huangque content service load the same internal token from
+`/etc/huangque/pixelle-talking.env`. Pixelle calls only the loopback route
+`http://127.0.0.1:8096/api/internal/pixelle/talking-clip`; it is not an nginx
+or public-browser endpoint. The bridge enforces a two-slot bridge limit across
+image conversion, provider image upload, and talking-video generation.
+
+Each provider attempt uses the existing 15-minute provider deadline. The
+Pixelle loopback caller uses a 20-minute client timeout so the provider
+deadline and cleanup grace remain authoritative. A scene makes at most three
+attempts, using 2-second and 5-second delays only for explicitly retryable,
+pre-billing failures. Billed outcomes are never retried. When generation or
+final composition fails, ordinary visual fallback retains the scene's already
+generated image or video and the parent video task continues with a warning.
+
+Caption cues are grouped toward approximately six seconds, but this is not a
+hard duration limit: a semantic cue or final remainder may be shorter or
+longer. The talking path concatenates existing cue audio and never invokes a
+second TTS operation. Provider audio is stripped from every returned clip;
+the original narration and caption timeline remain authoritative for final
+composition, including caption end times and the user's selected speech rate.
+
+Linux validation must run the POSIX mode-bit and real symlink security tests
+that are skipped on Windows. Local deterministic integration tests stub the
+loopback provider boundary and do not make a billable live-provider request.
