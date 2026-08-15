@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")
 
 
 def find_bash() -> str:
@@ -53,6 +55,53 @@ def load_renderer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def parse_patch_hunks(text: str):
+    lines = text.splitlines()
+    hunks = []
+    current = None
+    for lineno, line in enumerate(lines, start=1):
+        if line.startswith("@@"):
+            match = HUNK_RE.match(line)
+            if not match:
+                raise AssertionError(f"malformed hunk header at line {lineno}: {line}")
+            if current is not None:
+                hunks.append(current)
+            current = {
+                "lineno": lineno,
+                "header": line,
+                "old_count": int(match.group("old_count") or "1"),
+                "new_count": int(match.group("new_count") or "1"),
+                "old_lines": 0,
+                "new_lines": 0,
+            }
+            continue
+        if line.startswith("diff --git"):
+            if current is not None:
+                hunks.append(current)
+                current = None
+            continue
+        if current is None:
+            continue
+        if line.startswith(("---", "+++", "index ")):
+            continue
+        if line.startswith("\\ No newline at end of file"):
+            continue
+        if line.startswith("+"):
+            current["new_lines"] += 1
+            continue
+        if line.startswith("-"):
+            current["old_lines"] += 1
+            continue
+        if line.startswith(" "):
+            current["old_lines"] += 1
+            current["new_lines"] += 1
+            continue
+        raise AssertionError(f"patch fragment without header or invalid hunk line at {lineno}: {line}")
+    if current is not None:
+        hunks.append(current)
+    return hunks
 
 
 class PixelleDeploymentTests(unittest.TestCase):
@@ -597,6 +646,23 @@ class PixelleDeploymentTests(unittest.TestCase):
             'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
         )
         self.assertLess(patch_check, source_switch)
+
+    def test_talking_material_asset_patch_has_consistent_hunk_counts(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0010-support-talking-material-assets.patch"
+        ).read_text(encoding="utf-8")
+
+        hunks = parse_patch_hunks(patch)
+
+        self.assertGreaterEqual(len(hunks), 1)
+        for hunk in hunks:
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
 
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()

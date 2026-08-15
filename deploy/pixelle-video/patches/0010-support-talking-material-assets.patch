@@ -1,8 +1,8 @@
 diff --git a/api/app.py b/api/app.py
-index 23171e6..bd28b39 100644
+index 23171e6..694b289 100644
 --- a/api/app.py
 +++ b/api/app.py
-@@ -42,0 +43 @@ from api.config import api_config
+@@ -42,0 +43 @@ from api import external_audio
 +from api import avatar_assets
 @@ -58,0 +60 @@ from api.routers import (
 +    avatar_assets_router,
@@ -10,23 +10,23 @@ index 23171e6..bd28b39 100644
 +    await avatar_assets.start_cleanup_scheduler()
 @@ -79,0 +83 @@ async def lifespan(app: FastAPI):
 +    await avatar_assets.stop_cleanup_scheduler()
-@@ -140,0 +145 @@ app.include_router(frame_router, prefix=api_config.api_prefix)
+@@ -140,0 +145 @@ app.include_router(voice_assets_router, prefix=api_config.api_prefix)
 +app.include_router(avatar_assets_router, prefix=api_config.api_prefix)
 diff --git a/api/routers/__init__.py b/api/routers/__init__.py
-index 648a9a3..8cfd860 100644
+index 648a9a3..b27887b 100644
 --- a/api/routers/__init__.py
 +++ b/api/routers/__init__.py
-@@ -27,0 +28 @@ from api.routers.frame import router as frame_router
+@@ -27,0 +28 @@ from api.routers.voice_assets import router as voice_assets_router
 +from api.routers.avatar_assets import router as avatar_assets_router
 @@ -40,0 +42 @@ __all__ = [
 +    "avatar_assets_router",
 diff --git a/api/routers/video.py b/api/routers/video.py
-index abf2111..a61f772 100644
+index abf2111..3e7d136 100644
 --- a/api/routers/video.py
 +++ b/api/routers/video.py
 @@ -20,0 +21 @@ import uuid
 +from api import avatar_assets
-@@ -34,0 +36,27 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
+@@ -34,0 +36,28 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
 +def _talking_material_asset_ids(request_body: VideoGenerateRequest) -> list[str]:
 +    talking_material = request_body.talking_material
 +    if talking_material is None:
@@ -57,30 +57,27 @@ index abf2111..a61f772 100644
 +    return asset_ids
 @@ -107,0 +137 @@ async def generate_video_sync(
 +    avatar_asset_ids = []
-@@ -162,4 +193,8 @@ async def generate_video_sync(
+@@ -157,3 +187,5 @@ async def generate_video_sync(
 -        asset_ids, external_segments = _lease_external_segments(
 -            request_body, f"sync-{uuid.uuid4().hex}"
 -        )
--        if request_body.tts_speed is not None:
 +        task_id = f"sync-{uuid.uuid4().hex}"
 +        asset_ids, external_segments = _lease_external_segments(request_body, task_id)
 +        avatar_asset_ids = _lease_talking_material_assets(request_body, task_id)
 +        if request_body.talking_material is not None:
 +            video_params["talking_material"] = request_body.talking_material.model_dump()
-+        if request_body.tts_speed is not None:
-             video_params["tts_speed"] = request_body.tts_speed
-@@ -212,0 +247,2 @@ async def generate_video_sync(
+@@ -214,0 +247,2 @@ async def generate_video_sync(
 +        if avatar_asset_ids:
 +            avatar_assets.release_avatar_assets(avatar_asset_ids)
-@@ -241,0 +278 @@ async def generate_video_async(
+@@ -243,0 +278 @@ async def generate_video_async(
 +    avatar_asset_ids = []
-@@ -304,0 +342,7 @@ async def generate_video_async(
+@@ -306,0 +342,2 @@ async def generate_video_async(
 +            if request_body.talking_material is not None:
 +                video_params["talking_material"] = request_body.talking_material.model_dump()
-@@ -341,0 +386,2 @@ async def generate_video_async(
+@@ -348,0 +386,2 @@ async def generate_video_async(
 +                if avatar_asset_ids:
 +                    avatar_assets.release_avatar_assets(avatar_asset_ids)
-@@ -354,0 +401,7 @@ async def generate_video_async(
+@@ -361,0 +401,7 @@ async def generate_video_async(
 +        if request_body.talking_material is not None:
 +            try:
 +                avatar_asset_ids = _lease_talking_material_assets(request_body, task.task_id)
@@ -88,11 +85,11 @@ index abf2111..a61f772 100644
 +                task_manager.cancel_task(task.task_id)
 +                raise
 +
-@@ -372,0 +426,2 @@ async def generate_video_async(
+@@ -375,0 +422,2 @@ async def generate_video_async(
 +        if avatar_asset_ids:
 +            avatar_assets.release_avatar_assets(avatar_asset_ids)
 diff --git a/api/schemas/video.py b/api/schemas/video.py
-index 28faf9b..9f80d6d 100644
+index 986bafa..f8a0ae7 100644
 --- a/api/schemas/video.py
 +++ b/api/schemas/video.py
 @@ -40,0 +41,13 @@ class NarrationSegment(BaseModel):
