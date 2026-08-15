@@ -142,5 +142,57 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertIn("videoModeTag(x)", VIDEO_HTML)
 
 
+class HeyGenImageAssetReuseTests(unittest.TestCase):
+    def test_cached_image_asset_skips_upload(self):
+        with patch.object(video, "_heygen_retry_net") as retry:
+            asset_id = video._resolve_heygen_image_asset(
+                Path("avatar.jpg"), direct=True, image_asset_id="asset-cached")
+        self.assertEqual("asset-cached", asset_id)
+        retry.assert_not_called()
+
+    def test_direct_generator_accepts_reused_image_asset(self):
+        image = Path("avatar.jpg")
+        audio = Path("speech.mp3")
+        expected = {"video_id": "video-1", "image_asset_id": "asset-cached"}
+        with patch.object(video, "_resolve_out_file", side_effect=[image, audio]), \
+                patch.object(video, "_ensure_heygen_image_jpg", return_value=image), \
+                patch.object(video, "_ensure_heygen_audio_mp3", return_value=audio), \
+                patch.object(video, "_resolve_heygen_image_asset", return_value="asset-cached") as resolve, \
+                patch.object(video, "_generate_heygen_from_uploaded_assets", return_value=expected) as generate:
+            result = video.generate_heygen_video_direct(
+                "avatar.jpg", "speech.mp3", "1080p", "9:16", "medium",
+                image_asset_id="asset-cached")
+        self.assertEqual(expected, result)
+        resolve.assert_called_once_with(image, True, "asset-cached")
+        generate.assert_called_once_with(
+            "asset-cached", audio, "1080p", "9:16", "medium", direct=True)
+
+    def test_legacy_five_argument_dispatch_remains_valid(self):
+        expected = {"video_id": "video-legacy", "image_asset_id": "asset-legacy"}
+        with patch.object(video, "_HEYGEN_DIRECT", False), \
+                patch.object(video, "_generate_heygen_relay", return_value=expected) as relay:
+            result = video.generate_heygen_video(
+                "avatar.jpg", "speech.mp3", "1080p", "9:16", "medium")
+        self.assertEqual(expected, result)
+        relay.assert_called_once_with(
+            "avatar.jpg", "speech.mp3", "1080p", "9:16", "medium",
+            image_asset_id=None)
+
+    def test_poll_failure_after_relay_video_id_is_billed_once(self):
+        def invoke(fn, _label):
+            return fn()
+
+        with patch.object(video, "_heygen_retry_net", side_effect=invoke), \
+                patch.object(video, "_heygen_retry_429", side_effect=invoke), \
+                patch.object(video, "_heygen_upload_asset", return_value="audio-1"), \
+                patch.object(video, "_heygen_create_video", return_value="video-1") as create, \
+                patch.object(video, "_heygen_poll_video", side_effect=TimeoutError("poll timeout")):
+            with self.assertRaises(video.HeyGenBilledError):
+                video._generate_heygen_from_uploaded_assets(
+                    "image-1", Path("speech.mp3"), "1080p", "9:16", "medium",
+                    direct=False)
+        self.assertEqual(1, create.call_count)
+
+
 if __name__ == "__main__":
     unittest.main()

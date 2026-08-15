@@ -1830,85 +1830,100 @@ def _download_video_file_direct(url, prefix="vid"):
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
 
-def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):
-    """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数(honor resolution+expressiveness)，
-    只是 direct=True 走 api.heygen.com 出境。原 v2 talking_photo 直连丢了 expressiveness 且忽略 resolution
-    →出片效果不同+被硬编码720p(用户反馈"效果不一样")；改回 v3 image 后实测 1080×1920 104s。"""
-    image_fp = _resolve_out_file(image_file)
-    audio_fp = _resolve_out_file(audio_file)
-    if not image_fp or not audio_fp:
-        raise ValueError("视频素材文件不存在")
-    image_fp = _ensure_heygen_image_jpg(image_fp)
-    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    # 素材上传对瞬时网络错误重试：上传不计费(计费在 create-video)，重试安全。隧道抖动一下不该
-    # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
-    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp, direct=True), "口播传图")
-    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
-    with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
-        # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
-        # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
-        video_id = _heygen_retry_429(
-            lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True),
-            "口播直连")
-        # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
+def _resolve_heygen_image_asset(image_fp, direct, image_asset_id=None):
+    if image_asset_id:
+        return image_asset_id
+    return _heygen_retry_net(lambda: _heygen_upload_asset(image_fp, direct=direct), "口播传图")
+
+
+def _generate_heygen_from_uploaded_assets(image_asset_id, audio_fp, resolution, ratio, motion, direct):
+    upload_label = "口播传音" if direct else "口播中转传音"
+    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=direct), upload_label)
+    slot = heygen_slot("口播直连") if direct else heygen_slot("口播中转")
+    with slot:
+        if direct:
+            video_id = _heygen_retry_429(
+                lambda: _heygen_create_video(
+                    image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True),
+                "口播直连")
+        else:
+            video_id = _heygen_retry_429(
+                lambda: _heygen_create_video(
+                    image_asset_id, audio_asset_id, resolution, ratio, motion),
+                "口播中转")
+        # create 返回 provider ID 后即已计费；后续失败只上抛，绝不重新提交。
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
-            video_file = _download_video_file_direct(info["video_url"], "heygen")
+            if direct:
+                info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
+                video_file = _download_video_file_direct(info["video_url"], "heygen")
+            else:
+                info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
+                video_file = _download_video_file(info["video_url"], "heygen")
             cover = _extract_first_frame_cover(video_file)
         except Exception as e:
-            raise HeyGenBilledError("口播已提交 HeyGen(video_id=%s，已计费)，后续失败: %s"
-                                    % (video_id, str(e)[:180])) from e
+            raise HeyGenBilledError(
+                "口播已提交 HeyGen(video_id=%s，已计费)，后续失败: %s"
+                % (video_id, str(e)[:180])) from e
     ret = {
-        "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
-        "image_asset_id": image_asset_id, "audio_asset_id": audio_asset_id,
-        "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
-        "duration": info.get("duration"), "provider": "heygen_direct",
+        "video_id": video_id,
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "image_asset_id": image_asset_id,
+        "audio_asset_id": audio_asset_id,
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration"),
     }
+    if direct:
+        ret["provider"] = "heygen_direct"
     if cover:
         ret["image_file"] = cover
         ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
-def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
-    if _HEYGEN_DIRECT and HEYGEN_API_KEY:
-        try:
-            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
-        except HeyGenBilledError:
-            raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
-        except Exception as e:
-            print("[heygen] 直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
+
+def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion,
+                                  image_asset_id=None):
+    """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数，
+    只是 direct=True 走 api.heygen.com 出境；保留旧五参数调用并允许复用已上传图片。"""
     image_fp = _resolve_out_file(image_file)
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
-    image_fp = _ensure_heygen_image_jpg(image_fp)
-    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
-    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp), "口播中转传图")
-    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
-    # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
-    with heygen_slot("口播中转"):
-        video_id = _heygen_retry_429(
-            lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion), "口播中转")
-        # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
-        # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
-        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
-        video_file = _download_video_file(info["video_url"], "heygen")
-        cover = _extract_first_frame_cover(video_file)
-    ret = {
-        "video_id": video_id,
-        "image_asset_id": image_asset_id,
-        "audio_asset_id": audio_asset_id,
-        "video_file": video_file,
-        "video_url": _file_url(video_file),
-        "source_video_url": info.get("video_url"),
-        "thumbnail_url": info.get("thumbnail_url"),
-        "duration": info.get("duration"),
-    }
-    if cover:
-        ret["image_file"] = cover
-        ret["image_url"] = public_url(cover, "image/jpeg")
-    return ret
+    image_asset_id = _resolve_heygen_image_asset(
+        _ensure_heygen_image_jpg(image_fp), True, image_asset_id)
+    return _generate_heygen_from_uploaded_assets(
+        image_asset_id, _ensure_heygen_audio_mp3(audio_fp),
+        resolution, ratio, motion, direct=True)
+
+
+def _generate_heygen_relay(image_file, audio_file, resolution, ratio, motion,
+                           image_asset_id=None):
+    image_fp = _resolve_out_file(image_file)
+    audio_fp = _resolve_out_file(audio_file)
+    if not image_fp or not audio_fp:
+        raise ValueError("视频素材文件不存在")
+    image_asset_id = _resolve_heygen_image_asset(
+        _ensure_heygen_image_jpg(image_fp), False, image_asset_id)
+    return _generate_heygen_from_uploaded_assets(
+        image_asset_id, _ensure_heygen_audio_mp3(audio_fp),
+        resolution, ratio, motion, direct=False)
+
+
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
+                          image_asset_id=None):
+    if _HEYGEN_DIRECT and HEYGEN_API_KEY:
+        try:
+            return generate_heygen_video_direct(
+                image_file, audio_file, resolution, ratio, motion,
+                image_asset_id=image_asset_id)
+        except HeyGenBilledError:
+            raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
+        except Exception as e:
+            print("[heygen] 直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
+    return _generate_heygen_relay(
+        image_file, audio_file, resolution, ratio, motion,
+        image_asset_id=image_asset_id)
 
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。

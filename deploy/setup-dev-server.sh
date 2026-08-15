@@ -53,6 +53,12 @@ if sudo grep -qE '^(WX_PAY_|WX_MP_)' /home/ubuntu/auth-service/auth.env /home/ub
   exit 1
 fi
 sudo test -f /etc/huangque/runninghub.env || printf "RUNNINGHUB_API_KEY=\n" | sudo tee /etc/huangque/runninghub.env >/dev/null
+PIXELLE_TALKING_ENV=/etc/huangque/pixelle-talking.env
+if ! sudo test -f "$PIXELLE_TALKING_ENV"; then
+  sudo sh -c 'umask 077; token="$(openssl rand -hex 48)"; printf "PIXELLE_TALKING_INTERNAL_TOKEN=%s\n" "$token" > "$1"' sh "$PIXELLE_TALKING_ENV"
+fi
+sudo chown root:root "$PIXELLE_TALKING_ENV"
+sudo chmod 600 "$PIXELLE_TALKING_ENV"
 sudo chmod 600 /home/ubuntu/auth-service/auth.env /home/ubuntu/content-api/content.env /etc/huangque/runninghub.env
 sudo chown -R ubuntu:ubuntu /home/ubuntu
 

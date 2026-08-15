@@ -1283,6 +1283,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/internal/pixelle/talking-clip":
+            from . import pixelle_talking
+            return pixelle_talking.handle_http_request(self)
         if p.startswith("/api/v2/edit/"):
             route = self.path if "/webhooks/" in p else p; return ai_edit_v2_api.dispatch(self, "POST", route, None if "/webhooks/" in p else verify(self._token()))
         if p.startswith("/api/v3/edit/"):
