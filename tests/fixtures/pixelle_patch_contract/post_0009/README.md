@@ -19,5 +19,9 @@ Provenance:
 
 Integrity:
 
-- file hashes are recorded in `manifest.json`
-- the deployment test verifies each fixture file's SHA-256 before running `git apply`
+- the exact source bytes are stored in `post_0009.zip`, not as tracked text files
+- the archive SHA-256 and each extracted file's SHA-256 are recorded in `manifest.json`
+- the archive is deterministic: entries are lexicographically ordered, uncompressed,
+  timestamped `1980-01-01T00:00:00`, and stored with mode `100644`
+- the deployment test verifies the immutable archive hash, exact member allowlist, and
+  each extracted file hash before running `git apply` in a temporary repository

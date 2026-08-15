@@ -12,6 +12,15 @@
     "0008-support-tts-speed-api.patch",
     "0009-support-single-line-caption-cues.patch"
   ],
+  "archive": {
+    "path": "post_0009.zip",
+    "sha256": "f48de2a468b0f0829677a225ba013cd7d6340d203e730f479c192e03046b73b0",
+    "format": "zip",
+    "compression": "stored",
+    "member_order": "lexicographic",
+    "member_timestamp": "1980-01-01T00:00:00",
+    "member_mode": "100644"
+  },
   "files": {
     "api/app.py": {
       "sha256": "af6679f1065eb31295bd6e6f7c49c21ab916bbe302802fea1103fded02cf574a"

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,6 +73,29 @@ def load_patch_fixture_manifest() -> dict:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
+def extract_patch_fixture(repo: Path, manifest: dict) -> None:
+    archive_path = PATCH_FIXTURE_ROOT / manifest["archive"]["path"]
+    if not archive_path.is_file():
+        raise AssertionError(f"missing pixelle patch fixture archive: {archive_path}")
+    if manifest["archive"]["sha256"] != sha256_file(archive_path):
+        raise AssertionError(f"fixture archive hash mismatch: {archive_path.name}")
+
+    expected_paths = set(manifest["files"])
+    with zipfile.ZipFile(archive_path) as archive:
+        member_paths = [member.filename for member in archive.infolist()]
+        if len(member_paths) != len(expected_paths) or set(member_paths) != expected_paths:
+            raise AssertionError("fixture archive members do not match manifest")
+        for relpath in sorted(expected_paths):
+            target = repo / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relpath))
+
+    for relpath, expected in manifest["files"].items():
+        actual_path = repo / relpath
+        if expected["sha256"] != sha256_file(actual_path):
+            raise AssertionError(f"fixture hash mismatch: {relpath}")
+
+
 def patch_contract_git_env(temp_root: Path) -> dict[str, str]:
     control_root = temp_root / "git-env"
     home = control_root / "home"
@@ -115,20 +139,9 @@ def run_git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subpro
 
 def build_patch_contract_repo(temp_root: Path, git_env: dict[str, str] | None = None) -> Path:
     manifest = load_patch_fixture_manifest()
-    fixture_api_root = PATCH_FIXTURE_ROOT / "api"
-    if not fixture_api_root.is_dir():
-        raise AssertionError(f"missing pixelle patch fixture tree: {fixture_api_root}")
-
     git_env = git_env or patch_contract_git_env(temp_root)
     repo = temp_root / "repo"
-    shutil.copytree(PATCH_FIXTURE_ROOT, repo, dirs_exist_ok=True)
-    (repo / "manifest.json").unlink(missing_ok=True)
-    for relpath, expected in manifest["files"].items():
-        actual_path = repo / relpath
-        if not actual_path.is_file():
-            raise AssertionError(f"missing fixture file: {actual_path}")
-        if expected["sha256"] != sha256_file(actual_path):
-            raise AssertionError(f"fixture hash mismatch: {relpath}")
+    extract_patch_fixture(repo, manifest)
 
     result = run_git(repo, "init", env=git_env)
     if result.returncode != 0:
@@ -777,6 +790,30 @@ class PixelleDeploymentTests(unittest.TestCase):
                 },
                 set(filter(None, diff_names.stdout.splitlines())),
             )
+
+    def test_patch_contract_archive_extracts_exact_manifest_files_without_mutation(self):
+        manifest = load_patch_fixture_manifest()
+        self.assertFalse(
+            (PATCH_FIXTURE_ROOT / "api").exists(),
+            "byte-pinned source must only be tracked inside the binary archive",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            archive_path = PATCH_FIXTURE_ROOT / manifest["archive"]["path"]
+            archive_hash = sha256_file(archive_path)
+
+            extract_patch_fixture(repo, manifest)
+
+            extracted_files = {
+                path.relative_to(repo).as_posix()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(set(manifest["files"]), extracted_files)
+            for relpath, expected in manifest["files"].items():
+                self.assertEqual(expected["sha256"], sha256_file(repo / relpath))
+            self.assertEqual(archive_hash, sha256_file(archive_path))
 
     def test_patch_contract_repo_ignores_global_hooks_and_init_templates(self):
         with tempfile.TemporaryDirectory() as directory:
