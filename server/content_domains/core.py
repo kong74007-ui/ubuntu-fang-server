@@ -142,6 +142,7 @@ def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
     return (rel.startswith("video/") or
+            name.startswith(".pixelle-talking-") or
             rel.startswith("audio/voice_preview_") or
             rel.startswith("audio/clone_") or
             rel.startswith("audio/vid_aud_") or

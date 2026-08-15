@@ -10,6 +10,8 @@ import pathlib
 import re
 import tempfile
 import threading
+import time
+from collections import OrderedDict
 
 from . import video
 from .core import OUT_DIR, _resolve_out_file
@@ -17,8 +19,10 @@ from .core import OUT_DIR, _resolve_out_file
 
 TALKING_CLIP_CONCURRENCY = 2
 _TALKING_CLIP_SLOTS = threading.BoundedSemaphore(TALKING_CLIP_CONCURRENCY)
-_IMAGE_ASSET_CACHE = {}
-_IMAGE_HASH_LOCKS = {}
+IMAGE_ASSET_CACHE_MAX = 256
+IMAGE_ASSET_CACHE_TTL_SECONDS = 6 * 60 * 60
+_IMAGE_ASSET_CACHE = OrderedDict()
+_IMAGE_UPLOADS = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
 
 _MAX_INPUT_BYTES = 35 * 1024 * 1024
@@ -45,6 +49,13 @@ class InternalTalkingAuthError(RuntimeError):
 
 class TalkingPayloadError(ValueError):
     pass
+
+
+class _ImageUpload:
+    def __init__(self):
+        self.event = threading.Event()
+        self.asset_id = None
+        self.error = None
 
 
 def validate_internal_token(provided, expected):
@@ -145,17 +156,100 @@ def _write_private_temp(data, suffix):
         raise
 
 
+def _new_private_temp(suffix):
+    pathlib.Path(OUT_DIR).mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(
+        prefix=".pixelle-talking-", suffix=suffix, dir=str(OUT_DIR))
+    path = pathlib.Path(name)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(path, 0o600)
+    finally:
+        os.close(fd)
+    return path
+
+
 def _relative_temp_name(path):
     return path.relative_to(pathlib.Path(OUT_DIR)).as_posix()
 
 
-def _image_hash_lock(image_sha256):
+def _prune_image_cache_locked(now):
+    stale = [key for key, (_asset_id, expires_at) in _IMAGE_ASSET_CACHE.items()
+             if expires_at <= now]
+    for key in stale:
+        _IMAGE_ASSET_CACHE.pop(key, None)
+
+
+def _get_cached_image_asset(image_sha256):
+    now = time.monotonic()
     with _IMAGE_CACHE_LOCK:
-        lock = _IMAGE_HASH_LOCKS.get(image_sha256)
-        if lock is None:
-            lock = threading.Lock()
-            _IMAGE_HASH_LOCKS[image_sha256] = lock
-        return lock
+        _prune_image_cache_locked(now)
+        entry = _IMAGE_ASSET_CACHE.get(image_sha256)
+        if entry is None:
+            return None
+        _IMAGE_ASSET_CACHE.move_to_end(image_sha256)
+        return entry[0]
+
+
+def _cache_image_asset(image_sha256, image_asset_id):
+    now = time.monotonic()
+    with _IMAGE_CACHE_LOCK:
+        _prune_image_cache_locked(now)
+        _IMAGE_ASSET_CACHE[image_sha256] = (
+            image_asset_id, now + IMAGE_ASSET_CACHE_TTL_SECONDS)
+        _IMAGE_ASSET_CACHE.move_to_end(image_sha256)
+        while len(_IMAGE_ASSET_CACHE) > IMAGE_ASSET_CACHE_MAX:
+            _IMAGE_ASSET_CACHE.popitem(last=False)
+
+
+def _evict_image_asset(image_sha256, image_asset_id):
+    with _IMAGE_CACHE_LOCK:
+        entry = _IMAGE_ASSET_CACHE.get(image_sha256)
+        if entry is not None and entry[0] == image_asset_id:
+            _IMAGE_ASSET_CACHE.pop(image_sha256, None)
+
+
+def _resolve_image_asset(image_sha256, image_path):
+    cached = _get_cached_image_asset(image_sha256)
+    if cached:
+        return cached
+
+    with _IMAGE_CACHE_LOCK:
+        _prune_image_cache_locked(time.monotonic())
+        entry = _IMAGE_ASSET_CACHE.get(image_sha256)
+        if entry is not None:
+            _IMAGE_ASSET_CACHE.move_to_end(image_sha256)
+            return entry[0]
+        upload = _IMAGE_UPLOADS.get(image_sha256)
+        owner = upload is None
+        if owner:
+            upload = _ImageUpload()
+            _IMAGE_UPLOADS[image_sha256] = upload
+
+    if not owner:
+        upload.event.wait()
+        if upload.error is not None:
+            raise upload.error
+        return upload.asset_id
+
+    try:
+        asset_id = str(video.upload_heygen_image_asset(
+            _relative_temp_name(image_path)) or "").strip()
+        if not asset_id:
+            raise RuntimeError("provider image upload omitted asset ID")
+        _cache_image_asset(image_sha256, asset_id)
+        upload.asset_id = asset_id
+        return asset_id
+    except Exception as error:
+        upload.error = error
+        raise
+    finally:
+        with _IMAGE_CACHE_LOCK:
+            if _IMAGE_UPLOADS.get(image_sha256) is upload:
+                _IMAGE_UPLOADS.pop(image_sha256, None)
+            upload.event.set()
 
 
 def _generate_with_image_asset(validated, image_path, audio_path, image_asset_id):
@@ -166,77 +260,100 @@ def _generate_with_image_asset(validated, image_path, audio_path, image_asset_id
         validated["ratio"],
         validated["motion"],
         image_asset_id=image_asset_id,
+        internal=True,
     )
 
 
-def _cache_result_image_asset(image_sha256, result):
+def _result_image_asset(result):
     effective_asset_id = str(result.get("image_asset_id") or "").strip()
     if not effective_asset_id:
         if result.get("video_id"):
             raise video.HeyGenBilledError(
                 "provider result omitted image_asset_id after video creation")
         raise RuntimeError("provider result omitted image_asset_id")
-    with _IMAGE_CACHE_LOCK:
-        _IMAGE_ASSET_CACHE[image_sha256] = effective_asset_id
+    return effective_asset_id
+
+
+def _prepare_provider_media(image_path, audio_path):
+    derivatives = []
+    provider_image = image_path
+    provider_audio = audio_path
+    try:
+        if image_path.suffix.lower() not in video.HEYGEN_IMAGE_EXTS:
+            provider_image = _new_private_temp(".jpg")
+            derivatives.append(provider_image)
+            provider_image = video._ensure_heygen_image_jpg(
+                image_path, output_path=provider_image)
+        if audio_path.suffix.lower() != ".mp3":
+            provider_audio = _new_private_temp(".mp3")
+            derivatives.append(provider_audio)
+            provider_audio = video._ensure_heygen_audio_mp3(
+                audio_path, output_path=provider_audio)
+        return provider_image, provider_audio, derivatives
+    except Exception:
+        for path in derivatives:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def generate_clip(payload):
     validated = _validated_payload(payload)
-    with _TALKING_CLIP_SLOTS:
-        image_path = _write_private_temp(
-            validated["image_data"], validated["image_suffix"])
-        audio_path = None
+    image_path = _write_private_temp(
+        validated["image_data"], validated["image_suffix"])
+    audio_path = None
+    derivatives = []
+    try:
+        audio_path = _write_private_temp(
+            validated["audio_data"], validated["audio_suffix"])
+        provider_image, provider_audio, derivatives = _prepare_provider_media(
+            image_path, audio_path)
+        image_sha256 = validated["image_sha256"]
+        image_asset_id = _resolve_image_asset(image_sha256, provider_image)
         try:
-            audio_path = _write_private_temp(
-                validated["audio_data"], validated["audio_suffix"])
-            image_sha256 = validated["image_sha256"]
-            with _IMAGE_CACHE_LOCK:
-                image_asset_id = _IMAGE_ASSET_CACHE.get(image_sha256)
-            if image_asset_id:
-                return _generate_with_image_asset(
-                    validated, image_path, audio_path, image_asset_id)
-
-            with _image_hash_lock(image_sha256):
-                with _IMAGE_CACHE_LOCK:
-                    image_asset_id = _IMAGE_ASSET_CACHE.get(image_sha256)
-                if image_asset_id:
-                    return _generate_with_image_asset(
-                        validated, image_path, audio_path, image_asset_id)
+            with _TALKING_CLIP_SLOTS:
                 result = _generate_with_image_asset(
-                    validated, image_path, audio_path, None)
-                _cache_result_image_asset(image_sha256, result)
-                return result
-        finally:
-            if audio_path is not None:
-                audio_path.unlink(missing_ok=True)
-            image_path.unlink(missing_ok=True)
+                    validated, provider_image, provider_audio, image_asset_id)
+        except video.HeyGenBilledError:
+            raise
+        except Exception:
+            _evict_image_asset(image_sha256, image_asset_id)
+            raise
+        effective_asset_id = _result_image_asset(result)
+        _cache_image_asset(image_sha256, effective_asset_id)
+        return result
+    finally:
+        for path in derivatives:
+            path.unlink(missing_ok=True)
+        if audio_path is not None:
+            audio_path.unlink(missing_ok=True)
+        image_path.unlink(missing_ok=True)
 
 
 def classify_error(error):
     if isinstance(error, InternalTalkingAuthError):
         return {
             "code": "internal_auth",
-            "detail": str(error),
+            "detail": "internal authentication failed",
             "retryable": False,
             "billed": False,
         }
     if isinstance(error, (TalkingPayloadError, ValueError, json.JSONDecodeError)):
         return {
             "code": "invalid_request",
-            "detail": str(error),
+            "detail": "invalid talking clip request",
             "retryable": False,
             "billed": False,
         }
     if isinstance(error, video.HeyGenBilledError):
         return {
             "code": "heygen_billed",
-            "detail": str(error),
+            "detail": "provider video was created but delivery failed",
             "retryable": False,
             "billed": True,
         }
     return {
         "code": "talking_bridge_error",
-        "detail": str(error),
+        "detail": "talking clip generation failed",
         "retryable": True,
         "billed": False,
     }
@@ -267,29 +384,88 @@ def _safe_provider_header(value, name):
     return value
 
 
+def _safe_log_request_id(value):
+    value = re.sub(r"[^A-Za-z0-9._:-]", "_", str(value or "-"))[:80]
+    return value or "-"
+
+
+def _redacted_diagnostic(error):
+    detail = str(error).replace("\r", " ").replace("\n", " ")
+    detail = re.sub(r"https?://[^\s]+", "<url>", detail, flags=re.IGNORECASE)
+    detail = re.sub(r"\b[A-Za-z]:\\[^\s]+", "<path>", detail)
+    detail = re.sub(r"(?<![A-Za-z0-9])/(?:[^/\s]+/)+[^\s]*", "<path>", detail)
+    detail = re.sub(r"\b[0-9A-Za-z_-]{48,}\b", "<redacted>", detail)
+    return detail[:400]
+
+
+def _log_failure(error, request_id):
+    print("[pixelle-talking] request_id=%s error=%s detail=%s" % (
+        _safe_log_request_id(request_id), error.__class__.__name__,
+        _redacted_diagnostic(error)), flush=True)
+
+
+def _resolve_result_artifact(value):
+    return _resolve_out_file(value)
+
+
+def _cleanup_result_artifacts(result, video_path=None):
+    paths = []
+    if video_path is not None:
+        paths.append(pathlib.Path(video_path))
+    if isinstance(result, dict):
+        for key in ("video_file", "image_file"):
+            path = _resolve_result_artifact(result.get(key))
+            if path is not None:
+                paths.append(pathlib.Path(path))
+    seen = set()
+    for path in paths:
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            _log_failure(error, "cleanup")
+
+
 def handle_http_request(handler):
+    result = None
+    video_path = None
+    request_id = "-"
     try:
         validate_loopback_address(handler.client_address[0])
         validate_internal_token(
             handler.headers.get("X-HQ-Pixelle-Token"),
             os.environ.get("PIXELLE_TALKING_INTERNAL_TOKEN"),
         )
-        result = generate_clip(handler._json_body_strict())
+        payload = handler._json_body_strict()
+        if isinstance(payload, dict):
+            request_id = payload.get("request_id") or "-"
+        result = generate_clip(payload)
         video_path = resolve_video_path(result)
         provider_video_id = _safe_provider_header(result.get("video_id"), "video_id")
         image_asset_id = _safe_provider_header(
             result.get("image_asset_id"), "image_asset_id")
     except Exception as error:
+        _log_failure(error, request_id)
+        _cleanup_result_artifacts(result, video_path)
         return handler._send(error_status(error), classify_error(error))
-    handler.send_response(200)
-    handler.send_header("Content-Type", "video/mp4")
-    handler.send_header("Content-Length", str(video_path.stat().st_size))
-    handler.send_header("X-Provider-Video-Id", provider_video_id)
-    handler.send_header("X-Provider-Image-Asset-Id", image_asset_id)
-    handler.end_headers()
-    with video_path.open("rb") as source:
-        while True:
-            chunk = source.read(1024 * 1024)
-            if not chunk:
-                break
-            handler.wfile.write(chunk)
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "video/mp4")
+        handler.send_header("Content-Length", str(video_path.stat().st_size))
+        handler.send_header("X-Provider-Video-Id", provider_video_id)
+        handler.send_header("X-Provider-Image-Asset-Id", image_asset_id)
+        handler.end_headers()
+        with video_path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+    except Exception as error:
+        _log_failure(error, request_id)
+        raise
+    finally:
+        _cleanup_result_artifacts(result, video_path)

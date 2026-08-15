@@ -193,6 +193,75 @@ class HeyGenImageAssetReuseTests(unittest.TestCase):
                     direct=False)
         self.assertEqual(1, create.call_count)
 
+    def test_internal_provider_mode_skips_cover_publication(self):
+        info = {
+            "video_url": "https://provider.invalid/video.mp4",
+            "thumbnail_url": "https://provider.invalid/thumb.jpg",
+            "duration": 7,
+        }
+
+        def invoke(fn, _label):
+            return fn()
+
+        with patch.object(video, "_heygen_retry_net", side_effect=invoke), \
+                patch.object(video, "_heygen_retry_429", side_effect=invoke), \
+                patch.object(video, "_heygen_upload_asset", return_value="audio-1"), \
+                patch.object(video, "_heygen_create_video", return_value="video-1"), \
+                patch.object(video, "_heygen_poll_video", return_value=info), \
+                patch.object(video, "_download_video_file", return_value="video/internal.mp4"), \
+                patch.object(video, "_extract_first_frame_cover") as extract, \
+                patch.object(video, "public_url") as publish:
+            result = video._generate_heygen_from_uploaded_assets(
+                "image-1", Path("speech.mp3"), "1080p", "9:16", "medium",
+                direct=False, internal=True)
+
+        self.assertEqual("video/internal.mp4", result["video_file"])
+        self.assertNotIn("image_file", result)
+        self.assertNotIn("image_url", result)
+        extract.assert_not_called()
+        publish.assert_not_called()
+
+    def test_legacy_provider_mode_still_returns_published_cover(self):
+        info = {"video_url": "remote", "thumbnail_url": None, "duration": 7}
+
+        def invoke(fn, _label):
+            return fn()
+
+        with patch.object(video, "_heygen_retry_net", side_effect=invoke), \
+                patch.object(video, "_heygen_retry_429", side_effect=invoke), \
+                patch.object(video, "_heygen_upload_asset", return_value="audio-1"), \
+                patch.object(video, "_heygen_create_video", return_value="video-1"), \
+                patch.object(video, "_heygen_poll_video", return_value=info), \
+                patch.object(video, "_download_video_file", return_value="video/legacy.mp4"), \
+                patch.object(video, "_extract_first_frame_cover", return_value="image/cover.jpg"), \
+                patch.object(video, "public_url", return_value="https://cdn.invalid/cover.jpg"):
+            result = video._generate_heygen_from_uploaded_assets(
+                "image-1", Path("speech.mp3"), "1080p", "9:16", "medium",
+                direct=False)
+
+        self.assertEqual("image/cover.jpg", result["image_file"])
+        self.assertEqual("https://cdn.invalid/cover.jpg", result["image_url"])
+
+    def test_cover_publication_failure_after_video_id_is_billed(self):
+        info = {"video_url": "remote", "thumbnail_url": None, "duration": 7}
+
+        def invoke(fn, _label):
+            return fn()
+
+        with patch.object(video, "_heygen_retry_net", side_effect=invoke), \
+                patch.object(video, "_heygen_retry_429", side_effect=invoke), \
+                patch.object(video, "_heygen_upload_asset", return_value="audio-1"), \
+                patch.object(video, "_heygen_create_video", return_value="video-1") as create, \
+                patch.object(video, "_heygen_poll_video", return_value=info), \
+                patch.object(video, "_download_video_file", return_value="video/legacy.mp4"), \
+                patch.object(video, "_extract_first_frame_cover", return_value="image/cover.jpg"), \
+                patch.object(video, "public_url", side_effect=RuntimeError("publication failed")):
+            with self.assertRaises(video.HeyGenBilledError):
+                video._generate_heygen_from_uploaded_assets(
+                    "image-1", Path("speech.mp3"), "1080p", "9:16", "medium",
+                    direct=False)
+        self.assertEqual(1, create.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()

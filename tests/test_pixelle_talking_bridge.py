@@ -4,9 +4,13 @@ import hashlib
 import http.client
 import importlib
 import json
+import os
+import re
+import shutil
 import sys
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +45,13 @@ def _payload(image_bytes=IMAGE_BYTES, image_sha256=None, request_id="request-1")
     }
 
 
+def _converted_payload(image_bytes=IMAGE_BYTES, request_id="request-1"):
+    payload = _payload(image_bytes=image_bytes, request_id=request_id)
+    payload["image_data"] = _data_url("image/webp", image_bytes)
+    payload["audio_data"] = _data_url("audio/wav", AUDIO_BYTES)
+    return payload
+
+
 def _bridge():
     return importlib.import_module("content_domains.pixelle_talking")
 
@@ -56,7 +67,7 @@ def test_billed_error_is_not_retryable():
     error = bridge.classify_error(video.HeyGenBilledError("billed"))
     assert error == {
         "code": "heygen_billed",
-        "detail": "billed",
+        "detail": "provider video was created but delivery failed",
         "retryable": False,
         "billed": True,
     }
@@ -70,7 +81,7 @@ def test_bridge_uses_two_slots():
 @pytest.fixture(autouse=True)
 def reset_bridge_cache():
     bridge = _bridge()
-    for name in ("_IMAGE_ASSET_CACHE", "_IMAGE_HASH_LOCKS"):
+    for name in ("_IMAGE_ASSET_CACHE", "_IMAGE_UPLOADS", "_IMAGE_HASH_LOCKS"):
         value = getattr(bridge, name, None)
         if value is not None:
             value.clear()
@@ -102,14 +113,17 @@ def test_temporary_inputs_are_deleted_after_success(tmp_path, monkeypatch):
     monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
     seen = []
 
-    def fake_generate(image_file, audio_file, resolution, ratio, motion, image_asset_id=None):
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "image-asset-1")
+
+    def fake_generate(image_file, audio_file, resolution, ratio, motion,
+                      image_asset_id=None, internal=False):
         image_path = tmp_path / image_file
         audio_path = tmp_path / audio_file
         assert image_path.read_bytes() == IMAGE_BYTES
         assert audio_path.read_bytes() == AUDIO_BYTES
         seen.extend([image_path, audio_path])
-        assert (resolution, ratio, motion, image_asset_id) == (
-            "1080p", "9:16", "medium", None)
+        assert (resolution, ratio, motion, image_asset_id, internal) == (
+            "1080p", "9:16", "medium", "image-asset-1", True)
         return {
             "video_id": "video-1",
             "image_asset_id": "image-asset-1",
@@ -131,33 +145,190 @@ def test_temporary_inputs_are_deleted_after_provider_error(tmp_path, monkeypatch
         seen.extend([tmp_path / image_file, tmp_path / audio_file])
         raise RuntimeError("provider failed")
 
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "image-asset-1")
     monkeypatch.setattr(video, "generate_heygen_video", fail)
     with pytest.raises(RuntimeError, match="provider failed"):
         bridge.generate_clip(_payload())
     assert seen and all(not path.exists() for path in seen)
 
 
-def test_concurrent_same_hash_upload_is_coalesced(tmp_path, monkeypatch):
+def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypatch):
     bridge = _bridge()
     monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
-    calls = []
-    calls_lock = threading.Lock()
+    derivatives = []
+    lock = threading.Lock()
+
+    def convert(source, output_path=None):
+        assert output_path is not None
+        if os.name != "nt":
+            assert (output_path.stat().st_mode & 0o777) == 0o600
+        output_path.write_bytes(b"converted:" + source.read_bytes())
+        with lock:
+            derivatives.append(output_path)
+        return output_path
+
+    monkeypatch.setattr(video, "_ensure_heygen_image_jpg", convert)
+    monkeypatch.setattr(video, "_ensure_heygen_audio_mp3", convert)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-shared")
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: {
+        "video_id": "video", "image_asset_id": "asset-shared", "video_file": "video/result.mp4"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(bridge.generate_clip, [
+            _converted_payload(request_id="a"),
+            _converted_payload(request_id="b"),
+        ]))
+
+    assert len(derivatives) == 4
+    assert len({path.name for path in derivatives}) == 4
+    assert all(path.name.startswith(".pixelle-talking-") for path in derivatives)
+    assert all(core._sensitive_output_file(path.name) for path in derivatives)
+    assert all(not path.exists() for path in derivatives)
+
+
+def test_concurrent_same_hash_coalesces_only_image_upload(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+    uploads = []
+    generations = []
+
+    def upload(_image_file):
+        uploads.append("upload")
+        upload_started.set()
+        assert release_upload.wait(2)
+        return "image-asset-shared"
 
     def fake_generate(*_args, image_asset_id=None, **_kwargs):
-        with calls_lock:
-            calls.append(image_asset_id)
-        time.sleep(0.05)
+        generations.append(image_asset_id)
         return {
-            "video_id": "video-%d" % len(calls),
-            "image_asset_id": image_asset_id or "image-asset-shared",
+            "video_id": "video-%d" % len(generations),
+            "image_asset_id": image_asset_id,
             "video_file": "video/result.mp4",
         }
 
+    monkeypatch.setattr(video, "upload_heygen_image_asset", upload)
     monkeypatch.setattr(video, "generate_heygen_video", fake_generate)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(bridge.generate_clip, [_payload(request_id="a"), _payload(request_id="b")]))
+        futures = [pool.submit(bridge.generate_clip, _payload(request_id=value)) for value in ("a", "b")]
+        assert upload_started.wait(2)
+        time.sleep(0.05)
+        assert generations == []
+        release_upload.set()
+        results = [future.result(timeout=2) for future in futures]
     assert len(results) == 2
-    assert calls == [None, "image-asset-shared"]
+    assert uploads == ["upload"]
+    assert generations == ["image-asset-shared", "image-asset-shared"]
+    assert bridge._IMAGE_UPLOADS == {}
+
+
+def test_failed_image_upload_releases_waiters_and_cleans_coordination(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def fail_upload(_image_file):
+        upload_started.set()
+        assert release_upload.wait(2)
+        raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", fail_upload)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(bridge.generate_clip, _payload(request_id="a"))
+        assert upload_started.wait(2)
+        second = pool.submit(bridge.generate_clip, _payload(request_id="b"))
+        time.sleep(0.05)
+        release_upload.set()
+        for future in (first, second):
+            with pytest.raises(RuntimeError, match="upload failed"):
+                future.result(timeout=2)
+    assert bridge._IMAGE_UPLOADS == {}
+
+
+def test_same_hash_waiter_does_not_consume_generation_slot(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+    unrelated_generated = threading.Event()
+    upload_count = 0
+    upload_lock = threading.Lock()
+
+    def upload(_image_file):
+        nonlocal upload_count
+        with upload_lock:
+            upload_count += 1
+            call = upload_count
+        if call == 1:
+            upload_started.set()
+            assert release_upload.wait(2)
+            return "shared"
+        return "unrelated"
+
+    def fake_generate(*_args, image_asset_id=None, **_kwargs):
+        if image_asset_id == "unrelated":
+            unrelated_generated.set()
+        return {"video_id": "v", "image_asset_id": image_asset_id, "video_file": "video/v.mp4"}
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", upload)
+    monkeypatch.setattr(video, "generate_heygen_video", fake_generate)
+    unrelated = _payload(image_bytes=IMAGE_BYTES + b"other", request_id="other")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        first = pool.submit(bridge.generate_clip, _payload(request_id="a"))
+        assert upload_started.wait(2)
+        waiter = pool.submit(bridge.generate_clip, _payload(request_id="b"))
+        third = pool.submit(bridge.generate_clip, unrelated)
+        assert unrelated_generated.wait(1)
+        release_upload.set()
+        first.result(timeout=2)
+        waiter.result(timeout=2)
+        third.result(timeout=2)
+
+
+def test_image_asset_remains_coalesced_when_first_generation_fails(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    uploads = []
+    generation_calls = 0
+    lock = threading.Lock()
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def generate(*_args, image_asset_id=None, **_kwargs):
+        nonlocal generation_calls
+        with lock:
+            generation_calls += 1
+            call = generation_calls
+        if call == 1:
+            raise RuntimeError("pre-video failure")
+        return {"video_id": "v2", "image_asset_id": image_asset_id, "video_file": "video/v.mp4"}
+
+    def upload(_image):
+        uploads.append(1)
+        upload_started.set()
+        assert release_upload.wait(2)
+        return "shared"
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", upload)
+    monkeypatch.setattr(video, "generate_heygen_video", generate)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(bridge.generate_clip, _payload(request_id="a"))
+        assert upload_started.wait(2)
+        second = pool.submit(bridge.generate_clip, _payload(request_id="b"))
+        time.sleep(0.05)
+        release_upload.set()
+        futures = [first, second]
+        outcomes = []
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=2))
+            except RuntimeError:
+                outcomes.append("failed")
+    assert uploads == [1]
+    assert "failed" in outcomes
+    assert any(isinstance(value, dict) for value in outcomes)
 
 
 def test_bridge_never_runs_more_than_two_provider_calls(tmp_path, monkeypatch):
@@ -185,6 +356,7 @@ def test_bridge_never_runs_more_than_two_provider_calls(tmp_path, monkeypatch):
             "video_file": "video/result.mp4",
         }
 
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda image: Path(image).stem)
     monkeypatch.setattr(video, "generate_heygen_video", fake_generate)
     payloads = [
         _payload(image_bytes=IMAGE_BYTES + bytes([i]), request_id=str(i))
@@ -198,6 +370,47 @@ def test_bridge_never_runs_more_than_two_provider_calls(tmp_path, monkeypatch):
         release.set()
         [future.result(timeout=2) for future in futures]
     assert maximum == 2
+
+
+def test_image_asset_cache_is_ttl_lru_bounded_and_cleans_upload_state(monkeypatch):
+    bridge = _bridge()
+    clock = [100.0]
+    monkeypatch.setattr(bridge.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(bridge, "IMAGE_ASSET_CACHE_MAX", 2)
+    monkeypatch.setattr(bridge, "IMAGE_ASSET_CACHE_TTL_SECONDS", 10)
+    bridge._IMAGE_ASSET_CACHE = OrderedDict()
+
+    bridge._cache_image_asset("a", "asset-a")
+    clock[0] += 1
+    bridge._cache_image_asset("b", "asset-b")
+    assert bridge._get_cached_image_asset("a") == "asset-a"
+    bridge._cache_image_asset("c", "asset-c")
+    assert bridge._get_cached_image_asset("b") is None
+    assert list(bridge._IMAGE_ASSET_CACHE) == ["a", "c"]
+
+    clock[0] += 11
+    assert bridge._get_cached_image_asset("a") is None
+    assert bridge._get_cached_image_asset("c") is None
+    assert bridge._IMAGE_ASSET_CACHE == OrderedDict()
+    assert bridge._IMAGE_UPLOADS == {}
+
+
+def test_non_billed_failure_evicts_asset_but_billed_failure_preserves_it(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    image_hash = _payload()["image_sha256"]
+    bridge._cache_image_asset(image_hash, "cached")
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: pytest.fail("must use cache"))
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pre-video")))
+    with pytest.raises(RuntimeError):
+        bridge.generate_clip(_payload())
+    assert bridge._get_cached_image_asset(image_hash) is None
+
+    bridge._cache_image_asset(image_hash, "cached")
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: (_ for _ in ()).throw(video.HeyGenBilledError("video created")))
+    with pytest.raises(video.HeyGenBilledError):
+        bridge.generate_clip(_payload())
+    assert bridge._get_cached_image_asset(image_hash) == "cached"
 
 
 @pytest.fixture
@@ -230,6 +443,15 @@ def _post(port, payload, token=None):
     return response.status, response_headers, body
 
 
+def _get(port, path):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    connection.request("GET", path)
+    response = connection.getresponse()
+    body = response.read()
+    connection.close()
+    return response.status, body
+
+
 def test_internal_route_rejects_missing_token(bridge_server):
     port, _token = bridge_server
     with patch("content_domains.pixelle_talking.generate_clip") as generate:
@@ -238,11 +460,21 @@ def test_internal_route_rejects_missing_token(bridge_server):
     assert headers["Content-Type"].startswith("application/json")
     assert json.loads(raw) == {
         "code": "internal_auth",
-        "detail": "invalid internal Pixelle token",
+        "detail": "internal authentication failed",
         "retryable": False,
         "billed": False,
     }
     generate.assert_not_called()
+
+
+def test_bridge_derivative_is_not_publicly_retrievable(
+        tmp_path, bridge_server, monkeypatch):
+    port, _token = bridge_server
+    derivative = tmp_path / ".pixelle-talking-secret.jpg"
+    derivative.write_bytes(b"private")
+    monkeypatch.setattr(core, "OUT_DIR", tmp_path)
+    status, _raw = _get(port, "/api/gen/file/%s" % derivative.name)
+    assert status == 401
 
 
 def test_internal_route_streams_mp4_with_provider_headers(tmp_path, bridge_server):
@@ -262,6 +494,58 @@ def test_internal_route_streams_mp4_with_provider_headers(tmp_path, bridge_serve
     assert headers["X-Provider-Video-Id"] == "provider-video-1"
     assert headers["X-Provider-Image-Asset-Id"] == "provider-image-1"
     assert raw == b"mp4-result"
+    for _ in range(50):
+        if not output.exists():
+            break
+        time.sleep(0.01)
+    assert not output.exists()
+
+
+def test_internal_stream_deletes_video_and_cover_after_disconnect(tmp_path, monkeypatch):
+    bridge = _bridge()
+    video_path = tmp_path / "clip.mp4"
+    cover_path = tmp_path / "cover.jpg"
+    video_path.write_bytes(b"mp4-result")
+    cover_path.write_bytes(b"cover")
+    result = {
+        "video_id": "provider-video-1",
+        "image_asset_id": "provider-image-1",
+        "video_file": "video/clip.mp4",
+        "image_file": "image/cover.jpg",
+    }
+
+    class DisconnectingWriter:
+        def write(self, _data):
+            raise BrokenPipeError("client disconnected")
+
+    class Handler:
+        client_address = ("127.0.0.1", 12345)
+        headers = {"X-HQ-Pixelle-Token": "secret"}
+        wfile = DisconnectingWriter()
+
+        def _json_body_strict(self):
+            return _payload()
+
+        def send_response(self, _status):
+            pass
+
+        def send_header(self, _name, _value):
+            pass
+
+        def end_headers(self):
+            pass
+
+    monkeypatch.setenv("PIXELLE_TALKING_INTERNAL_TOKEN", "secret")
+    monkeypatch.setattr(bridge, "generate_clip", lambda _payload: result)
+    monkeypatch.setattr(bridge, "resolve_video_path", lambda _result: video_path)
+    monkeypatch.setattr(bridge, "_resolve_result_artifact", lambda value: {
+        "video/clip.mp4": video_path,
+        "image/cover.jpg": cover_path,
+    }.get(value))
+    with pytest.raises(BrokenPipeError):
+        bridge.handle_http_request(Handler())
+    assert not video_path.exists()
+    assert not cover_path.exists()
 
 
 def test_internal_route_reports_billed_failure_as_non_retryable(bridge_server):
@@ -272,10 +556,33 @@ def test_internal_route_reports_billed_failure_as_non_retryable(bridge_server):
     assert status == 502
     assert json.loads(raw) == {
         "code": "heygen_billed",
-        "detail": "created video-1",
+        "detail": "provider video was created but delivery failed",
         "retryable": False,
         "billed": True,
     }
+
+
+def test_error_response_is_sanitized_and_server_log_has_redacted_request_id(
+        bridge_server, capsys):
+    port, token = bridge_server
+    raw_detail = "provider failed at C:\\secrets\\token.txt https://provider.invalid/job/abc"
+    with patch("content_domains.pixelle_talking.generate_clip",
+               side_effect=RuntimeError(raw_detail)):
+        status, _headers, raw = _post(port, _payload(request_id="request-redact"), token)
+    body = json.loads(raw)
+    assert status == 502
+    assert body == {
+        "code": "talking_bridge_error",
+        "detail": "talking clip generation failed",
+        "retryable": True,
+        "billed": False,
+    }
+    logged = capsys.readouterr().out
+    assert "request_id=request-redact" in logged
+    assert "token.txt" not in logged
+    assert "provider.invalid" not in logged
+    assert "<path>" in logged
+    assert "<url>" in logged
 
 
 def test_shared_root_only_systemd_token_file_is_wired_without_token_logging():
@@ -287,6 +594,39 @@ def test_shared_root_only_systemd_token_file_is_wired_without_token_logging():
     setup = (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8")
     assert env_path in setup
     assert "openssl rand -hex 48" in setup
+    assert "set -eu" in setup
+    assert "mktemp" in setup
+    assert 'ln "$tmp" "$target"' in setup
+    assert '${#token}' in setup
+    assert '*[!0-9a-f]*' in setup
+    assert 'wc -l < "$target"' in setup
     assert "chown root:root" in setup
     assert "chmod 600" in setup
     assert 'echo "$token"' not in setup.lower()
+
+
+def test_pixelle_token_creation_is_atomic_no_clobber_and_fail_closed(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable in this Windows test environment")
+    setup = (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8")
+    marker_start = "# PIXELLE_TOKEN_CREATE_BEGIN"
+    marker_end = "# PIXELLE_TOKEN_CREATE_END"
+    body = setup.split(marker_start, 1)[1].split(marker_end, 1)[0]
+    target = tmp_path / "pixelle-talking.env"
+    runner = tmp_path / "token-test.sh"
+    runner.write_text(
+        "#!/usr/bin/env bash\nset -eu\ntarget=$1\n" + body + "\n",
+        encoding="utf-8")
+
+    import subprocess
+    subprocess.run([bash, str(runner), str(target)], check=True)
+    original = target.read_text(encoding="utf-8")
+    assert re.fullmatch(r"PIXELLE_TALKING_INTERNAL_TOKEN=[0-9a-f]{96}\n", original)
+    subprocess.run([bash, str(runner), str(target)], check=True)
+    assert target.read_text(encoding="utf-8") == original
+
+    target.write_text("PIXELLE_TALKING_INTERNAL_TOKEN=broken\n", encoding="utf-8")
+    failed = subprocess.run([bash, str(runner), str(target)])
+    assert failed.returncode != 0
+    assert target.read_text(encoding="utf-8") == "PIXELLE_TALKING_INTERNAL_TOKEN=broken\n"
