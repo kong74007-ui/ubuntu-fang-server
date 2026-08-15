@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -294,6 +295,178 @@ def test_cleanup_journal_bounds_work_without_directory_enumeration(
     with sqlite3.connect(bridge._cleanup_db_path()) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0] == 3
+
+
+def test_cleanup_db_is_private_regular_file_before_sqlite_connect(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    real_connect = sqlite3.connect
+    observed = []
+
+    def guarded_connect(path, *args, **kwargs):
+        database = Path(path)
+        assert database.exists()
+        assert not database.is_symlink()
+        metadata = database.lstat()
+        assert stat.S_ISREG(metadata.st_mode)
+        if os.name != "nt":
+            assert stat.S_IMODE(metadata.st_mode) == 0o600
+        observed.append(database)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(bridge.sqlite3, "connect", guarded_connect)
+    bridge._open_cleanup_db().close()
+
+    assert observed == [bridge._cleanup_db_path()]
+
+
+def test_cleanup_db_rejects_non_regular_file_before_sqlite_connect(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    database = bridge._cleanup_db_path()
+    database.mkdir()
+
+    with patch.object(bridge.sqlite3, "connect", wraps=sqlite3.connect) as connect:
+        with pytest.raises(Exception):
+            bridge._open_cleanup_db()
+
+    connect.assert_not_called()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable to Windows")
+def test_cleanup_db_rejects_wrong_mode_before_sqlite_connect(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    database = bridge._cleanup_db_path()
+    database.write_bytes(b"")
+    database.chmod(0o644)
+
+    with patch.object(bridge.sqlite3, "connect", wraps=sqlite3.connect) as connect:
+        with pytest.raises(PermissionError):
+            bridge._open_cleanup_db()
+
+    connect.assert_not_called()
+
+
+def test_cleanup_db_rejects_wrong_owner_before_sqlite_connect(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    database = bridge._cleanup_db_path()
+    database.write_bytes(b"")
+    database.chmod(0o600)
+    real_fstat = os.fstat
+    expected_uid = getattr(os, "geteuid", lambda: 1000)()
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: expected_uid, raising=False)
+
+    def wrong_owner(descriptor):
+        metadata = real_fstat(descriptor)
+        values = {
+            name: getattr(metadata, name)
+            for name in dir(metadata)
+            if name.startswith("st_")
+        }
+        values["st_uid"] = expected_uid + 1
+        return type("WrongOwnerStat", (), values)()
+
+    monkeypatch.setattr(bridge.os, "fstat", wrong_owner)
+    with patch.object(bridge.sqlite3, "connect", wraps=sqlite3.connect) as connect:
+        with pytest.raises(PermissionError):
+            bridge._open_cleanup_db()
+
+    connect.assert_not_called()
+
+
+@pytest.mark.parametrize("tampered_path", ["absolute", "traversal"])
+def test_cleanup_journal_discards_external_rows_without_touching_targets(
+        tmp_path, monkeypatch, tampered_path):
+    bridge = _bridge()
+    output_root = tmp_path / "output"
+    monkeypatch.setattr(bridge, "OUT_DIR", output_root)
+    external = tmp_path / ("%s-sentinel.txt" % tampered_path)
+    external.write_bytes(b"do-not-delete")
+    database = bridge._cleanup_db_path()
+    bridge._open_cleanup_db().close()
+    if tampered_path == "absolute":
+        row_path = str(external.resolve())
+    else:
+        row_path = "../../%s" % external.name
+    with sqlite3.connect(database) as connection:
+        connection.execute("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, cleanup_requested_at, next_attempt_at
+            ) VALUES (?, 0, 'pending', 0, 0)
+        """, (row_path,))
+
+    assert bridge._sweep_private_cleanup("tampered-row") == 0
+    assert external.read_bytes() == b"do-not-delete"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts WHERE path=?",
+            (row_path,),
+        ).fetchone()[0] == 0
+
+
+def test_cleanup_journal_discards_database_and_sidecar_rows(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    database = bridge._cleanup_db_path()
+    bridge._open_cleanup_db().close()
+    reserved = [
+        bridge.PRIVATE_CLEANUP_DB_NAME,
+        bridge.PRIVATE_CLEANUP_DB_NAME + "-journal",
+        bridge.PRIVATE_CLEANUP_DB_NAME + "-wal",
+        bridge.PRIVATE_CLEANUP_DB_NAME + "-shm",
+    ]
+    with sqlite3.connect(database) as connection:
+        connection.executemany("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, cleanup_requested_at, next_attempt_at
+            ) VALUES (?, 0, 'pending', 0, 0)
+        """, [(name,) for name in reserved])
+
+    assert bridge._journal_cleanup_candidates(time.time()) == []
+    assert database.is_file()
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0] == 0
+
+
+def test_symlinked_cleanup_db_fails_before_provider_and_preserves_target(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    output_root = tmp_path / "output"
+    monkeypatch.setattr(bridge, "OUT_DIR", output_root)
+    external = tmp_path / "external.sqlite3"
+    with sqlite3.connect(external) as connection:
+        connection.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
+    before = external.read_bytes()
+    database = bridge._cleanup_db_path()
+    try:
+        database.symlink_to(external)
+    except OSError as error:
+        pytest.skip("symlinks unavailable: %s" % error)
+    provider_calls = []
+
+    def provider_upload(_image):
+        provider_calls.append("upload")
+        raise AssertionError("provider work must not be reached")
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", provider_upload)
+    caught = None
+    try:
+        bridge.generate_clip(_payload(request_id="symlinked-cleanup-db"))
+    except Exception as error:
+        caught = error
+
+    assert provider_calls == []
+    assert external.read_bytes() == before
+    assert isinstance(caught, bridge.TalkingBridgeBackpressureError)
 
 
 def test_cleanup_journal_candidate_query_has_bounded_scan_cost(

@@ -9,6 +9,7 @@ import os
 import pathlib
 import re
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -161,9 +162,74 @@ def _cleanup_db_path():
     return _private_dir() / PRIVATE_CLEANUP_DB_NAME
 
 
+def _cleanup_db_metadata_is_link(metadata):
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        reparse_point and
+        getattr(metadata, "st_file_attributes", 0) & reparse_point)
+
+
+def _validate_cleanup_db_metadata(metadata):
+    if _cleanup_db_metadata_is_link(metadata):
+        raise OSError("private cleanup journal must not be a link")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise OSError("private cleanup journal must be a regular file")
+    if getattr(metadata, "st_nlink", 1) != 1:
+        raise OSError("private cleanup journal must have exactly one link")
+    get_effective_uid = getattr(os, "geteuid", None)
+    if get_effective_uid is not None and hasattr(metadata, "st_uid"):
+        if metadata.st_uid != get_effective_uid():
+            raise PermissionError("private cleanup journal has an unexpected owner")
+    if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise PermissionError("private cleanup journal must have mode 0600")
+
+
+def _secure_cleanup_db_descriptor(path):
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    created = False
+    try:
+        descriptor = os.open(
+            str(path), flags | nofollow | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        existing = path.lstat()
+        _validate_cleanup_db_metadata(existing)
+        descriptor = os.open(str(path), flags | nofollow)
+
+    try:
+        if created:
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(path, 0o600)
+        metadata = os.fstat(descriptor)
+        _validate_cleanup_db_metadata(metadata)
+        path_metadata = path.lstat()
+        _validate_cleanup_db_metadata(path_metadata)
+        descriptor_identity = (
+            getattr(metadata, "st_dev", None),
+            getattr(metadata, "st_ino", None),
+        )
+        path_identity = (
+            getattr(path_metadata, "st_dev", None),
+            getattr(path_metadata, "st_ino", None),
+        )
+        if descriptor_identity != path_identity:
+            raise OSError("private cleanup journal identity changed")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def _open_cleanup_db():
     path = _cleanup_db_path()
-    connection = sqlite3.connect(str(path), timeout=5)
+    descriptor = _secure_cleanup_db_descriptor(path)
+    try:
+        connection = sqlite3.connect(str(path), timeout=5)
+    finally:
+        os.close(descriptor)
     try:
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("""
@@ -181,19 +247,39 @@ def _open_cleanup_db():
             ON bridge_artifacts(next_attempt_at, path)
         """)
         connection.commit()
-        os.chmod(path, 0o600)
         return connection
     except Exception:
         connection.close()
         raise
 
 
+def _allowed_cleanup_artifact_name(name, private_root):
+    if not isinstance(name, str) or not name or "\x00" in name:
+        return None
+    if (pathlib.PurePosixPath(name).name != name or
+            pathlib.PureWindowsPath(name).name != name):
+        return None
+    if (name == PRIVATE_CLEANUP_DB_NAME or
+            name.startswith(PRIVATE_CLEANUP_DB_NAME + "-")):
+        return None
+    try:
+        candidate = private_root / name
+        if candidate.resolve().parent != private_root:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return name
+
+
 def _private_artifact_name(path):
     private_root = _private_dir().resolve()
-    candidate = pathlib.Path(path).resolve()
-    if candidate.parent != private_root or candidate.name == PRIVATE_CLEANUP_DB_NAME:
+    candidate = pathlib.Path(path)
+    try:
+        if candidate.parent.resolve() != private_root:
+            return None
+    except (OSError, RuntimeError):
         return None
-    return candidate.name
+    return _allowed_cleanup_artifact_name(candidate.name, private_root)
 
 
 def _journal_register(path):
@@ -288,7 +374,20 @@ def _journal_cleanup_candidates(now):
             now,
             max(0, PRIVATE_SWEEP_BATCH),
         )).fetchall()
-        return [row[0] for row in rows]
+        private_root = _private_dir().resolve()
+        candidates = []
+        invalid = []
+        for row in rows:
+            name = row[0]
+            if _allowed_cleanup_artifact_name(name, private_root) is None:
+                invalid.append((name,))
+            else:
+                candidates.append(name)
+        if invalid:
+            connection.executemany(
+                "DELETE FROM bridge_artifacts WHERE path=?", invalid)
+            connection.commit()
+        return candidates
     finally:
         connection.close()
 
