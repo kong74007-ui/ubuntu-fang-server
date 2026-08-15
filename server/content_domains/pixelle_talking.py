@@ -67,6 +67,10 @@ class TalkingBridgeBackpressureError(RuntimeError):
     pass
 
 
+class CleanupJournalIntegrityError(RuntimeError):
+    pass
+
+
 class _ImageUpload:
     def __init__(self):
         self.event = threading.Event()
@@ -184,6 +188,27 @@ def _validate_cleanup_db_metadata(metadata):
         raise PermissionError("private cleanup journal must have mode 0600")
 
 
+def _cleanup_db_identity(metadata):
+    return (
+        getattr(metadata, "st_dev", None),
+        getattr(metadata, "st_ino", None),
+    )
+
+
+def _validate_cleanup_db_identity(path, descriptor):
+    try:
+        descriptor_metadata = os.fstat(descriptor)
+        _validate_cleanup_db_metadata(descriptor_metadata)
+        path_metadata = path.lstat()
+        _validate_cleanup_db_metadata(path_metadata)
+        if (_cleanup_db_identity(descriptor_metadata) !=
+                _cleanup_db_identity(path_metadata)):
+            raise OSError("private cleanup journal identity changed")
+    except Exception as error:
+        raise CleanupJournalIntegrityError(
+            "private cleanup journal identity changed") from error
+
+
 def _secure_cleanup_db_descriptor(path):
     flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -207,15 +232,8 @@ def _secure_cleanup_db_descriptor(path):
         _validate_cleanup_db_metadata(metadata)
         path_metadata = path.lstat()
         _validate_cleanup_db_metadata(path_metadata)
-        descriptor_identity = (
-            getattr(metadata, "st_dev", None),
-            getattr(metadata, "st_ino", None),
-        )
-        path_identity = (
-            getattr(path_metadata, "st_dev", None),
-            getattr(path_metadata, "st_ino", None),
-        )
-        if descriptor_identity != path_identity:
+        if (_cleanup_db_identity(metadata) !=
+                _cleanup_db_identity(path_metadata)):
             raise OSError("private cleanup journal identity changed")
         return descriptor
     except Exception:
@@ -228,6 +246,11 @@ def _open_cleanup_db():
     descriptor = _secure_cleanup_db_descriptor(path)
     try:
         connection = sqlite3.connect(str(path), timeout=5)
+        try:
+            _validate_cleanup_db_identity(path, descriptor)
+        except Exception:
+            connection.close()
+            raise
     finally:
         os.close(descriptor)
     try:
@@ -253,14 +276,27 @@ def _open_cleanup_db():
         raise
 
 
+def _windows_cleanup_name_is_unsafe(name):
+    if name.endswith((".", " ")) or ":" in name:
+        return True
+    stem = name.split(".", 1)[0].casefold()
+    if stem in {"con", "prn", "aux", "nul", "clock$", "conin$", "conout$"}:
+        return True
+    return bool(re.fullmatch(r"(?:com|lpt)[1-9]", stem))
+
+
 def _allowed_cleanup_artifact_name(name, private_root):
     if not isinstance(name, str) or not name or "\x00" in name:
         return None
     if (pathlib.PurePosixPath(name).name != name or
             pathlib.PureWindowsPath(name).name != name):
         return None
-    if (name == PRIVATE_CLEANUP_DB_NAME or
-            name.startswith(PRIVATE_CLEANUP_DB_NAME + "-")):
+    if _windows_cleanup_name_is_unsafe(name):
+        return None
+    normalized = name.casefold()
+    cleanup_db_name = PRIVATE_CLEANUP_DB_NAME.casefold()
+    if (normalized == cleanup_db_name or
+            normalized.startswith(cleanup_db_name + "-")):
         return None
     try:
         candidate = private_root / name
@@ -365,6 +401,7 @@ def _journal_note_failure(path):
 def _journal_cleanup_candidates(now):
     connection = _open_cleanup_db()
     try:
+        connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute("""
             SELECT path FROM bridge_artifacts
             WHERE next_attempt_at <= ?
@@ -386,10 +423,16 @@ def _journal_cleanup_candidates(now):
         if invalid:
             connection.executemany(
                 "DELETE FROM bridge_artifacts WHERE path=?", invalid)
-            connection.commit()
-        return candidates
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
+    if invalid:
+        raise CleanupJournalIntegrityError(
+            "private cleanup journal contains invalid artifact rows")
+    return candidates
 
 
 def _private_backlog_size():
@@ -538,6 +581,10 @@ def _sweep_private_cleanup(request_id):
         try:
             private_dir = _private_dir()
             candidates = _journal_cleanup_candidates(time.time())
+        except CleanupJournalIntegrityError as error:
+            _best_effort_log_failure(error, request_id)
+            raise TalkingBridgeBackpressureError(
+                "private cleanup journal integrity violation") from error
         except Exception as error:
             _best_effort_log_failure(error, request_id)
             return 0
