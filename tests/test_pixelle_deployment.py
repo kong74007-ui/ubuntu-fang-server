@@ -531,6 +531,24 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertLess(patch_check, source_switch)
 
+    def test_talking_material_override_is_fail_closed_and_installed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("TALKING_MATERIAL_OVERRIDE=", installer)
+        self.assertIn('! -s "${TALKING_MATERIAL_OVERRIDE}"', installer)
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${TALKING_MATERIAL_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/talking_material.py"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video"',
+            installer,
+        )
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:
