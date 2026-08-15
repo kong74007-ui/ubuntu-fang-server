@@ -109,11 +109,37 @@ class TalkingClient:
                 provider_bytes, provider_video_id = await asyncio.to_thread(
                     self._request_once, payload
                 )
-                await asyncio.to_thread(
-                    self._write_silent_video,
-                    provider_bytes,
-                    output,
+                staged_output = output.with_name(
+                    f".{output.name}.{uuid.uuid4().hex}.staged.mp4"
                 )
+                worker = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._write_silent_video,
+                        provider_bytes,
+                        staged_output,
+                    )
+                )
+                try:
+                    await asyncio.shield(worker)
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        raise asyncio.CancelledError
+                    os.replace(staged_output, output)
+                except asyncio.CancelledError:
+                    def cleanup_cancelled_output(_worker) -> None:
+                        staged_output.unlink(missing_ok=True)
+                        output.unlink(missing_ok=True)
+
+                    worker.add_done_callback(cleanup_cancelled_output)
+                    try:
+                        await asyncio.shield(worker)
+                    except Exception:
+                        pass
+                    staged_output.unlink(missing_ok=True)
+                    output.unlink(missing_ok=True)
+                    raise
+                finally:
+                    staged_output.unlink(missing_ok=True)
                 return TalkingResult(
                     str(output), provider_video_id, attempt, warnings=[]
                 )

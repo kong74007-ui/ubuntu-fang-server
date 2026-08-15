@@ -153,7 +153,7 @@ index 5ca8f47..b5dc9ef 100644
 @@ -311,0 +343 @@ class StandardPipeline(LinearVideoPipeline):
 +                scene_id=f"scene_{i + 1:02d}",
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
-index c0c9cee..5f90144 100644
+index c0c9cee..5931412 100644
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
 @@ -22,0 +23 @@ Key Feature:
@@ -166,16 +166,71 @@ index c0c9cee..5f90144 100644
 @@ -125,0 +130,2 @@ class FrameProcessor:
 +            await self._prepare_talking_visuals(frame, config)
 +
-@@ -154,0 +161,2 @@ class FrameProcessor:
+@@ -136,2 +142,3 @@ class FrameProcessor:
+-            if len(frame.caption_cues) == 1:
+-                await self._step_compose_frame(frame, storyboard, config)
++            try:
++                if len(frame.caption_cues) == 1:
++                    await self._step_compose_frame(frame, storyboard, config)
+@@ -139,10 +146,10 @@ class FrameProcessor:
+-            # Step 4: Create video segment
+-            if progress_callback:
+-                progress_callback(ProgressEvent(
+-                    event_type="frame_step",
+-                    progress=0.75 if (needs_generation or has_existing_media) else 0.67,
+-                    frame_current=frame_num,
+-                    frame_total=total_frames,
+-                    step=4,
+-                    action="video"
+-                ))
++                # Step 4: Create video segment
++                if progress_callback:
++                    progress_callback(ProgressEvent(
++                        event_type="frame_step",
++                        progress=0.75 if (needs_generation or has_existing_media) else 0.67,
++                        frame_current=frame_num,
++                        frame_total=total_frames,
++                        step=4,
++                        action="video"
++                    ))
+@@ -150,4 +157,23 @@ class FrameProcessor:
+-            if len(frame.caption_cues) == 1:
+-                await self._step_create_video_segment(frame, config)
+-            else:
+-                await self._create_caption_carousel_segment(frame, storyboard, config)
++                if len(frame.caption_cues) == 1:
++                    await self._step_create_video_segment(frame, config)
++                else:
++                    await self._create_caption_carousel_segment(frame, storyboard, config)
++            except asyncio.CancelledError:
++                raise
++            except Exception as error:
++                if not self._has_talking_visuals(frame):
++                    raise
++                logger.warning(
++                    "Talking material final render fallback for %s: %s",
++                    frame.scene_id,
++                    type(error).__name__,
++                )
++                self._fallback_to_ordinary_visual(
++                    frame,
++                    "talking_material_final_render_failed",
++                )
++                if len(frame.caption_cues) == 1:
++                    await self._step_compose_frame(frame, storyboard, config)
++                    await self._step_create_video_segment(frame, config)
++                else:
++                    await self._create_caption_carousel_segment(frame, storyboard, config)
+@@ -154,0 +181,2 @@ class FrameProcessor:
 +            self._cleanup_talking_cue_videos(frame)
 +
-@@ -157,0 +166,3 @@ class FrameProcessor:
+@@ -157,0 +186,3 @@ class FrameProcessor:
 +        except asyncio.CancelledError:
 +            self._cleanup_talking_cue_videos(frame)
 +            raise
-@@ -158,0 +170 @@ class FrameProcessor:
+@@ -158,0 +190 @@ class FrameProcessor:
 +            self._cleanup_talking_cue_videos(frame)
-@@ -161,0 +174,188 @@ class FrameProcessor:
+@@ -161,0 +194,217 @@ class FrameProcessor:
 +    @staticmethod
 +    def _talking_scene_selection(
 +        frame: StoryboardFrame,
@@ -218,6 +273,30 @@ index c0c9cee..5f90144 100644
 +            frame.talking_original_video_path = None
 +            frame.talking_original_media_type = None
 +            frame.talking_single_override = False
++
++    @staticmethod
++    def _has_talking_visuals(frame: StoryboardFrame) -> bool:
++        return bool(frame.talking_cue_video_paths or frame.talking_single_override)
++
++    @staticmethod
++    def _append_talking_warning(frame: StoryboardFrame, warning: str) -> None:
++        warnings = [
++            item.strip()
++            for item in str(frame.talking_warning or "").split(";")
++            if item.strip()
++        ]
++        if warning not in warnings:
++            warnings.append(warning)
++        frame.talking_warning = "; ".join(warnings) or None
++
++    def _fallback_to_ordinary_visual(
++        self,
++        frame: StoryboardFrame,
++        warning: str,
++    ) -> None:
++        self._cleanup_talking_cue_videos(frame)
++        frame.visual_source = "ordinary"
++        self._append_talking_warning(frame, warning)
 +
 +    async def _prepare_talking_visuals(
 +        self,
@@ -284,6 +363,7 @@ index c0c9cee..5f90144 100644
 +                )
 +                temporary_paths.extend([window_audio, provider_video])
 +                window_slice_indices: list[int] = []
++                window_slice_paths: list[Path] = []
 +                try:
 +                    video_service.concat_audios(
 +                        [cue.audio_path for cue in window_cues],
@@ -310,6 +390,7 @@ index c0c9cee..5f90144 100644
 +                        cue_video = base_segment.with_name(
 +                            f"{base_segment.stem}_talking_cue_{cue_index + 1:02d}.mp4"
 +                        )
++                        window_slice_paths.append(cue_video)
 +                        video_service.extract_video_clip(
 +                            str(prepared_video),
 +                            cue.start_time - window_start_time,
@@ -319,6 +400,7 @@ index c0c9cee..5f90144 100644
 +                        frame.talking_cue_video_paths[cue_index] = str(cue_video)
 +                        window_slice_indices.append(cue_index)
 +                    frame.visual_source = "talking"
++                    window_slice_paths.clear()
 +                except TalkingClipError as error:
 +                    self._discard_talking_window_slices(frame, window_slice_indices)
 +                    frame.talking_attempts += error.attempts
@@ -335,6 +417,8 @@ index c0c9cee..5f90144 100644
 +                        type(error).__name__,
 +                    )
 +                finally:
++                    for path in window_slice_paths:
++                        path.unlink(missing_ok=True)
 +                    window_audio.unlink(missing_ok=True)
 +                    provider_video.unlink(missing_ok=True)
 +        except asyncio.CancelledError:
@@ -364,7 +448,7 @@ index c0c9cee..5f90144 100644
 +            if cue_video_path:
 +                Path(cue_video_path).unlink(missing_ok=True)
 +
-@@ -318 +518,5 @@ class FrameProcessor:
+@@ -318 +567,5 @@ class FrameProcessor:
 -            if frame.media_type == "video":
 +            talking_video = frame.talking_cue_video_paths.get(cue_index)
 +            if talking_video:

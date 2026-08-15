@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import subprocess
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -222,3 +223,54 @@ def test_client_requires_internal_token(monkeypatch):
     monkeypatch.delenv("PIXELLE_TALKING_INTERNAL_TOKEN", raising=False)
     with pytest.raises(ValueError, match="internal token"):
         module.TalkingClient()
+
+
+def test_client_cancellation_waits_for_ffmpeg_and_never_revives_output(tmp_path):
+    asyncio.run(_assert_client_cancellation_waits_for_ffmpeg_and_never_revives_output(tmp_path))
+
+
+async def _assert_client_cancellation_waits_for_ffmpeg_and_never_revives_output(tmp_path):
+    module = load_module()
+    image, audio, output = make_files(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def opener(_request, timeout):
+        assert timeout == 1200
+        return FakeResponse(
+            b"provider-video",
+            {"X-Provider-Video-Id": "video-cancelled"},
+        )
+
+    def blocking_ffmpeg(command, **kwargs):
+        assert kwargs == {"check": True, "capture_output": True}
+        started.set()
+        assert release.wait(timeout=5), "test did not release the ffmpeg runner"
+        Path(command[-1]).write_bytes(b"late-silent-video")
+        finished.set()
+        return subprocess.CompletedProcess(command, 0)
+
+    client = module.TalkingClient(
+        token="internal-secret",
+        opener=opener,
+        process_runner=blocking_ffmpeg,
+    )
+    task = asyncio.create_task(
+        client.generate(str(image), str(audio), str(output), "req-cancel", "9:16")
+    )
+    assert await asyncio.to_thread(started.wait, 5)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(finished.wait, 5)
+    await asyncio.sleep(0.05)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".*.provider.mp4"))
+    assert not list(tmp_path.glob(".*.silent.mp4"))
+    assert not list(tmp_path.glob(".*.staged.mp4"))
