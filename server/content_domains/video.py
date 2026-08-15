@@ -1764,7 +1764,19 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None):
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen视频生成超时")
 
-def _download_video_file(url, prefix="vid"):
+def _validated_internal_video_output(value):
+    rel = str(value or "").replace("\\", "/").lstrip("/")
+    if (not rel.startswith(".pixelle-talking-private/") or
+            ".." in rel.split("/")):
+        raise ValueError("internal video output must use the private bridge namespace")
+    path = _out_path(rel)
+    private_root = (pathlib.Path(OUT_DIR) / ".pixelle-talking-private").resolve()
+    if path.is_symlink() or path.resolve().parent != private_root or not path.is_file():
+        raise ValueError("internal video output must be a pre-created private file")
+    return rel, path
+
+
+def _download_video_file(url, prefix="vid", output_file=None):
     headers = {"User-Agent": "huangque-content/1.0"}
     relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
     if relay:
@@ -1780,8 +1792,15 @@ def _download_video_file(url, prefix="vid"):
     req = urllib.request.Request(url, headers=headers)
     # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
     data = _heygen_read_retry(lambda: urllib.request.urlopen(req, timeout=360), "成片下载")
-    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
-    _out_path(fn).write_bytes(data)
+    if output_file is None:
+        fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
+        output_path = _out_path(fn)
+    else:
+        fn, output_path = _validated_internal_video_output(output_file)
+    output_path.write_bytes(data)
+    if output_file is not None:
+        os.chmod(output_path, 0o600)
+        return fn
     return _faststart_video_file(fn)
 
 # ==================== HeyGen 直连(数字人口播,绕开泽龙中转,走 mihomo 代理) ====================
@@ -1822,14 +1841,21 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _download_video_file_direct(url, prefix="vid"):
+def _download_video_file_direct(url, prefix="vid", output_file=None):
     if not url:
         raise RuntimeError("直连未返回视频地址")
     req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
     # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
     data = _heygen_read_retry(lambda: _heygen_direct_opener().open(req, timeout=360), "成片直连下载")
-    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
-    _out_path(fn).write_bytes(data)
+    if output_file is None:
+        fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
+        output_path = _out_path(fn)
+    else:
+        fn, output_path = _validated_internal_video_output(output_file)
+    output_path.write_bytes(data)
+    if output_file is not None:
+        os.chmod(output_path, 0o600)
+        return fn
     return _faststart_video_file(fn)
 
 def _resolve_heygen_image_asset(image_fp, direct, image_asset_id=None):
@@ -1853,7 +1879,13 @@ def upload_heygen_image_asset(image_file):
 
 
 def _generate_heygen_from_uploaded_assets(image_asset_id, audio_fp, resolution, ratio, motion,
-                                           direct, internal=False):
+                                           direct, internal=False,
+                                           internal_output_file=None):
+    if internal:
+        internal_output_file, _output_path = _validated_internal_video_output(
+            internal_output_file)
+    elif internal_output_file is not None:
+        raise ValueError("internal_output_file requires internal provider mode")
     upload_label = "口播传音" if direct else "口播中转传音"
     audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=direct), upload_label)
     slot = heygen_slot("口播直连") if direct else heygen_slot("口播中转")
@@ -1872,21 +1904,33 @@ def _generate_heygen_from_uploaded_assets(image_asset_id, audio_fp, resolution, 
         try:
             if direct:
                 info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
-                video_file = _download_video_file_direct(info["video_url"], "heygen")
+                if internal:
+                    video_file = _download_video_file_direct(
+                        info["video_url"], "heygen",
+                        output_file=internal_output_file)
+                else:
+                    video_file = _download_video_file_direct(
+                        info["video_url"], "heygen")
             else:
                 info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
-                video_file = _download_video_file(info["video_url"], "heygen")
+                if internal:
+                    video_file = _download_video_file(
+                        info["video_url"], "heygen",
+                        output_file=internal_output_file)
+                else:
+                    video_file = _download_video_file(info["video_url"], "heygen")
             cover = None if internal else _extract_first_frame_cover(video_file)
             ret = {
                 "video_id": video_id,
                 "video_file": video_file,
-                "video_url": _file_url(video_file),
                 "image_asset_id": image_asset_id,
                 "audio_asset_id": audio_asset_id,
                 "source_video_url": info.get("video_url"),
                 "thumbnail_url": info.get("thumbnail_url"),
                 "duration": info.get("duration"),
             }
+            if not internal:
+                ret["video_url"] = _file_url(video_file)
             if direct:
                 ret["provider"] = "heygen_direct"
             if cover:
@@ -1900,7 +1944,8 @@ def _generate_heygen_from_uploaded_assets(image_asset_id, audio_fp, resolution, 
 
 
 def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion,
-                                  image_asset_id=None, internal=False):
+                                  image_asset_id=None, internal=False,
+                                  internal_output_file=None):
     """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数，
     只是 direct=True 走 api.heygen.com 出境；保留旧五参数调用并允许复用已上传图片。"""
     image_fp = _resolve_out_file(image_file)
@@ -1914,12 +1959,14 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
             resolution, ratio, motion)
     if internal:
         return _generate_heygen_from_uploaded_assets(
-            *args, direct=True, internal=True)
+            *args, direct=True, internal=True,
+            internal_output_file=internal_output_file)
     return _generate_heygen_from_uploaded_assets(*args, direct=True)
 
 
 def _generate_heygen_relay(image_file, audio_file, resolution, ratio, motion,
-                           image_asset_id=None, internal=False):
+                           image_asset_id=None, internal=False,
+                           internal_output_file=None):
     image_fp = _resolve_out_file(image_file)
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
@@ -1931,17 +1978,20 @@ def _generate_heygen_relay(image_file, audio_file, resolution, ratio, motion,
             resolution, ratio, motion)
     if internal:
         return _generate_heygen_from_uploaded_assets(
-            *args, direct=False, internal=True)
+            *args, direct=False, internal=True,
+            internal_output_file=internal_output_file)
     return _generate_heygen_from_uploaded_assets(*args, direct=False)
 
 
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
-                          image_asset_id=None, internal=False):
+                          image_asset_id=None, internal=False,
+                          internal_output_file=None):
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
             kwargs = {"image_asset_id": image_asset_id}
             if internal:
                 kwargs["internal"] = True
+                kwargs["internal_output_file"] = internal_output_file
             return generate_heygen_video_direct(
                 image_file, audio_file, resolution, ratio, motion, **kwargs)
         except HeyGenBilledError:
@@ -1951,6 +2001,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
     kwargs = {"image_asset_id": image_asset_id}
     if internal:
         kwargs["internal"] = True
+        kwargs["internal_output_file"] = internal_output_file
     return _generate_heygen_relay(
         image_file, audio_file, resolution, ratio, motion, **kwargs)
 

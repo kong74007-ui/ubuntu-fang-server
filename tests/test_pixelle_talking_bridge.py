@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -118,7 +119,8 @@ def test_temporary_inputs_are_deleted_after_success(tmp_path, monkeypatch):
     monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "image-asset-1")
 
     def fake_generate(image_file, audio_file, resolution, ratio, motion,
-                      image_asset_id=None, internal=False):
+                      image_asset_id=None, internal=False,
+                      internal_output_file=None):
         image_path = tmp_path / image_file
         audio_path = tmp_path / audio_file
         assert image_path.read_bytes() == IMAGE_BYTES
@@ -126,10 +128,12 @@ def test_temporary_inputs_are_deleted_after_success(tmp_path, monkeypatch):
         seen.extend([image_path, audio_path])
         assert (resolution, ratio, motion, image_asset_id, internal) == (
             "1080p", "9:16", "medium", "image-asset-1", True)
+        output_path = tmp_path / internal_output_file
+        output_path.write_bytes(b"mp4")
         return {
             "video_id": "video-1",
             "image_asset_id": "image-asset-1",
-            "video_file": "video/result.mp4",
+            "video_file": internal_output_file,
         }
 
     monkeypatch.setattr(video, "generate_heygen_video", fake_generate)
@@ -265,6 +269,136 @@ def test_private_input_cleanup_survives_overflow_and_restart(tmp_path, monkeypat
     assert bridge._sweep_private_cleanup("restart") == 2
     assert bridge._sweep_private_cleanup("restart") == 1
     assert all(not path.exists() for path in paths)
+
+
+def test_cleanup_journal_bounds_work_without_directory_enumeration(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_BATCH", 2)
+    paths = [bridge._write_private_temp(bytes([index]), ".tmp")
+             for index in range(5)]
+    real_unlink = Path.unlink
+
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    bridge._best_effort_cleanup(paths, "journal-pending")
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    monkeypatch.setattr(
+        Path, "iterdir",
+        lambda *_args, **_kwargs: pytest.fail("cleanup must not enumerate the directory"))
+
+    assert bridge._sweep_private_cleanup("journal-batch") == 2
+    assert sum(path.exists() for path in paths) == 3
+    with sqlite3.connect(bridge._cleanup_db_path()) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0] == 3
+
+
+def test_cleanup_journal_candidate_query_has_bounded_scan_cost(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_BATCH", 2)
+    database = bridge._cleanup_db_path()
+    bridge._open_cleanup_db().close()
+    with sqlite3.connect(database) as connection:
+        connection.executemany("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, cleanup_requested_at, next_attempt_at
+            ) VALUES (?, ?, 'pending', ?, 0)
+        """, [
+            ("artifact-%05d.tmp" % index, float(index), float(index))
+            for index in range(2000)
+        ])
+
+    real_connect = sqlite3.connect
+    steps = []
+
+    class CountingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if "SELECT path FROM bridge_artifacts" not in sql:
+                return super().execute(sql, parameters)
+            count = [0]
+            self.set_progress_handler(
+                lambda: count.__setitem__(0, count[0] + 1) or 0, 1)
+            try:
+                return super().execute(sql, parameters)
+            finally:
+                self.set_progress_handler(None, 0)
+                steps.append(count[0])
+
+    monkeypatch.setattr(
+        bridge.sqlite3, "connect",
+        lambda *args, **kwargs: real_connect(
+            *args, factory=CountingConnection, **kwargs))
+
+    assert len(bridge._journal_cleanup_candidates(time.time())) == 2
+    assert steps and steps[0] < 500
+
+
+def test_cleanup_journal_serializes_concurrent_passes(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    path = bridge._write_private_temp(b"x", ".tmp")
+    real_unlink = Path.unlink
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    bridge._best_effort_cleanup([path], "journal-pending")
+
+    entered = threading.Event()
+    release = threading.Event()
+    attempts = []
+
+    def blocking_unlink(target, *args, **kwargs):
+        attempts.append(target)
+        entered.set()
+        assert release.wait(2)
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", blocking_unlink)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(bridge._sweep_private_cleanup, "first-pass")
+        assert entered.wait(2)
+        second = pool.submit(bridge._sweep_private_cleanup, "second-pass")
+        assert second.result(timeout=2) == 0
+        release.set()
+        assert first.result(timeout=2) == 1
+
+    assert attempts == [path]
+    assert not path.exists()
+
+
+def test_private_backlog_applies_backpressure_before_provider_use(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "PRIVATE_BACKLOG_MAX", 2)
+    paths = [bridge._write_private_temp(bytes([index]), ".tmp")
+             for index in range(2)]
+    provider_calls = []
+
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    bridge._best_effort_cleanup(paths, "stuck-backlog")
+    monkeypatch.setattr(
+        video, "upload_heygen_image_asset",
+        lambda _image: provider_calls.append("upload"))
+
+    with pytest.raises(bridge.TalkingBridgeBackpressureError):
+        bridge.generate_clip(_payload(request_id="backpressure"))
+
+    assert provider_calls == []
+    error = bridge.classify_error(bridge.TalkingBridgeBackpressureError("full"))
+    assert error == {
+        "code": "talking_bridge_backpressure",
+        "detail": "talking clip bridge is temporarily unavailable",
+        "retryable": True,
+        "billed": False,
+    }
 
 
 def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypatch):
@@ -565,6 +699,51 @@ def test_missing_result_image_asset_deletes_completed_mp4(tmp_path, monkeypatch)
     assert not output.exists()
 
 
+def test_provider_output_is_created_directly_in_registered_private_namespace(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(core, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(video, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    monkeypatch.setattr(
+        os, "replace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "private provider output must not require adoption"))
+
+    def generate(*_args, internal_output_file=None, **_kwargs):
+        assert internal_output_file is not None
+        output = tmp_path / internal_output_file
+        assert output.parent == bridge._private_dir()
+        assert output.exists()
+        with sqlite3.connect(bridge._cleanup_db_path()) as connection:
+            row = connection.execute(
+                "SELECT status FROM bridge_artifacts WHERE path=?",
+                (output.name,),
+            ).fetchone()
+        assert row == ("active",)
+        output.write_bytes(b"mp4")
+        assert not (tmp_path / "video").exists()
+        return {
+            "video_id": "video-1",
+            "image_asset_id": "asset-1",
+            "video_file": internal_output_file,
+        }
+
+    monkeypatch.setattr(video, "generate_heygen_video", generate)
+    result = bridge.generate_clip(_payload(request_id="private-provider-output"))
+
+    output = tmp_path / result["video_file"]
+    assert output.parent == bridge._private_dir()
+    assert output.read_bytes() == b"mp4"
+    assert core._sensitive_output_file(result["video_file"])
+    bridge._cleanup_result_artifacts(result, request_id="private-provider-output")
+    assert not output.exists()
+    with sqlite3.connect(bridge._cleanup_db_path()) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0] == 0
+
+
 def test_adopted_mp4_cleanup_survives_simulated_restart(tmp_path, monkeypatch):
     bridge = _bridge()
     monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
@@ -719,6 +898,11 @@ def test_bridge_derivative_is_not_publicly_retrievable(
     monkeypatch.setattr(core, "OUT_DIR", tmp_path)
     status, _raw = _get(
         port, "/api/gen/file/.pixelle-talking-private/%s" % derivative.name)
+    assert status == 404
+    database = private_dir / "cleanup.sqlite3"
+    database.write_bytes(b"private-db")
+    status, _raw = _get(
+        port, "/api/gen/file/.pixelle-talking-private/cleanup.sqlite3")
     assert status == 404
 
 

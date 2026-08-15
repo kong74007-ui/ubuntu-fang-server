@@ -8,7 +8,7 @@ import json
 import os
 import pathlib
 import re
-import tempfile
+import sqlite3
 import threading
 import time
 import uuid
@@ -26,11 +26,15 @@ DEFERRED_CLEANUP_MAX = 256
 PRIVATE_DIR_NAME = ".pixelle-talking-private"
 PRIVATE_SWEEP_MIN_AGE_SECONDS = 24 * 60 * 60
 PRIVATE_SWEEP_BATCH = 64
+PRIVATE_BACKLOG_MAX = 1024
+PRIVATE_CLEANUP_RETRY_SECONDS = 60
+PRIVATE_CLEANUP_DB_NAME = "cleanup.sqlite3"
 _IMAGE_ASSET_CACHE = OrderedDict()
 _IMAGE_UPLOADS = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
 _DEFERRED_CLEANUP = OrderedDict()
 _DEFERRED_CLEANUP_LOCK = threading.Lock()
+_CLEANUP_PASS_LOCK = threading.Lock()
 
 _MAX_INPUT_BYTES = 35 * 1024 * 1024
 _IMAGE_MIME_EXTENSIONS = {
@@ -55,6 +59,10 @@ class InternalTalkingAuthError(RuntimeError):
 
 
 class TalkingPayloadError(ValueError):
+    pass
+
+
+class TalkingBridgeBackpressureError(RuntimeError):
     pass
 
 
@@ -149,15 +157,193 @@ def _private_dir():
     return path
 
 
-def _write_private_temp(data, suffix, kind="input"):
-    fd, name = tempfile.mkstemp(
-        prefix="%s-" % kind, suffix=suffix, dir=str(_private_dir()))
-    path = pathlib.Path(name)
+def _cleanup_db_path():
+    return _private_dir() / PRIVATE_CLEANUP_DB_NAME
+
+
+def _open_cleanup_db():
+    path = _cleanup_db_path()
+    connection = sqlite3.connect(str(path), timeout=5)
     try:
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS bridge_artifacts (
+                path TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'pending')),
+                cleanup_requested_at REAL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL DEFAULT 0
+            )
+        """)
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS bridge_artifacts_due
+            ON bridge_artifacts(next_attempt_at, path)
+        """)
+        connection.commit()
+        os.chmod(path, 0o600)
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def _private_artifact_name(path):
+    private_root = _private_dir().resolve()
+    candidate = pathlib.Path(path).resolve()
+    if candidate.parent != private_root or candidate.name == PRIVATE_CLEANUP_DB_NAME:
+        return None
+    return candidate.name
+
+
+def _journal_register(path):
+    name = _private_artifact_name(path)
+    if name is None:
+        raise ValueError("bridge artifacts must stay in the private namespace")
+    connection = _open_cleanup_db()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        backlog = connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0]
+        if backlog >= max(0, PRIVATE_BACKLOG_MAX):
+            raise TalkingBridgeBackpressureError("private artifact backlog limit reached")
+        created_at = time.time()
+        connection.execute("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, next_attempt_at
+            ) VALUES (?, ?, 'active', ?)
+        """, (
+            name,
+            created_at,
+            created_at + max(0, PRIVATE_SWEEP_MIN_AGE_SECONDS),
+        ))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _journal_mark_pending(path):
+    name = _private_artifact_name(path)
+    if name is None:
+        return False
+    now = time.time()
+    connection = _open_cleanup_db()
+    try:
+        connection.execute("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, cleanup_requested_at, next_attempt_at
+            ) VALUES (?, ?, 'pending', ?, 0)
+            ON CONFLICT(path) DO UPDATE SET
+                status='pending', cleanup_requested_at=excluded.cleanup_requested_at,
+                next_attempt_at=0
+        """, (name, now, now))
+        connection.commit()
+        return True
+    finally:
+        connection.close()
+
+
+def _journal_forget(path):
+    name = _private_artifact_name(path)
+    if name is None:
+        return
+    connection = _open_cleanup_db()
+    try:
+        connection.execute("DELETE FROM bridge_artifacts WHERE path=?", (name,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _journal_note_failure(path):
+    name = _private_artifact_name(path)
+    if name is None:
+        return
+    now = time.time()
+    connection = _open_cleanup_db()
+    try:
+        connection.execute("""
+            UPDATE bridge_artifacts
+            SET status='pending', attempts=attempts+1,
+                next_attempt_at=?
+            WHERE path=?
+        """, (now + max(0, PRIVATE_CLEANUP_RETRY_SECONDS), name))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _journal_cleanup_candidates(now):
+    connection = _open_cleanup_db()
+    try:
+        rows = connection.execute("""
+            SELECT path FROM bridge_artifacts
+            WHERE next_attempt_at <= ?
+            ORDER BY next_attempt_at, path
+            LIMIT ?
+        """, (
+            now,
+            max(0, PRIVATE_SWEEP_BATCH),
+        )).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        connection.close()
+
+
+def _private_backlog_size():
+    connection = _open_cleanup_db()
+    try:
+        return connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts").fetchone()[0]
+    finally:
+        connection.close()
+
+
+def _enforce_backlog_admission():
+    try:
+        backlog = _private_backlog_size()
+    except TalkingBridgeBackpressureError:
+        raise
+    except Exception as error:
+        raise TalkingBridgeBackpressureError(
+            "private cleanup journal unavailable") from error
+    if backlog >= max(0, PRIVATE_BACKLOG_MAX):
+        raise TalkingBridgeBackpressureError("private artifact backlog limit reached")
+
+
+def _allocate_private_file(suffix, kind):
+    path = _private_dir() / ("%s-%s%s" % (kind, uuid.uuid4().hex, suffix))
+    try:
+        _journal_register(path)
+    except TalkingBridgeBackpressureError:
+        raise
+    except Exception as error:
+        raise TalkingBridgeBackpressureError(
+            "private cleanup journal unavailable") from error
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(str(path), flags, 0o600)
         if hasattr(os, "fchmod"):
             os.fchmod(fd, 0o600)
         else:
             os.chmod(path, 0o600)
+        return fd, path
+    except Exception:
+        try:
+            _journal_forget(path)
+        except Exception:
+            pass
+        raise
+
+
+def _write_private_temp(data, suffix, kind="input"):
+    fd, path = _allocate_private_file(suffix, kind)
+    try:
         with os.fdopen(fd, "wb") as output:
             fd = -1
             output.write(data)
@@ -165,21 +351,13 @@ def _write_private_temp(data, suffix, kind="input"):
     except Exception:
         if fd >= 0:
             os.close(fd)
-        path.unlink(missing_ok=True)
+        _best_effort_cleanup([path], "artifact-create")
         raise
 
 
 def _new_private_temp(suffix, kind="derivative"):
-    fd, name = tempfile.mkstemp(
-        prefix="%s-" % kind, suffix=suffix, dir=str(_private_dir()))
-    path = pathlib.Path(name)
-    try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        else:
-            os.chmod(path, 0o600)
-    finally:
-        os.close(fd)
+    fd, path = _allocate_private_file(suffix, kind)
+    os.close(fd)
     return path
 
 
@@ -221,6 +399,10 @@ def _best_effort_cleanup(paths, request_id):
             continue
         seen.add(marker)
         try:
+            _journal_mark_pending(path)
+        except Exception as error:
+            _best_effort_log_failure(error, request_id)
+        try:
             path.unlink(missing_ok=True)
         except Exception as error:
             try:
@@ -237,50 +419,52 @@ def _best_effort_cleanup(paths, request_id):
             _best_effort_log_failure(error, request_id)
         else:
             try:
+                _journal_forget(path)
+            except Exception as error:
+                _best_effort_log_failure(error, request_id)
+            try:
                 _forget_deferred_cleanup(path)
             except Exception:
                 pass
 
 
 def _retry_deferred_cleanup(request_id):
-    with _DEFERRED_CLEANUP_LOCK:
-        paths = list(_DEFERRED_CLEANUP.values())
-    _best_effort_cleanup(paths, request_id)
+    return _sweep_private_cleanup(request_id)
 
 
 def _sweep_private_cleanup(request_id):
-    try:
-        private_dir = _private_dir()
-        cutoff = time.time() - PRIVATE_SWEEP_MIN_AGE_SECONDS
-        candidates = []
-        for path in private_dir.iterdir():
-            try:
-                if path.is_file() and path.stat().st_mtime <= cutoff:
-                    candidates.append(path)
-            except Exception as error:
-                _best_effort_log_failure(error, request_id)
-        candidates.sort(key=lambda path: (path.stat().st_mtime, path.name))
-    except Exception as error:
-        _best_effort_log_failure(error, request_id)
+    if not _CLEANUP_PASS_LOCK.acquire(blocking=False):
         return 0
-
-    deleted = 0
-    for path in candidates[:max(0, PRIVATE_SWEEP_BATCH)]:
+    try:
         try:
-            path.unlink(missing_ok=True)
+            private_dir = _private_dir()
+            candidates = _journal_cleanup_candidates(time.time())
         except Exception as error:
-            try:
-                _remember_deferred_cleanup(path)
-            except Exception as registry_error:
-                _best_effort_log_failure(registry_error, request_id)
             _best_effort_log_failure(error, request_id)
-        else:
-            deleted += 1
+            return 0
+
+        deleted = 0
+        for name in candidates:
+            path = private_dir / name
             try:
-                _forget_deferred_cleanup(path)
+                path.unlink(missing_ok=True)
             except Exception as error:
+                try:
+                    _remember_deferred_cleanup(path)
+                    _journal_note_failure(path)
+                except Exception as registry_error:
+                    _best_effort_log_failure(registry_error, request_id)
                 _best_effort_log_failure(error, request_id)
-    return deleted
+            else:
+                deleted += 1
+                try:
+                    _journal_forget(path)
+                    _forget_deferred_cleanup(path)
+                except Exception as error:
+                    _best_effort_log_failure(error, request_id)
+        return deleted
+    finally:
+        _CLEANUP_PASS_LOCK.release()
 
 
 def _prune_image_cache_locked(now):
@@ -367,7 +551,8 @@ def _resolve_image_asset(image_sha256, image_path, request_id):
             upload.event.set()
 
 
-def _generate_with_image_asset(validated, image_path, audio_path, image_asset_id):
+def _generate_with_image_asset(validated, image_path, audio_path, image_asset_id,
+                               output_path):
     return video.generate_heygen_video(
         _relative_temp_name(image_path),
         _relative_temp_name(audio_path),
@@ -376,6 +561,7 @@ def _generate_with_image_asset(validated, image_path, audio_path, image_asset_id
         validated["motion"],
         image_asset_id=image_asset_id,
         internal=True,
+        internal_output_file=_relative_temp_name(output_path),
     )
 
 
@@ -423,7 +609,7 @@ def generate_clip(payload):
     validated = _validated_payload(payload)
     request_id = validated["request_id"]
     _sweep_private_cleanup(request_id)
-    _retry_deferred_cleanup(request_id)
+    _enforce_backlog_admission()
     image_path = _write_private_temp(
         validated["image_data"], validated["image_suffix"], "input-image")
     audio_path = None
@@ -438,12 +624,25 @@ def generate_clip(payload):
             with _TALKING_CLIP_SLOTS:
                 provider_audio, derivatives = _prepare_provider_audio(
                     audio_path, request_id)
+                provider_output = None
+                output_transferred = False
                 try:
+                    provider_output = _new_private_temp(
+                        ".mp4", "result-video")
                     result = _generate_with_image_asset(
-                        validated, image_path, provider_audio, image_asset_id)
+                        validated, image_path, provider_audio, image_asset_id,
+                        provider_output)
                     result = _adopt_result_artifacts(result, request_id)
+                    resolved_output = _resolve_result_artifact(
+                        result.get("video_file"))
+                    output_transferred = (
+                        resolved_output is not None and
+                        resolved_output.resolve() == provider_output.resolve()
+                    )
                 finally:
                     _best_effort_cleanup(derivatives, request_id)
+                    if provider_output is not None and not output_transferred:
+                        _best_effort_cleanup([provider_output], request_id)
         except video.HeyGenBilledError:
             raise
         except Exception:
@@ -481,6 +680,13 @@ def classify_error(error):
             "retryable": False,
             "billed": False,
         }
+    if isinstance(error, TalkingBridgeBackpressureError):
+        return {
+            "code": "talking_bridge_backpressure",
+            "detail": "talking clip bridge is temporarily unavailable",
+            "retryable": True,
+            "billed": False,
+        }
     if isinstance(error, video.HeyGenBilledError):
         return {
             "code": "heygen_billed",
@@ -501,6 +707,8 @@ def error_status(error):
         return 401
     if isinstance(error, (TalkingPayloadError, ValueError, json.JSONDecodeError)):
         return 400
+    if isinstance(error, TalkingBridgeBackpressureError):
+        return 503
     return 502
 
 
@@ -576,8 +784,7 @@ def _adopt_result_artifacts(result, request_id):
                 destination = source
             else:
                 suffix = source.suffix or (".mp4" if kind == "video" else ".bin")
-                destination = private_root / (
-                    "result-%s-%s%s" % (kind, uuid.uuid4().hex, suffix))
+                destination = _new_private_temp(suffix, "result-%s" % kind)
                 os.replace(source, destination)
                 adopted.append(destination)
             os.chmod(destination, 0o600)
