@@ -166,7 +166,7 @@ def test_input_cleanup_failure_cannot_mask_success_and_is_retried(
     failed_path = []
 
     def fail_once(path, *args, **kwargs):
-        if path.name.startswith(".pixelle-talking-") and not failed_path:
+        if path.parent.name == ".pixelle-talking-private" and not failed_path:
             failed_path.append(path)
             raise OSError("locked C:\\secret\\input.tmp")
         return real_unlink(path, *args, **kwargs)
@@ -196,7 +196,7 @@ def test_input_cleanup_failure_preserves_existing_billed_error(tmp_path, monkeyp
     real_unlink = Path.unlink
 
     def fail_inputs(path, *args, **kwargs):
-        if path.name.startswith(".pixelle-talking-"):
+        if path.parent.name == ".pixelle-talking-private":
             raise OSError("cleanup failed")
         return real_unlink(path, *args, **kwargs)
 
@@ -218,7 +218,7 @@ def test_cleanup_logging_failure_cannot_mask_completed_result(tmp_path, monkeypa
     real_unlink = Path.unlink
 
     def fail_inputs(path, *args, **kwargs):
-        if path.name.startswith(".pixelle-talking-"):
+        if path.parent.name == ".pixelle-talking-private":
             raise OSError("cleanup failed")
         return real_unlink(path, *args, **kwargs)
 
@@ -232,15 +232,39 @@ def test_cleanup_logging_failure_cannot_mask_completed_result(tmp_path, monkeypa
 
 def test_deferred_cleanup_retention_is_bounded(tmp_path, monkeypatch):
     bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
     monkeypatch.setattr(bridge, "DEFERRED_CLEANUP_MAX", 2)
     monkeypatch.setattr(Path, "unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
-    paths = []
-    for index in range(3):
-        path = tmp_path / ("private-%d.tmp" % index)
-        path.write_bytes(b"x")
-        paths.append(path)
+    paths = [bridge._write_private_temp(bytes([index]), ".tmp") for index in range(3)]
     bridge._best_effort_cleanup(paths, "bounded-cleanup")
     assert list(bridge._DEFERRED_CLEANUP) == [str(paths[1]), str(paths[2])]
+    assert all(path.parent == bridge._private_dir() for path in paths)
+
+
+def test_private_input_cleanup_survives_overflow_and_restart(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "DEFERRED_CLEANUP_MAX", 2)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_MIN_AGE_SECONDS", 10)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_BATCH", 2)
+    paths = [bridge._write_private_temp(bytes([index]), ".tmp") for index in range(3)]
+    real_unlink = Path.unlink
+
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    bridge._best_effort_cleanup(paths, "overflow")
+    assert len(bridge._DEFERRED_CLEANUP) == 2
+    assert all(path.exists() for path in paths)
+
+    bridge._DEFERRED_CLEANUP.clear()
+    old = time.time() - 20
+    for path in paths:
+        os.utime(path, (old, old))
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert bridge._sweep_private_cleanup("restart") == 2
+    assert bridge._sweep_private_cleanup("restart") == 1
+    assert all(not path.exists() for path in paths)
 
 
 def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypatch):
@@ -272,8 +296,9 @@ def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypa
 
     assert len(derivatives) == 3
     assert len({path.name for path in derivatives}) == 3
-    assert all(path.name.startswith(".pixelle-talking-") for path in derivatives)
-    assert all(core._sensitive_output_file(path.name) for path in derivatives)
+    assert all(path.parent == bridge._private_dir() for path in derivatives)
+    assert all(core._sensitive_output_file(
+        path.relative_to(tmp_path).as_posix()) for path in derivatives)
     assert all(not path.exists() for path in derivatives)
 
 
@@ -540,6 +565,55 @@ def test_missing_result_image_asset_deletes_completed_mp4(tmp_path, monkeypatch)
     assert not output.exists()
 
 
+def test_adopted_mp4_cleanup_survives_simulated_restart(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(core, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(bridge, "DEFERRED_CLEANUP_MAX", 2)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_MIN_AGE_SECONDS", 10)
+    provider_dir = tmp_path / "video"
+    provider_dir.mkdir()
+    provider_outputs = []
+
+    def generate(*_args, **_kwargs):
+        provider_output = provider_dir / ("provider-%d.mp4" % len(provider_outputs))
+        provider_output.write_bytes(b"mp4")
+        provider_outputs.append(provider_output)
+        return {
+            "video_id": "video-%d" % len(provider_outputs),
+            "image_asset_id": "asset-1",
+            "video_file": provider_output.relative_to(tmp_path).as_posix(),
+        }
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    monkeypatch.setattr(video, "generate_heygen_video", generate)
+
+    results = [bridge.generate_clip(_payload(request_id="adopt-result-%d" % index))
+               for index in range(3)]
+    adopted = [tmp_path / result["video_file"] for result in results]
+    assert all(path.parent == bridge._private_dir() for path in adopted)
+    assert all(path.name.startswith("result-video-") for path in adopted)
+    assert all(path.read_bytes() == b"mp4" for path in adopted)
+    assert all(not path.exists() for path in provider_outputs)
+
+    real_unlink = Path.unlink
+    monkeypatch.setattr(
+        Path, "unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    for result in results:
+        bridge._cleanup_result_artifacts(result, request_id="adopt-result")
+    assert len(bridge._DEFERRED_CLEANUP) == 2
+    assert all(path.exists() for path in adopted)
+    bridge._DEFERRED_CLEANUP.clear()
+
+    old = time.time() - 20
+    for path in adopted:
+        os.utime(path, (old, old))
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert bridge._sweep_private_cleanup("restart") == 3
+    assert all(not path.exists() for path in adopted)
+
+
 def test_image_asset_cache_is_ttl_lru_bounded_and_cleans_upload_state(monkeypatch):
     bridge = _bridge()
     clock = [100.0]
@@ -638,11 +712,14 @@ def test_internal_route_rejects_missing_token(bridge_server):
 def test_bridge_derivative_is_not_publicly_retrievable(
         tmp_path, bridge_server, monkeypatch):
     port, _token = bridge_server
-    derivative = tmp_path / ".pixelle-talking-secret.jpg"
+    private_dir = tmp_path / ".pixelle-talking-private"
+    private_dir.mkdir()
+    derivative = private_dir / "derivative-secret.jpg"
     derivative.write_bytes(b"private")
     monkeypatch.setattr(core, "OUT_DIR", tmp_path)
-    status, _raw = _get(port, "/api/gen/file/%s" % derivative.name)
-    assert status == 401
+    status, _raw = _get(
+        port, "/api/gen/file/.pixelle-talking-private/%s" % derivative.name)
+    assert status == 404
 
 
 def test_internal_route_streams_mp4_with_provider_headers(tmp_path, bridge_server):
@@ -706,6 +783,9 @@ def test_internal_stream_deletes_video_and_cover_after_disconnect(tmp_path, monk
     monkeypatch.setenv("PIXELLE_TALKING_INTERNAL_TOKEN", "secret")
     monkeypatch.setattr(bridge, "generate_clip", lambda _payload: result)
     monkeypatch.setattr(bridge, "resolve_video_path", lambda _result: video_path)
+    monkeypatch.setattr(
+        bridge, "_log_failure",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("logger failed")))
     monkeypatch.setattr(bridge, "_resolve_result_artifact", lambda value: {
         "video/clip.mp4": video_path,
         "image/cover.jpg": cover_path,
@@ -728,6 +808,46 @@ def test_internal_route_reports_billed_failure_as_non_retryable(bridge_server):
         "retryable": False,
         "billed": True,
     }
+
+
+def test_handler_logger_failure_preserves_billed_generation_response(bridge_server):
+    port, token = bridge_server
+    with patch("content_domains.pixelle_talking.generate_clip",
+               side_effect=video.HeyGenBilledError("created video-1")), \
+            patch("content_domains.pixelle_talking._log_failure",
+                  side_effect=OSError("logger failed")):
+        status, _headers, raw = _post(port, _payload(), token)
+    assert status == 502
+    assert json.loads(raw) == {
+        "code": "heygen_billed",
+        "detail": "provider video was created but delivery failed",
+        "retryable": False,
+        "billed": True,
+    }
+
+
+def test_handler_logger_failure_cannot_skip_billed_header_cleanup(
+        tmp_path, bridge_server):
+    port, token = bridge_server
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"mp4")
+    result = {
+        "video_id": "provider-video-1",
+        "image_asset_id": "",
+        "video_file": "video/clip.mp4",
+    }
+    with patch("content_domains.pixelle_talking.generate_clip", return_value=result), \
+            patch("content_domains.pixelle_talking.resolve_video_path",
+                  return_value=output), \
+            patch("content_domains.pixelle_talking._resolve_result_artifact",
+                  return_value=output), \
+            patch("content_domains.pixelle_talking._log_failure",
+                  side_effect=OSError("logger failed")):
+        status, _headers, raw = _post(port, _payload(), token)
+    assert status == 502
+    assert json.loads(raw)["code"] == "heygen_billed"
+    assert json.loads(raw)["retryable"] is False
+    assert not output.exists()
 
 
 def test_error_response_is_sanitized_and_server_log_has_redacted_request_id(

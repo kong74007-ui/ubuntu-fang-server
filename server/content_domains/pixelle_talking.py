@@ -11,6 +11,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from collections import OrderedDict
 
 from . import video
@@ -22,6 +23,9 @@ _TALKING_CLIP_SLOTS = threading.BoundedSemaphore(TALKING_CLIP_CONCURRENCY)
 IMAGE_ASSET_CACHE_MAX = 256
 IMAGE_ASSET_CACHE_TTL_SECONDS = 6 * 60 * 60
 DEFERRED_CLEANUP_MAX = 256
+PRIVATE_DIR_NAME = ".pixelle-talking-private"
+PRIVATE_SWEEP_MIN_AGE_SECONDS = 24 * 60 * 60
+PRIVATE_SWEEP_BATCH = 64
 _IMAGE_ASSET_CACHE = OrderedDict()
 _IMAGE_UPLOADS = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
@@ -138,10 +142,16 @@ def _validated_payload(payload):
     }
 
 
-def _write_private_temp(data, suffix):
-    pathlib.Path(OUT_DIR).mkdir(parents=True, exist_ok=True)
+def _private_dir():
+    path = pathlib.Path(OUT_DIR) / PRIVATE_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _write_private_temp(data, suffix, kind="input"):
     fd, name = tempfile.mkstemp(
-        prefix=".pixelle-talking-", suffix=suffix, dir=str(OUT_DIR))
+        prefix="%s-" % kind, suffix=suffix, dir=str(_private_dir()))
     path = pathlib.Path(name)
     try:
         if hasattr(os, "fchmod"):
@@ -159,10 +169,9 @@ def _write_private_temp(data, suffix):
         raise
 
 
-def _new_private_temp(suffix):
-    pathlib.Path(OUT_DIR).mkdir(parents=True, exist_ok=True)
+def _new_private_temp(suffix, kind="derivative"):
     fd, name = tempfile.mkstemp(
-        prefix=".pixelle-talking-", suffix=suffix, dir=str(OUT_DIR))
+        prefix="%s-" % kind, suffix=suffix, dir=str(_private_dir()))
     path = pathlib.Path(name)
     try:
         if hasattr(os, "fchmod"):
@@ -180,11 +189,13 @@ def _relative_temp_name(path):
 
 def _remember_deferred_cleanup(path):
     marker = str(path)
+    evicted = None
     with _DEFERRED_CLEANUP_LOCK:
         _DEFERRED_CLEANUP[marker] = pathlib.Path(path)
         _DEFERRED_CLEANUP.move_to_end(marker)
         while len(_DEFERRED_CLEANUP) > DEFERRED_CLEANUP_MAX:
-            _DEFERRED_CLEANUP.popitem(last=False)
+            _marker, evicted = _DEFERRED_CLEANUP.popitem(last=False)
+    return evicted
 
 
 def _forget_deferred_cleanup(path):
@@ -213,9 +224,16 @@ def _best_effort_cleanup(paths, request_id):
             path.unlink(missing_ok=True)
         except Exception as error:
             try:
-                _remember_deferred_cleanup(path)
-            except Exception:
-                pass
+                evicted = _remember_deferred_cleanup(path)
+                if evicted is not None:
+                    _best_effort_log_failure(
+                        RuntimeError(
+                            "deferred cleanup memory limit reached; "
+                            "private sweep retains discovery"),
+                        request_id,
+                    )
+            except Exception as registry_error:
+                _best_effort_log_failure(registry_error, request_id)
             _best_effort_log_failure(error, request_id)
         else:
             try:
@@ -228,6 +246,41 @@ def _retry_deferred_cleanup(request_id):
     with _DEFERRED_CLEANUP_LOCK:
         paths = list(_DEFERRED_CLEANUP.values())
     _best_effort_cleanup(paths, request_id)
+
+
+def _sweep_private_cleanup(request_id):
+    try:
+        private_dir = _private_dir()
+        cutoff = time.time() - PRIVATE_SWEEP_MIN_AGE_SECONDS
+        candidates = []
+        for path in private_dir.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime <= cutoff:
+                    candidates.append(path)
+            except Exception as error:
+                _best_effort_log_failure(error, request_id)
+        candidates.sort(key=lambda path: (path.stat().st_mtime, path.name))
+    except Exception as error:
+        _best_effort_log_failure(error, request_id)
+        return 0
+
+    deleted = 0
+    for path in candidates[:max(0, PRIVATE_SWEEP_BATCH)]:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as error:
+            try:
+                _remember_deferred_cleanup(path)
+            except Exception as registry_error:
+                _best_effort_log_failure(registry_error, request_id)
+            _best_effort_log_failure(error, request_id)
+        else:
+            deleted += 1
+            try:
+                _forget_deferred_cleanup(path)
+            except Exception as error:
+                _best_effort_log_failure(error, request_id)
+    return deleted
 
 
 def _prune_image_cache_locked(now):
@@ -341,7 +394,7 @@ def _prepare_provider_image(image_path, request_id):
     provider_image = image_path
     try:
         if image_path.suffix.lower() not in video.HEYGEN_IMAGE_EXTS:
-            provider_image = _new_private_temp(".jpg")
+            provider_image = _new_private_temp(".jpg", "derivative-image")
             derivatives.append(provider_image)
             provider_image = video._ensure_heygen_image_jpg(
                 image_path, output_path=provider_image)
@@ -356,7 +409,7 @@ def _prepare_provider_audio(audio_path, request_id):
     provider_audio = audio_path
     try:
         if audio_path.suffix.lower() != ".mp3":
-            provider_audio = _new_private_temp(".mp3")
+            provider_audio = _new_private_temp(".mp3", "derivative-audio")
             derivatives.append(provider_audio)
             provider_audio = video._ensure_heygen_audio_mp3(
                 audio_path, output_path=provider_audio)
@@ -369,14 +422,15 @@ def _prepare_provider_audio(audio_path, request_id):
 def generate_clip(payload):
     validated = _validated_payload(payload)
     request_id = validated["request_id"]
+    _sweep_private_cleanup(request_id)
     _retry_deferred_cleanup(request_id)
     image_path = _write_private_temp(
-        validated["image_data"], validated["image_suffix"])
+        validated["image_data"], validated["image_suffix"], "input-image")
     audio_path = None
     result = None
     try:
         audio_path = _write_private_temp(
-            validated["audio_data"], validated["audio_suffix"])
+            validated["audio_data"], validated["audio_suffix"], "input-audio")
         image_sha256 = validated["image_sha256"]
         image_asset_id = _resolve_image_asset(
             image_sha256, image_path, request_id)
@@ -387,6 +441,7 @@ def generate_clip(payload):
                 try:
                     result = _generate_with_image_asset(
                         validated, image_path, provider_audio, image_asset_id)
+                    result = _adopt_result_artifacts(result, request_id)
                 finally:
                     _best_effort_cleanup(derivatives, request_id)
         except video.HeyGenBilledError:
@@ -450,7 +505,7 @@ def error_status(error):
 
 
 def resolve_video_path(result):
-    path = _resolve_out_file(result.get("video_file"))
+    path = _resolve_result_artifact(result.get("video_file"))
     if path is None:
         if result.get("video_id"):
             raise video.HeyGenBilledError(
@@ -486,8 +541,57 @@ def _log_failure(error, request_id):
         _redacted_diagnostic(error)), flush=True)
 
 
+def _resolve_private_artifact(value):
+    rel = str(value or "").replace("\\", "/").lstrip("/")
+    if not rel.startswith(PRIVATE_DIR_NAME + "/"):
+        return None
+    try:
+        path = (pathlib.Path(OUT_DIR) / rel).resolve()
+        path.relative_to(_private_dir().resolve())
+    except Exception:
+        return None
+    return path if path.is_file() else None
+
+
 def _resolve_result_artifact(value):
-    return _resolve_out_file(value)
+    return _resolve_private_artifact(value) or _resolve_out_file(value)
+
+
+def _adopt_result_artifacts(result, request_id):
+    if not isinstance(result, dict):
+        return result
+
+    resolved = []
+    for key, kind in (("video_file", "video"), ("image_file", "cover")):
+        source = _resolve_result_artifact(result.get(key))
+        if source is not None:
+            resolved.append((key, kind, source))
+
+    adopted = []
+    try:
+        private_root = _private_dir().resolve()
+        for key, kind, source in resolved:
+            source = source.resolve()
+            if source.parent == private_root:
+                destination = source
+            else:
+                suffix = source.suffix or (".mp4" if kind == "video" else ".bin")
+                destination = private_root / (
+                    "result-%s-%s%s" % (kind, uuid.uuid4().hex, suffix))
+                os.replace(source, destination)
+                adopted.append(destination)
+            os.chmod(destination, 0o600)
+            result[key] = _relative_temp_name(destination)
+        result.pop("video_url", None)
+        result.pop("image_url", None)
+        return result
+    except Exception as error:
+        _best_effort_cleanup(
+            adopted + [source for _key, _kind, source in resolved], request_id)
+        if result.get("video_id"):
+            raise video.HeyGenBilledError(
+                "provider result artifact adoption failed after video creation") from error
+        raise
 
 
 def _cleanup_result_artifacts(result, video_path=None, request_id="cleanup"):
@@ -525,8 +629,8 @@ def handle_http_request(handler):
         image_asset_id = _safe_provider_header(
             result.get("image_asset_id"), "image_asset_id")
     except Exception as error:
-        _log_failure(error, request_id)
         _cleanup_result_artifacts(result, video_path, request_id)
+        _best_effort_log_failure(error, request_id)
         return handler._send(error_status(error), classify_error(error))
     try:
         handler.send_response(200)
@@ -542,7 +646,7 @@ def handle_http_request(handler):
                     break
                 handler.wfile.write(chunk)
     except Exception as error:
-        _log_failure(error, request_id)
+        _best_effort_log_failure(error, request_id)
         raise
     finally:
         _cleanup_result_artifacts(result, video_path, request_id)

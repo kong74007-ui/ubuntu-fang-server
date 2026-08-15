@@ -142,6 +142,7 @@ def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
     return (rel.startswith("video/") or
+            rel.startswith(".pixelle-talking-private/") or
             name.startswith(".pixelle-talking-") or
             rel.startswith("audio/voice_preview_") or
             rel.startswith("audio/clone_") or
@@ -1918,11 +1919,16 @@ class H(BaseHTTPRequestHandler):
             return
         if p.startswith("/api/gen/file/"):
             rel = p[len("/api/gen/file/"):]
+            if str(rel).replace("\\", "/").lstrip("/").startswith(
+                    ".pixelle-talking-private/"):
+                return self._send(404, {"detail": "no file"})
             fp = _resolve_out_file(rel)
             if not fp: return self._send(404, {"detail": "no file"})
             try:
                 canonical_rel = fp.resolve().relative_to(OUT_DIR.resolve()).as_posix()
             except Exception:
+                return self._send(404, {"detail": "no file"})
+            if canonical_rel.startswith(".pixelle-talking-private/"):
                 return self._send(404, {"detail": "no file"})
             sensitive = _sensitive_output_file(canonical_rel)
             if sensitive:
