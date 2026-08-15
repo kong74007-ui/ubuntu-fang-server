@@ -1,0 +1,395 @@
+diff --git a/api/routers/video.py b/api/routers/video.py
+index 3e7d136..9566e48 100644
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -21 +20,0 @@ import uuid
+-from api import avatar_assets
+@@ -33,0 +33 @@ from api import external_audio
++from api import avatar_assets
+@@ -35,0 +36,2 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
++
++
+@@ -51 +53,4 @@ def _talking_material_asset_ids(request_body: VideoGenerateRequest) -> list[str]
+-def _lease_talking_material_assets(request_body: VideoGenerateRequest, task_id: str) -> list[str]:
++def _lease_talking_material_assets(
++    request_body: VideoGenerateRequest,
++    task_id: str,
++) -> tuple[list[str], dict[str, str]]:
+@@ -54 +59 @@ def _lease_talking_material_assets(request_body: VideoGenerateRequest, task_id:
+-        return []
++        return [], {}
+@@ -56 +61 @@ def _lease_talking_material_assets(request_body: VideoGenerateRequest, task_id:
+-        avatar_assets.lease_avatar_assets(asset_ids, task_id)
++        leased_paths = avatar_assets.lease_avatar_assets(asset_ids, task_id)
+@@ -63 +68,3 @@ def _lease_talking_material_assets(request_body: VideoGenerateRequest, task_id:
+-    return asset_ids
++    return asset_ids, {
++        asset_id: str(path) for asset_id, path in leased_paths.items()
++    }
+@@ -137 +143,0 @@ async def generate_video_sync(
+-    avatar_asset_ids = []
+@@ -153,0 +160 @@ async def generate_video_sync(
++    avatar_asset_ids = []
+@@ -189 +196,3 @@ async def generate_video_sync(
+-        avatar_asset_ids = _lease_talking_material_assets(request_body, task_id)
++        avatar_asset_ids, talking_avatar_paths = _lease_talking_material_assets(
++            request_body, task_id
++        )
+@@ -191,0 +201 @@ async def generate_video_sync(
++            video_params["talking_avatar_paths"] = talking_avatar_paths
+@@ -243,0 +254,2 @@ async def generate_video_sync(
++        if avatar_asset_ids:
++            avatar_assets.release_avatar_assets(avatar_asset_ids)
+@@ -247,2 +258,0 @@ async def generate_video_sync(
+-        if avatar_asset_ids:
+-            avatar_assets.release_avatar_assets(avatar_asset_ids)
+@@ -272,0 +283,2 @@ async def generate_video_async(
++    avatar_asset_ids = []
++    talking_avatar_paths = {}
+@@ -273,0 +286 @@ async def generate_video_async(
++    avatar_lease_owned_by_route = False
+@@ -278 +290,0 @@ async def generate_video_async(
+-    avatar_asset_ids = []
+@@ -299,0 +312,9 @@ async def generate_video_async(
++        if request_body.talking_material is not None:
++            try:
++                avatar_asset_ids, talking_avatar_paths = _lease_talking_material_assets(
++                    request_body, task.task_id
++                )
++            except HTTPException:
++                task_manager.cancel_task(task.task_id)
++                raise
++            avatar_lease_owned_by_route = bool(avatar_asset_ids)
+@@ -343,0 +365 @@ async def generate_video_async(
++                video_params["talking_avatar_paths"] = talking_avatar_paths
+@@ -382,0 +405,2 @@ async def generate_video_async(
++                if avatar_asset_ids:
++                    avatar_assets.release_avatar_assets(avatar_asset_ids)
+@@ -386,2 +409,0 @@ async def generate_video_async(
+-                if avatar_asset_ids:
+-                    avatar_assets.release_avatar_assets(avatar_asset_ids)
+@@ -392,0 +415 @@ async def generate_video_async(
++        avatar_lease_owned_by_route = False
+@@ -401,6 +423,0 @@ async def generate_video_async(
+-        if request_body.talking_material is not None:
+-            try:
+-                avatar_asset_ids = _lease_talking_material_assets(request_body, task.task_id)
+-            except HTTPException:
+-                task_manager.cancel_task(task.task_id)
+-                raise
+@@ -418,0 +436,2 @@ async def generate_video_async(
++        if avatar_lease_owned_by_route and avatar_asset_ids:
++            avatar_assets.release_avatar_assets(avatar_asset_ids)
+@@ -421,3 +439,0 @@ async def generate_video_async(
+-
+-        if avatar_asset_ids:
+-            avatar_assets.release_avatar_assets(avatar_asset_ids)
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+index f8a0ae7..7d173b1 100644
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -40,0 +41,2 @@ class NarrationSegment(BaseModel):
++
++
+@@ -78 +79,0 @@ class VideoGenerateRequest(BaseModel):
+-    talking_material: TalkingMaterialConfig | None = None
+@@ -79,0 +81 @@ class VideoGenerateRequest(BaseModel):
++    talking_material: TalkingMaterialConfig | None = None
+diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
+index fafb7f1..9e56900 100644
+--- a/pixelle_video/models/storyboard.py
++++ b/pixelle_video/models/storyboard.py
+@@ -52,0 +53,2 @@ class StoryboardConfig:
++    talking_material: Optional[Dict[str, Any]] = None  # Normalized talking-scene selection
++    talking_avatar_paths: Optional[Dict[str, str]] = None  # Leased server-side avatar paths
+@@ -75,0 +78 @@ class StoryboardFrame:
++    scene_id: str = ""                        # Stable API-facing scene identifier
+@@ -87,0 +91,7 @@ class StoryboardFrame:
++    visual_source: str = "ordinary"
++    talking_attempts: int = 0
++    talking_warning: Optional[str] = None
++    talking_cue_video_paths: Dict[int, str] = field(default_factory=dict, repr=False)
++    talking_original_video_path: Optional[str] = field(default=None, repr=False)
++    talking_original_media_type: Optional[str] = field(default=None, repr=False)
++    talking_single_override: bool = field(default=False, repr=False)
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+index 5ca8f47..b5dc9ef 100644
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -50,0 +51,4 @@ from pixelle_video.services.caption_cues import split_caption_text
++from pixelle_video.services.talking_material import (
++    normalize_talking_material,
++    recommend_scene_ids,
++)
+@@ -239,0 +244,25 @@ class StandardPipeline(LinearVideoPipeline):
++        scene_ids = [f"scene_{i + 1:02d}" for i in range(len(ctx.narrations))]
++        talking_material = normalize_talking_material(
++            ctx.params.get("talking_material"), scene_ids
++        )
++        if talking_material["enabled"] and not talking_material["scenes"]:
++            recommended = recommend_scene_ids(
++                [{"scene_id": scene_id} for scene_id in scene_ids],
++                talking_material["ratio"],
++            )
++            talking_material["scenes"] = [
++                {"scene_id": scene_id, "enabled": True, "avatar_asset_id": ""}
++                for scene_id in recommended
++            ]
++        talking_avatar_paths = dict(ctx.params.get("talking_avatar_paths") or {})
++        if talking_material["enabled"]:
++            required_assets = {talking_material["default_avatar_asset_id"]}
++            required_assets.update(
++                scene["avatar_asset_id"]
++                for scene in talking_material["scenes"]
++                if scene["enabled"] and scene["avatar_asset_id"]
++            )
++            missing_assets = required_assets.difference(talking_avatar_paths)
++            if missing_assets:
++                raise ValueError("leased talking avatar path is missing")
++
+@@ -281,0 +311,2 @@ class StandardPipeline(LinearVideoPipeline):
++            talking_material=talking_material,
++            talking_avatar_paths=talking_avatar_paths,
+@@ -311,0 +343 @@ class StandardPipeline(LinearVideoPipeline):
++                scene_id=f"scene_{i + 1:02d}",
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index c0c9cee..5f90144 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -22,0 +23 @@ Key Feature:
++import asyncio
+@@ -23,0 +25 @@ import copy
++import math
+@@ -37,0 +40,2 @@ from pixelle_video.services.media_retry import RetryBudget, retry_async
++from pixelle_video.services.talking_client import TalkingClient, TalkingClipError
++from pixelle_video.services.talking_material import build_talking_windows
+@@ -125,0 +130,2 @@ class FrameProcessor:
++            await self._prepare_talking_visuals(frame, config)
++
+@@ -154,0 +161,2 @@ class FrameProcessor:
++            self._cleanup_talking_cue_videos(frame)
++
+@@ -157,0 +166,3 @@ class FrameProcessor:
++        except asyncio.CancelledError:
++            self._cleanup_talking_cue_videos(frame)
++            raise
+@@ -158,0 +170 @@ class FrameProcessor:
++            self._cleanup_talking_cue_videos(frame)
+@@ -161,0 +174,188 @@ class FrameProcessor:
++    @staticmethod
++    def _talking_scene_selection(
++        frame: StoryboardFrame,
++        config: StoryboardConfig,
++    ) -> dict | None:
++        talking_material = config.talking_material or {}
++        if not talking_material.get("enabled"):
++            return None
++        for selection in talking_material.get("scenes") or []:
++            if selection.get("scene_id") == frame.scene_id and selection.get("enabled"):
++                return selection
++        return None
++
++    @staticmethod
++    def _talking_ratio(config: StoryboardConfig) -> str:
++        width = int(config.media_width or 0)
++        height = int(config.media_height or 0)
++        if width <= 0 or height <= 0:
++            raise ValueError("talking material requires positive media dimensions")
++        divisor = math.gcd(width, height)
++        exact = f"{width // divisor}:{height // divisor}"
++        if exact in {"9:16", "16:9", "1:1"}:
++            return exact
++        return "9:16" if height > width else "16:9"
++
++    @staticmethod
++    def _raise_if_talking_cancelled() -> None:
++        task = asyncio.current_task()
++        if task is not None and task.cancelling():
++            raise asyncio.CancelledError
++
++    @staticmethod
++    def _cleanup_talking_cue_videos(frame: StoryboardFrame) -> None:
++        for path in frame.talking_cue_video_paths.values():
++            Path(path).unlink(missing_ok=True)
++        frame.talking_cue_video_paths.clear()
++        if frame.talking_single_override:
++            frame.video_path = frame.talking_original_video_path
++            frame.media_type = frame.talking_original_media_type
++            frame.talking_original_video_path = None
++            frame.talking_original_media_type = None
++            frame.talking_single_override = False
++
++    async def _prepare_talking_visuals(
++        self,
++        frame: StoryboardFrame,
++        config: StoryboardConfig,
++    ) -> None:
++        selection = self._talking_scene_selection(frame, config)
++        frame.visual_source = "ordinary"
++        if selection is None:
++            return
++
++        talking_material = config.talking_material or {}
++        avatar_asset_id = (
++            selection.get("avatar_asset_id")
++            or talking_material.get("default_avatar_asset_id")
++        )
++        avatar_path = (config.talking_avatar_paths or {}).get(avatar_asset_id)
++        if not avatar_path:
++            frame.talking_warning = "leased talking avatar path is missing"
++            return
++
++        windows = build_talking_windows(
++            [
++                {
++                    "text": cue.text,
++                    "audio_path": cue.audio_path,
++                    "duration": cue.duration,
++                }
++                for cue in frame.caption_cues
++            ],
++            enabled=True,
++        )
++        if not windows:
++            return
++
++        from pixelle_video.services.video import VideoService
++        from pixelle_video.utils.os_util import get_task_frame_path
++
++        video_service = VideoService()
++        try:
++            talking_client = TalkingClient()
++        except Exception as error:
++            frame.talking_warning = "talking_client_unavailable"
++            logger.warning(
++                "Talking material client unavailable for %s: %s",
++                frame.scene_id,
++                type(error).__name__,
++            )
++            return
++        base_segment = Path(get_task_frame_path(config.task_id, frame.index, "segment"))
++        warnings = []
++        temporary_paths: list[Path] = []
++        try:
++            for window_index, window in enumerate(windows):
++                self._raise_if_talking_cancelled()
++                window_cues = frame.caption_cues[
++                    window["cue_start"]:window["cue_end"]
++                ]
++                window_audio = base_segment.with_name(
++                    f"{base_segment.stem}_talking_{window_index + 1:02d}.mp3"
++                )
++                provider_video = base_segment.with_name(
++                    f"{base_segment.stem}_talking_{window_index + 1:02d}.mp4"
++                )
++                temporary_paths.extend([window_audio, provider_video])
++                window_slice_indices: list[int] = []
++                try:
++                    video_service.concat_audios(
++                        [cue.audio_path for cue in window_cues],
++                        str(window_audio),
++                    )
++                    result = await talking_client.generate(
++                        str(avatar_path),
++                        str(window_audio),
++                        str(provider_video),
++                        f"{config.task_id}:{frame.scene_id}:{window_index + 1}",
++                        self._talking_ratio(config),
++                    )
++                    frame.talking_attempts += result.attempts
++                    prepared_video = Path(video_service.ensure_video_duration(
++                        result.video_path,
++                        window["duration"],
++                    ))
++                    if prepared_video != provider_video:
++                        temporary_paths.append(prepared_video)
++
++                    window_start_time = window_cues[0].start_time
++                    for cue_index in range(window["cue_start"], window["cue_end"]):
++                        cue = frame.caption_cues[cue_index]
++                        cue_video = base_segment.with_name(
++                            f"{base_segment.stem}_talking_cue_{cue_index + 1:02d}.mp4"
++                        )
++                        video_service.extract_video_clip(
++                            str(prepared_video),
++                            cue.start_time - window_start_time,
++                            cue.duration,
++                            str(cue_video),
++                        )
++                        frame.talking_cue_video_paths[cue_index] = str(cue_video)
++                        window_slice_indices.append(cue_index)
++                    frame.visual_source = "talking"
++                except TalkingClipError as error:
++                    self._discard_talking_window_slices(frame, window_slice_indices)
++                    frame.talking_attempts += error.attempts
++                    warnings.append(f"{error.code} after {error.attempts} attempt(s)")
++                    logger.warning(
++                        f"Talking material fallback for {frame.scene_id}: {error.code}"
++                    )
++                except Exception as error:
++                    self._discard_talking_window_slices(frame, window_slice_indices)
++                    warnings.append("talking_material_processing_failed")
++                    logger.warning(
++                        "Talking material processing fallback for %s: %s",
++                        frame.scene_id,
++                        type(error).__name__,
++                    )
++                finally:
++                    window_audio.unlink(missing_ok=True)
++                    provider_video.unlink(missing_ok=True)
++        except asyncio.CancelledError:
++            for path in temporary_paths:
++                path.unlink(missing_ok=True)
++            self._cleanup_talking_cue_videos(frame)
++            raise
++        finally:
++            for path in temporary_paths:
++                path.unlink(missing_ok=True)
++
++        frame.talking_warning = "; ".join(warnings) or None
++        if len(frame.caption_cues) == 1 and 0 in frame.talking_cue_video_paths:
++            frame.talking_original_video_path = frame.video_path
++            frame.talking_original_media_type = frame.media_type
++            frame.talking_single_override = True
++            frame.video_path = frame.talking_cue_video_paths[0]
++            frame.media_type = "video"
++
++    @staticmethod
++    def _discard_talking_window_slices(
++        frame: StoryboardFrame,
++        cue_indices: list[int],
++    ) -> None:
++        for cue_index in cue_indices:
++            cue_video_path = frame.talking_cue_video_paths.pop(cue_index, None)
++            if cue_video_path:
++                Path(cue_video_path).unlink(missing_ok=True)
++
+@@ -318 +518,5 @@ class FrameProcessor:
+-            if frame.media_type == "video":
++            talking_video = frame.talking_cue_video_paths.get(cue_index)
++            if talking_video:
++                cue_frame.media_type = "video"
++                cue_frame.video_path = talking_video
++            elif frame.media_type == "video":
+diff --git a/pixelle_video/services/persistence.py b/pixelle_video/services/persistence.py
+index 6308664..0b75d10 100644
+--- a/pixelle_video/services/persistence.py
++++ b/pixelle_video/services/persistence.py
+@@ -349,0 +350,2 @@ class PersistenceService:
++            "talking_material": config.talking_material,
++            "talking_avatar_paths": config.talking_avatar_paths,
+@@ -372,0 +375,2 @@ class PersistenceService:
++            talking_material=data.get("talking_material"),
++            talking_avatar_paths=data.get("talking_avatar_paths"),
+@@ -380,0 +385 @@ class PersistenceService:
++            "scene_id": frame.scene_id,
+@@ -389,0 +395,3 @@ class PersistenceService:
++            "visual_source": frame.visual_source,
++            "talking_attempts": frame.talking_attempts,
++            "talking_warning": frame.talking_warning,
+@@ -406,0 +415 @@ class PersistenceService:
++            scene_id=data.get("scene_id", f"scene_{data['index'] + 1:02d}"),
+@@ -415,0 +425,3 @@ class PersistenceService:
++            visual_source=data.get("visual_source", "ordinary"),
++            talking_attempts=data.get("talking_attempts", 0),
++            talking_warning=data.get("talking_warning"),

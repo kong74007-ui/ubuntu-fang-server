@@ -7,6 +7,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TALKING_PATCH_PATH = (
+    ROOT
+    / "deploy"
+    / "pixelle-video"
+    / "patches"
+    / "0011-render-talking-material-scenes.patch"
+)
 MODULE_PATH = (
     ROOT
     / "deploy"
@@ -154,6 +161,59 @@ class CaptionTimelineTests(unittest.TestCase):
                 self.module.caption_timeline_duration(timed),
             ),
         )
+
+
+class TalkingMaterialPatchContractTests(unittest.TestCase):
+    def test_talking_path_reuses_existing_cue_audio_without_second_tts(self):
+        patch = TALKING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("build_talking_windows(", patch)
+        self.assertIn("[cue.audio_path for cue in window_cues]", patch)
+        self.assertIn("concat_audios(", patch)
+        self.assertIn("await talking_client.generate(", patch)
+        self.assertNotIn("_generate_talking_audio", patch)
+        self.assertNotIn("tts(**talking", patch)
+
+    def test_ordinary_visual_is_generated_before_optional_talking_replacement(self):
+        patch = TALKING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("+            await self._prepare_talking_visuals(", patch)
+        self.assertNotIn("-                await self._step_generate_media", patch)
+        self.assertIn("except TalkingClipError as error:", patch)
+        self.assertIn('frame.visual_source = "ordinary"', patch)
+        self.assertIn("frame.talking_warning", patch)
+
+    def test_talking_visuals_follow_existing_cue_timeline_and_parent_audio(self):
+        patch = TALKING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("cue.start_time - window_start_time", patch)
+        self.assertIn("cue.duration", patch)
+        self.assertIn("frame.talking_cue_video_paths", patch)
+        added_lines = "\n".join(
+            line for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("cue_frame.audio_path =", added_lines)
+        self.assertNotIn("cue_frame.audio_path = talking_video", patch)
+
+    def test_talking_windows_check_cancellation_and_clean_temporary_artifacts(self):
+        patch = TALKING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("asyncio.current_task()", patch)
+        self.assertIn("task.cancelling()", patch)
+        self.assertIn("except asyncio.CancelledError:", patch)
+        self.assertIn("temporary_paths", patch)
+        self.assertIn("unlink(missing_ok=True)", patch)
+        self.assertNotIn("MIN_TALKING_WINDOW", patch)
+        self.assertNotIn("MAX_TALKING_WINDOW", patch)
+
+    def test_talking_setup_failure_falls_back_and_single_cue_restores_ordinary_media(self):
+        patch = TALKING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('frame.talking_warning = "talking_client_unavailable"', patch)
+        self.assertIn("frame.talking_original_video_path = frame.video_path", patch)
+        self.assertIn("frame.video_path = frame.talking_original_video_path", patch)
+        self.assertIn("frame.media_type = frame.talking_original_media_type", patch)
 
 
 if __name__ == "__main__":

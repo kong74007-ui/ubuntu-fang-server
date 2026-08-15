@@ -759,6 +759,96 @@ class PixelleDeploymentTests(unittest.TestCase):
                 self.assertEqual(hunk["old_count"], hunk["old_lines"])
                 self.assertEqual(hunk["new_count"], hunk["new_lines"])
 
+    def test_talking_scene_patch_and_client_are_fail_closed_and_installed_last(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        )
+        client_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "overrides"
+            / "pixelle_video"
+            / "services"
+            / "talking_client.py"
+        )
+
+        self.assertTrue(patch_path.is_file())
+        self.assertTrue(client_path.is_file())
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertIn("TALKING_SCENES_PATCH=", installer)
+        self.assertIn("TALKING_CLIENT_OVERRIDE=", installer)
+        self.assertIn('! -s "${TALKING_SCENES_PATCH}"', installer)
+        self.assertIn('! -s "${TALKING_CLIENT_OVERRIDE}"', installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_SCENES_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_SCENES_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${TALKING_CLIENT_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/talking_client.py"',
+            installer,
+        )
+        self.assertGreater(
+            installer.index('"${TALKING_SCENES_PATCH}"'),
+            installer.index('"${TALKING_MATERIAL_ASSETS_PATCH}"'),
+        )
+        for line in patch.splitlines():
+            self.assertEqual(line.rstrip(), line)
+        self.assertFalse(patch.endswith("\n\n"))
+
+    def test_talking_scene_patch_persists_stable_scene_state_and_avatar_paths(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        ).read_text(encoding="utf-8")
+
+        for marker in (
+            "talking_material: Optional[Dict[str, Any]]",
+            "talking_avatar_paths: Optional[Dict[str, str]]",
+            "scene_id: str",
+            "visual_source: str",
+            "talking_attempts: int",
+            "talking_warning: Optional[str]",
+            'scene_id=f"scene_{i + 1:02d}"',
+            '"visual_source": frame.visual_source',
+            '"talking_attempts": frame.talking_attempts',
+            '"talking_warning": frame.talking_warning',
+            '"talking_avatar_paths": config.talking_avatar_paths',
+        ):
+            self.assertIn(marker, patch)
+
+    def test_talking_scene_patch_has_consistent_hunk_counts(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        ).read_text(encoding="utf-8")
+
+        hunks = parse_patch_hunks(patch)
+        self.assertGreaterEqual(len(hunks), 1)
+        for hunk in hunks:
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
     def test_talking_material_asset_patch_applies_to_post_0009_fixture_with_installer_flags(self):
         patch_path = (
             ROOT
