@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,21 +72,54 @@ def load_patch_fixture_manifest() -> dict:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
-def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def patch_contract_git_env(temp_root: Path) -> dict[str, str]:
+    control_root = temp_root / "git-env"
+    home = control_root / "home"
+    xdg = control_root / "xdg"
+    hooks = control_root / "hooks"
+    template = control_root / "template"
+    global_config = control_root / "global.gitconfig"
+    hooks.mkdir(parents=True, exist_ok=True)
+    template.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    xdg.mkdir(parents=True, exist_ok=True)
+    global_config.write_text("", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(global_config),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "XDG_CONFIG_HOME": str(xdg),
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(hooks),
+            "GIT_CONFIG_KEY_1": "init.templateDir",
+            "GIT_CONFIG_VALUE_1": str(template),
+        }
+    )
+    return env
+
+
+def run_git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
-def build_patch_contract_repo(temp_root: Path) -> Path:
+def build_patch_contract_repo(temp_root: Path, git_env: dict[str, str] | None = None) -> Path:
     manifest = load_patch_fixture_manifest()
     fixture_api_root = PATCH_FIXTURE_ROOT / "api"
     if not fixture_api_root.is_dir():
         raise AssertionError(f"missing pixelle patch fixture tree: {fixture_api_root}")
 
+    git_env = git_env or patch_contract_git_env(temp_root)
     repo = temp_root / "repo"
     shutil.copytree(PATCH_FIXTURE_ROOT, repo, dirs_exist_ok=True)
     (repo / "manifest.json").unlink(missing_ok=True)
@@ -96,22 +130,10 @@ def build_patch_contract_repo(temp_root: Path) -> Path:
         if expected["sha256"] != sha256_file(actual_path):
             raise AssertionError(f"fixture hash mismatch: {relpath}")
 
-    result = run_git(repo, "init")
+    result = run_git(repo, "init", env=git_env)
     if result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
-    result = run_git(repo, "add", ".")
-    if result.returncode != 0:
-        raise AssertionError(result.stderr or result.stdout)
-    result = run_git(
-        repo,
-        "-c",
-        "user.name=codex",
-        "-c",
-        "user.email=codex@example.com",
-        "commit",
-        "-m",
-        "post-0009 fixture",
-    )
+    result = run_git(repo, "add", ".", env=git_env)
     if result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
     return repo
@@ -734,15 +756,17 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as directory:
-            repo = build_patch_contract_repo(Path(directory))
+            temp_root = Path(directory)
+            git_env = patch_contract_git_env(temp_root)
+            repo = build_patch_contract_repo(temp_root, git_env)
 
-            check = run_git(repo, "apply", "--unidiff-zero", "--check", str(patch_path))
+            check = run_git(repo, "apply", "--unidiff-zero", "--check", str(patch_path), env=git_env)
             self.assertEqual(0, check.returncode, check.stderr or check.stdout)
 
-            apply_result = run_git(repo, "apply", "--unidiff-zero", str(patch_path))
+            apply_result = run_git(repo, "apply", "--unidiff-zero", str(patch_path), env=git_env)
             self.assertEqual(0, apply_result.returncode, apply_result.stderr or apply_result.stdout)
 
-            diff_names = run_git(repo, "diff", "--name-only", "--")
+            diff_names = run_git(repo, "diff", "--name-only", "--", env=git_env)
             self.assertEqual(0, diff_names.returncode, diff_names.stderr or diff_names.stdout)
             self.assertEqual(
                 {
@@ -752,6 +776,47 @@ class PixelleDeploymentTests(unittest.TestCase):
                     "api/schemas/video.py",
                 },
                 set(filter(None, diff_names.stdout.splitlines())),
+            )
+
+    def test_patch_contract_repo_ignores_global_hooks_and_init_templates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp_root = Path(directory)
+            fake_home = temp_root / "fake-home"
+            hooks_path = fake_home / "hooks-path"
+            template_hooks = fake_home / "template" / "hooks"
+            marker = temp_root / "hook-marker.txt"
+            fake_home.mkdir()
+            hooks_path.mkdir(parents=True)
+            template_hooks.mkdir(parents=True)
+
+            hook_script = "#!/bin/sh\nprintf hook-ran > \"$HOOK_MARKER\"\n"
+            (hooks_path / "post-commit").write_text(hook_script, encoding="utf-8")
+            (template_hooks / "custom-template-hook").write_text("template copied\n", encoding="utf-8")
+            gitconfig = "\n".join(
+                [
+                    "[core]",
+                    f"\thooksPath = {hooks_path.as_posix()}",
+                    "[init]",
+                    f"\ttemplateDir = {(fake_home / 'template').as_posix()}",
+                    "",
+                ]
+            )
+            (fake_home / ".gitconfig").write_text(gitconfig, encoding="utf-8")
+
+            env = {
+                "HOME": str(fake_home),
+                "USERPROFILE": str(fake_home),
+                "XDG_CONFIG_HOME": str(fake_home / "xdg"),
+                "HOOK_MARKER": str(marker),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                git_env = patch_contract_git_env(temp_root)
+                repo = build_patch_contract_repo(temp_root, git_env)
+
+            self.assertFalse(marker.exists(), "git hooks must not run during fixture setup")
+            self.assertFalse(
+                (repo / ".git" / "hooks" / "custom-template-hook").exists(),
+                "git init must not copy caller-configured templates into the test repo",
             )
 
     def test_rendered_config_is_owner_only(self):
