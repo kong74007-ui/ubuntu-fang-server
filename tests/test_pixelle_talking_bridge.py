@@ -520,6 +520,24 @@ def test_cleanup_journal_discards_database_and_sidecar_rows(
     "NUL.log",
     "COM1.data",
     "LPT9",
+    "COM\u00b9",
+    "com\u00b9.data",
+    "CoM\u00b9. ",
+    "COM\u00b2",
+    "com\u00b2.TXT",
+    "CoM\u00b2. ",
+    "COM\u00b3",
+    "com\u00b3.log",
+    "CoM\u00b3. ",
+    "LPT\u00b9",
+    "lpt\u00b9.data",
+    "LpT\u00b9. ",
+    "LPT\u00b2",
+    "lpt\u00b2.log",
+    "LpT\u00b2. ",
+    "LPT\u00b3",
+    "lpt\u00b3.TXT",
+    "LpT\u00b3. ",
 ])
 def test_cleanup_journal_rejects_windows_filename_aliases(
         tmp_path, monkeypatch, alias):
@@ -541,6 +559,76 @@ def test_cleanup_journal_rejects_windows_filename_aliases(
         assert connection.execute(
             "SELECT COUNT(*) FROM bridge_artifacts WHERE path=?",
             (alias,),
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "placement", ["future", "after-batch", "future-lock-busy"])
+def test_full_cleanup_journal_integrity_blocks_generation_before_artifacts(
+        tmp_path, monkeypatch, placement):
+    bridge = _bridge()
+    output_root = tmp_path / "output"
+    monkeypatch.setattr(bridge, "OUT_DIR", output_root)
+    monkeypatch.setattr(bridge, "PRIVATE_SWEEP_BATCH", 64)
+    external = tmp_path / ("%s-sentinel.txt" % placement)
+    external.write_bytes(b"do-not-delete")
+    database = bridge._cleanup_db_path()
+    bridge._open_cleanup_db().close()
+    row_path = str(external.resolve())
+    now = time.time()
+    with sqlite3.connect(database) as connection:
+        if placement == "after-batch":
+            connection.executemany("""
+                INSERT INTO bridge_artifacts(
+                    path, created_at, status, cleanup_requested_at,
+                    next_attempt_at
+                ) VALUES (?, ?, 'pending', ?, -1)
+            """, [
+                ("artifact-%03d.tmp" % index, float(index), float(index))
+                for index in range(64)
+            ])
+        connection.execute("""
+            INSERT INTO bridge_artifacts(
+                path, created_at, status, cleanup_requested_at, next_attempt_at
+            ) VALUES (?, ?, 'pending', ?, ?)
+        """, (
+            row_path,
+            now + 3600 if placement.startswith("future") else now,
+            now,
+            now + 3600 if placement.startswith("future") else 0,
+        ))
+
+    artifact_calls = []
+    provider_calls = []
+
+    def allocate_artifact(*_args, **_kwargs):
+        artifact_calls.append("artifact")
+        pytest.fail("private artifacts must not be allocated after journal tampering")
+
+    monkeypatch.setattr(
+        bridge, "_allocate_private_file", allocate_artifact)
+    monkeypatch.setattr(
+        video, "upload_heygen_image_asset",
+        lambda _image: provider_calls.append("upload"))
+
+    cleanup_lock_held = placement == "future-lock-busy"
+    if cleanup_lock_held:
+        assert bridge._CLEANUP_PASS_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(bridge.TalkingBridgeBackpressureError):
+            bridge.generate_clip(
+                _payload(request_id="full-journal-%s" % placement))
+    finally:
+        if cleanup_lock_held:
+            bridge._CLEANUP_PASS_LOCK.release()
+
+    assert artifact_calls == []
+    assert provider_calls == []
+    assert external.read_bytes() == b"do-not-delete"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM bridge_artifacts WHERE path=?",
+            (row_path,),
         ).fetchone()[0] == 0
 
 

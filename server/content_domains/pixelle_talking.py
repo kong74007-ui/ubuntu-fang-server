@@ -282,7 +282,7 @@ def _windows_cleanup_name_is_unsafe(name):
     stem = name.split(".", 1)[0].casefold()
     if stem in {"con", "prn", "aux", "nul", "clock$", "conin$", "conout$"}:
         return True
-    return bool(re.fullmatch(r"(?:com|lpt)[1-9]", stem))
+    return bool(re.fullmatch(r"(?:com|lpt)[1-9\u00b9\u00b2\u00b3]", stem))
 
 
 def _allowed_cleanup_artifact_name(name, private_root):
@@ -435,6 +435,31 @@ def _journal_cleanup_candidates(now):
     return candidates
 
 
+def _validate_cleanup_journal_integrity():
+    connection = _open_cleanup_db()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT path FROM bridge_artifacts").fetchall()
+        private_root = _private_dir().resolve()
+        invalid = [
+            (row[0],) for row in rows
+            if _allowed_cleanup_artifact_name(row[0], private_root) is None
+        ]
+        if invalid:
+            connection.executemany(
+                "DELETE FROM bridge_artifacts WHERE path=?", invalid)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    if invalid:
+        raise CleanupJournalIntegrityError(
+            "private cleanup journal contains invalid artifact rows")
+
+
 def _private_backlog_size():
     connection = _open_cleanup_db()
     try:
@@ -575,6 +600,15 @@ def _retry_deferred_cleanup(request_id):
 
 
 def _sweep_private_cleanup(request_id):
+    try:
+        _validate_cleanup_journal_integrity()
+    except CleanupJournalIntegrityError as error:
+        _best_effort_log_failure(error, request_id)
+        raise TalkingBridgeBackpressureError(
+            "private cleanup journal integrity violation") from error
+    except Exception as error:
+        _best_effort_log_failure(error, request_id)
+        return 0
     if not _CLEANUP_PASS_LOCK.acquire(blocking=False):
         return 0
     try:
