@@ -9,7 +9,6 @@ AVATAR_ASSET_RE = re.compile(r"^avatar_[0-9a-f]{32}$")
 DEFAULT_TALKING_RATIO = 0.3
 MIN_TALKING_RATIO = 0.1
 MAX_TALKING_RATIO = 0.5
-MIN_WINDOW_DURATION = 3.0
 MAX_WINDOW_DURATION = 6.0
 
 
@@ -75,26 +74,35 @@ def recommend_scene_ids(scenes: list[dict], ratio: float) -> list[str]:
     target = max(1, round(len(scenes) * float(ratio)))
     target = min(target, len(scenes))
 
-    ordered_indices = [0]
-    if len(scenes) > 1:
-        ordered_indices.append(len(scenes) - 1)
-
     center = (len(scenes) - 1) / 2.0
-    interior = [
-        index
-        for index in range(1, len(scenes) - 1)
-    ]
-    interior.sort(key=lambda index: (abs(index - center), index))
-    ordered_indices.extend(interior)
+    selected_indices: list[int] = [0]
+    if len(scenes) > 1:
+        selected_indices.append(len(scenes) - 1)
 
-    selected: list[str] = []
-    for index in ordered_indices:
-        scene_id = _scene_id(scenes[index].get("scene_id"))
-        if not scene_id or scene_id in selected:
-            continue
-        selected.append(scene_id)
-        if len(selected) >= target:
+    def is_adjacent_to_selected_interior(index: int) -> bool:
+        return any(abs(index - selected_index) == 1 for selected_index in selected_indices if 0 < selected_index < len(scenes) - 1)
+
+    interior = sorted(
+        range(1, len(scenes) - 1),
+        key=lambda index: (abs(index - center), index),
+    )
+
+    for index in interior:
+        if len(selected_indices) >= target:
             break
+        if is_adjacent_to_selected_interior(index):
+            continue
+        selected_indices.append(index)
+
+    if len(selected_indices) < target:
+        for index in interior:
+            if len(selected_indices) >= target:
+                break
+            if index in selected_indices:
+                continue
+            selected_indices.append(index)
+
+    selected = [_scene_id(scenes[index].get("scene_id")) for index in selected_indices[:target]]
 
     return selected
 
@@ -123,21 +131,15 @@ def build_talking_windows(cues: list[dict], enabled: bool) -> list[dict]:
     accumulated = 0.0
 
     for index, cue in enumerate(cues):
-        accumulated += _cue_duration(cue)
-        if accumulated >= MIN_WINDOW_DURATION:
-            windows.append(_window(window_start, index + 1, accumulated))
-            window_start = index + 1
+        duration = _cue_duration(cue)
+        if accumulated and accumulated + duration > MAX_WINDOW_DURATION:
+            windows.append(_window(window_start, index, accumulated))
+            window_start = index
             accumulated = 0.0
+        accumulated += duration
 
     if accumulated <= 0:
         return windows
-
-    if windows and accumulated < MIN_WINDOW_DURATION:
-        previous = windows[-1]
-        if previous["duration"] < MIN_WINDOW_DURATION and previous["duration"] + accumulated <= MAX_WINDOW_DURATION:
-            previous["cue_end"] = len(cues)
-            previous["duration"] = round(previous["duration"] + accumulated, 10)
-            return windows
 
     windows.append(_window(window_start, len(cues), accumulated))
     return windows

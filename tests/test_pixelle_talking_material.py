@@ -65,6 +65,16 @@ class TalkingMaterialTests(unittest.TestCase):
             ["scene_01", "scene_05"],
         )
 
+    def test_recommend_scene_ids_skip_center_adjacent_interior(self):
+        module = load_module()
+
+        scenes = [{"scene_id": f"scene_{index:02d}"} for index in range(1, 8)]
+
+        self.assertEqual(
+            module.recommend_scene_ids(scenes, 0.5),
+            ["scene_01", "scene_07", "scene_04", "scene_02"],
+        )
+
     def test_disabled_talking_windows_are_empty(self):
         module = load_module()
 
@@ -80,6 +90,25 @@ class TalkingMaterialTests(unittest.TestCase):
             [],
         )
 
+    def test_four_two_second_cues_pack_toward_six_seconds(self):
+        module = load_module()
+
+        self.assertEqual(
+            module.build_talking_windows(
+                [
+                    {"text": "one", "duration": 2.0},
+                    {"text": "two", "duration": 2.0},
+                    {"text": "three", "duration": 2.0},
+                    {"text": "four", "duration": 2.0},
+                ],
+                enabled=True,
+            ),
+            [
+                {"cue_start": 0, "cue_end": 3, "duration": 6.0},
+                {"cue_start": 3, "cue_end": 4, "duration": 2.0},
+            ],
+        )
+
     def test_short_cues_are_packed_without_text_loss(self):
         module = load_module()
 
@@ -93,8 +122,7 @@ class TalkingMaterialTests(unittest.TestCase):
                 enabled=True,
             ),
             [
-                {"cue_start": 0, "cue_end": 2, "duration": 3.2},
-                {"cue_start": 2, "cue_end": 3, "duration": 2.7},
+                {"cue_start": 0, "cue_end": 3, "duration": 5.9},
             ],
         )
 
