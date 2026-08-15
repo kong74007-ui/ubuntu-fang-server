@@ -1907,8 +1907,9 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
+    image_upload_fp = image_fp if image_asset_id else _ensure_heygen_image_jpg(image_fp)
     image_asset_id = _resolve_heygen_image_asset(
-        _ensure_heygen_image_jpg(image_fp), True, image_asset_id)
+        image_upload_fp, True, image_asset_id)
     args = (image_asset_id, _ensure_heygen_audio_mp3(audio_fp),
             resolution, ratio, motion)
     if internal:
@@ -1923,8 +1924,9 @@ def _generate_heygen_relay(image_file, audio_file, resolution, ratio, motion,
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
+    image_upload_fp = image_fp if image_asset_id else _ensure_heygen_image_jpg(image_fp)
     image_asset_id = _resolve_heygen_image_asset(
-        _ensure_heygen_image_jpg(image_fp), False, image_asset_id)
+        image_upload_fp, False, image_asset_id)
     args = (image_asset_id, _ensure_heygen_audio_mp3(audio_fp),
             resolution, ratio, motion)
     if internal:

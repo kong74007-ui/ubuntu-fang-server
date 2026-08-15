@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -81,7 +82,8 @@ def test_bridge_uses_two_slots():
 @pytest.fixture(autouse=True)
 def reset_bridge_cache():
     bridge = _bridge()
-    for name in ("_IMAGE_ASSET_CACHE", "_IMAGE_UPLOADS", "_IMAGE_HASH_LOCKS"):
+    for name in ("_IMAGE_ASSET_CACHE", "_IMAGE_UPLOADS", "_IMAGE_HASH_LOCKS",
+                 "_DEFERRED_CLEANUP"):
         value = getattr(bridge, name, None)
         if value is not None:
             value.clear()
@@ -152,6 +154,95 @@ def test_temporary_inputs_are_deleted_after_provider_error(tmp_path, monkeypatch
     assert seen and all(not path.exists() for path in seen)
 
 
+def test_input_cleanup_failure_cannot_mask_success_and_is_retried(
+        tmp_path, monkeypatch, capsys):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: {
+        "video_id": "video-1", "image_asset_id": "asset-1",
+        "video_file": "video/result.mp4"})
+    real_unlink = Path.unlink
+    failed_path = []
+
+    def fail_once(path, *args, **kwargs):
+        if path.name.startswith(".pixelle-talking-") and not failed_path:
+            failed_path.append(path)
+            raise OSError("locked C:\\secret\\input.tmp")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_once)
+    result = bridge.generate_clip(_payload(request_id="cleanup-success"))
+    assert result["video_id"] == "video-1"
+    assert failed_path[0].exists()
+    assert list(bridge._DEFERRED_CLEANUP) == [str(failed_path[0])]
+    logged = capsys.readouterr().out
+    assert "request_id=cleanup-success" in logged
+    assert "secret" not in logged
+
+    bridge.generate_clip(_payload(request_id="cleanup-retry"))
+    assert not failed_path[0].exists()
+    assert bridge._DEFERRED_CLEANUP == OrderedDict()
+
+
+def test_input_cleanup_failure_preserves_existing_billed_error(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    billed = video.HeyGenBilledError("video-1 created")
+    monkeypatch.setattr(
+        video, "generate_heygen_video",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(billed))
+    real_unlink = Path.unlink
+
+    def fail_inputs(path, *args, **kwargs):
+        if path.name.startswith(".pixelle-talking-"):
+            raise OSError("cleanup failed")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_inputs)
+    with pytest.raises(video.HeyGenBilledError) as raised:
+        bridge.generate_clip(_payload(request_id="cleanup-billed"))
+    assert raised.value is billed
+    assert bridge.classify_error(raised.value)["retryable"] is False
+    assert bridge._DEFERRED_CLEANUP
+
+
+def test_cleanup_logging_failure_cannot_mask_completed_result(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: {
+        "video_id": "video-1", "image_asset_id": "asset-1",
+        "video_file": "video/result.mp4"})
+    real_unlink = Path.unlink
+
+    def fail_inputs(path, *args, **kwargs):
+        if path.name.startswith(".pixelle-talking-"):
+            raise OSError("cleanup failed")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_inputs)
+    monkeypatch.setattr(
+        bridge, "_log_failure",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("log closed")))
+    result = bridge.generate_clip(_payload(request_id="cleanup-log-failed"))
+    assert result["video_id"] == "video-1"
+
+
+def test_deferred_cleanup_retention_is_bounded(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "DEFERRED_CLEANUP_MAX", 2)
+    monkeypatch.setattr(Path, "unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("locked")))
+    paths = []
+    for index in range(3):
+        path = tmp_path / ("private-%d.tmp" % index)
+        path.write_bytes(b"x")
+        paths.append(path)
+    bridge._best_effort_cleanup(paths, "bounded-cleanup")
+    assert list(bridge._DEFERRED_CLEANUP) == [str(paths[1]), str(paths[2])]
+
+
 def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypatch):
     bridge = _bridge()
     monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
@@ -179,8 +270,8 @@ def test_converted_derivatives_are_unique_private_and_cleaned(tmp_path, monkeypa
             _converted_payload(request_id="b"),
         ]))
 
-    assert len(derivatives) == 4
-    assert len({path.name for path in derivatives}) == 4
+    assert len(derivatives) == 3
+    assert len({path.name for path in derivatives}) == 3
     assert all(path.name.startswith(".pixelle-talking-") for path in derivatives)
     assert all(core._sensitive_output_file(path.name) for path in derivatives)
     assert all(not path.exists() for path in derivatives)
@@ -221,6 +312,47 @@ def test_concurrent_same_hash_coalesces_only_image_upload(tmp_path, monkeypatch)
     assert uploads == ["upload"]
     assert generations == ["image-asset-shared", "image-asset-shared"]
     assert bridge._IMAGE_UPLOADS == {}
+
+
+def test_same_hash_requests_acquire_generation_slots_after_upload_release(
+        tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+    two_generations = threading.Event()
+    release_generation = threading.Event()
+    active_generations = 0
+    lock = threading.Lock()
+
+    def upload(_image_file):
+        upload_started.set()
+        assert release_upload.wait(2)
+        return "shared"
+
+    def generate(*_args, image_asset_id=None, **_kwargs):
+        nonlocal active_generations
+        with lock:
+            active_generations += 1
+            if active_generations == 2:
+                two_generations.set()
+        assert release_generation.wait(2)
+        with lock:
+            active_generations -= 1
+        return {"video_id": "v", "image_asset_id": image_asset_id,
+                "video_file": "video/v.mp4"}
+
+    monkeypatch.setattr(video, "upload_heygen_image_asset", upload)
+    monkeypatch.setattr(video, "generate_heygen_video", generate)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(bridge.generate_clip, _payload(request_id="a"))
+        assert upload_started.wait(2)
+        second = pool.submit(bridge.generate_clip, _payload(request_id="b"))
+        release_upload.set()
+        assert two_generations.wait(2)
+        release_generation.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
 
 
 def test_failed_image_upload_releases_waiters_and_cleans_coordination(tmp_path, monkeypatch):
@@ -331,45 +463,81 @@ def test_image_asset_remains_coalesced_when_first_generation_fails(tmp_path, mon
     assert any(isinstance(value, dict) for value in outcomes)
 
 
-def test_bridge_never_runs_more_than_two_provider_calls(tmp_path, monkeypatch):
+def test_bridge_never_runs_more_than_two_conversion_upload_or_generation_calls(
+        tmp_path, monkeypatch):
     bridge = _bridge()
     monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
     active = 0
     maximum = 0
     lock = threading.Lock()
     two_entered = threading.Event()
+    three_entered = threading.Event()
     release = threading.Event()
 
-    def fake_generate(*_args, **_kwargs):
+    def bounded_step():
         nonlocal active, maximum
         with lock:
             active += 1
             maximum = max(maximum, active)
             if active == 2:
                 two_entered.set()
+            if active == 3:
+                three_entered.set()
         assert release.wait(2)
         with lock:
             active -= 1
+
+    def convert(source, output_path=None):
+        bounded_step()
+        output_path.write_bytes(b"converted:" + source.read_bytes())
+        return output_path
+
+    def upload(image):
+        bounded_step()
+        return Path(image).stem
+
+    def fake_generate(*_args, image_asset_id=None, **_kwargs):
+        bounded_step()
         return {
             "video_id": "video",
-            "image_asset_id": "image-asset",
+            "image_asset_id": image_asset_id,
             "video_file": "video/result.mp4",
         }
 
-    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda image: Path(image).stem)
+    monkeypatch.setattr(video, "_ensure_heygen_image_jpg", convert)
+    monkeypatch.setattr(video, "_ensure_heygen_audio_mp3", convert)
+    monkeypatch.setattr(video, "upload_heygen_image_asset", upload)
     monkeypatch.setattr(video, "generate_heygen_video", fake_generate)
     payloads = [
-        _payload(image_bytes=IMAGE_BYTES + bytes([i]), request_id=str(i))
+        _converted_payload(image_bytes=IMAGE_BYTES + bytes([i]), request_id=str(i))
         for i in range(3)
     ]
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = [pool.submit(bridge.generate_clip, payload) for payload in payloads]
         assert two_entered.wait(2)
         time.sleep(0.05)
+        assert not three_entered.is_set()
         assert maximum == 2
         release.set()
         [future.result(timeout=2) for future in futures]
     assert maximum == 2
+
+
+def test_missing_result_image_asset_deletes_completed_mp4(tmp_path, monkeypatch):
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "OUT_DIR", tmp_path)
+    output = tmp_path / "completed.mp4"
+    output.write_bytes(b"mp4")
+    monkeypatch.setattr(video, "upload_heygen_image_asset", lambda _image: "asset-1")
+    monkeypatch.setattr(video, "generate_heygen_video", lambda *_args, **_kwargs: {
+        "video_id": "video-1", "video_file": "video/completed.mp4"})
+    monkeypatch.setattr(
+        bridge, "_resolve_result_artifact",
+        lambda value: output if value == "video/completed.mp4" else None)
+
+    with pytest.raises(video.HeyGenBilledError):
+        bridge.generate_clip(_payload(request_id="missing-asset"))
+    assert not output.exists()
 
 
 def test_image_asset_cache_is_ttl_lru_bounded_and_cleans_upload_state(monkeypatch):
@@ -605,28 +773,78 @@ def test_shared_root_only_systemd_token_file_is_wired_without_token_logging():
     assert 'echo "$token"' not in setup.lower()
 
 
+def _git_posix_shell():
+    candidates = [shutil.which("dash"), shutil.which("sh")]
+    git = shutil.which("git")
+    if git:
+        git_root = Path(git).resolve().parent.parent
+        candidates.extend([
+            git_root / "usr" / "bin" / "dash.exe",
+            git_root / "bin" / "sh.exe",
+        ])
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    raise AssertionError("POSIX sh/dash runtime not found")
+
+
+def _run_token_block(shell, body, cwd, target, prefix=""):
+    script = "PATH=/usr/bin:/bin:$PATH\nexport PATH\n" + prefix + body
+    return subprocess.run(
+        [shell, "-s", "--", target], input=script.encode("utf-8"),
+        cwd=cwd, capture_output=True)
+
+
 def test_pixelle_token_creation_is_atomic_no_clobber_and_fail_closed(tmp_path):
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash is unavailable in this Windows test environment")
+    shell = _git_posix_shell()
     setup = (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8")
     marker_start = "# PIXELLE_TOKEN_CREATE_BEGIN"
     marker_end = "# PIXELLE_TOKEN_CREATE_END"
     body = setup.split(marker_start, 1)[1].split(marker_end, 1)[0]
-    target = tmp_path / "pixelle-talking.env"
-    runner = tmp_path / "token-test.sh"
-    runner.write_text(
-        "#!/usr/bin/env bash\nset -eu\ntarget=$1\n" + body + "\n",
-        encoding="utf-8")
-
-    import subprocess
-    subprocess.run([bash, str(runner), str(target)], check=True)
+    target = Path("pixelle-talking.env")
+    created = _run_token_block(
+        shell, body, tmp_path, str(target),
+        prefix=('chmod() { printf "%s\\n" "$*" >> chmod.trace; '
+                'command chmod "$@"; }\n'))
+    assert created.returncode == 0, created.stderr
+    target = tmp_path / target
     original = target.read_text(encoding="utf-8")
     assert re.fullmatch(r"PIXELLE_TALKING_INTERNAL_TOKEN=[0-9a-f]{96}\n", original)
-    subprocess.run([bash, str(runner), str(target)], check=True)
+    metadata = subprocess.run(
+        [shell, "-c",
+         'PATH=/usr/bin:/bin:$PATH; export PATH; stat -c "%a:%u" "$1"; id -u',
+         "sh", target.name],
+        cwd=tmp_path, text=True, capture_output=True, check=True).stdout.splitlines()
+    mode, owner = metadata[0].split(":")
+    if os.name == "nt":
+        assert (tmp_path / "chmod.trace").read_text(encoding="utf-8").split()[0] == "600"
+    else:
+        assert mode == "600"
+    assert owner == metadata[1]
+
+    existing = _run_token_block(
+        shell, body, tmp_path, target.name,
+        prefix="openssl() { return 1; }\n")
+    assert existing.returncode == 0, existing.stderr
     assert target.read_text(encoding="utf-8") == original
 
     target.write_text("PIXELLE_TALKING_INTERNAL_TOKEN=broken\n", encoding="utf-8")
-    failed = subprocess.run([bash, str(runner), str(target)])
+    failed = _run_token_block(shell, body, tmp_path, target.name)
     assert failed.returncode != 0
     assert target.read_text(encoding="utf-8") == "PIXELLE_TALKING_INTERNAL_TOKEN=broken\n"
+
+    target.unlink()
+    random_failed = _run_token_block(
+        shell, body, tmp_path, target.name,
+        prefix="openssl() { return 1; }\n")
+    assert random_failed.returncode != 0
+    assert not target.exists()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda _index: _run_token_block(shell, body, tmp_path, target.name),
+            range(2)))
+    assert [result.returncode for result in results] == [0, 0]
+    assert re.fullmatch(
+        r"PIXELLE_TALKING_INTERNAL_TOKEN=[0-9a-f]{96}\n",
+        target.read_text(encoding="utf-8"))

@@ -21,9 +21,12 @@ TALKING_CLIP_CONCURRENCY = 2
 _TALKING_CLIP_SLOTS = threading.BoundedSemaphore(TALKING_CLIP_CONCURRENCY)
 IMAGE_ASSET_CACHE_MAX = 256
 IMAGE_ASSET_CACHE_TTL_SECONDS = 6 * 60 * 60
+DEFERRED_CLEANUP_MAX = 256
 _IMAGE_ASSET_CACHE = OrderedDict()
 _IMAGE_UPLOADS = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
+_DEFERRED_CLEANUP = OrderedDict()
+_DEFERRED_CLEANUP_LOCK = threading.Lock()
 
 _MAX_INPUT_BYTES = 35 * 1024 * 1024
 _IMAGE_MIME_EXTENSIONS = {
@@ -175,6 +178,58 @@ def _relative_temp_name(path):
     return path.relative_to(pathlib.Path(OUT_DIR)).as_posix()
 
 
+def _remember_deferred_cleanup(path):
+    marker = str(path)
+    with _DEFERRED_CLEANUP_LOCK:
+        _DEFERRED_CLEANUP[marker] = pathlib.Path(path)
+        _DEFERRED_CLEANUP.move_to_end(marker)
+        while len(_DEFERRED_CLEANUP) > DEFERRED_CLEANUP_MAX:
+            _DEFERRED_CLEANUP.popitem(last=False)
+
+
+def _forget_deferred_cleanup(path):
+    with _DEFERRED_CLEANUP_LOCK:
+        _DEFERRED_CLEANUP.pop(str(path), None)
+
+
+def _best_effort_log_failure(error, request_id):
+    try:
+        _log_failure(error, request_id)
+    except Exception:
+        pass
+
+
+def _best_effort_cleanup(paths, request_id):
+    seen = set()
+    for value in paths:
+        if value is None:
+            continue
+        path = pathlib.Path(value)
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as error:
+            try:
+                _remember_deferred_cleanup(path)
+            except Exception:
+                pass
+            _best_effort_log_failure(error, request_id)
+        else:
+            try:
+                _forget_deferred_cleanup(path)
+            except Exception:
+                pass
+
+
+def _retry_deferred_cleanup(request_id):
+    with _DEFERRED_CLEANUP_LOCK:
+        paths = list(_DEFERRED_CLEANUP.values())
+    _best_effort_cleanup(paths, request_id)
+
+
 def _prune_image_cache_locked(now):
     stale = [key for key, (_asset_id, expires_at) in _IMAGE_ASSET_CACHE.items()
              if expires_at <= now]
@@ -211,7 +266,7 @@ def _evict_image_asset(image_sha256, image_asset_id):
             _IMAGE_ASSET_CACHE.pop(image_sha256, None)
 
 
-def _resolve_image_asset(image_sha256, image_path):
+def _resolve_image_asset(image_sha256, image_path, request_id):
     cached = _get_cached_image_asset(image_sha256)
     if cached:
         return cached
@@ -235,8 +290,15 @@ def _resolve_image_asset(image_sha256, image_path):
         return upload.asset_id
 
     try:
-        asset_id = str(video.upload_heygen_image_asset(
-            _relative_temp_name(image_path)) or "").strip()
+        derivatives = []
+        with _TALKING_CLIP_SLOTS:
+            provider_image, derivatives = _prepare_provider_image(
+                image_path, request_id)
+            try:
+                asset_id = str(video.upload_heygen_image_asset(
+                    _relative_temp_name(provider_image)) or "").strip()
+            finally:
+                _best_effort_cleanup(derivatives, request_id)
         if not asset_id:
             raise RuntimeError("provider image upload omitted asset ID")
         _cache_image_asset(image_sha256, asset_id)
@@ -274,59 +336,79 @@ def _result_image_asset(result):
     return effective_asset_id
 
 
-def _prepare_provider_media(image_path, audio_path):
+def _prepare_provider_image(image_path, request_id):
     derivatives = []
     provider_image = image_path
-    provider_audio = audio_path
     try:
         if image_path.suffix.lower() not in video.HEYGEN_IMAGE_EXTS:
             provider_image = _new_private_temp(".jpg")
             derivatives.append(provider_image)
             provider_image = video._ensure_heygen_image_jpg(
                 image_path, output_path=provider_image)
+        return provider_image, derivatives
+    except Exception:
+        _best_effort_cleanup(derivatives, request_id)
+        raise
+
+
+def _prepare_provider_audio(audio_path, request_id):
+    derivatives = []
+    provider_audio = audio_path
+    try:
         if audio_path.suffix.lower() != ".mp3":
             provider_audio = _new_private_temp(".mp3")
             derivatives.append(provider_audio)
             provider_audio = video._ensure_heygen_audio_mp3(
                 audio_path, output_path=provider_audio)
-        return provider_image, provider_audio, derivatives
+        return provider_audio, derivatives
     except Exception:
-        for path in derivatives:
-            path.unlink(missing_ok=True)
+        _best_effort_cleanup(derivatives, request_id)
         raise
 
 
 def generate_clip(payload):
     validated = _validated_payload(payload)
+    request_id = validated["request_id"]
+    _retry_deferred_cleanup(request_id)
     image_path = _write_private_temp(
         validated["image_data"], validated["image_suffix"])
     audio_path = None
-    derivatives = []
+    result = None
     try:
         audio_path = _write_private_temp(
             validated["audio_data"], validated["audio_suffix"])
-        provider_image, provider_audio, derivatives = _prepare_provider_media(
-            image_path, audio_path)
         image_sha256 = validated["image_sha256"]
-        image_asset_id = _resolve_image_asset(image_sha256, provider_image)
+        image_asset_id = _resolve_image_asset(
+            image_sha256, image_path, request_id)
         try:
             with _TALKING_CLIP_SLOTS:
-                result = _generate_with_image_asset(
-                    validated, provider_image, provider_audio, image_asset_id)
+                provider_audio, derivatives = _prepare_provider_audio(
+                    audio_path, request_id)
+                try:
+                    result = _generate_with_image_asset(
+                        validated, image_path, provider_audio, image_asset_id)
+                finally:
+                    _best_effort_cleanup(derivatives, request_id)
         except video.HeyGenBilledError:
             raise
         except Exception:
             _evict_image_asset(image_sha256, image_asset_id)
             raise
-        effective_asset_id = _result_image_asset(result)
-        _cache_image_asset(image_sha256, effective_asset_id)
+        try:
+            effective_asset_id = _result_image_asset(result)
+            _cache_image_asset(image_sha256, effective_asset_id)
+        except video.HeyGenBilledError:
+            _cleanup_result_artifacts(result, request_id=request_id)
+            raise
+        except Exception as error:
+            _cleanup_result_artifacts(result, request_id=request_id)
+            if result.get("video_id"):
+                raise video.HeyGenBilledError(
+                    "post-generation result validation failed after video creation") from error
+            raise
         return result
     finally:
-        for path in derivatives:
-            path.unlink(missing_ok=True)
-        if audio_path is not None:
-            audio_path.unlink(missing_ok=True)
-        image_path.unlink(missing_ok=True)
+        _best_effort_cleanup([audio_path, image_path], request_id)
 
 
 def classify_error(error):
@@ -408,25 +490,20 @@ def _resolve_result_artifact(value):
     return _resolve_out_file(value)
 
 
-def _cleanup_result_artifacts(result, video_path=None):
+def _cleanup_result_artifacts(result, video_path=None, request_id="cleanup"):
     paths = []
     if video_path is not None:
         paths.append(pathlib.Path(video_path))
     if isinstance(result, dict):
         for key in ("video_file", "image_file"):
-            path = _resolve_result_artifact(result.get(key))
+            try:
+                path = _resolve_result_artifact(result.get(key))
+            except Exception as error:
+                _best_effort_log_failure(error, request_id)
+                continue
             if path is not None:
                 paths.append(pathlib.Path(path))
-    seen = set()
-    for path in paths:
-        marker = str(path)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as error:
-            _log_failure(error, "cleanup")
+    _best_effort_cleanup(paths, request_id)
 
 
 def handle_http_request(handler):
@@ -449,7 +526,7 @@ def handle_http_request(handler):
             result.get("image_asset_id"), "image_asset_id")
     except Exception as error:
         _log_failure(error, request_id)
-        _cleanup_result_artifacts(result, video_path)
+        _cleanup_result_artifacts(result, video_path, request_id)
         return handler._send(error_status(error), classify_error(error))
     try:
         handler.send_response(200)
@@ -468,4 +545,4 @@ def handle_http_request(handler):
         _log_failure(error, request_id)
         raise
     finally:
-        _cleanup_result_artifacts(result, video_path)
+        _cleanup_result_artifacts(result, video_path, request_id)

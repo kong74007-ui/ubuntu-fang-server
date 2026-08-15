@@ -167,6 +167,23 @@ class HeyGenImageAssetReuseTests(unittest.TestCase):
         generate.assert_called_once_with(
             "asset-cached", audio, "1080p", "9:16", "medium", direct=True)
 
+    def test_reused_image_asset_skips_image_conversion(self):
+        image = Path("avatar.webp")
+        audio = Path("speech.mp3")
+        expected = {"video_id": "video-1", "image_asset_id": "asset-cached"}
+        with patch.object(video, "_resolve_out_file", side_effect=[image, audio]), \
+                patch.object(video, "_ensure_heygen_image_jpg",
+                             side_effect=AssertionError("must not convert cached image")), \
+                patch.object(video, "_ensure_heygen_audio_mp3", return_value=audio), \
+                patch.object(video, "_resolve_heygen_image_asset",
+                             return_value="asset-cached"), \
+                patch.object(video, "_generate_heygen_from_uploaded_assets",
+                             return_value=expected):
+            result = video.generate_heygen_video_direct(
+                "avatar.webp", "speech.mp3", "1080p", "9:16", "medium",
+                image_asset_id="asset-cached")
+        self.assertEqual(expected, result)
+
     def test_legacy_five_argument_dispatch_remains_valid(self):
         expected = {"video_id": "video-legacy", "image_asset_id": "asset-legacy"}
         with patch.object(video, "_HEYGEN_DIRECT", False), \
