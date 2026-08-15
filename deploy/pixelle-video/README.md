@@ -98,11 +98,18 @@ The files are stored privately under
 `/var/lib/huangque-pixelle-video/data/external_audio`; they are not served by
 the public files router.
 
-A fixed-mode video request may provide one to 20 `narration_segments`, each
-containing `text` and an uploaded `audio_asset_id`. External narration cannot
-be combined with Pixelle TTS, voice, or reference-audio parameters. Assets are
-leased exclusively to one task, removed on every terminal task path, and
-removed after 24 hours as crash recovery if they were uploaded but never used.
+A fixed-mode video request may provide one to 20 `narration_segments`. Legacy
+callers may keep sending one `audio_asset_id` per segment. For single-line
+caption rotation, a segment can instead contain one to 20 ordered `cues`, each
+with `text` and an uploaded `audio_asset_id`; cue text must concatenate exactly
+to the segment text. Public-voice jobs split and synthesize the same cue shape
+inside Pixelle. Cue timing comes from the probed audio duration, while the
+segment still generates media only once and preserves the selected template's
+title, typography, colors, stroke, shadow, position, and non-caption motion.
+External narration cannot be combined with Pixelle TTS, voice, or
+reference-audio parameters. Assets are leased exclusively to one task,
+removed on every terminal task path, and removed after 24 hours as crash
+recovery if they were uploaded but never used.
 Cleanup runs once at service startup and every 15 minutes, and always skips
 assets with an active task lease. Startup first reclaims leases left by the
 previous process because Pixelle's task registry is in memory.

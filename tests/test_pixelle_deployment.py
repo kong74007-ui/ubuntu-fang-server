@@ -56,6 +56,28 @@ def load_renderer():
 
 
 class PixelleDeploymentTests(unittest.TestCase):
+    def test_single_line_caption_patch_is_fail_closed_and_applied_last(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0009-support-single-line-caption-cues.patch"
+        )
+        self.assertTrue(patch_path.is_file())
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertIn('CAPTION_CUES_PATCH=', installer)
+        self.assertIn('CAPTION_CUES_OVERRIDE=', installer)
+        self.assertIn('git -C "${RELEASE_DIR}" apply --check "${CAPTION_CUES_PATCH}"', installer)
+        self.assertGreater(
+            installer.index('"${CAPTION_CUES_PATCH}"'),
+            installer.index('"${TTS_SPEED_PATCH}"'),
+        )
+        self.assertIn("class CaptionCue", patch)
+        self.assertIn("caption_cues", patch)
+        self.assertIn("pixelle_video/services/frame_html.py", patch)
+
     def test_service_is_loopback_only_and_resource_limited(self):
         unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")
         self.assertIn("--host 127.0.0.1 --port 8103", unit)
