@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -14,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")
+PATCH_FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "pixelle_patch_contract" / "post_0009"
 
 
 def find_bash() -> str:
@@ -55,6 +58,63 @@ def load_renderer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_patch_fixture_manifest() -> dict:
+    manifest_path = PATCH_FIXTURE_ROOT / "manifest.json"
+    if not manifest_path.is_file():
+        raise AssertionError(f"missing pixelle patch fixture manifest: {manifest_path}")
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def build_patch_contract_repo(temp_root: Path) -> Path:
+    manifest = load_patch_fixture_manifest()
+    fixture_api_root = PATCH_FIXTURE_ROOT / "api"
+    if not fixture_api_root.is_dir():
+        raise AssertionError(f"missing pixelle patch fixture tree: {fixture_api_root}")
+
+    repo = temp_root / "repo"
+    shutil.copytree(PATCH_FIXTURE_ROOT, repo, dirs_exist_ok=True)
+    (repo / "manifest.json").unlink(missing_ok=True)
+    for relpath, expected in manifest["files"].items():
+        actual_path = repo / relpath
+        if not actual_path.is_file():
+            raise AssertionError(f"missing fixture file: {actual_path}")
+        if expected["sha256"] != sha256_file(actual_path):
+            raise AssertionError(f"fixture hash mismatch: {relpath}")
+
+    result = run_git(repo, "init")
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    result = run_git(repo, "add", ".")
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    result = run_git(
+        repo,
+        "-c",
+        "user.name=codex",
+        "-c",
+        "user.email=codex@example.com",
+        "commit",
+        "-m",
+        "post-0009 fixture",
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    return repo
 
 
 def parse_patch_hunks(text: str):
@@ -663,6 +723,36 @@ class PixelleDeploymentTests(unittest.TestCase):
             with self.subTest(header=hunk["header"], line=hunk["lineno"]):
                 self.assertEqual(hunk["old_count"], hunk["old_lines"])
                 self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
+    def test_talking_material_asset_patch_applies_to_post_0009_fixture_with_installer_flags(self):
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0010-support-talking-material-assets.patch"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = build_patch_contract_repo(Path(directory))
+
+            check = run_git(repo, "apply", "--unidiff-zero", "--check", str(patch_path))
+            self.assertEqual(0, check.returncode, check.stderr or check.stdout)
+
+            apply_result = run_git(repo, "apply", "--unidiff-zero", str(patch_path))
+            self.assertEqual(0, apply_result.returncode, apply_result.stderr or apply_result.stdout)
+
+            diff_names = run_git(repo, "diff", "--name-only", "--")
+            self.assertEqual(0, diff_names.returncode, diff_names.stderr or diff_names.stdout)
+            self.assertEqual(
+                {
+                    "api/app.py",
+                    "api/routers/__init__.py",
+                    "api/routers/video.py",
+                    "api/schemas/video.py",
+                },
+                set(filter(None, diff_names.stdout.splitlines())),
+            )
 
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()

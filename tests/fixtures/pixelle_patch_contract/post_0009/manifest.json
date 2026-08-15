@@ -1,0 +1,29 @@
+{
+    "fixture_kind":  "pixelle-post-0009-touched-files",
+    "source_commit":  "848b054e4fae40dabc62ec58e960b573e83793ac",
+    "applied_patches":  [
+                            "0001-enforce-video-task-capacity.patch",
+                            "0002-remove-video-template-branding.patch",
+                            "0003-support-external-narration-audio.patch",
+                            "0004-disable-deepseek-v4-thinking.patch",
+                            "0005-retry-image-generation.patch",
+                            "0006-guard-runninghub-polling.patch",
+                            "0007-fail-fast-parallel-frames.patch",
+                            "0008-support-tts-speed-api.patch",
+                            "0009-support-single-line-caption-cues.patch"
+                        ],
+    "files":  {
+                  "api/app.py":  {
+                                     "sha256":  "3d26956118642618f7e10dc4e1c08836948b904335b9f2fd6e239db547811584"
+                                 },
+                  "api/routers/__init__.py":  {
+                                                  "sha256":  "c7a3f9fb93356d2061dcda5164fe937d27284b6ab012bd5cba205fe2103aa2bb"
+                                              },
+                  "api/routers/video.py":  {
+                                               "sha256":  "f628672cff28bf41095fa92685a5ff9a2f04a5df9ddcb55b67c501e6b560a9a0"
+                                           },
+                  "api/schemas/video.py":  {
+                                               "sha256":  "b05f66ce0d7755c9b959e1648d84f2b4c5c8d63ad321069137aa69fe61662af0"
+                                           }
+              }
+}
