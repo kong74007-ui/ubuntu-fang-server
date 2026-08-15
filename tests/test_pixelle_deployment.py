@@ -549,6 +549,55 @@ class PixelleDeploymentTests(unittest.TestCase):
             installer,
         )
 
+    def test_avatar_asset_patch_and_overrides_are_fail_closed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
+        patch = patch_path.read_text(encoding="utf-8")
+
+        for marker in (
+            "AVATAR_ASSET_ROOT=",
+            "AVATAR_ASSETS_OVERRIDE=",
+            "AVATAR_ASSETS_ROUTER_OVERRIDE=",
+            "TALKING_MATERIAL_ASSETS_PATCH=",
+        ):
+            self.assertIn(marker, installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_MATERIAL_ASSETS_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_MATERIAL_ASSETS_PATCH}"',
+            installer,
+        )
+        self.assertIn('"${RELEASE_DIR}/api/avatar_assets.py"', installer)
+        self.assertIn('"${RELEASE_DIR}/api/routers/avatar_assets.py"', installer)
+        self.assertIn(
+            'install -d -o admin -g admin -m 0700 "${AVATAR_ASSET_ROOT}"',
+            installer,
+        )
+        self.assertIn(
+            "Environment=PIXELLE_AVATAR_ROOT=/var/lib/huangque-pixelle-video/data/avatar_assets",
+            unit,
+        )
+        self.assertIn("TalkingSceneSelection", patch)
+        self.assertIn("TalkingMaterialConfig", patch)
+        self.assertIn("avatar_asset_id: str | None = None", patch)
+        self.assertIn("default_avatar_asset_id: str | None = None", patch)
+        self.assertIn("talking_material: TalkingMaterialConfig | None = None", patch)
+        self.assertIn("avatar_assets_router", patch)
+        self.assertIn("lease_avatar_assets", patch)
+        self.assertIn("release_avatar_assets", patch)
+        self.assertIn("start_cleanup_scheduler", patch)
+        self.assertIn("stop_cleanup_scheduler", patch)
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_MATERIAL_ASSETS_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:
