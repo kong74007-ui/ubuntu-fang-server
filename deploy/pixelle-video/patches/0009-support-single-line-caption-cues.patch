@@ -1,0 +1,418 @@
+diff --git a/api/routers/video.py b/api/routers/video.py
+index 8b67d67..abf2111 100644
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -41 +40,0 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
+-    asset_ids = [segment.audio_asset_id for segment in segments]
+@@ -43 +42 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
+-        paths = external_audio.lease_audio_assets(asset_ids, task_id)
++        asset_ids, resolved = external_audio.lease_narration_segments(segments, task_id)
+@@ -48,4 +46,0 @@ def _lease_external_segments(request_body: VideoGenerateRequest, task_id: str):
+-    resolved = [
+-        {"text": segment.text, "audio_path": str(path)}
+-        for segment, path in zip(segments, paths)
+-    ]
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+index 88348d5..986bafa 100644
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -18,0 +19 @@ from pydantic import BaseModel, Field, model_validator
++from pixelle_video.services.caption_cues import validate_caption_cue_text
+@@ -21 +22 @@ from pydantic import BaseModel, Field, model_validator
+-class NarrationSegment(BaseModel):
++class NarrationCue(BaseModel):
+@@ -25,0 +27,16 @@ class NarrationSegment(BaseModel):
++class NarrationSegment(BaseModel):
++    text: str = Field(..., min_length=1, max_length=1000)
++    audio_asset_id: Optional[str] = Field(None, pattern=r"^audio_[0-9a-f]{32}$")
++    cues: Optional[list[NarrationCue]] = Field(None, min_length=1, max_length=20)
++
++    @model_validator(mode="after")
++    def validate_audio_shape(self):
++        if bool(self.audio_asset_id) == bool(self.cues):
++            raise ValueError("exactly one of audio_asset_id or cues is required")
++        for cue in self.cues or []:
++            validate_caption_cue_text(cue.text)
++        if self.cues and "".join(cue.text for cue in self.cues) != self.text:
++            raise ValueError("narration cue text must preserve the scene text")
++        return self
++
++
+diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
+index 55ba4ab..fafb7f1 100644
+--- a/pixelle_video/models/storyboard.py
++++ b/pixelle_video/models/storyboard.py
+@@ -58,0 +59,11 @@ class StoryboardConfig:
++@dataclass
++class CaptionCue:
++    """One timed caption and its narration audio inside a storyboard frame."""
++
++    text: str
++    audio_path: Optional[str] = None
++    duration: float = 0.0
++    start_time: float = 0.0
++    end_time: float = 0.0
++
++
+@@ -75,0 +87 @@ class StoryboardFrame:
++    caption_cues: List[CaptionCue] = field(default_factory=list)
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+index 1d3a93c..5ca8f47 100644
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -32,0 +33 @@ from pixelle_video.models.storyboard import (
++    CaptionCue,
+@@ -48,0 +50 @@ from pixelle_video.utils.template_util import get_template_type
++from pixelle_video.services.caption_cues import split_caption_text
+@@ -275,4 +277 @@ class StandardPipeline(LinearVideoPipeline):
+-            external_audio_paths=[
+-                segment["audio_path"]
+-                for segment in (ctx.params.get("external_narration_segments") or [])
+-            ] or None,
++            external_audio_paths=None,
+@@ -295,0 +295 @@ class StandardPipeline(LinearVideoPipeline):
++        external_segments = ctx.params.get("external_narration_segments") or []
+@@ -296,0 +297,11 @@ class StandardPipeline(LinearVideoPipeline):
++            if external_segments:
++                cue_values = external_segments[i]["cues"]
++                caption_cues = [
++                    CaptionCue(text=cue["text"], audio_path=cue["audio_path"])
++                    for cue in cue_values
++                ]
++            else:
++                caption_cues = [
++                    CaptionCue(text=text)
++                    for text in split_caption_text(narration)
++                ]
+@@ -301 +312 @@ class StandardPipeline(LinearVideoPipeline):
+-                audio_path=(ctx.config.external_audio_paths or [None] * len(ctx.narrations))[i],
++                caption_cues=caption_cues,
+diff --git a/pixelle_video/services/frame_html.py b/pixelle_video/services/frame_html.py
+index c437d33..181b86e 100644
+--- a/pixelle_video/services/frame_html.py
++++ b/pixelle_video/services/frame_html.py
+@@ -300 +300,8 @@ class HTMLFrameGenerator:
+-                return str(value) if value is not None else ''
++                rendered = str(value) if value is not None else ''
++                if param_name == "text":
++                    return (
++                        '<span data-pixelle-caption="true" '
++                        'style="white-space: nowrap;">'
++                        f'{rendered}</span>'
++                    )
++                return rendered
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index 1ead3a1..c0c9cee 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -22,0 +23,2 @@ Key Feature:
++import copy
++from pathlib import Path
+@@ -29 +31,6 @@ from pixelle_video.models.progress import ProgressEvent
+-from pixelle_video.models.storyboard import Storyboard, StoryboardFrame, StoryboardConfig
++from pixelle_video.models.storyboard import CaptionCue, Storyboard, StoryboardFrame, StoryboardConfig
++from pixelle_video.services.caption_cues import (
++    build_caption_timeline,
++    caption_timeline_duration,
++    split_caption_text,
++)
+@@ -82,15 +89,12 @@ class FrameProcessor:
+-            # Step 1: Generate audio (TTS)
+-            if not frame.audio_path:
+-                if progress_callback:
+-                    progress_callback(ProgressEvent(
+-                        event_type="frame_step",
+-                        progress=0.0,
+-                        frame_current=frame_num,
+-                        frame_total=total_frames,
+-                        step=1,
+-                        action="audio"
+-                    ))
+-                await self._step_generate_audio(frame, config)
+-            else:
+-                logger.debug(f"  1/4: Using existing audio: {frame.audio_path}")
+-                frame.duration = await self._get_audio_duration(frame.audio_path)
++            # Step 1: Prepare one narration audio track per caption cue.
++            if progress_callback:
++                progress_callback(ProgressEvent(
++                    event_type="frame_step",
++                    progress=0.0,
++                    frame_current=frame_num,
++                    frame_total=total_frames,
++                    step=1,
++                    action="audio"
++                ))
++            await self._prepare_caption_audio(frame, config)
++            narration_duration = frame.duration
+@@ -109,0 +114 @@ class FrameProcessor:
++                frame.duration = narration_duration
+@@ -131 +136,2 @@ class FrameProcessor:
+-            await self._step_compose_frame(frame, storyboard, config)
++            if len(frame.caption_cues) == 1:
++                await self._step_compose_frame(frame, storyboard, config)
+@@ -144 +150,4 @@ class FrameProcessor:
+-            await self._step_create_video_segment(frame, config)
++            if len(frame.caption_cues) == 1:
++                await self._step_create_video_segment(frame, config)
++            else:
++                await self._create_caption_carousel_segment(frame, storyboard, config)
+@@ -198,0 +208,144 @@ class FrameProcessor:
++    async def _prepare_caption_audio(
++        self,
++        frame: StoryboardFrame,
++        config: StoryboardConfig,
++    ) -> None:
++        """Resolve cue audio and build an exact, speech-timed cue timeline."""
++        from pixelle_video.services.video import VideoService
++        from pixelle_video.utils.os_util import get_task_frame_path
++
++        if not frame.caption_cues:
++            frame.caption_cues = [
++                CaptionCue(text=text) for text in split_caption_text(frame.narration)
++            ]
++            if len(frame.caption_cues) == 1 and frame.audio_path:
++                frame.caption_cues[0].audio_path = frame.audio_path
++
++        base_audio_path = Path(get_task_frame_path(config.task_id, frame.index, "audio"))
++        durations = []
++        for cue_index, cue in enumerate(frame.caption_cues):
++            if not cue.audio_path:
++                cue_path = base_audio_path.with_name(
++                    f"{base_audio_path.stem}_cue_{cue_index + 1:02d}{base_audio_path.suffix}"
++                )
++                cue.audio_path = await self._generate_audio_text(
++                    cue.text,
++                    str(cue_path),
++                    frame.index,
++                    config,
++                )
++            durations.append(await self._get_audio_duration_strict(cue.audio_path))
++
++        timeline = build_caption_timeline(
++            [
++                {"text": cue.text, "audio_path": cue.audio_path}
++                for cue in frame.caption_cues
++            ],
++            durations,
++        )
++        for cue, timing in zip(frame.caption_cues, timeline):
++            cue.duration = timing["duration"]
++            cue.start_time = timing["start_time"]
++            cue.end_time = timing["end_time"]
++
++        if len(frame.caption_cues) == 1:
++            frame.audio_path = frame.caption_cues[0].audio_path
++        else:
++            VideoService().concat_audios(
++                [cue.audio_path for cue in frame.caption_cues],
++                str(base_audio_path),
++            )
++            frame.audio_path = str(base_audio_path)
++        frame.duration = caption_timeline_duration(timeline)
++
++    async def _generate_audio_text(
++        self,
++        text: str,
++        output_path: str,
++        frame_index: int,
++        config: StoryboardConfig,
++    ) -> str:
++        tts_params = {
++            "text": text,
++            "inference_mode": config.tts_inference_mode,
++            "output_path": output_path,
++            "index": frame_index + 1,
++        }
++        if config.tts_inference_mode == "local":
++            if config.voice_id:
++                tts_params["voice"] = config.voice_id
++            if config.tts_speed is not None:
++                tts_params["speed"] = config.tts_speed
++        else:
++            if config.tts_workflow:
++                tts_params["workflow"] = config.tts_workflow
++            if config.voice_id:
++                tts_params["voice"] = config.voice_id
++            if config.tts_speed is not None:
++                tts_params["speed"] = config.tts_speed
++            if config.ref_audio:
++                tts_params["ref_audio"] = config.ref_audio
++        return await self.core.tts(**tts_params)
++
++    async def _create_caption_carousel_segment(
++        self,
++        frame: StoryboardFrame,
++        storyboard: Storyboard,
++        config: StoryboardConfig,
++    ) -> None:
++        """Render timed single-line captions while reusing one generated media asset."""
++        from pixelle_video.services.video import VideoService
++        from pixelle_video.utils.os_util import get_task_frame_path
++
++        video_service = VideoService()
++        base_composed = Path(get_task_frame_path(config.task_id, frame.index, "composed"))
++        base_segment = Path(get_task_frame_path(config.task_id, frame.index, "segment"))
++        cue_segments = []
++
++        if frame.media_type == "video":
++            frame.video_path = video_service.ensure_video_duration(
++                frame.video_path,
++                frame.duration,
++            )
++
++        for cue_index, cue in enumerate(frame.caption_cues):
++            cue_frame = copy.copy(frame)
++            cue_frame.narration = cue.text
++            cue_frame.audio_path = cue.audio_path
++            cue_frame.duration = cue.duration
++            cue_frame.caption_cues = [cue]
++
++            if frame.media_type == "video":
++                cue_video = base_segment.with_name(
++                    f"{base_segment.stem}_cue_{cue_index + 1:02d}_source.mp4"
++                )
++                cue_frame.video_path = video_service.extract_video_clip(
++                    frame.video_path,
++                    cue.start_time,
++                    cue.duration,
++                    str(cue_video),
++                )
++
++            composed_path = base_composed.with_name(
++                f"{base_composed.stem}_cue_{cue_index + 1:02d}{base_composed.suffix}"
++            )
++            cue_frame.composed_image_path = await self._compose_frame_html(
++                cue_frame,
++                storyboard,
++                config,
++                str(composed_path),
++            )
++            cue_output = base_segment.with_name(
++                f"{base_segment.stem}_cue_{cue_index + 1:02d}{base_segment.suffix}"
++            )
++            await self._step_create_video_segment(cue_frame, config, str(cue_output))
++            cue_segments.append(cue_frame.video_segment_path)
++
++        frame.composed_image_path = str(base_composed.with_name(
++            f"{base_composed.stem}_cue_01{base_composed.suffix}"
++        ))
++        frame.video_segment_path = video_service.concat_videos(
++            cue_segments,
++            str(base_segment),
++        )
++
+@@ -398 +551,2 @@ class FrameProcessor:
+-        config: StoryboardConfig
++        config: StoryboardConfig,
++        output_path: Optional[str] = None,
+@@ -405 +559 @@ class FrameProcessor:
+-        output_path = get_task_frame_path(config.task_id, frame.index, "segment")
++        output_path = output_path or get_task_frame_path(config.task_id, frame.index, "segment")
+@@ -475,0 +630,13 @@ class FrameProcessor:
++
++    async def _get_audio_duration_strict(self, audio_path: str) -> float:
++        """Probe a positive real duration; caption timing must never be estimated."""
++        import ffmpeg
++
++        try:
++            probe = ffmpeg.probe(audio_path)
++            duration = float(probe["format"]["duration"])
++        except Exception as exc:
++            raise RuntimeError(f"Failed to probe caption audio duration: {audio_path}") from exc
++        if duration <= 0:
++            raise RuntimeError(f"Caption audio has non-positive duration: {audio_path}")
++        return duration
+diff --git a/pixelle_video/services/persistence.py b/pixelle_video/services/persistence.py
+index 6f5cb06..6308664 100644
+--- a/pixelle_video/services/persistence.py
++++ b/pixelle_video/services/persistence.py
+@@ -25 +25 @@ from loguru import logger
+-from pixelle_video.models.storyboard import Storyboard, StoryboardFrame, StoryboardConfig, ContentMetadata
++from pixelle_video.models.storyboard import CaptionCue, Storyboard, StoryboardFrame, StoryboardConfig, ContentMetadata
+@@ -389,0 +390,10 @@ class PersistenceService:
++            "caption_cues": [
++                {
++                    "text": cue.text,
++                    "audio_path": cue.audio_path,
++                    "duration": cue.duration,
++                    "start_time": cue.start_time,
++                    "end_time": cue.end_time,
++                }
++                for cue in frame.caption_cues
++            ],
+@@ -405,0 +416 @@ class PersistenceService:
++            caption_cues=[CaptionCue(**cue) for cue in data.get("caption_cues", [])],
+diff --git a/pixelle_video/services/video.py b/pixelle_video/services/video.py
+index 425619a..e59d5b4 100644
+--- a/pixelle_video/services/video.py
++++ b/pixelle_video/services/video.py
+@@ -36,0 +37 @@ from loguru import logger
++from pixelle_video.services.caption_cues import required_video_padding
+@@ -167,0 +169,67 @@ class VideoService:
++
++    def concat_audios(self, audios: List[str], output: str) -> str:
++        """Concatenate narration cue audio into one frame-level track."""
++        self._ensure_ffmpeg()
++        if not audios:
++            raise ValueError("Audios list cannot be empty")
++        if len(audios) == 1:
++            shutil.copy(audios[0], output)
++            return output
++        try:
++            streams = [ffmpeg.input(path).audio for path in audios]
++            joined = ffmpeg.concat(*streams, v=0, a=1)
++            (
++                ffmpeg.output(joined, output, acodec="libmp3lame", audio_bitrate="192k")
++                .overwrite_output()
++                .run(capture_stdout=True, capture_stderr=True)
++            )
++            return output
++        except ffmpeg.Error as exc:
++            error_msg = exc.stderr.decode() if exc.stderr else str(exc)
++            raise RuntimeError(f"Failed to concatenate audio: {error_msg}") from exc
++
++    def ensure_video_duration(
++        self,
++        video: str,
++        target_duration: float,
++        pad_strategy: str = "freeze",
++    ) -> str:
++        """Pad a short provider video before cumulative caption slicing."""
++        self._ensure_ffmpeg()
++        source_duration = self._get_video_duration(video)
++        if source_duration <= 0 or target_duration <= 0:
++            raise ValueError("Video duration must be positive")
++        if required_video_padding(source_duration, target_duration) > 0:
++            return self._pad_video_to_duration(video, target_duration, pad_strategy)
++        return video
++
++    def extract_video_clip(
++        self,
++        video: str,
++        start_time: float,
++        duration: float,
++        output: str,
++    ) -> str:
++        """Extract a re-encoded video slice at an exact cue offset."""
++        self._ensure_ffmpeg()
++        if start_time < 0 or duration <= 0:
++            raise ValueError("Video clip timing must be positive")
++        try:
++            source = ffmpeg.input(video, ss=start_time, t=duration)
++            (
++                ffmpeg.output(
++                    source.video,
++                    output,
++                    vcodec="libx264",
++                    pix_fmt="yuv420p",
++                    preset="medium",
++                    crf=23,
++                    an=None,
++                )
++                .overwrite_output()
++                .run(capture_stdout=True, capture_stderr=True)
++            )
++            return output
++        except ffmpeg.Error as exc:
++            error_msg = exc.stderr.decode() if exc.stderr else str(exc)
++            raise RuntimeError(f"Failed to extract video clip: {error_msg}") from exc

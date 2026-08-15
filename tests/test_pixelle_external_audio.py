@@ -22,9 +22,13 @@ except ModuleNotFoundError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "deploy" / "pixelle-video" / "overrides" / "api" / "external_audio.py"
-ROUTER_PATH = ROOT / "deploy" / "pixelle-video" / "overrides" / "api" / "routers" / "voice_assets.py"
+OVERRIDES_ROOT = ROOT / "deploy" / "pixelle-video" / "overrides"
+MODULE_PATH = OVERRIDES_ROOT / "api" / "external_audio.py"
+ROUTER_PATH = OVERRIDES_ROOT / "api" / "routers" / "voice_assets.py"
 MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + (b"audio" * 20)
+
+if str(OVERRIDES_ROOT) not in sys.path:
+    sys.path.insert(0, str(OVERRIDES_ROOT))
 
 
 def load_module(name: str, path: Path):
@@ -136,6 +140,60 @@ class ExternalAudioRegistryTests(unittest.TestCase):
         self.assertEqual(2, self.module.release_audio_assets([first["asset_id"], second["asset_id"]]))
         self.assertEqual(0, self.module.release_audio_assets([first["asset_id"], second["asset_id"]]))
         self.assertFalse(paths[0].exists())
+
+    def test_nested_cues_are_leased_in_scene_and_cue_order(self):
+        first = self.store("nested-first")
+        second = self.store("nested-second")
+        segments = [
+            {
+                "text": "第一句，第二句。",
+                "cues": [
+                    {"text": "第一句，", "audio_asset_id": first["asset_id"]},
+                    {"text": "第二句。", "audio_asset_id": second["asset_id"]},
+                ],
+            }
+        ]
+
+        asset_ids, resolved = self.module.lease_narration_segments(segments, "task-nested")
+
+        self.assertEqual([first["asset_id"], second["asset_id"]], asset_ids)
+        self.assertEqual("第一句，第二句。", resolved[0]["text"])
+        self.assertEqual(["第一句，", "第二句。"], [cue["text"] for cue in resolved[0]["cues"]])
+        self.assertEqual(
+            [
+                str(self.root / f'{first["asset_id"]}.mp3'),
+                str(self.root / f'{second["asset_id"]}.mp3'),
+            ],
+            [cue["audio_path"] for cue in resolved[0]["cues"]],
+        )
+
+    def test_legacy_audio_asset_becomes_one_resolved_cue(self):
+        record = self.store("legacy-scene")
+        asset_ids, resolved = self.module.lease_narration_segments(
+            [{"text": "旧版长旁白" * 20, "audio_asset_id": record["asset_id"]}],
+            "task-legacy",
+        )
+
+        self.assertEqual([record["asset_id"]], asset_ids)
+        self.assertEqual(
+            [{
+                "text": "旧版长旁白" * 20,
+                "audio_path": str(self.root / f'{record["asset_id"]}.mp3'),
+            }],
+            resolved[0]["cues"],
+        )
+
+    def test_nested_cue_rejects_text_wider_than_single_line(self):
+        record = self.store("nested-overlong")
+        text = "一" * 15
+        with self.assertRaisesRegex(ValueError, "single-line display width"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": text,
+                    "cues": [{"text": text, "audio_asset_id": record["asset_id"]}],
+                }],
+                "task-overlong",
+            )
 
     def test_public_catalog_is_sanitized(self):
         voices = types.ModuleType("pixelle_video.tts_voices")
@@ -263,6 +321,38 @@ class ExternalAudioAsyncLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(reservation.released)
         self.assertFalse((self.root / f'{record["asset_id"]}.mp3').exists())
+
+    async def test_nested_task_creation_failure_releases_every_cue_asset(self):
+        class Reservation:
+            released = False
+
+            async def release(self):
+                self.released = True
+
+        reservation = Reservation()
+        first = self.module.store_audio_asset(MP3, "audio/mpeg", "nested-fail-first")
+        second = self.module.store_audio_asset(MP3, "audio/mpeg", "nested-fail-second")
+        segments = [{
+            "text": "第一句，第二句。",
+            "cues": [
+                {"text": "第一句，", "audio_asset_id": first["asset_id"]},
+                {"text": "第二句。", "audio_asset_id": second["asset_id"]},
+            ],
+        }]
+
+        async def reserve():
+            return reservation
+
+        with self.assertRaisesRegex(RuntimeError, "create failed"):
+            await self.module.prepare_async_audio_submission(
+                segments,
+                reserve,
+                lambda: (_ for _ in ()).throw(RuntimeError("create failed")),
+            )
+
+        self.assertTrue(reservation.released)
+        self.assertFalse((self.root / f'{first["asset_id"]}.mp3').exists())
+        self.assertFalse((self.root / f'{second["asset_id"]}.mp3').exists())
 
 
 class VoiceAssetRouterSourceTests(unittest.TestCase):

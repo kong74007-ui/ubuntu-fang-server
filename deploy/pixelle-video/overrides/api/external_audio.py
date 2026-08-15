@@ -10,6 +10,8 @@ import time
 import uuid
 from pathlib import Path
 
+from pixelle_video.services.caption_cues import validate_caption_cue_text
+
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 AUDIO_TTL_SECONDS = 24 * 60 * 60
@@ -170,7 +172,7 @@ def resolve_audio_asset(asset_id: str) -> Path:
 def lease_audio_assets(asset_ids: list[str], task_id: str) -> list[Path]:
     if not TASK_ID_RE.fullmatch(str(task_id or "")):
         raise ValueError("invalid task id")
-    if not asset_ids or len(asset_ids) > 20 or len(set(asset_ids)) != len(asset_ids):
+    if not asset_ids or len(asset_ids) > 400 or len(set(asset_ids)) != len(asset_ids):
         raise ValueError("invalid audio asset list")
 
     with _LOCK:
@@ -199,21 +201,73 @@ def _segment_value(segment, name: str):
     return getattr(segment, name)
 
 
+def _optional_segment_value(segment, name: str, default=None):
+    if isinstance(segment, dict):
+        return segment.get(name, default)
+    return getattr(segment, name, default)
+
+
+def _normalize_narration_segments(segments) -> list[dict]:
+    normalized = []
+    for segment in segments or []:
+        scene_text = _segment_value(segment, "text")
+        raw_cues = _optional_segment_value(segment, "cues")
+        if raw_cues:
+            cues = [
+                {
+                    "text": _segment_value(cue, "text"),
+                    "audio_asset_id": _segment_value(cue, "audio_asset_id"),
+                }
+                for cue in raw_cues
+            ]
+            for cue in cues:
+                validate_caption_cue_text(cue["text"])
+        else:
+            cues = [{
+                "text": scene_text,
+                "audio_asset_id": _segment_value(segment, "audio_asset_id"),
+            }]
+        if not cues or len(cues) > 20:
+            raise ValueError("each narration segment requires 1 to 20 cues")
+        if "".join(cue["text"] for cue in cues) != scene_text:
+            raise ValueError("narration cue text must preserve the scene text")
+        normalized.append({"text": scene_text, "cues": cues})
+    return normalized
+
+
+def lease_narration_segments(segments, task_id: str):
+    normalized = _normalize_narration_segments(segments)
+    if not normalized:
+        return [], []
+    asset_ids = [
+        cue["audio_asset_id"]
+        for segment in normalized
+        for cue in segment["cues"]
+    ]
+    paths = iter(lease_audio_assets(asset_ids, task_id))
+    resolved = []
+    for segment in normalized:
+        resolved.append({
+            "text": segment["text"],
+            "cues": [
+                {"text": cue["text"], "audio_path": str(next(paths))}
+                for cue in segment["cues"]
+            ],
+        })
+    return asset_ids, resolved
+
+
 async def prepare_async_audio_submission(segments, reserve, create_task):
     """Reserve capacity and lease audio before an async task can be created."""
     reservation = await reserve()
-    asset_ids = [_segment_value(segment, "audio_asset_id") for segment in (segments or [])]
+    asset_ids = []
     resolved = []
     leased = False
     try:
-        if asset_ids:
+        if segments:
             lease_id = f"submission-{uuid.uuid4().hex}"
-            paths = lease_audio_assets(asset_ids, lease_id)
-            leased = True
-            resolved = [
-                {"text": _segment_value(segment, "text"), "audio_path": str(path)}
-                for segment, path in zip(segments, paths)
-            ]
+            asset_ids, resolved = lease_narration_segments(segments, lease_id)
+            leased = bool(asset_ids)
         task = create_task()
     except Exception:
         if leased:
