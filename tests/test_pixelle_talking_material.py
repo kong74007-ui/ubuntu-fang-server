@@ -126,6 +126,22 @@ class TalkingMaterialTests(unittest.TestCase):
             ],
         )
 
+    def test_slightly_over_six_seconds_stays_one_window(self):
+        module = load_module()
+
+        self.assertEqual(
+            module.build_talking_windows(
+                [
+                    {"text": "one", "duration": 3.2},
+                    {"text": "two", "duration": 2.9},
+                ],
+                enabled=True,
+            ),
+            [
+                {"cue_start": 0, "cue_end": 2, "duration": 6.1},
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -132,10 +132,13 @@ def build_talking_windows(cues: list[dict], enabled: bool) -> list[dict]:
 
     for index, cue in enumerate(cues):
         duration = _cue_duration(cue)
-        if accumulated and accumulated + duration > MAX_WINDOW_DURATION:
-            windows.append(_window(window_start, index, accumulated))
-            window_start = index
-            accumulated = 0.0
+        if accumulated:
+            current_distance = abs(accumulated - MAX_WINDOW_DURATION)
+            next_distance = abs((accumulated + duration) - MAX_WINDOW_DURATION)
+            if next_distance > current_distance:
+                windows.append(_window(window_start, index, accumulated))
+                window_start = index
+                accumulated = 0.0
         accumulated += duration
 
     if accumulated <= 0:
