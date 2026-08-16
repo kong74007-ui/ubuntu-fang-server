@@ -62,25 +62,44 @@ index 3e7d136..9566e48 100644
 +            avatar_lease_owned_by_route = bool(avatar_asset_ids)
 @@ -343,0 +365 @@ async def generate_video_async(
 +                video_params["talking_avatar_paths"] = talking_avatar_paths
-@@ -382,0 +405,2 @@ async def generate_video_async(
+@@ -370,5 +390,13 @@ async def generate_video_async(
+-            return {
+-                "video_url": video_url,
+-                "duration": result.duration,
+-                "file_size": file_size
+-            }
++            return {
++                "video_url": video_url,
++                "duration": result.duration,
++                "file_size": file_size,
++                "talking_warnings": [
++                    {
++                        "scene_id": frame.scene_id,
++                        "message": frame.talking_warning,
++                    }
++                    for frame in result.storyboard.frames
++                    if frame.talking_warning
++                ],
++            }
+@@ -382,0 +413,2 @@ async def generate_video_async(
 +                if avatar_asset_ids:
 +                    avatar_assets.release_avatar_assets(avatar_asset_ids)
-@@ -386,2 +409,0 @@ async def generate_video_async(
+@@ -386,2 +417,0 @@ async def generate_video_async(
 -                if avatar_asset_ids:
 -                    avatar_assets.release_avatar_assets(avatar_asset_ids)
-@@ -392,0 +415 @@ async def generate_video_async(
+@@ -392,0 +423 @@ async def generate_video_async(
 +        avatar_lease_owned_by_route = False
-@@ -401,6 +423,0 @@ async def generate_video_async(
+@@ -401,6 +431,0 @@ async def generate_video_async(
 -        if request_body.talking_material is not None:
 -            try:
 -                avatar_asset_ids = _lease_talking_material_assets(request_body, task.task_id)
 -            except HTTPException:
 -                task_manager.cancel_task(task.task_id)
 -                raise
-@@ -418,0 +436,2 @@ async def generate_video_async(
+@@ -418,0 +444,2 @@ async def generate_video_async(
 +        if avatar_lease_owned_by_route and avatar_asset_ids:
 +            avatar_assets.release_avatar_assets(avatar_asset_ids)
-@@ -421,3 +439,0 @@ async def generate_video_async(
+@@ -421,3 +447,0 @@ async def generate_video_async(
 -
 -        if avatar_asset_ids:
 -            avatar_assets.release_avatar_assets(avatar_asset_ids)
