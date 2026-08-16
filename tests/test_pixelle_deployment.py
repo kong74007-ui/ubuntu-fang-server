@@ -849,6 +849,45 @@ class PixelleDeploymentTests(unittest.TestCase):
                 self.assertEqual(hunk["old_count"], hunk["old_lines"])
                 self.assertEqual(hunk["new_count"], hunk["new_lines"])
 
+    def test_talking_scene_patch_exposes_warnings_in_async_result(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"talking_warnings": [', patch)
+        self.assertIn('"scene_id": frame.scene_id', patch)
+        self.assertIn('"message": frame.talking_warning', patch)
+        self.assertIn('if frame.talking_warning', patch)
+
+    def test_talking_scene_patch_applies_after_talking_asset_patch(self):
+        asset_patch = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
+        scene_patch = ROOT / "deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp_root = Path(directory)
+            git_env = patch_contract_git_env(temp_root)
+            repo = build_patch_contract_repo(temp_root, git_env)
+            for patch_path, extra_args in (
+                (asset_patch, ()),
+                (scene_patch, ("--include=api/routers/video.py",)),
+            ):
+                check = run_git(
+                    repo, "apply", "--unidiff-zero", *extra_args, "--check", str(patch_path),
+                    env=git_env,
+                )
+                self.assertEqual(0, check.returncode, check.stderr or check.stdout)
+                applied = run_git(
+                    repo, "apply", "--unidiff-zero", *extra_args, str(patch_path), env=git_env,
+                )
+                self.assertEqual(0, applied.returncode, applied.stderr or applied.stdout)
+
+            router = (repo / "api/routers/video.py").read_text(encoding="utf-8")
+            self.assertIn('"talking_warnings": [', router)
+
     def test_talking_material_asset_patch_applies_to_post_0009_fixture_with_installer_flags(self):
         patch_path = (
             ROOT
