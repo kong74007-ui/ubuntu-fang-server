@@ -92,7 +92,13 @@ def _extract_frame_processor_fixture(source_root: Path) -> None:
     module_path = source_root / member
     module_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(FIXTURE_PATH) as archive:
-        module_path.write_bytes(archive.read(member))
+        matches = [
+            info
+            for info in archive.infolist()
+            if info.filename.replace("\\", "/") == member
+        ]
+        assert len(matches) == 1, archive.namelist()
+        module_path.write_bytes(archive.read(matches[0]))
 
 
 def _load_patched_frame_processor(tmp_path: Path, monkeypatch, video_service_class):
