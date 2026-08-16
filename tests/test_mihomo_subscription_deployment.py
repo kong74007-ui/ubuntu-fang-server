@@ -105,6 +105,12 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn('bind-address: "127.0.0.1"', rendered)
         self.assertIn('url: "https://proxy.example.test/sub?token=x"', rendered)
         self.assertIn('User-Agent: ["clash.meta"]', rendered)
+        self.assertIn("dns:\n  enable: true", rendered)
+        self.assertIn('enhanced-mode: "fake-ip"', rendered)
+        self.assertEqual(3, rendered.count('"https://1.12.12.12/dns-query"'))
+        self.assertIn("exclude-filter:", rendered)
+        self.assertIn("剩余流量", rendered)
+        self.assertIn("套餐到期", rendered)
         self.assertIn("type: url-test", rendered)
         self.assertIn("MATCH,GRAYFOX_AUTO", rendered)
 
@@ -174,6 +180,23 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         )
         self.assertIn("systemctl daemon-reload", installer)
         self.assertIn("systemctl start huangque-pixelle-video.service", installer)
+
+    def test_candidate_directory_is_accessible_to_mihomo_user(self):
+        installer = (ROOT / "deploy/mihomo-new/install.sh").read_text(
+            encoding="utf-8"
+        )
+        candidate_index = installer.index(
+            'CANDIDATE_DIR="$(mktemp -d "${CONFIG_DIR}/.candidate.XXXXXX")"'
+        )
+        ownership_index = installer.index(
+            'chown ubuntu:ubuntu "${CANDIDATE_DIR}"', candidate_index
+        )
+        mode_index = installer.index('chmod 0700 "${CANDIDATE_DIR}"', ownership_index)
+        validate_index = installer.index("sudo -u ubuntu /usr/local/bin/mihomo -t")
+
+        self.assertLess(candidate_index, ownership_index)
+        self.assertLess(ownership_index, mode_index)
+        self.assertLess(mode_index, validate_index)
 
     def test_rollback_stops_proxy_before_restoring_provider_cache(self):
         installer = (ROOT / "deploy/mihomo-new/install.sh").read_text(

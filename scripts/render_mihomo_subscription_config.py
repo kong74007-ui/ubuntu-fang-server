@@ -54,9 +54,21 @@ mode: rule
 log-level: warning
 ipv6: false
 
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: "fake-ip"
+  nameserver:
+    - "https://1.12.12.12/dns-query"
+  proxy-server-nameserver:
+    - "https://1.12.12.12/dns-query"
+  direct-nameserver:
+    - "https://1.12.12.12/dns-query"
+
 proxy-providers:
   grayfox:
     type: http
+    exclude-filter: "(?i)剩余流量|距离下次重置|套餐到期|流量|重置|到期|官网"
     url: {quoted(subscription_url)}
     path: ./providers/grayfox.yaml
     interval: 3600
