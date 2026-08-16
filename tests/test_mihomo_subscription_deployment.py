@@ -134,11 +134,8 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         )
         self.assertNotIn('"https://1.12.12.12/dns-query"', rendered)
         self.assertIn("exclude-filter:", rendered)
-        self.assertIn(
-            'filter: "^\\ud83c\\uddfa\\ud83c\\uddf8\\\\ \\u7f8e\\u56fd\\\\ '
-            '\\u5c71\\u4e18\\\\ \\u4e13\\u7528$"',
-            rendered,
-        )
+        self.assertIn("filter: '^🇺🇸\\ 美国\\ 山丘\\ 专用$'", rendered)
+        self.assertNotIn("\\ud83c", rendered)
         self.assertIn("剩余流量", rendered)
         self.assertIn("套餐到期", rendered)
         self.assertIn("type: url-test", rendered)
