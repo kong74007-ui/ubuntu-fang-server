@@ -72,6 +72,7 @@ proxy-providers:
     url: {quoted(subscription_url)}
     path: ./providers/grayfox.yaml
     interval: 3600
+    proxy: DIRECT
     header:
       User-Agent: ["clash.meta"]
     health-check:

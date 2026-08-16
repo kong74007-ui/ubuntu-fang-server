@@ -104,6 +104,7 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn("mixed-port: 7999", rendered)
         self.assertIn('bind-address: "127.0.0.1"', rendered)
         self.assertIn('url: "https://proxy.example.test/sub?token=x"', rendered)
+        self.assertIn("    proxy: DIRECT", rendered)
         self.assertIn('User-Agent: ["clash.meta"]', rendered)
         self.assertIn("dns:\n  enable: true", rendered)
         self.assertIn('enhanced-mode: "fake-ip"', rendered)
