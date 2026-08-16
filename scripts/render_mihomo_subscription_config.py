@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,10 +44,22 @@ def validate_subscription_url(value: str) -> str:
     return url
 
 
+def validate_node_name(value: str) -> str:
+    node_name = value.strip()
+    if not node_name:
+        raise ValueError("GRAYFOX_NODE_NAME is missing")
+    has_control_character = any(ord(character) < 32 for character in node_name)
+    if len(node_name) > 200 or has_control_character:
+        raise ValueError("GRAYFOX_NODE_NAME is invalid")
+    return node_name
+
+
 def render(values: dict[str, str]) -> str:
     subscription_url = validate_subscription_url(
         values.get("GRAYFOX_SUBSCRIPTION_URL", "")
     )
+    node_name = validate_node_name(values.get("GRAYFOX_NODE_NAME", ""))
+    node_filter = f"^{re.escape(node_name)}$"
     return f"""mixed-port: 7999
 allow-lan: false
 bind-address: "127.0.0.1"
@@ -58,16 +71,19 @@ dns:
   enable: true
   ipv6: false
   enhanced-mode: "fake-ip"
+  default-nameserver:
+    - 223.5.5.5
   nameserver:
-    - "https://1.12.12.12/dns-query"
+    - "https://dns.alidns.com/dns-query"
   proxy-server-nameserver:
-    - "https://1.12.12.12/dns-query"
+    - "https://dns.alidns.com/dns-query"
   direct-nameserver:
-    - "https://1.12.12.12/dns-query"
+    - "https://dns.alidns.com/dns-query"
 
 proxy-providers:
   grayfox:
     type: http
+    filter: {quoted(node_filter)}
     exclude-filter: "(?i)剩余流量|距离下次重置|套餐到期|流量|重置|到期|官网"
     url: {quoted(subscription_url)}
     path: ./providers/grayfox.yaml
