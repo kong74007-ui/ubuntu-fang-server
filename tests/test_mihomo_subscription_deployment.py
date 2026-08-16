@@ -105,6 +105,9 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn('bind-address: "127.0.0.1"', rendered)
         self.assertIn('url: "https://proxy.example.test/sub?token=x"', rendered)
         self.assertIn('User-Agent: ["clash.meta"]', rendered)
+        self.assertIn("dns:\n  enable: true", rendered)
+        self.assertIn('enhanced-mode: "redir-host"', rendered)
+        self.assertEqual(3, rendered.count('"https://1.12.12.12/dns-query"'))
         self.assertIn("type: url-test", rendered)
         self.assertIn("MATCH,GRAYFOX_AUTO", rendered)
 

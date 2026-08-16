@@ -54,6 +54,17 @@ mode: rule
 log-level: warning
 ipv6: false
 
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: "redir-host"
+  nameserver:
+    - "https://1.12.12.12/dns-query"
+  proxy-server-nameserver:
+    - "https://1.12.12.12/dns-query"
+  direct-nameserver:
+    - "https://1.12.12.12/dns-query"
+
 proxy-providers:
   grayfox:
     type: http
