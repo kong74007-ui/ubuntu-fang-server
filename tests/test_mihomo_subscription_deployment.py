@@ -88,6 +88,23 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "GRAYFOX_SUBSCRIPTION_URL"):
             renderer.render({})
 
+    def test_renderer_requires_exact_node_name(self):
+        renderer = load_renderer()
+        with self.assertRaisesRegex(ValueError, "GRAYFOX_NODE_NAME"):
+            renderer.render(
+                {"GRAYFOX_SUBSCRIPTION_URL": "https://proxy.example.test/sub"}
+            )
+
+    def test_renderer_rejects_unsafe_node_name(self):
+        renderer = load_renderer()
+        with self.assertRaisesRegex(ValueError, "GRAYFOX_NODE_NAME"):
+            renderer.render(
+                {
+                    "GRAYFOX_SUBSCRIPTION_URL": "https://proxy.example.test/sub",
+                    "GRAYFOX_NODE_NAME": "unsafe\nnode",
+                }
+            )
+
     def test_renderer_rejects_non_https_subscription_url(self):
         renderer = load_renderer()
         with self.assertRaisesRegex(ValueError, "HTTPS"):
@@ -98,7 +115,10 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
     def test_renderer_builds_loopback_subscription_proxy(self):
         renderer = load_renderer()
         rendered = renderer.render(
-            {"GRAYFOX_SUBSCRIPTION_URL": "https://proxy.example.test/sub?token=x"}
+            {
+                "GRAYFOX_SUBSCRIPTION_URL": "https://proxy.example.test/sub?token=x",
+                "GRAYFOX_NODE_NAME": "🇺🇸 美国 山丘 专用",
+            }
         )
 
         self.assertIn("mixed-port: 7999", rendered)
@@ -108,8 +128,17 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn('User-Agent: ["clash.meta"]', rendered)
         self.assertIn("dns:\n  enable: true", rendered)
         self.assertIn('enhanced-mode: "fake-ip"', rendered)
-        self.assertEqual(3, rendered.count('"https://1.12.12.12/dns-query"'))
+        self.assertIn("  default-nameserver:\n    - 223.5.5.5", rendered)
+        self.assertEqual(
+            3, rendered.count('"https://dns.alidns.com/dns-query"')
+        )
+        self.assertNotIn('"https://1.12.12.12/dns-query"', rendered)
         self.assertIn("exclude-filter:", rendered)
+        self.assertIn(
+            'filter: "^\\ud83c\\uddfa\\ud83c\\uddf8\\\\ \\u7f8e\\u56fd\\\\ '
+            '\\u5c71\\u4e18\\\\ \\u4e13\\u7528$"',
+            rendered,
+        )
         self.assertIn("剩余流量", rendered)
         self.assertIn("套餐到期", rendered)
         self.assertIn("type: url-test", rendered)
@@ -122,7 +151,8 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
             env_path = root / "mihomo.env"
             output = root / "config.yaml"
             env_path.write_text(
-                "GRAYFOX_SUBSCRIPTION_URL=https://proxy.example.test/sub?token=x\n",
+                "GRAYFOX_SUBSCRIPTION_URL=https://proxy.example.test/sub?token=x\n"
+                "GRAYFOX_NODE_NAME=🇺🇸 美国 山丘 专用\n",
                 encoding="utf-8",
             )
 
