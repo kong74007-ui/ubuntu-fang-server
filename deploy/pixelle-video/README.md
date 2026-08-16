@@ -16,7 +16,7 @@ third-party source remains in its upstream Git repository.
 - Service: `huangque-pixelle-video.service`
 - Address: `http://127.0.0.1:8103`
 - Health: `GET /health`
-- Egress: local `huangque-egress-tunnel.service` proxy on `127.0.0.1:7999`
+- Egress: local `mihomo-new.service` proxy on `127.0.0.1:7999`
 
 The API is not exposed as a public browser API. The generated nginx config
 provides `/internal/pixelle/` as a backend-only bridge, restricted to the
@@ -43,13 +43,16 @@ reviewed video-capacity patch, installs Python 3.11 with uv, rewrites only the
 locked PyPI package host to the byte-identical Aliyun mirror, syncs dependencies
 with the upstream SHA256 checks intact, overlays the reviewed templates,
 installs Chromium for Playwright, and restarts the service.
+Before preparing a release, it fails closed unless `mihomo-new.service` is
+installed, active, and able to reach OpenAI through `127.0.0.1:7999`.
 Existing output and task data are migrated to `/var/lib` on first deployment
 of this layout and survive later source releases and service redeployments.
 Every candidate release is patched, dependency-synced, and compile-checked in
 an isolated release directory before the service is stopped. The installer then
 confirms the service is inactive before switching the `source` link to that
-release. Startup or health-check failure restores the previous source only
-after the service is again confirmed inactive.
+release. The existing Pixelle systemd unit is backed up before replacement.
+Startup or health-check failure restores both the previous source and previous
+unit only after the service is again confirmed inactive, then reloads systemd.
 
 ## Capacity and persistence
 

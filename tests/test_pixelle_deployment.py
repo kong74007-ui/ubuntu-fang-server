@@ -31,6 +31,13 @@ def find_bash() -> str:
     raise unittest.SkipTest("bash is required for Pixelle installer tests")
 
 
+def extract_bash_function(path: Path, name: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n", start) + 3
+    return text[start:end]
+
+
 def run_stop_helper(fake_systemctl: str, trace: Path) -> subprocess.CompletedProcess[str]:
     helper = ROOT / "deploy" / "pixelle-video" / "lib" / "service_control.sh"
     command = f'''source "{helper.as_posix()}"
@@ -239,7 +246,8 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1 --port 8103", unit)
         self.assertIn("MemoryMax=1800M", unit)
         self.assertIn("CPUQuota=150%", unit)
-        self.assertIn("After=network-online.target huangque-egress-tunnel.service", unit)
+        self.assertIn("After=network-online.target mihomo-new.service", unit)
+        self.assertIn("Requires=mihomo-new.service", unit)
         self.assertIn("Environment=HTTPS_PROXY=http://127.0.0.1:7999", unit)
         self.assertIn("Environment=NO_PROXY=127.0.0.1,localhost", unit)
         self.assertNotIn("Environment=OPENAI_API_KEY", unit)
@@ -313,6 +321,160 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertLess(compile_check, stop_service)
         self.assertIn('trap cleanup EXIT', installer)
         self.assertIn('mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"', installer)
+
+    def test_installer_requires_ready_mihomo_before_preparing_release(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        release_prepare = installer.index('RELEASE_DIR="$(mktemp -d')
+        load_check = installer.index(
+            'systemctl show --property=LoadState --value "${PROXY_SERVICE}"'
+        )
+        active_check = installer.index(
+            'systemctl is-active --quiet "${PROXY_SERVICE}"'
+        )
+        readiness_check = installer.index('"${PROXY_READINESS_CHECK}"')
+
+        self.assertLess(load_check, release_prepare)
+        self.assertLess(active_check, release_prepare)
+        self.assertLess(readiness_check, release_prepare)
+
+    def test_installer_backs_up_and_rolls_back_pixelle_unit(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        unit_install = installer.index(
+            'install -o root -g root -m 0644 "${SERVICE_UNIT_SOURCE}"'
+        )
+        unit_backup = installer.index("\nbackup_pixelle_unit\n")
+
+        self.assertLess(unit_backup, unit_install)
+        self.assertIn("restore_pixelle_unit", installer)
+        self.assertIn("systemctl daemon-reload", installer)
+
+    def test_installer_initializes_deploy_root_before_derived_paths(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertLess(
+            installer.index('DEPLOY_ROOT="$(cd'),
+            installer.index('SERVICE_UNIT_SOURCE="${DEPLOY_ROOT}'),
+        )
+
+    def test_managed_file_helper_restores_previous_unit_bytes(self):
+        helper = (
+            ROOT / "deploy" / "pixelle-video" / "lib" / "service_control.sh"
+        ).as_posix()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = (root / "pixelle.service").as_posix()
+            backup = (root / "pixelle.service.backup").as_posix()
+            script = f'''source "{helper}"
+printf old-unit > "{target}"
+existed=0
+pixelle_backup_managed_file "{target}" "{backup}" existed
+printf new-unit > "{target}"
+pixelle_restore_managed_file "{target}" "{backup}" "$existed"
+cat "{target}"
+'''
+            result = subprocess.run(
+                [find_bash(), "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("old-unit", result.stdout)
+
+    def test_combined_rollback_propagates_source_restore_failure(self):
+        installer = ROOT / "deploy" / "pixelle-video" / "install.sh"
+        combined = extract_bash_function(installer, "rollback_release_and_unit")
+        script = f'''{combined}
+rollback_release() {{ return 7; }}
+restore_pixelle_unit() {{ return 0; }}
+rollback_release_and_unit
+'''
+        result = subprocess.run(
+            [find_bash(), "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(0, result.returncode)
+
+    def test_unit_restore_propagates_managed_file_failure(self):
+        installer = ROOT / "deploy" / "pixelle-video" / "install.sh"
+        restore = extract_bash_function(installer, "restore_pixelle_unit")
+        script = f'''{restore}
+SERVICE_UNIT_TARGET=/tmp/pixelle.service
+UNIT_BACKUP_DIR=/tmp/pixelle-backup
+SERVICE_NAME=huangque-pixelle-video.service
+UNIT_EXISTED=1
+pixelle_restore_managed_file() {{ return 8; }}
+systemctl() {{ return 0; }}
+restore_pixelle_unit
+'''
+        result = subprocess.run(
+            [find_bash(), "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(0, result.returncode)
+
+    def test_cleanup_never_starts_service_after_partial_rollback(self):
+        installer = ROOT / "deploy" / "pixelle-video" / "install.sh"
+        restore = extract_bash_function(installer, "restore_pixelle_unit")
+        combined = extract_bash_function(installer, "rollback_release_and_unit")
+        cleanup = extract_bash_function(installer, "cleanup")
+
+        for source_status, unit_status in ((7, 0), (0, 8)):
+            with self.subTest(
+                source_status=source_status,
+                unit_status=unit_status,
+            ):
+                with tempfile.TemporaryDirectory() as directory:
+                    trace_path = Path(directory) / "systemctl.log"
+                    trace_path.touch()
+                    trace = trace_path.as_posix()
+                    script = f'''{restore}
+{combined}
+{cleanup}
+SERVICE_NAME=huangque-pixelle-video.service
+SERVICE_UNIT_TARGET=/tmp/pixelle.service
+UNIT_BACKUP_DIR="{Path(directory).as_posix()}"
+UNIT_EXISTED=1
+SOURCE_SWITCHED=1
+DEPLOY_SUCCEEDED=0
+UNIT_BACKED_UP=1
+NEXT_SOURCE_LINK=
+RELEASE_DIR=
+rollback_release() {{ return {source_status}; }}
+pixelle_restore_managed_file() {{ return {unit_status}; }}
+pixelle_run_with_service_stopped() {{
+  local callback=$2
+  shift 2
+  "$callback" "$@"
+}}
+systemctl() {{ printf '%s\n' "$*" >> "{trace}"; return 0; }}
+false
+cleanup
+'''
+                    subprocess.run(
+                        [find_bash(), "-c", script],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    calls = trace_path.read_text(encoding="utf-8").splitlines()
+                    self.assertNotIn("start huangque-pixelle-video.service", calls)
+
+    def test_readme_documents_mihomo_egress_dependency(self):
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("mihomo-new.service", readme)
+        self.assertNotIn("huangque-egress-tunnel.service", readme)
 
     def test_installer_confirms_service_is_inactive_before_switch(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")

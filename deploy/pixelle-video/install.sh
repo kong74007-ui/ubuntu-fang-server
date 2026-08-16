@@ -14,8 +14,12 @@ EXTERNAL_AUDIO_DIR="${DATA_DIR}/external_audio"
 AVATAR_ASSET_ROOT="${DATA_DIR}/avatar_assets"
 CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
-PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SERVICE_UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/${SERVICE_NAME}"
+SERVICE_UNIT_TARGET="/etc/systemd/system/${SERVICE_NAME}"
+PROXY_SERVICE="mihomo-new.service"
+PROXY_READINESS_CHECK="/usr/local/libexec/huangque/check-mihomo-openai-proxy"
+PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
 VIDEO_TEMPLATE_BRANDING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0002-remove-video-template-branding.patch"
@@ -44,6 +48,9 @@ RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
 PREVIOUS_SOURCE_TARGET=""
 LEGACY_SOURCE_BACKUP=""
+UNIT_BACKUP_DIR=""
+UNIT_EXISTED=0
+UNIT_BACKED_UP=0
 SOURCE_SWITCHED=0
 DEPLOY_SUCCEEDED=0
 
@@ -52,6 +59,24 @@ if [[ ! -s "${SERVICE_CONTROL_LIB}" ]]; then
   exit 2
 fi
 source "${SERVICE_CONTROL_LIB}"
+
+backup_pixelle_unit() {
+  UNIT_BACKUP_DIR="$(mktemp -d /var/tmp/huangque-pixelle-unit.XXXXXX)"
+  chmod 0700 "${UNIT_BACKUP_DIR}"
+  pixelle_backup_managed_file \
+    "${SERVICE_UNIT_TARGET}" \
+    "${UNIT_BACKUP_DIR}/${SERVICE_NAME}" \
+    UNIT_EXISTED
+  UNIT_BACKED_UP=1
+}
+
+restore_pixelle_unit() {
+  pixelle_restore_managed_file \
+    "${SERVICE_UNIT_TARGET}" \
+    "${UNIT_BACKUP_DIR}/${SERVICE_NAME}" \
+    "${UNIT_EXISTED}" || return 1
+  systemctl daemon-reload || return 1
+}
 
 rollback_release() {
   if [[ -n "${PREVIOUS_SOURCE_TARGET}" ]]; then
@@ -64,6 +89,11 @@ rollback_release() {
   else
     rm -f "${SOURCE_DIR}"
   fi
+}
+
+rollback_release_and_unit() {
+  rollback_release || return 1
+  restore_pixelle_unit || return 1
 }
 
 activate_release() {
@@ -89,11 +119,14 @@ cleanup() {
   set +e
 
   if [[ "${SOURCE_SWITCHED}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 ]]; then
-    if pixelle_run_with_service_stopped "${SERVICE_NAME}" rollback_release; then
+    if pixelle_run_with_service_stopped "${SERVICE_NAME}" rollback_release_and_unit; then
       systemctl start "${SERVICE_NAME}" || true
     else
-      echo "rollback skipped because ${SERVICE_NAME} could not be confirmed inactive" >&2
+      restore_pixelle_unit || true
+      echo "source rollback skipped because ${SERVICE_NAME} could not be confirmed inactive" >&2
     fi
+  elif [[ "${UNIT_BACKED_UP}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 ]]; then
+    restore_pixelle_unit || true
   fi
 
   if [[ -n "${NEXT_SOURCE_LINK}" && -L "${NEXT_SOURCE_LINK}" ]]; then
@@ -102,6 +135,9 @@ cleanup() {
   if [[ "${SOURCE_SWITCHED}" -ne 1 && -n "${RELEASE_DIR}" && -d "${RELEASE_DIR}" ]]; then
     rm -rf "${RELEASE_DIR}"
   fi
+  case "${UNIT_BACKUP_DIR}" in
+    /var/tmp/huangque-pixelle-unit.*) rm -rf -- "${UNIT_BACKUP_DIR}" ;;
+  esac
   return "${exit_code}"
 }
 
@@ -117,6 +153,22 @@ if [[ ! -s "${CONFIG_PATH}" ]]; then
 fi
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
+  exit 2
+fi
+if [[ "$(systemctl show --property=LoadState --value "${PROXY_SERVICE}")" != "loaded" ]]; then
+  echo "${PROXY_SERVICE} is not installed; provision the Pixelle proxy first" >&2
+  exit 2
+fi
+if ! systemctl is-active --quiet "${PROXY_SERVICE}"; then
+  echo "${PROXY_SERVICE} is not active; refusing Pixelle deployment" >&2
+  exit 2
+fi
+if [[ ! -x "${PROXY_READINESS_CHECK}" ]]; then
+  echo "missing ${PROXY_READINESS_CHECK}; provision the Pixelle proxy first" >&2
+  exit 2
+fi
+if ! "${PROXY_READINESS_CHECK}"; then
+  echo "${PROXY_SERVICE} is not ready on 127.0.0.1:7999" >&2
   exit 2
 fi
 if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
@@ -234,9 +286,8 @@ sudo -u admin env PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" \
   "${RELEASE_DIR}/.venv/bin/python" -m playwright install chromium
 sudo -u admin "${RELEASE_DIR}/.venv/bin/python" -m compileall -q "${RELEASE_DIR}/api" "${RELEASE_DIR}/pixelle_video"
 
-install -o root -g root -m 0644 \
-  "${DEPLOY_ROOT}/deploy/systemd/${SERVICE_NAME}" \
-  "/etc/systemd/system/${SERVICE_NAME}"
+backup_pixelle_unit
+install -o root -g root -m 0644 "${SERVICE_UNIT_SOURCE}" "${SERVICE_UNIT_TARGET}"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 
