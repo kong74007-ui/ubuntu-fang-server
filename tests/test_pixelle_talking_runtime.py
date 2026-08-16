@@ -119,14 +119,15 @@ def _extract_frame_processor_fixture(source_root: Path) -> None:
             if info.filename.replace("\\", "/") == member
         ]
         assert len(matches) == 1, archive.namelist()
-        module_path.write_bytes(archive.read(matches[0]))
+        source = archive.read(matches[0]).decode("utf-8").replace("\r\n", "\n")
+        module_path.write_text(source, encoding="utf-8", newline="\n")
 
 
 def load_patched_frame_processor(tmp_path: Path, monkeypatch):
     source_root = tmp_path / "patched"
     _extract_frame_processor_fixture(source_root)
     patch_path = tmp_path / "frame_processor.patch"
-    patch_path.write_text(_frame_patch_text(), encoding="utf-8")
+    patch_path.write_text(_frame_patch_text(), encoding="utf-8", newline="\n")
     completed = subprocess.run(
         [
             "git",
