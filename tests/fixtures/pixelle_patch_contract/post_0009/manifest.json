@@ -1,0 +1,38 @@
+{
+  "fixture_kind": "pixelle-post-0009-touched-files",
+  "source_commit": "848b054e4fae40dabc62ec58e960b573e83793ac",
+  "applied_patches": [
+    "0001-enforce-video-task-capacity.patch",
+    "0002-remove-video-template-branding.patch",
+    "0003-support-external-narration-audio.patch",
+    "0004-disable-deepseek-v4-thinking.patch",
+    "0005-retry-image-generation.patch",
+    "0006-guard-runninghub-polling.patch",
+    "0007-fail-fast-parallel-frames.patch",
+    "0008-support-tts-speed-api.patch",
+    "0009-support-single-line-caption-cues.patch"
+  ],
+  "archive": {
+    "path": "post_0009.zip",
+    "sha256": "f48de2a468b0f0829677a225ba013cd7d6340d203e730f479c192e03046b73b0",
+    "format": "zip",
+    "compression": "stored",
+    "member_order": "lexicographic",
+    "member_timestamp": "1980-01-01T00:00:00",
+    "member_mode": "100644"
+  },
+  "files": {
+    "api/app.py": {
+      "sha256": "af6679f1065eb31295bd6e6f7c49c21ab916bbe302802fea1103fded02cf574a"
+    },
+    "api/routers/__init__.py": {
+      "sha256": "c9bd42108214965f1d35716dcb05b486e9e7f5f4d835a10eaf9b6d61ffcdd4fd"
+    },
+    "api/routers/video.py": {
+      "sha256": "0512595d207ddc9527679ac0b40ccaad3a1a6d9f3d7786dbc4907ab0f57d7782"
+    },
+    "api/schemas/video.py": {
+      "sha256": "8d6ef996cd194eb2fc2b4db4b80d0b3c41248f71a7ccfaf2a3a27a5eb8817a89"
+    }
+  }
+}

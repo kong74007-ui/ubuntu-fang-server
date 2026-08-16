@@ -43,6 +43,9 @@ jobs:
       - name: 安装 AI Edit V3 Python 依赖
         run: python -m pip install --disable-pip-version-check --no-input --no-deps --requirement deploy/requirements-ai-edit-v3.txt
 
+      - name: Install Python test dependencies
+        run: python -m pip install --disable-pip-version-check --no-input --requirement deploy/requirements-test.txt
+
       - name: Install FFmpeg for media contract tests
         run: |
           sudo apt-get update -qq
@@ -56,6 +59,14 @@ jobs:
 
       - name: 测试 CI 检查器
         run: python -m unittest discover -s tests -v
+
+      - name: Test Pixelle talking material workflow
+        run: >-
+          python -m pytest -q
+          tests/test_pixelle_talking_bridge.py
+          tests/test_pixelle_talking_client.py
+          tests/test_pixelle_talking_integration.py
+          tests/test_pixelle_talking_runtime.py
 
       - name: 检查 Python 语法
         shell: bash

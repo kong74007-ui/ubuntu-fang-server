@@ -11,6 +11,7 @@ STATE_ROOT="/var/lib/huangque-pixelle-video"
 OUTPUT_DIR="${STATE_ROOT}/output"
 DATA_DIR="${STATE_ROOT}/data"
 EXTERNAL_AUDIO_DIR="${DATA_DIR}/external_audio"
+AVATAR_ASSET_ROOT="${DATA_DIR}/avatar_assets"
 CONFIG_PATH="/etc/huangque/pixelle-video.yaml"
 SERVICE_NAME="huangque-pixelle-video.service"
 PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
@@ -25,9 +26,15 @@ RUNNINGHUB_GUARD_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0006-guard-r
 PARALLEL_FAIL_FAST_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0007-fail-fast-parallel-frames.patch"
 TTS_SPEED_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0008-support-tts-speed-api.patch"
 CAPTION_CUES_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0009-support-single-line-caption-cues.patch"
+TALKING_MATERIAL_ASSETS_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
+TALKING_SCENES_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"
+TALKING_MATERIAL_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/talking_material.py"
+TALKING_CLIENT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/talking_client.py"
 PIXELLE_DISCONNECT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/disconnect.py"
 EXTERNAL_AUDIO_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/external_audio.py"
 VOICE_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/voice_assets.py"
+AVATAR_ASSETS_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/avatar_assets.py"
+AVATAR_ASSETS_ROUTER_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/routers/avatar_assets.py"
 MEDIA_RETRY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/media_retry.py"
 RUNNINGHUB_GUARD_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/runninghub_guard.py"
 FAIL_FAST_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/fail_fast.py"
@@ -112,7 +119,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -123,6 +130,7 @@ chmod 0640 "${CONFIG_PATH}"
 install -d -o admin -g admin -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}" "${BROWSER_DIR}"
 install -d -o admin -g admin -m 0750 "${STATE_ROOT}" "${OUTPUT_DIR}" "${DATA_DIR}"
 install -d -o admin -g admin -m 0700 "${EXTERNAL_AUDIO_DIR}"
+install -d -o admin -g admin -m 0700 "${AVATAR_ASSET_ROOT}"
 
 # Preserve outputs created by deployments that predate the persistent state
 # layout before preparing the replacement release.
@@ -169,6 +177,10 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --check "${TTS_SPEED_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply "${TTS_SPEED_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${CAPTION_CUES_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${CAPTION_CUES_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_MATERIAL_ASSETS_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_MATERIAL_ASSETS_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_SCENES_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_SCENES_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${PIXELLE_DISCONNECT_OVERRIDE}" \
@@ -177,6 +189,10 @@ install -o admin -g admin -m 0644 "${EXTERNAL_AUDIO_OVERRIDE}" \
   "${RELEASE_DIR}/api/external_audio.py"
 install -o admin -g admin -m 0644 "${VOICE_ASSETS_ROUTER_OVERRIDE}" \
   "${RELEASE_DIR}/api/routers/voice_assets.py"
+install -o admin -g admin -m 0644 "${AVATAR_ASSETS_OVERRIDE}" \
+  "${RELEASE_DIR}/api/avatar_assets.py"
+install -o admin -g admin -m 0644 "${AVATAR_ASSETS_ROUTER_OVERRIDE}" \
+  "${RELEASE_DIR}/api/routers/avatar_assets.py"
 install -o admin -g admin -m 0644 "${MEDIA_RETRY_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/media_retry.py"
 install -o admin -g admin -m 0644 "${RUNNINGHUB_GUARD_OVERRIDE}" \
@@ -185,6 +201,10 @@ install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/fail_fast.py"
 install -o admin -g admin -m 0644 "${CAPTION_CUES_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/caption_cues.py"
+install -o admin -g admin -m 0644 "${TALKING_MATERIAL_OVERRIDE}" \
+  "${RELEASE_DIR}/pixelle_video/services/talking_material.py"
+install -o admin -g admin -m 0644 "${TALKING_CLIENT_OVERRIDE}" \
+  "${RELEASE_DIR}/pixelle_video/services/talking_client.py"
 rm -f "${RELEASE_DIR}/config.yaml"
 ln -s "${CONFIG_PATH}" "${RELEASE_DIR}/config.yaml"
 chown -h admin:admin "${RELEASE_DIR}/config.yaml"

@@ -53,6 +53,49 @@ if sudo grep -qE '^(WX_PAY_|WX_MP_)' /home/ubuntu/auth-service/auth.env /home/ub
   exit 1
 fi
 sudo test -f /etc/huangque/runninghub.env || printf "RUNNINGHUB_API_KEY=\n" | sudo tee /etc/huangque/runninghub.env >/dev/null
+PIXELLE_TALKING_ENV=/etc/huangque/pixelle-talking.env
+sudo sh -s -- "$PIXELLE_TALKING_ENV" <<'PIXELLE_TOKEN_SCRIPT'
+# PIXELLE_TOKEN_CREATE_BEGIN
+set -eu
+target=$1
+directory=${target%/*}
+[ "$directory" != "$target" ] || directory=.
+umask 077
+if [ -e "$target" ] || [ -L "$target" ]; then
+  [ -f "$target" ] && [ ! -L "$target" ] || exit 1
+else
+  tmp=$(mktemp "$directory/.pixelle-talking.env.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+  chmod 600 "$tmp"
+  token=$(openssl rand -hex 48)
+  [ "${#token}" -eq 96 ]
+  case "$token" in
+    ""|*[!0-9a-f]*) exit 1 ;;
+  esac
+  printf "PIXELLE_TALKING_INTERNAL_TOKEN=%s\n" "$token" > "$tmp"
+  if ln "$tmp" "$target" 2>/dev/null; then
+    :
+  elif [ -f "$target" ] && [ ! -L "$target" ]; then
+    :
+  else
+    exit 1
+  fi
+fi
+line=$(cat "$target")
+[ "$(wc -l < "$target")" -eq 1 ]
+case "$line" in
+  PIXELLE_TALKING_INTERNAL_TOKEN=*) ;;
+  *) exit 1 ;;
+esac
+token=${line#PIXELLE_TALKING_INTERNAL_TOKEN=}
+[ "${#token}" -eq 96 ]
+case "$token" in
+  ""|*[!0-9a-f]*) exit 1 ;;
+esac
+# PIXELLE_TOKEN_CREATE_END
+PIXELLE_TOKEN_SCRIPT
+sudo chown root:root "$PIXELLE_TALKING_ENV"
+sudo chmod 600 "$PIXELLE_TALKING_ENV"
 sudo chmod 600 /home/ubuntu/auth-service/auth.env /home/ubuntu/content-api/content.env /etc/huangque/runninghub.env
 sudo chown -R ubuntu:ubuntu /home/ubuntu
 

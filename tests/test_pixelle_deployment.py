@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")
+PATCH_FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "pixelle_patch_contract" / "post_0009"
 
 
 def find_bash() -> str:
@@ -53,6 +60,143 @@ def load_renderer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_patch_fixture_manifest() -> dict:
+    manifest_path = PATCH_FIXTURE_ROOT / "manifest.json"
+    if not manifest_path.is_file():
+        raise AssertionError(f"missing pixelle patch fixture manifest: {manifest_path}")
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def extract_patch_fixture(repo: Path, manifest: dict) -> None:
+    archive_path = PATCH_FIXTURE_ROOT / manifest["archive"]["path"]
+    if not archive_path.is_file():
+        raise AssertionError(f"missing pixelle patch fixture archive: {archive_path}")
+    if manifest["archive"]["sha256"] != sha256_file(archive_path):
+        raise AssertionError(f"fixture archive hash mismatch: {archive_path.name}")
+
+    expected_paths = set(manifest["files"])
+    with zipfile.ZipFile(archive_path) as archive:
+        member_paths = [member.filename for member in archive.infolist()]
+        if len(member_paths) != len(expected_paths) or set(member_paths) != expected_paths:
+            raise AssertionError("fixture archive members do not match manifest")
+        for relpath in sorted(expected_paths):
+            target = repo / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read(relpath))
+
+    for relpath, expected in manifest["files"].items():
+        actual_path = repo / relpath
+        if expected["sha256"] != sha256_file(actual_path):
+            raise AssertionError(f"fixture hash mismatch: {relpath}")
+
+
+def patch_contract_git_env(temp_root: Path) -> dict[str, str]:
+    control_root = temp_root / "git-env"
+    home = control_root / "home"
+    xdg = control_root / "xdg"
+    hooks = control_root / "hooks"
+    template = control_root / "template"
+    global_config = control_root / "global.gitconfig"
+    hooks.mkdir(parents=True, exist_ok=True)
+    template.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
+    xdg.mkdir(parents=True, exist_ok=True)
+    global_config.write_text("", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(global_config),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "XDG_CONFIG_HOME": str(xdg),
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": str(hooks),
+            "GIT_CONFIG_KEY_1": "init.templateDir",
+            "GIT_CONFIG_VALUE_1": str(template),
+        }
+    )
+    return env
+
+
+def run_git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def build_patch_contract_repo(temp_root: Path, git_env: dict[str, str] | None = None) -> Path:
+    manifest = load_patch_fixture_manifest()
+    git_env = git_env or patch_contract_git_env(temp_root)
+    repo = temp_root / "repo"
+    extract_patch_fixture(repo, manifest)
+
+    result = run_git(repo, "init", env=git_env)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    result = run_git(repo, "add", ".", env=git_env)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or result.stdout)
+    return repo
+
+
+def parse_patch_hunks(text: str):
+    lines = text.splitlines()
+    hunks = []
+    current = None
+    for lineno, line in enumerate(lines, start=1):
+        if line.startswith("@@"):
+            match = HUNK_RE.match(line)
+            if not match:
+                raise AssertionError(f"malformed hunk header at line {lineno}: {line}")
+            if current is not None:
+                hunks.append(current)
+            current = {
+                "lineno": lineno,
+                "header": line,
+                "old_count": int(match.group("old_count") or "1"),
+                "new_count": int(match.group("new_count") or "1"),
+                "old_lines": 0,
+                "new_lines": 0,
+            }
+            continue
+        if line.startswith("diff --git"):
+            if current is not None:
+                hunks.append(current)
+                current = None
+            continue
+        if current is None:
+            continue
+        if line.startswith(("---", "+++", "index ")):
+            continue
+        if line.startswith("\\ No newline at end of file"):
+            continue
+        if line.startswith("+"):
+            current["new_lines"] += 1
+            continue
+        if line.startswith("-"):
+            current["old_lines"] += 1
+            continue
+        if line.startswith(" "):
+            current["old_lines"] += 1
+            current["new_lines"] += 1
+            continue
+        raise AssertionError(f"patch fragment without header or invalid hunk line at {lineno}: {line}")
+    if current is not None:
+        hunks.append(current)
+    return hunks
 
 
 class PixelleDeploymentTests(unittest.TestCase):
@@ -531,6 +675,277 @@ class PixelleDeploymentTests(unittest.TestCase):
         )
         self.assertLess(patch_check, source_switch)
 
+    def test_talking_material_override_is_fail_closed_and_installed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("TALKING_MATERIAL_OVERRIDE=", installer)
+        self.assertIn('! -s "${TALKING_MATERIAL_OVERRIDE}"', installer)
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${TALKING_MATERIAL_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/talking_material.py"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video"',
+            installer,
+        )
+
+    def test_avatar_asset_patch_and_overrides_are_fail_closed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")
+        patch_path = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
+        patch = patch_path.read_text(encoding="utf-8")
+
+        for marker in (
+            "AVATAR_ASSET_ROOT=",
+            "AVATAR_ASSETS_OVERRIDE=",
+            "AVATAR_ASSETS_ROUTER_OVERRIDE=",
+            "TALKING_MATERIAL_ASSETS_PATCH=",
+        ):
+            self.assertIn(marker, installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_MATERIAL_ASSETS_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_MATERIAL_ASSETS_PATCH}"',
+            installer,
+        )
+        self.assertIn('"${RELEASE_DIR}/api/avatar_assets.py"', installer)
+        self.assertIn('"${RELEASE_DIR}/api/routers/avatar_assets.py"', installer)
+        self.assertIn(
+            'install -d -o admin -g admin -m 0700 "${AVATAR_ASSET_ROOT}"',
+            installer,
+        )
+        self.assertIn(
+            "Environment=PIXELLE_AVATAR_ROOT=/var/lib/huangque-pixelle-video/data/avatar_assets",
+            unit,
+        )
+        self.assertIn("TalkingSceneSelection", patch)
+        self.assertIn("TalkingMaterialConfig", patch)
+        self.assertIn("avatar_asset_id: str | None = None", patch)
+        self.assertIn("default_avatar_asset_id: str | None = None", patch)
+        self.assertIn("talking_material: TalkingMaterialConfig | None = None", patch)
+        self.assertIn("avatar_assets_router", patch)
+        self.assertIn("lease_avatar_assets", patch)
+        self.assertIn("release_avatar_assets", patch)
+        self.assertIn("start_cleanup_scheduler", patch)
+        self.assertIn("stop_cleanup_scheduler", patch)
+        patch_check = installer.index(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_MATERIAL_ASSETS_PATCH}"'
+        )
+        source_switch = installer.rindex(
+            'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'
+        )
+        self.assertLess(patch_check, source_switch)
+
+    def test_talking_material_asset_patch_has_consistent_hunk_counts(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0010-support-talking-material-assets.patch"
+        ).read_text(encoding="utf-8")
+
+        hunks = parse_patch_hunks(patch)
+
+        self.assertGreaterEqual(len(hunks), 1)
+        for hunk in hunks:
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
+    def test_talking_scene_patch_and_client_are_fail_closed_and_installed_last(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        )
+        client_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "overrides"
+            / "pixelle_video"
+            / "services"
+            / "talking_client.py"
+        )
+
+        self.assertTrue(patch_path.is_file())
+        self.assertTrue(client_path.is_file())
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertIn("TALKING_SCENES_PATCH=", installer)
+        self.assertIn("TALKING_CLIENT_OVERRIDE=", installer)
+        self.assertIn('! -s "${TALKING_SCENES_PATCH}"', installer)
+        self.assertIn('! -s "${TALKING_CLIENT_OVERRIDE}"', installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${TALKING_SCENES_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${TALKING_SCENES_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'install -o admin -g admin -m 0644 "${TALKING_CLIENT_OVERRIDE}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/talking_client.py"',
+            installer,
+        )
+        self.assertGreater(
+            installer.index('"${TALKING_SCENES_PATCH}"'),
+            installer.index('"${TALKING_MATERIAL_ASSETS_PATCH}"'),
+        )
+        for line in patch.splitlines():
+            self.assertEqual(line.rstrip(), line)
+        self.assertFalse(patch.endswith("\n\n"))
+
+    def test_talking_scene_patch_persists_stable_scene_state_and_avatar_paths(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        ).read_text(encoding="utf-8")
+
+        for marker in (
+            "talking_material: Optional[Dict[str, Any]]",
+            "talking_avatar_paths: Optional[Dict[str, str]]",
+            "scene_id: str",
+            "visual_source: str",
+            "talking_attempts: int",
+            "talking_warning: Optional[str]",
+            'scene_id=f"scene_{i + 1:02d}"',
+            '"visual_source": frame.visual_source',
+            '"talking_attempts": frame.talking_attempts',
+            '"talking_warning": frame.talking_warning',
+            '"talking_avatar_paths": config.talking_avatar_paths',
+        ):
+            self.assertIn(marker, patch)
+
+    def test_talking_scene_patch_has_consistent_hunk_counts(self):
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0011-render-talking-material-scenes.patch"
+        ).read_text(encoding="utf-8")
+
+        hunks = parse_patch_hunks(patch)
+        self.assertGreaterEqual(len(hunks), 1)
+        for hunk in hunks:
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
+    def test_talking_material_asset_patch_applies_to_post_0009_fixture_with_installer_flags(self):
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0010-support-talking-material-assets.patch"
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            temp_root = Path(directory)
+            git_env = patch_contract_git_env(temp_root)
+            repo = build_patch_contract_repo(temp_root, git_env)
+
+            check = run_git(repo, "apply", "--unidiff-zero", "--check", str(patch_path), env=git_env)
+            self.assertEqual(0, check.returncode, check.stderr or check.stdout)
+
+            apply_result = run_git(repo, "apply", "--unidiff-zero", str(patch_path), env=git_env)
+            self.assertEqual(0, apply_result.returncode, apply_result.stderr or apply_result.stdout)
+
+            diff_names = run_git(repo, "diff", "--name-only", "--", env=git_env)
+            self.assertEqual(0, diff_names.returncode, diff_names.stderr or diff_names.stdout)
+            self.assertEqual(
+                {
+                    "api/app.py",
+                    "api/routers/__init__.py",
+                    "api/routers/video.py",
+                    "api/schemas/video.py",
+                },
+                set(filter(None, diff_names.stdout.splitlines())),
+            )
+
+    def test_patch_contract_archive_extracts_exact_manifest_files_without_mutation(self):
+        manifest = load_patch_fixture_manifest()
+        self.assertFalse(
+            (PATCH_FIXTURE_ROOT / "api").exists(),
+            "byte-pinned source must only be tracked inside the binary archive",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            archive_path = PATCH_FIXTURE_ROOT / manifest["archive"]["path"]
+            archive_hash = sha256_file(archive_path)
+
+            extract_patch_fixture(repo, manifest)
+
+            extracted_files = {
+                path.relative_to(repo).as_posix()
+                for path in repo.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(set(manifest["files"]), extracted_files)
+            for relpath, expected in manifest["files"].items():
+                self.assertEqual(expected["sha256"], sha256_file(repo / relpath))
+            self.assertEqual(archive_hash, sha256_file(archive_path))
+
+    def test_patch_contract_repo_ignores_global_hooks_and_init_templates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp_root = Path(directory)
+            fake_home = temp_root / "fake-home"
+            hooks_path = fake_home / "hooks-path"
+            template_hooks = fake_home / "template" / "hooks"
+            marker = temp_root / "hook-marker.txt"
+            fake_home.mkdir()
+            hooks_path.mkdir(parents=True)
+            template_hooks.mkdir(parents=True)
+
+            hook_script = "#!/bin/sh\nprintf hook-ran > \"$HOOK_MARKER\"\n"
+            (hooks_path / "post-commit").write_text(hook_script, encoding="utf-8")
+            (template_hooks / "custom-template-hook").write_text("template copied\n", encoding="utf-8")
+            gitconfig = "\n".join(
+                [
+                    "[core]",
+                    f"\thooksPath = {hooks_path.as_posix()}",
+                    "[init]",
+                    f"\ttemplateDir = {(fake_home / 'template').as_posix()}",
+                    "",
+                ]
+            )
+            (fake_home / ".gitconfig").write_text(gitconfig, encoding="utf-8")
+
+            env = {
+                "HOME": str(fake_home),
+                "USERPROFILE": str(fake_home),
+                "XDG_CONFIG_HOME": str(fake_home / "xdg"),
+                "HOOK_MARKER": str(marker),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                git_env = patch_contract_git_env(temp_root)
+                repo = build_patch_contract_repo(temp_root, git_env)
+
+            self.assertFalse(marker.exists(), "git hooks must not run during fixture setup")
+            self.assertFalse(
+                (repo / ".git" / "hooks" / "custom-template-hook").exists(),
+                "git init must not copy caller-configured templates into the test repo",
+            )
+
     def test_rendered_config_is_owner_only(self):
         renderer = load_renderer()
         with tempfile.TemporaryDirectory() as directory:
@@ -562,6 +977,30 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:8103/;", nginx)
         self.assertIn("proxy_read_timeout 1800s;", nginx)
         self.assertIn("proxy_request_buffering off;", nginx)
+
+    def test_talking_material_runtime_contract_is_documented(self):
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_readme = " ".join(readme.split()).casefold()
+        required_contract = (
+            "/etc/huangque/pixelle-talking.env",
+            "http://127.0.0.1:8096/api/internal/pixelle/talking-clip",
+            "24-hour avatar TTL",
+            "two-slot bridge limit",
+            "15-minute provider deadline",
+            "20-minute client timeout",
+            "at most three attempts",
+            "billed outcomes are never retried",
+            "ordinary visual fallback",
+            "approximately six seconds",
+            "not a hard duration limit",
+            "original narration and caption timeline remain authoritative",
+            "Linux validation",
+        )
+        for contract in required_contract:
+            with self.subTest(contract=contract):
+                self.assertIn(contract.casefold(), normalized_readme)
 
 
 if __name__ == "__main__":
