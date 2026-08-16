@@ -32,6 +32,10 @@ def quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
+def yaml_single_quoted(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def validate_subscription_url(value: str) -> str:
     url = value.strip()
     if not url:
@@ -83,7 +87,7 @@ dns:
 proxy-providers:
   grayfox:
     type: http
-    filter: {quoted(node_filter)}
+    filter: {yaml_single_quoted(node_filter)}
     exclude-filter: "(?i)剩余流量|距离下次重置|套餐到期|流量|重置|到期|官网"
     url: {quoted(subscription_url)}
     path: ./providers/grayfox.yaml
