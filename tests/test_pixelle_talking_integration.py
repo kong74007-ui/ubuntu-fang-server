@@ -87,10 +87,17 @@ def _frame_patch_text() -> str:
     return patch[start:end] + "\n"
 
 
+def _extract_frame_processor_fixture(source_root: Path) -> None:
+    member = "pixelle_video/services/frame_processor.py"
+    module_path = source_root / member
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(FIXTURE_PATH) as archive:
+        module_path.write_bytes(archive.read(member))
+
+
 def _load_patched_frame_processor(tmp_path: Path, monkeypatch, video_service_class):
     source_root = tmp_path / "patched"
-    with zipfile.ZipFile(FIXTURE_PATH) as archive:
-        archive.extractall(source_root)
+    _extract_frame_processor_fixture(source_root)
     patch_path = tmp_path / "frame_processor.patch"
     patch_path.write_text(_frame_patch_text(), encoding="utf-8")
     completed = subprocess.run(
