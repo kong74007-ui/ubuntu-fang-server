@@ -315,6 +315,77 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn('trap cleanup EXIT', installer)
         self.assertIn('mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"', installer)
 
+    def test_installer_requires_ready_mihomo_before_preparing_release(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        release_prepare = installer.index('RELEASE_DIR="$(mktemp -d')
+        load_check = installer.index(
+            'systemctl show --property=LoadState --value "${PROXY_SERVICE}"'
+        )
+        active_check = installer.index(
+            'systemctl is-active --quiet "${PROXY_SERVICE}"'
+        )
+        readiness_check = installer.index('"${PROXY_READINESS_CHECK}"')
+
+        self.assertLess(load_check, release_prepare)
+        self.assertLess(active_check, release_prepare)
+        self.assertLess(readiness_check, release_prepare)
+
+    def test_installer_backs_up_and_rolls_back_pixelle_unit(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        unit_install = installer.index(
+            'install -o root -g root -m 0644 "${SERVICE_UNIT_SOURCE}"'
+        )
+        unit_backup = installer.index("\nbackup_pixelle_unit\n")
+
+        self.assertLess(unit_backup, unit_install)
+        self.assertIn("restore_pixelle_unit", installer)
+        self.assertIn("systemctl daemon-reload", installer)
+
+    def test_installer_initializes_deploy_root_before_derived_paths(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertLess(
+            installer.index('DEPLOY_ROOT="$(cd'),
+            installer.index('SERVICE_UNIT_SOURCE="${DEPLOY_ROOT}'),
+        )
+
+    def test_managed_file_helper_restores_previous_unit_bytes(self):
+        helper = (
+            ROOT / "deploy" / "pixelle-video" / "lib" / "service_control.sh"
+        ).as_posix()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = (root / "pixelle.service").as_posix()
+            backup = (root / "pixelle.service.backup").as_posix()
+            script = f'''source "{helper}"
+printf old-unit > "{target}"
+existed=0
+pixelle_backup_managed_file "{target}" "{backup}" existed
+printf new-unit > "{target}"
+pixelle_restore_managed_file "{target}" "{backup}" "$existed"
+cat "{target}"
+'''
+            result = subprocess.run(
+                [find_bash(), "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("old-unit", result.stdout)
+
+    def test_readme_documents_mihomo_egress_dependency(self):
+        readme = (ROOT / "deploy/pixelle-video/README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("mihomo-new.service", readme)
+        self.assertNotIn("huangque-egress-tunnel.service", readme)
+
     def test_installer_confirms_service_is_inactive_before_switch(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
         stop_call = 'pixelle_run_with_service_stopped "${SERVICE_NAME}" activate_release'

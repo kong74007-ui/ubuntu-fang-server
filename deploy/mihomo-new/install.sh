@@ -5,6 +5,7 @@ DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_PATH="/etc/huangque/mihomo-new.env"
 CONFIG_DIR="/home/ubuntu/.config/mihomo-new"
 CONFIG_PATH="${CONFIG_DIR}/config.yaml"
+PROVIDER_PATH="${CONFIG_DIR}/providers/grayfox.yaml"
 RENDERER="${DEPLOY_ROOT}/scripts/render_mihomo_subscription_config.py"
 IDLE_CHECKER="${DEPLOY_ROOT}/scripts/check_pixelle_idle.py"
 CHECK_SOURCE="${DEPLOY_ROOT}/deploy/mihomo-new/check_openai_proxy.sh"
@@ -22,6 +23,7 @@ CONFIG_EXISTED=0
 UNIT_EXISTED=0
 PIXELLE_UNIT_EXISTED=0
 CHECK_EXISTED=0
+PROVIDER_EXISTED=0
 PROXY_WAS_ACTIVE=0
 PROXY_WAS_ENABLED=0
 PIXELLE_WAS_ACTIVE=0
@@ -58,41 +60,46 @@ backup_managed_files() {
   backup_file "${UNIT_TARGET}" mihomo-new.service UNIT_EXISTED
   backup_file "${PIXELLE_UNIT_TARGET}" huangque-pixelle-video.service PIXELLE_UNIT_EXISTED
   backup_file "${CHECK_TARGET}" check-mihomo-openai-proxy CHECK_EXISTED
+  backup_file "${PROVIDER_PATH}" grayfox.yaml PROVIDER_EXISTED
   MANAGED_FILES_BACKED_UP=1
 }
 
 restore_managed_files() {
-  restore_file "${CONFIG_PATH}" config.yaml "${CONFIG_EXISTED}"
-  restore_file "${UNIT_TARGET}" mihomo-new.service "${UNIT_EXISTED}"
-  restore_file "${PIXELLE_UNIT_TARGET}" huangque-pixelle-video.service "${PIXELLE_UNIT_EXISTED}"
-  restore_file "${CHECK_TARGET}" check-mihomo-openai-proxy "${CHECK_EXISTED}"
-  systemctl daemon-reload
+  restore_file "${CONFIG_PATH}" config.yaml "${CONFIG_EXISTED}" || return 1
+  restore_file "${UNIT_TARGET}" mihomo-new.service "${UNIT_EXISTED}" || return 1
+  restore_file "${PIXELLE_UNIT_TARGET}" huangque-pixelle-video.service "${PIXELLE_UNIT_EXISTED}" || return 1
+  restore_file "${CHECK_TARGET}" check-mihomo-openai-proxy "${CHECK_EXISTED}" || return 1
+  restore_file "${PROVIDER_PATH}" grayfox.yaml "${PROVIDER_EXISTED}" || return 1
+  systemctl daemon-reload || return 1
 }
 
 rollback_config() {
-  restore_managed_files
+  systemctl stop "${PROXY_SERVICE}" || return 1
+  restore_managed_files || return 1
   if [[ "${PROXY_WAS_ENABLED}" -eq 1 ]]; then
-    systemctl enable "${PROXY_SERVICE}" || true
+    systemctl enable "${PROXY_SERVICE}" || return 1
   else
-    systemctl disable "${PROXY_SERVICE}" || true
+    systemctl disable "${PROXY_SERVICE}" || return 1
   fi
   if [[ "${PROXY_WAS_ACTIVE}" -eq 1 ]]; then
-    systemctl restart "${PROXY_SERVICE}" || true
-  else
-    systemctl stop "${PROXY_SERVICE}" || true
+    systemctl restart "${PROXY_SERVICE}" || return 1
   fi
 }
 
 cleanup() {
   local exit_code=$?
+  local rollback_ok=1
   set +e
   if [[ "${exit_code}" -ne 0 && "${PIXELLE_WAS_ACTIVE}" -eq 1 && "${PIXELLE_STOPPED}" -eq 1 ]]; then
     systemctl stop "${PIXELLE_SERVICE}" || true
   fi
   if [[ "${exit_code}" -ne 0 && "${MANAGED_FILES_BACKED_UP}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 ]]; then
-    rollback_config
+    if ! rollback_config; then
+      rollback_ok=0
+      echo "Mihomo rollback failed; leaving Pixelle stopped" >&2
+    fi
   fi
-  if [[ "${PIXELLE_WAS_ACTIVE}" -eq 1 && "${PIXELLE_STOPPED}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 ]]; then
+  if [[ "${PIXELLE_WAS_ACTIVE}" -eq 1 && "${PIXELLE_STOPPED}" -eq 1 && "${DEPLOY_SUCCEEDED}" -ne 1 && "${rollback_ok}" -eq 1 ]]; then
     systemctl start "${PIXELLE_SERVICE}" || true
   fi
   rm -f "${NEXT_CONFIG}"

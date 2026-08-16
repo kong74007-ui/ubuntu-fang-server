@@ -164,8 +164,28 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn("rollback_config", installer)
         self.assertIn("backup_managed_files", installer)
         self.assertIn("restore_managed_files", installer)
+        self.assertIn(
+            'backup_file "${PROVIDER_PATH}" grayfox.yaml PROVIDER_EXISTED',
+            installer,
+        )
+        self.assertIn(
+            'restore_file "${PROVIDER_PATH}" grayfox.yaml "${PROVIDER_EXISTED}"',
+            installer,
+        )
         self.assertIn("systemctl daemon-reload", installer)
         self.assertIn("systemctl start huangque-pixelle-video.service", installer)
+
+    def test_rollback_stops_proxy_before_restoring_provider_cache(self):
+        installer = (ROOT / "deploy/mihomo-new/install.sh").read_text(
+            encoding="utf-8"
+        )
+        rollback_start = installer.index("rollback_config() {")
+        restore_index = installer.index("restore_managed_files", rollback_start)
+        stop_index = installer.index(
+            'systemctl stop "${PROXY_SERVICE}"', rollback_start
+        )
+
+        self.assertLess(stop_index, restore_index)
 
     def test_failed_install_restores_all_managed_files(self):
         installer = (ROOT / "deploy/mihomo-new/install.sh").as_posix()
@@ -176,24 +196,29 @@ CONFIG_PATH="{(root / "config.yaml").as_posix()}"
 UNIT_TARGET="{(root / "mihomo.service").as_posix()}"
 PIXELLE_UNIT_TARGET="{(root / "pixelle.service").as_posix()}"
 CHECK_TARGET="{(root / "check-proxy").as_posix()}"
+PROVIDER_PATH="{(root / "grayfox.yaml").as_posix()}"
 BACKUP_DIR="{(root / "backup").as_posix()}"
 mkdir -p "$BACKUP_DIR"
 printf old-config > "$BACKUP_DIR/config.yaml"
 printf old-unit > "$BACKUP_DIR/mihomo-new.service"
 printf old-pixelle > "$BACKUP_DIR/huangque-pixelle-video.service"
 printf old-check > "$BACKUP_DIR/check-mihomo-openai-proxy"
+printf old-provider > "$BACKUP_DIR/grayfox.yaml"
 printf new-config > "$CONFIG_PATH"
 printf new-unit > "$UNIT_TARGET"
 printf new-pixelle > "$PIXELLE_UNIT_TARGET"
 printf new-check > "$CHECK_TARGET"
+printf new-provider > "$PROVIDER_PATH"
 CONFIG_EXISTED=1
 UNIT_EXISTED=1
 PIXELLE_UNIT_EXISTED=1
 CHECK_EXISTED=1
+PROVIDER_EXISTED=1
 systemctl() {{ :; }}
 restore_managed_files
 printf '%s|' "$(cat "$CONFIG_PATH")" "$(cat "$UNIT_TARGET")" \
-  "$(cat "$PIXELLE_UNIT_TARGET")" "$(cat "$CHECK_TARGET")"
+  "$(cat "$PIXELLE_UNIT_TARGET")" "$(cat "$CHECK_TARGET")" \
+  "$(cat "$PROVIDER_PATH")"
 '''
             result = subprocess.run(
                 [find_bash(), "-c", script],
@@ -203,7 +228,8 @@ printf '%s|' "$(cat "$CONFIG_PATH")" "$(cat "$UNIT_TARGET")" \
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(
-                "old-config|old-unit|old-pixelle|old-check|", result.stdout
+                "old-config|old-unit|old-pixelle|old-check|old-provider|",
+                result.stdout,
             )
 
     def test_successful_cleanup_keeps_new_managed_files(self):
@@ -215,26 +241,31 @@ CONFIG_PATH="{(root / "config.yaml").as_posix()}"
 UNIT_TARGET="{(root / "mihomo.service").as_posix()}"
 PIXELLE_UNIT_TARGET="{(root / "pixelle.service").as_posix()}"
 CHECK_TARGET="{(root / "check-proxy").as_posix()}"
+PROVIDER_PATH="{(root / "grayfox.yaml").as_posix()}"
 BACKUP_DIR="{(root / "backup").as_posix()}"
 mkdir -p "$BACKUP_DIR"
 printf old-config > "$BACKUP_DIR/config.yaml"
 printf old-unit > "$BACKUP_DIR/mihomo-new.service"
 printf old-pixelle > "$BACKUP_DIR/huangque-pixelle-video.service"
 printf old-check > "$BACKUP_DIR/check-mihomo-openai-proxy"
+printf old-provider > "$BACKUP_DIR/grayfox.yaml"
 printf new-config > "$CONFIG_PATH"
 printf new-unit > "$UNIT_TARGET"
 printf new-pixelle > "$PIXELLE_UNIT_TARGET"
 printf new-check > "$CHECK_TARGET"
+printf new-provider > "$PROVIDER_PATH"
 CONFIG_EXISTED=1
 UNIT_EXISTED=1
 PIXELLE_UNIT_EXISTED=1
 CHECK_EXISTED=1
+PROVIDER_EXISTED=1
 MANAGED_FILES_BACKED_UP=1
 DEPLOY_SUCCEEDED=1
 systemctl() {{ :; }}
 cleanup
 printf '%s|' "$(cat "$CONFIG_PATH")" "$(cat "$UNIT_TARGET")" \
-  "$(cat "$PIXELLE_UNIT_TARGET")" "$(cat "$CHECK_TARGET")"
+  "$(cat "$PIXELLE_UNIT_TARGET")" "$(cat "$CHECK_TARGET")" \
+  "$(cat "$PROVIDER_PATH")"
 '''
             result = subprocess.run(
                 [find_bash(), "-c", script],
@@ -244,7 +275,8 @@ printf '%s|' "$(cat "$CONFIG_PATH")" "$(cat "$UNIT_TARGET")" \
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(
-                "new-config|new-unit|new-pixelle|new-check|", result.stdout
+                "new-config|new-unit|new-pixelle|new-check|new-provider|",
+                result.stdout,
             )
 
     def test_repository_contains_no_real_subscription_token(self):
