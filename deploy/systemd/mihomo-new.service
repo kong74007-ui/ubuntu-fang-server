@@ -8,6 +8,7 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 ExecStart=/usr/local/bin/mihomo -d /home/ubuntu/.config/mihomo-new
+ExecStartPost=/usr/local/libexec/huangque/check-mihomo-openai-proxy
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

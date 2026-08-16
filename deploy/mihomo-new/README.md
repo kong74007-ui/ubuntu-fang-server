@@ -19,8 +19,12 @@ never be committed.
    sudo bash deploy/mihomo-new/install.sh
    ```
 
-The installer renders a private config, validates it with `mihomo -t`, and
-only then replaces and restarts `mihomo-new.service`.
+The installer renders a private config and validates it with `mihomo -t`. It
+then refuses the deployment while Pixelle has non-terminal tasks, stops Pixelle
+from accepting new work, backs up every managed config and unit, and switches
+the proxy. Mihomo is not considered active until its OpenAI probe succeeds;
+Pixelle starts only after that readiness gate. A failed switch restores the old
+config, both systemd units, and the previous probe before restarting services.
 
 ## Verify
 
