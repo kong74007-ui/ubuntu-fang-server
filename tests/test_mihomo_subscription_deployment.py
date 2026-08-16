@@ -106,8 +106,11 @@ class MihomoSubscriptionDeploymentTests(unittest.TestCase):
         self.assertIn('url: "https://proxy.example.test/sub?token=x"', rendered)
         self.assertIn('User-Agent: ["clash.meta"]', rendered)
         self.assertIn("dns:\n  enable: true", rendered)
-        self.assertIn('enhanced-mode: "redir-host"', rendered)
+        self.assertIn('enhanced-mode: "fake-ip"', rendered)
         self.assertEqual(3, rendered.count('"https://1.12.12.12/dns-query"'))
+        self.assertIn("exclude-filter:", rendered)
+        self.assertIn("剩余流量", rendered)
+        self.assertIn("套餐到期", rendered)
         self.assertIn("type: url-test", rendered)
         self.assertIn("MATCH,GRAYFOX_AUTO", rendered)
 
