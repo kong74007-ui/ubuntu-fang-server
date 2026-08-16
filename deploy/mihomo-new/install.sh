@@ -143,6 +143,8 @@ main() {
   chmod 0600 "${ENV_PATH}"
   install -d -o ubuntu -g ubuntu -m 0700 "${CONFIG_DIR}" "${CONFIG_DIR}/providers"
   CANDIDATE_DIR="$(mktemp -d "${CONFIG_DIR}/.candidate.XXXXXX")"
+  chown ubuntu:ubuntu "${CANDIDATE_DIR}"
+  chmod 0700 "${CANDIDATE_DIR}"
   install -d -o ubuntu -g ubuntu -m 0700 "${CANDIDATE_DIR}/providers"
   python3 "${RENDERER}" --env "${ENV_PATH}" --output "${CANDIDATE_DIR}/config.yaml"
   chown ubuntu:ubuntu "${CANDIDATE_DIR}/config.yaml"
