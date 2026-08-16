@@ -74,8 +74,8 @@ restore_pixelle_unit() {
   pixelle_restore_managed_file \
     "${SERVICE_UNIT_TARGET}" \
     "${UNIT_BACKUP_DIR}/${SERVICE_NAME}" \
-    "${UNIT_EXISTED}"
-  systemctl daemon-reload
+    "${UNIT_EXISTED}" || return 1
+  systemctl daemon-reload || return 1
 }
 
 rollback_release() {
@@ -92,8 +92,8 @@ rollback_release() {
 }
 
 rollback_release_and_unit() {
-  rollback_release
-  restore_pixelle_unit
+  rollback_release || return 1
+  restore_pixelle_unit || return 1
 }
 
 activate_release() {
