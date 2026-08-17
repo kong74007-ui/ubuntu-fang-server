@@ -128,6 +128,16 @@ class CaptionTimelineTests(unittest.TestCase):
         )
         self.assertEqual(3.75, self.module.caption_timeline_duration(timed))
 
+    def test_continuous_audio_is_shared_across_display_cues(self):
+        cues = [{"text": "第一句，"}, {"text": "第二句更长一些。"}]
+
+        timed = self.module.build_proportional_caption_timeline(cues, 4.5)
+
+        self.assertEqual(0.0, timed[0]["start_time"])
+        self.assertEqual(4.5, timed[-1]["end_time"])
+        self.assertAlmostEqual(4.5, sum(cue["duration"] for cue in timed))
+        self.assertGreater(timed[1]["duration"], timed[0]["duration"])
+
     def test_video_slices_advance_instead_of_restarting(self):
         timed = self.module.build_caption_timeline(
             [

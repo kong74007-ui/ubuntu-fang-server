@@ -183,6 +183,28 @@ class ExternalAudioRegistryTests(unittest.TestCase):
             resolved[0]["cues"],
         )
 
+    def test_continuous_scene_audio_is_leased_once_for_multiple_caption_cues(self):
+        record = self.store("continuous-scene")
+        segments = [{
+            "text": "第一句，第二句。",
+            "audio_asset_id": record["asset_id"],
+            "caption_cues": [{"text": "第一句，"}, {"text": "第二句。"}],
+        }]
+
+        asset_ids, resolved = self.module.lease_narration_segments(
+            segments, "task-continuous"
+        )
+
+        self.assertEqual([record["asset_id"]], asset_ids)
+        self.assertEqual(
+            str(self.root / f'{record["asset_id"]}.mp3'),
+            resolved[0]["audio_path"],
+        )
+        self.assertEqual(
+            [{"text": "第一句，"}, {"text": "第二句。"}],
+            resolved[0]["cues"],
+        )
+
     def test_nested_cue_rejects_text_wider_than_single_line(self):
         record = self.store("nested-overlong")
         text = "一" * 15

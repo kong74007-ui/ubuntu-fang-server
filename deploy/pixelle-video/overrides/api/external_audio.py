@@ -212,7 +212,20 @@ def _normalize_narration_segments(segments) -> list[dict]:
     for segment in segments or []:
         scene_text = _segment_value(segment, "text")
         raw_cues = _optional_segment_value(segment, "cues")
-        if raw_cues:
+        caption_cues = _optional_segment_value(segment, "caption_cues")
+        scene_audio_asset_id = _optional_segment_value(segment, "audio_asset_id")
+        if caption_cues:
+            if raw_cues or not scene_audio_asset_id:
+                raise ValueError("continuous narration requires one scene audio asset")
+            cues = [{"text": _segment_value(cue, "text")} for cue in caption_cues]
+            for cue in cues:
+                validate_caption_cue_text(cue["text"])
+            normalized_segment = {
+                "text": scene_text,
+                "audio_asset_id": scene_audio_asset_id,
+                "caption_cues": cues,
+            }
+        elif raw_cues:
             cues = [
                 {
                     "text": _segment_value(cue, "text"),
@@ -222,16 +235,18 @@ def _normalize_narration_segments(segments) -> list[dict]:
             ]
             for cue in cues:
                 validate_caption_cue_text(cue["text"])
+            normalized_segment = {"text": scene_text, "cues": cues}
         else:
             cues = [{
                 "text": scene_text,
-                "audio_asset_id": _segment_value(segment, "audio_asset_id"),
+                "audio_asset_id": scene_audio_asset_id,
             }]
+            normalized_segment = {"text": scene_text, "cues": cues}
         if not cues or len(cues) > 20:
             raise ValueError("each narration segment requires 1 to 20 cues")
         if "".join(cue["text"] for cue in cues) != scene_text:
             raise ValueError("narration cue text must preserve the scene text")
-        normalized.append({"text": scene_text, "cues": cues})
+        normalized.append(normalized_segment)
     return normalized
 
 
@@ -239,21 +254,29 @@ def lease_narration_segments(segments, task_id: str):
     normalized = _normalize_narration_segments(segments)
     if not normalized:
         return [], []
-    asset_ids = [
-        cue["audio_asset_id"]
-        for segment in normalized
-        for cue in segment["cues"]
-    ]
+    asset_ids = []
+    for segment in normalized:
+        if segment.get("audio_asset_id"):
+            asset_ids.append(segment["audio_asset_id"])
+        else:
+            asset_ids.extend(cue["audio_asset_id"] for cue in segment["cues"])
     paths = iter(lease_audio_assets(asset_ids, task_id))
     resolved = []
     for segment in normalized:
-        resolved.append({
-            "text": segment["text"],
-            "cues": [
-                {"text": cue["text"], "audio_path": str(next(paths))}
-                for cue in segment["cues"]
-            ],
-        })
+        if segment.get("audio_asset_id"):
+            resolved.append({
+                "text": segment["text"],
+                "audio_path": str(next(paths)),
+                "cues": [dict(cue) for cue in segment["caption_cues"]],
+            })
+        else:
+            resolved.append({
+                "text": segment["text"],
+                "cues": [
+                    {"text": cue["text"], "audio_path": str(next(paths))}
+                    for cue in segment["cues"]
+                ],
+            })
     return asset_ids, resolved
 
 

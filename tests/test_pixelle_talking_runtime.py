@@ -8,7 +8,7 @@ import types
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -20,6 +20,13 @@ PATCH_PATH = (
     / "pixelle-video"
     / "patches"
     / "0011-render-talking-material-scenes.patch"
+)
+CONTINUOUS_PATCH_PATH = (
+    ROOT
+    / "deploy"
+    / "pixelle-video"
+    / "patches"
+    / "0012-preserve-continuous-narration.patch"
 )
 FIXTURE_PATH = (
     ROOT
@@ -76,8 +83,20 @@ def _install_import_stubs(monkeypatch):
         "pixelle_video.services.caption_cues": _module(
             "pixelle_video.services.caption_cues",
             build_caption_timeline=lambda *_args, **_kwargs: [],
+            build_proportional_caption_timeline=lambda cues, duration: [
+                {
+                    **cue,
+                    "start_time": index * duration / len(cues),
+                    "end_time": (index + 1) * duration / len(cues),
+                    "duration": duration / len(cues),
+                }
+                for index, cue in enumerate(cues)
+            ],
             caption_timeline_duration=lambda *_args, **_kwargs: 0.0,
             split_caption_text=lambda text: [text],
+        ),
+        "pixelle_video.services.video": _module(
+            "pixelle_video.services.video", VideoService=object
         ),
         "pixelle_video.services.media_retry": _module(
             "pixelle_video.services.media_retry",
@@ -93,13 +112,17 @@ def _install_import_stubs(monkeypatch):
             "pixelle_video.services.talking_material",
             build_talking_windows=lambda *_args, **_kwargs: [],
         ),
+        "pixelle_video.utils.os_util": _module(
+            "pixelle_video.utils.os_util",
+            get_task_frame_path=lambda task_id, index, kind: f"{task_id}-{index}-{kind}.mp3",
+        ),
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
 
-def _frame_patch_text() -> str:
-    patch = PATCH_PATH.read_text(encoding="utf-8")
+def _frame_patch_text(patch_path: Path) -> str:
+    patch = patch_path.read_text(encoding="utf-8")
     start = patch.index("diff --git a/pixelle_video/services/frame_processor.py")
     try:
         end = patch.index("\ndiff --git ", start + 1)
@@ -126,22 +149,25 @@ def _extract_frame_processor_fixture(source_root: Path) -> None:
 def load_patched_frame_processor(tmp_path: Path, monkeypatch):
     source_root = tmp_path / "patched"
     _extract_frame_processor_fixture(source_root)
-    patch_path = tmp_path / "frame_processor.patch"
-    patch_path.write_text(_frame_patch_text(), encoding="utf-8", newline="\n")
-    completed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(source_root),
-            "apply",
-            "--unidiff-zero",
-            str(patch_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr or completed.stdout
+    for index, source_patch in enumerate((PATCH_PATH, CONTINUOUS_PATCH_PATH), 1):
+        patch_path = tmp_path / f"frame_processor-{index}.patch"
+        patch_path.write_text(
+            _frame_patch_text(source_patch), encoding="utf-8", newline="\n"
+        )
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source_root),
+                "apply",
+                "--unidiff-zero",
+                str(patch_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr or completed.stdout
 
     _install_import_stubs(monkeypatch)
     module_path = source_root / "pixelle_video" / "services" / "frame_processor.py"
@@ -196,6 +222,39 @@ def _config():
         media_width=1080,
         media_height=1920,
     )
+
+
+def test_display_cues_generate_one_continuous_tts_track(tmp_path, monkeypatch):
+    module = load_patched_frame_processor(tmp_path, monkeypatch)
+    processor = module.FrameProcessor(SimpleNamespace())
+    full_audio = str(tmp_path / "full.mp3")
+    processor._generate_audio_text = AsyncMock(return_value=full_audio)
+    processor._get_audio_duration_strict = AsyncMock(return_value=4.0)
+    processor._extract_audio_clip = Mock(side_effect=lambda _audio, _start, _duration, output: output)
+    frame = SimpleNamespace(
+        index=0,
+        narration="第一句，第二句。",
+        audio_path=None,
+        duration=0.0,
+        caption_cues=[
+            SimpleNamespace(text="第一句，", audio_path=None, duration=0.0,
+                            start_time=0.0, end_time=0.0),
+            SimpleNamespace(text="第二句。", audio_path=None, duration=0.0,
+                            start_time=0.0, end_time=0.0),
+        ],
+    )
+
+    config = _config()
+    asyncio.run(processor._prepare_caption_audio(frame, config))
+
+    processor._generate_audio_text.assert_awaited_once_with(
+        frame.narration, "task-runtime-0-audio.mp3", 0, config
+    )
+    self_calls = processor._extract_audio_clip.call_args_list
+    assert len(self_calls) == 2
+    assert all(call.args[0] == full_audio for call in self_calls)
+    assert frame.audio_path == full_audio
+    assert frame.duration == 4.0
 
 
 @pytest.mark.parametrize("cue_count", [1, 2])
