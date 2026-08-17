@@ -1025,6 +1025,37 @@ cleanup
         self.assertIn('"message": frame.talking_warning', patch)
         self.assertIn('if frame.talking_warning', patch)
 
+    def test_continuous_narration_patch_is_applied_after_talking_scenes(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0012-preserve-continuous-narration.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("CONTINUOUS_NARRATION_PATCH=", installer)
+        self.assertIn(
+            'apply --unidiff-zero --check "${CONTINUOUS_NARRATION_PATCH}"',
+            installer,
+        )
+        self.assertGreater(
+            installer.index('"${CONTINUOUS_NARRATION_PATCH}"'),
+            installer.index('"${TALKING_SCENES_PATCH}"'),
+        )
+        self.assertIn("caption_cues require one scene audio_asset_id", patch)
+        self.assertIn("build_proportional_caption_timeline", patch)
+        self.assertIn("_extract_audio_clip", patch)
+
+        for hunk in parse_patch_hunks(patch):
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
     def test_talking_scene_patch_applies_after_talking_asset_patch(self):
         asset_patch = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
         scene_patch = ROOT / "deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"

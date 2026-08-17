@@ -127,6 +127,37 @@ def build_caption_timeline(cues: list[dict], durations: list[float]) -> list[dic
     return timed
 
 
+def build_proportional_caption_timeline(
+    cues: list[dict], total_duration: float
+) -> list[dict]:
+    """Distribute one continuous narration track across display-only cues."""
+    if not cues:
+        raise ValueError("caption cues must not be empty")
+    if not isinstance(total_duration, (int, float)) or total_duration <= 0:
+        raise ValueError("continuous narration duration must be positive")
+    weights = []
+    for cue in cues:
+        text = cue.get("text") if isinstance(cue, dict) else None
+        validate_caption_cue_text(text)
+        weights.append(max(1, display_units(text.strip())))
+    total_weight = sum(weights)
+    cursor = 0.0
+    timed: list[dict] = []
+    for index, (cue, weight) in enumerate(zip(cues, weights)):
+        end_time = (
+            float(total_duration)
+            if index == len(cues) - 1
+            else float(total_duration) * sum(weights[: index + 1]) / total_weight
+        )
+        item = dict(cue)
+        item["start_time"] = cursor
+        item["end_time"] = end_time
+        item["duration"] = end_time - cursor
+        timed.append(item)
+        cursor = end_time
+    return timed
+
+
 def caption_timeline_duration(cues: list[dict]) -> float:
     if not cues:
         raise ValueError("caption timeline must not be empty")
