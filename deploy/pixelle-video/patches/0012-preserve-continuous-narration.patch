@@ -2,81 +2,47 @@ diff --git a/api/schemas/video.py b/api/schemas/video.py
 index 2ce303e..6769fd9 100644
 --- a/api/schemas/video.py
 +++ b/api/schemas/video.py
-@@ -24,18 +24,31 @@ class NarrationCue(BaseModel):
-     audio_asset_id: str = Field(..., pattern=r"^audio_[0-9a-f]{32}$")
- 
- 
+@@ -26,0 +27,4 @@ class NarrationCue(BaseModel):
 +class NarrationCaptionCue(BaseModel):
 +    text: str = Field(..., min_length=1, max_length=1000)
 +
 +
- class NarrationSegment(BaseModel):
-     text: str = Field(..., min_length=1, max_length=1000)
-     audio_asset_id: Optional[str] = Field(None, pattern=r"^audio_[0-9a-f]{32}$")
-     cues: Optional[list[NarrationCue]] = Field(None, min_length=1, max_length=20)
+@@ -30,0 +35,3 @@ class NarrationSegment(BaseModel):
 +    caption_cues: Optional[list[NarrationCaptionCue]] = Field(
 +        None, min_length=1, max_length=20
 +    )
- 
-     @model_validator(mode="after")
-     def validate_audio_shape(self):
+@@ -34 +41,4 @@ class NarrationSegment(BaseModel):
 -        if bool(self.audio_asset_id) == bool(self.cues):
 +        if self.caption_cues:
 +            if not self.audio_asset_id or self.cues:
 +                raise ValueError("caption_cues require one scene audio_asset_id")
 +        elif bool(self.audio_asset_id) == bool(self.cues):
-             raise ValueError("exactly one of audio_asset_id or cues is required")
-         for cue in self.cues or []:
-             validate_caption_cue_text(cue.text)
+@@ -38 +48,4 @@ class NarrationSegment(BaseModel):
 -        if self.cues and "".join(cue.text for cue in self.cues) != self.text:
 +        for cue in self.caption_cues or []:
 +            validate_caption_cue_text(cue.text)
 +        text_cues = self.caption_cues or self.cues
 +        if text_cues and "".join(cue.text for cue in text_cues) != self.text:
-             raise ValueError("narration cue text must preserve the scene text")
-         return self
- 
 diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
 index a1336f9..63f086d 100644
 --- a/pixelle_video/pipelines/standard.py
 +++ b/pixelle_video/pipelines/standard.py
-@@ -326,9 +326,10 @@ class StandardPipeline(LinearVideoPipeline):
-         external_segments = ctx.params.get("external_narration_segments") or []
-         for i, (narration, image_prompt) in enumerate(zip(ctx.narrations, ctx.image_prompts)):
-             if external_segments:
+@@ -329 +329,2 @@ class StandardPipeline(LinearVideoPipeline):
 -                cue_values = external_segments[i]["cues"]
 +                external_segment = external_segments[i]
 +                cue_values = external_segment["cues"]
-                 caption_cues = [
+@@ -331 +332 @@ class StandardPipeline(LinearVideoPipeline):
 -                    CaptionCue(text=cue["text"], audio_path=cue["audio_path"])
 +                    CaptionCue(text=cue["text"], audio_path=cue.get("audio_path"))
-                     for cue in cue_values
-                 ]
-             else:
-@@ -341,6 +342,7 @@ class StandardPipeline(LinearVideoPipeline):
-                 narration=narration,
-                 image_prompt=image_prompt,
-                 scene_id=f"scene_{i + 1:02d}",
+@@ -343,0 +345 @@ class StandardPipeline(LinearVideoPipeline):
 +                audio_path=(external_segment.get("audio_path") if external_segments else None),
-                 caption_cues=caption_cues,
-                 created_at=datetime.now()
-             )
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
-index 6e43109..769566f 100644
+index 5931412..29bbc45 100644
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
-@@ -33,6 +33,7 @@ from pixelle_video.models.progress import ProgressEvent
- from pixelle_video.models.storyboard import CaptionCue, Storyboard, StoryboardFrame, StoryboardConfig
- from pixelle_video.services.caption_cues import (
-     build_caption_timeline,
+@@ -35,0 +36 @@ from pixelle_video.services.caption_cues import (
 +    build_proportional_caption_timeline,
-     caption_timeline_duration,
-     split_caption_text,
- )
-@@ -422,6 +423,41 @@ class FrameProcessor:
-                 frame.caption_cues[0].audio_path = frame.audio_path
- 
-         base_audio_path = Path(get_task_frame_path(config.task_id, frame.index, "audio"))
+@@ -473,0 +475,35 @@ class FrameProcessor:
 +        cue_has_audio = [bool(cue.audio_path) for cue in frame.caption_cues]
 +        if any(cue_has_audio) and not all(cue_has_audio):
 +            raise ValueError("caption cue audio must be either complete or display-only")
@@ -112,13 +78,7 @@ index 6e43109..769566f 100644
 +            frame.duration = total_duration
 +            return
 +
-         durations = []
-         for cue_index, cue in enumerate(frame.caption_cues):
-             if not cue.audio_path:
-@@ -458,6 +494,29 @@ class FrameProcessor:
-             frame.audio_path = str(base_audio_path)
-         frame.duration = caption_timeline_duration(timeline)
- 
+@@ -509,0 +546,23 @@ class FrameProcessor:
 +    @staticmethod
 +    def _extract_audio_clip(
 +        audio_path: str,
@@ -142,6 +102,3 @@ index 6e43109..769566f 100644
 +            raise RuntimeError(f"Failed to slice continuous narration audio: {details}") from exc
 +        return output_path
 +
-     async def _generate_audio_text(
-         self,
-         text: str,
