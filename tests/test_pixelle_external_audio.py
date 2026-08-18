@@ -141,6 +141,24 @@ class ExternalAudioRegistryTests(unittest.TestCase):
         self.assertEqual(0, self.module.release_audio_assets([first["asset_id"], second["asset_id"]]))
         self.assertFalse(paths[0].exists())
 
+    def test_audio_asset_lease_limit_matches_20_scenes_of_100_legacy_cues(self):
+        limit = self.module.MAX_AUDIO_ASSETS_PER_TASK
+        asset_ids = [f"audio_{index:032x}" for index in range(limit)]
+        active_assets = [
+            (Path(f"/tmp/{index}.mp3"), Path(f"/tmp/{index}.json"), {})
+            for index in range(limit)
+        ]
+
+        with patch.object(self.module, "_active_asset", side_effect=active_assets), \
+             patch.object(self.module, "_write_metadata"):
+            paths = self.module.lease_audio_assets(asset_ids, "task-max-assets")
+
+        self.assertEqual(limit, len(paths))
+        with self.assertRaisesRegex(ValueError, "invalid audio asset list"):
+            self.module.lease_audio_assets(
+                asset_ids + [f"audio_{limit:032x}"], "task-too-many-assets"
+            )
+
     def test_nested_cues_are_leased_in_scene_and_cue_order(self):
         first = self.store("nested-first")
         second = self.store("nested-second")
@@ -204,6 +222,75 @@ class ExternalAudioRegistryTests(unittest.TestCase):
             [{"text": "第一句，"}, {"text": "第二句。"}],
             resolved[0]["cues"],
         )
+
+    def test_continuous_caption_cue_limit_accepts_100_and_rejects_101(self):
+        accepted = self.store("continuous-limit")
+        cues = [{"text": "一"} for _ in range(self.module.MAX_CAPTION_CUES)]
+
+        asset_ids, resolved = self.module.lease_narration_segments(
+            [{
+                "text": "一" * self.module.MAX_CAPTION_CUES,
+                "audio_asset_id": accepted["asset_id"],
+                "caption_cues": cues,
+            }],
+            "task-continuous-limit",
+        )
+
+        self.assertEqual([accepted["asset_id"]], asset_ids)
+        self.assertEqual(self.module.MAX_CAPTION_CUES, len(resolved[0]["cues"]))
+        with self.assertRaisesRegex(ValueError, "1 to 100 cues"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": "一" * (self.module.MAX_CAPTION_CUES + 1),
+                    "audio_asset_id": "audio_" + "f" * 32,
+                    "caption_cues": cues + [{"text": "一"}],
+                }],
+                "task-continuous-over-limit",
+            )
+
+    def test_legacy_cue_limit_and_maximum_multiscene_asset_count(self):
+        per_scene = self.module.MAX_CAPTION_CUES
+        scene_count = self.module.MAX_NARRATION_SEGMENTS
+        asset_ids = [f"audio_{index:032x}" for index in range(per_scene * scene_count)]
+        segments = []
+        for scene_index in range(scene_count):
+            start = scene_index * per_scene
+            segments.append({
+                "text": "一" * per_scene,
+                "cues": [
+                    {"text": "一", "audio_asset_id": asset_id}
+                    for asset_id in asset_ids[start:start + per_scene]
+                ],
+            })
+
+        leased_paths = [Path(f"/tmp/{index}.mp3") for index in range(len(asset_ids))]
+        with patch.object(
+            self.module, "lease_audio_assets", return_value=leased_paths
+        ) as lease:
+            leased_ids, resolved = self.module.lease_narration_segments(
+                segments, "task-legacy-maximum"
+            )
+
+        self.assertEqual(self.module.MAX_AUDIO_ASSETS_PER_TASK, len(leased_ids))
+        self.assertEqual(scene_count, len(resolved))
+        lease.assert_called_once_with(asset_ids, "task-legacy-maximum")
+
+        with self.assertRaisesRegex(ValueError, "1 to 100 cues"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": "一" * (per_scene + 1),
+                    "cues": [
+                        {"text": "一", "audio_asset_id": f"audio_{index:032x}"}
+                        for index in range(per_scene + 1)
+                    ],
+                }],
+                "task-legacy-over-limit",
+            )
+
+        with self.assertRaisesRegex(ValueError, "at most 20 segments"):
+            self.module.lease_narration_segments(
+                segments + [segments[0]], "task-scene-over-limit"
+            )
 
     def test_nested_cue_rejects_text_wider_than_single_line(self):
         record = self.store("nested-overlong")
