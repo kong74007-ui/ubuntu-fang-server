@@ -562,7 +562,7 @@ cleanup
         renderer = load_renderer()
         rendered = renderer.render(
             {
-                "PIXELLE_LLM_API_KEY": "glm-secret",
+                "PIXELLE_GLM_API_KEY": "glm-secret",
                 "OPENAI_API_KEY": "openai-secret",
             },
             {"RUNNINGHUB_API_KEY": "rh-secret"},
@@ -580,7 +580,7 @@ cleanup
     def test_config_renderer_allows_glm_without_openai_credentials(self):
         renderer = load_renderer()
         rendered = renderer.render(
-            {"PIXELLE_LLM_API_KEY": "glm-only-secret"},
+            {"PIXELLE_GLM_API_KEY": "glm-only-secret"},
             {"RUNNINGHUB_API_KEY": "rh-secret"},
         )
 
@@ -591,6 +591,33 @@ cleanup
             '    base_url: "https://api.openai.com/v1"',
             rendered,
         )
+
+    def test_config_renderer_keeps_legacy_model_override_on_openai_fallback(self):
+        renderer = load_renderer()
+        rendered = renderer.render(
+            {
+                "OPENAI_API_KEY": "openai-secret",
+                "PIXELLE_LLM_MODEL": "gpt-4.1-mini",
+            },
+            {"RUNNINGHUB_API_KEY": "rh-secret"},
+        )
+
+        self.assertIn('base_url: "https://api.openai.com/v1"', rendered)
+        self.assertIn('model: "gpt-4.1-mini"', rendered)
+
+    def test_config_renderer_rejects_partial_glm_config_without_glm_key(self):
+        renderer = load_renderer()
+        for partial in (
+            {"PIXELLE_GLM_BASE": "https://open.bigmodel.cn/api/paas/v4"},
+            {"PIXELLE_GLM_MODEL": "glm-4.7-flash"},
+        ):
+            with self.subTest(partial=partial), self.assertRaisesRegex(
+                ValueError, "PIXELLE_GLM_API_KEY"
+            ):
+                renderer.render(
+                    {"OPENAI_API_KEY": "openai-secret", **partial},
+                    {"RUNNINGHUB_API_KEY": "rh-secret"},
+                )
 
     def test_rendered_media_prompts_default_people_to_chinese_or_east_asian(self):
         renderer = load_renderer()

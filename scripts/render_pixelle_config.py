@@ -31,21 +31,25 @@ def quoted(value: str) -> str:
 
 
 def render(llm: dict[str, str], runninghub: dict[str, str]) -> str:
-    glm_key = llm.get("PIXELLE_LLM_API_KEY", "").strip()
+    glm_key = llm.get("PIXELLE_GLM_API_KEY", "").strip()
+    glm_base = llm.get("PIXELLE_GLM_BASE", "").strip()
+    glm_model = llm.get("PIXELLE_GLM_MODEL", "").strip()
     openai_key = llm.get("OPENAI_API_KEY", "").strip()
+    if not glm_key and (glm_base or glm_model):
+        raise ValueError(
+            "PIXELLE_GLM_API_KEY is required when PIXELLE_GLM_BASE or "
+            "PIXELLE_GLM_MODEL is configured"
+        )
     api_key = glm_key or openai_key
     runninghub_key = runninghub.get("RUNNINGHUB_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("PIXELLE_LLM_API_KEY or OPENAI_API_KEY is missing")
+        raise ValueError("PIXELLE_GLM_API_KEY or OPENAI_API_KEY is missing")
     if not runninghub_key:
         raise ValueError("RUNNINGHUB_API_KEY is missing")
 
     if glm_key:
-        base_url = (
-            llm.get("PIXELLE_LLM_BASE", "").strip()
-            or "https://open.bigmodel.cn/api/paas/v4"
-        )
-        model = llm.get("PIXELLE_LLM_MODEL", "").strip() or "glm-4.7-flash"
+        base_url = glm_base or "https://open.bigmodel.cn/api/paas/v4"
+        model = glm_model or "glm-4.7-flash"
     else:
         base_url = llm.get("OPENAI_BASE", "").strip() or "https://api.openai.com/v1"
         model = llm.get("PIXELLE_LLM_MODEL", "").strip() or "gpt-4o-mini"

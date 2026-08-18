@@ -30,15 +30,16 @@ The text/storyboard LLM uses the dedicated values below when present. Keep the
 key only in the root-readable LLM env file; never place it in this repository:
 
 ```bash
-PIXELLE_LLM_API_KEY=replace-with-zhipu-key
-PIXELLE_LLM_BASE=https://open.bigmodel.cn/api/paas/v4
-PIXELLE_LLM_MODEL=glm-4.7-flash
+PIXELLE_GLM_API_KEY=replace-with-zhipu-key
+PIXELLE_GLM_BASE=https://open.bigmodel.cn/api/paas/v4
+PIXELLE_GLM_MODEL=glm-4.7-flash
 ```
 
 These values affect only Pixelle text and storyboard generation. Existing
 `OPENAI_API_KEY` / `OPENAI_BASE` values remain available to the separate OpenAI
 provider and are also the backward-compatible LLM fallback when the dedicated
-Pixelle key is absent.
+GLM key is absent. The legacy `PIXELLE_LLM_MODEL` override applies only to that
+OpenAI fallback. A GLM base or model without `PIXELLE_GLM_API_KEY` fails closed.
 
 Run from a clean checkout of the exact merged commit:
 
