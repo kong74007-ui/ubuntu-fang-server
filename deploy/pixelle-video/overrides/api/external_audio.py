@@ -10,12 +10,14 @@ import time
 import uuid
 from pathlib import Path
 
-from pixelle_video.services.caption_cues import validate_caption_cue_text
+from pixelle_video.services.caption_cues import MAX_CAPTION_CUES, validate_caption_cue_text
 
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 AUDIO_TTL_SECONDS = 24 * 60 * 60
 CLEANUP_INTERVAL_SECONDS = 15 * 60
+MAX_NARRATION_SEGMENTS = 20
+MAX_AUDIO_ASSETS_PER_TASK = MAX_NARRATION_SEGMENTS * MAX_CAPTION_CUES
 EXTERNAL_AUDIO_ROOT = Path(os.environ.get("PIXELLE_EXTERNAL_AUDIO_ROOT", "data/external_audio"))
 ASSET_ID_RE = re.compile(r"^audio_[0-9a-f]{32}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -172,7 +174,11 @@ def resolve_audio_asset(asset_id: str) -> Path:
 def lease_audio_assets(asset_ids: list[str], task_id: str) -> list[Path]:
     if not TASK_ID_RE.fullmatch(str(task_id or "")):
         raise ValueError("invalid task id")
-    if not asset_ids or len(asset_ids) > 400 or len(set(asset_ids)) != len(asset_ids):
+    if (
+        not asset_ids
+        or len(asset_ids) > MAX_AUDIO_ASSETS_PER_TASK
+        or len(set(asset_ids)) != len(asset_ids)
+    ):
         raise ValueError("invalid audio asset list")
 
     with _LOCK:
@@ -208,8 +214,13 @@ def _optional_segment_value(segment, name: str, default=None):
 
 
 def _normalize_narration_segments(segments) -> list[dict]:
+    segments = list(segments or [])
+    if len(segments) > MAX_NARRATION_SEGMENTS:
+        raise ValueError(
+            f"narration requires at most {MAX_NARRATION_SEGMENTS} segments"
+        )
     normalized = []
-    for segment in segments or []:
+    for segment in segments:
         scene_text = _segment_value(segment, "text")
         raw_cues = _optional_segment_value(segment, "cues")
         caption_cues = _optional_segment_value(segment, "caption_cues")
@@ -242,8 +253,10 @@ def _normalize_narration_segments(segments) -> list[dict]:
                 "audio_asset_id": scene_audio_asset_id,
             }]
             normalized_segment = {"text": scene_text, "cues": cues}
-        if not cues or len(cues) > 20:
-            raise ValueError("each narration segment requires 1 to 20 cues")
+        if not cues or len(cues) > MAX_CAPTION_CUES:
+            raise ValueError(
+                f"each narration segment requires 1 to {MAX_CAPTION_CUES} cues"
+            )
         if "".join(cue["text"] for cue in cues) != scene_text:
             raise ValueError("narration cue text must preserve the scene text")
         normalized.append(normalized_segment)

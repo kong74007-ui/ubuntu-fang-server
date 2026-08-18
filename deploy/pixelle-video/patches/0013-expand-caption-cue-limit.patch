@@ -1,0 +1,9 @@
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -34 +34 @@ class NarrationSegment(BaseModel):
+-    cues: Optional[list[NarrationCue]] = Field(None, min_length=1, max_length=20)
++    cues: Optional[list[NarrationCue]] = Field(None, min_length=1, max_length=100)
+@@ -36 +36 @@ class NarrationSegment(BaseModel):
+-        None, min_length=1, max_length=20
++        None, min_length=1, max_length=100
