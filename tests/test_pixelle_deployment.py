@@ -1056,6 +1056,39 @@ cleanup
                 self.assertEqual(hunk["old_count"], hunk["old_lines"])
                 self.assertEqual(hunk["new_count"], hunk["new_lines"])
 
+    def test_caption_cue_limit_patch_is_applied_after_continuous_narration(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0013-expand-caption-cue-limit.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CAPTION_CUE_LIMIT_PATCH=", installer)
+        self.assertIn(
+            'apply --unidiff-zero --check "${CAPTION_CUE_LIMIT_PATCH}"',
+            installer,
+        )
+        self.assertGreater(
+            installer.index('"${CAPTION_CUE_LIMIT_PATCH}"'),
+            installer.index('"${CONTINUOUS_NARRATION_PATCH}"'),
+        )
+        self.assertEqual(2, patch.count("max_length=100"))
+        added_lines = "\n".join(
+            line for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("max_length=20", added_lines)
+
+        for hunk in parse_patch_hunks(patch):
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
     def test_talking_scene_patch_applies_after_talking_asset_patch(self):
         asset_patch = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
         scene_patch = ROOT / "deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"

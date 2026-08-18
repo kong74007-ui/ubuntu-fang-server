@@ -76,9 +76,9 @@ class CaptionSplitterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.module.split_caption_text("测试", max_units=0)
 
-    def test_rejects_more_than_twenty_cues(self):
-        with self.assertRaises(ValueError):
-            self.module.split_caption_text("一" * 300)
+    def test_accepts_more_than_twenty_cues_for_long_scenes(self):
+        cues = self.assert_lossless_and_single_line("一" * 300)
+        self.assertEqual(len(cues), 22)
 
     def test_greedily_packs_short_english_and_cjk_fragments(self):
         for text in (
@@ -91,11 +91,11 @@ class CaptionSplitterTests(unittest.TestCase):
                 cues = self.assert_lossless_and_single_line(text)
                 self.assertLessEqual(len(cues), 20)
 
-    def test_twenty_cue_boundary_is_enforced_after_packing(self):
-        accepted = self.module.split_caption_text("一，" * 140)
-        self.assertEqual(len(accepted), 20)
+    def test_one_hundred_cue_boundary_is_enforced_after_packing(self):
+        accepted = self.module.split_caption_text("一，" * 700)
+        self.assertEqual(len(accepted), 100)
         with self.assertRaises(ValueError):
-            self.module.split_caption_text("一，" * 141)
+            self.module.split_caption_text("一，" * 701)
 
     def test_nested_cue_width_contract_handles_cjk_and_ascii_boundaries(self):
         self.assertEqual("一" * 14, self.module.validate_caption_cue_text("一" * 14))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 MAX_CAPTION_UNITS = 28
-MAX_CAPTION_CUES = 20
+MAX_CAPTION_CUES = 100
 _SENTENCE_BOUNDARIES = frozenset("。！？!?；;：:\n")
 _CLAUSE_BOUNDARIES = frozenset("，,、 ")
 
