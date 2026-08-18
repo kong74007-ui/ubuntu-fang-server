@@ -558,6 +558,40 @@ cleanup
         with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
             renderer.render({}, {"RUNNINGHUB_API_KEY": "rh-secret"})
 
+    def test_config_renderer_prefers_dedicated_glm_llm_without_reusing_its_key(self):
+        renderer = load_renderer()
+        rendered = renderer.render(
+            {
+                "PIXELLE_LLM_API_KEY": "glm-secret",
+                "OPENAI_API_KEY": "openai-secret",
+            },
+            {"RUNNINGHUB_API_KEY": "rh-secret"},
+        )
+
+        self.assertIn('api_key: "glm-secret"', rendered)
+        self.assertIn('base_url: "https://open.bigmodel.cn/api/paas/v4"', rendered)
+        self.assertIn('model: "glm-4.7-flash"', rendered)
+        self.assertIn(
+            'openai:\n    api_key: "openai-secret"\n'
+            '    base_url: "https://api.openai.com/v1"',
+            rendered,
+        )
+
+    def test_config_renderer_allows_glm_without_openai_credentials(self):
+        renderer = load_renderer()
+        rendered = renderer.render(
+            {"PIXELLE_LLM_API_KEY": "glm-only-secret"},
+            {"RUNNINGHUB_API_KEY": "rh-secret"},
+        )
+
+        self.assertIn('api_key: "glm-only-secret"', rendered)
+        self.assertIn('model: "glm-4.7-flash"', rendered)
+        self.assertIn(
+            'openai:\n    api_key: ""\n'
+            '    base_url: "https://api.openai.com/v1"',
+            rendered,
+        )
+
     def test_rendered_media_prompts_default_people_to_chinese_or_east_asian(self):
         renderer = load_renderer()
         rendered = renderer.render(
