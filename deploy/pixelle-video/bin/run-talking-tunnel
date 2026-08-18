@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_TALKING_SSH_TARGET:?missing PIXELLE_TALKING_SSH_TARGET}"
+: "${PIXELLE_TALKING_SSH_KEY:?missing PIXELLE_TALKING_SSH_KEY}"
+: "${PIXELLE_TALKING_SSH_KNOWN_HOSTS:?missing PIXELLE_TALKING_SSH_KNOWN_HOSTS}"
+
+LOCAL_PORT="${PIXELLE_TALKING_LOCAL_PORT:-8097}"
+REMOTE_HOST="${PIXELLE_TALKING_REMOTE_HOST:-127.0.0.1}"
+REMOTE_PORT="${PIXELLE_TALKING_REMOTE_PORT:-8096}"
+
+if [[ ! "${PIXELLE_TALKING_SSH_TARGET}" =~ ^[a-z_][a-z0-9_-]*@[A-Za-z0-9.-]+$ ]]; then
+  echo "invalid PIXELLE_TALKING_SSH_TARGET" >&2
+  exit 2
+fi
+if [[ ! "${LOCAL_PORT}" =~ ^[0-9]+$ ]] || (( LOCAL_PORT < 1024 || LOCAL_PORT > 65535 )); then
+  echo "invalid PIXELLE_TALKING_LOCAL_PORT" >&2
+  exit 2
+fi
+if [[ "${REMOTE_HOST}" != "127.0.0.1" ]]; then
+  echo "PIXELLE_TALKING_REMOTE_HOST must be 127.0.0.1" >&2
+  exit 2
+fi
+if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]] || (( REMOTE_PORT < 1024 || REMOTE_PORT > 65535 )); then
+  echo "invalid PIXELLE_TALKING_REMOTE_PORT" >&2
+  exit 2
+fi
+for path in "${PIXELLE_TALKING_SSH_KEY}" "${PIXELLE_TALKING_SSH_KNOWN_HOSTS}"; do
+  if [[ ! -f "${path}" || -L "${path}" || ! -r "${path}" ]]; then
+    echo "talking tunnel credential file is missing, unreadable, or a symlink" >&2
+    exit 2
+  fi
+done
+
+exec /usr/bin/ssh -F /dev/null -NT \
+  -i "${PIXELLE_TALKING_SSH_KEY}" \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  -o ExitOnForwardFailure=yes \
+  -o PermitLocalCommand=no \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${PIXELLE_TALKING_SSH_KNOWN_HOSTS}" \
+  -L "127.0.0.1:${LOCAL_PORT}:${REMOTE_HOST}:${REMOTE_PORT}" \
+  "${PIXELLE_TALKING_SSH_TARGET}"

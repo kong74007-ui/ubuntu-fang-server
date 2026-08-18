@@ -18,6 +18,7 @@ from typing import Callable
 
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8096/api/internal/pixelle/talking-clip"
+BRIDGE_PATH = "/api/internal/pixelle/talking-clip"
 SOCKET_TIMEOUT_SECONDS = 20 * 60
 MAX_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = (2, 5)
@@ -68,23 +69,36 @@ class TalkingClient:
     def __init__(
         self,
         *,
-        endpoint: str = DEFAULT_ENDPOINT,
+        endpoint: str | None = None,
         token: str | None = None,
         opener: Callable | None = None,
         sleeper: Callable | None = None,
         process_runner: Callable | None = None,
         ffmpeg_path: str = "ffmpeg",
     ) -> None:
-        parsed = urllib.parse.urlsplit(endpoint)
+        resolved_endpoint = str(
+            endpoint
+            if endpoint is not None
+            else os.environ.get("PIXELLE_TALKING_ENDPOINT", DEFAULT_ENDPOINT)
+        ).strip()
+        parsed = urllib.parse.urlsplit(resolved_endpoint)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
             raise ValueError("talking bridge endpoint must be loopback HTTP")
+        try:
+            parsed.port
+        except ValueError as error:
+            raise ValueError("talking bridge endpoint has an invalid port") from error
+        if parsed.path != BRIDGE_PATH:
+            raise ValueError("talking bridge endpoint has an invalid path")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("talking bridge endpoint must not contain credentials or parameters")
         internal_token = str(
             token if token is not None else os.environ.get("PIXELLE_TALKING_INTERNAL_TOKEN", "")
         ).strip()
         if not internal_token:
             raise ValueError("talking bridge internal token is required")
 
-        self.endpoint = endpoint
+        self.endpoint = resolved_endpoint
         self.token = internal_token
         self._opener = opener or urllib.request.urlopen
         self._sleeper = sleeper or asyncio.sleep

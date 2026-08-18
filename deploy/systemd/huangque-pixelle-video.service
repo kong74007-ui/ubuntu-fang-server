@@ -1,6 +1,6 @@
 [Unit]
 Description=Huangque Pixelle video generation API
-After=network-online.target mihomo-new.service
+After=network-online.target mihomo-new.service huangque-pixelle-talking-tunnel.service
 Wants=network-online.target
 Requires=mihomo-new.service
 
