@@ -31,15 +31,29 @@ def quoted(value: str) -> str:
 
 
 def render(llm: dict[str, str], runninghub: dict[str, str]) -> str:
-    api_key = llm.get("OPENAI_API_KEY", "").strip()
+    glm_key = llm.get("PIXELLE_GLM_API_KEY", "").strip()
+    glm_base = llm.get("PIXELLE_GLM_BASE", "").strip()
+    glm_model = llm.get("PIXELLE_GLM_MODEL", "").strip()
+    openai_key = llm.get("OPENAI_API_KEY", "").strip()
+    if not glm_key and (glm_base or glm_model):
+        raise ValueError(
+            "PIXELLE_GLM_API_KEY is required when PIXELLE_GLM_BASE or "
+            "PIXELLE_GLM_MODEL is configured"
+        )
+    api_key = glm_key or openai_key
     runninghub_key = runninghub.get("RUNNINGHUB_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("OPENAI_API_KEY is missing")
+        raise ValueError("PIXELLE_GLM_API_KEY or OPENAI_API_KEY is missing")
     if not runninghub_key:
         raise ValueError("RUNNINGHUB_API_KEY is missing")
 
-    base_url = llm.get("OPENAI_BASE", "").strip() or "https://api.openai.com/v1"
-    model = llm.get("PIXELLE_LLM_MODEL", "").strip() or "gpt-4o-mini"
+    if glm_key:
+        base_url = glm_base or "https://open.bigmodel.cn/api/paas/v4"
+        model = glm_model or "glm-4.7-flash"
+    else:
+        base_url = llm.get("OPENAI_BASE", "").strip() or "https://api.openai.com/v1"
+        model = llm.get("PIXELLE_LLM_MODEL", "").strip() or "gpt-4o-mini"
+    openai_base = llm.get("OPENAI_BASE", "").strip() or "https://api.openai.com/v1"
     people_context = (
         "When people appear, depict contemporary Chinese or East Asian people "
         "unless the user text explicitly specifies another ethnicity, nationality, or region."
@@ -64,8 +78,8 @@ api_providers:
     print_model_input: false
     local_proxy: ""
   openai:
-    api_key: {quoted(api_key)}
-    base_url: {quoted(base_url)}
+    api_key: {quoted(openai_key)}
+    base_url: {quoted(openai_base)}
     use_proxy: false
   dashscope:
     api_key: ""
