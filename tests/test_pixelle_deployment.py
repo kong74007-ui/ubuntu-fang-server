@@ -1152,6 +1152,32 @@ cleanup
                 self.assertEqual(hunk["old_count"], hunk["old_lines"])
                 self.assertEqual(hunk["new_count"], hunk["new_lines"])
 
+    def test_edge_tts_timing_patch_is_applied_after_caption_limit(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0014-align-edge-tts-caption-timing.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("EDGE_TTS_TIMING_PATCH=", installer)
+        self.assertIn('apply --check "${EDGE_TTS_TIMING_PATCH}"', installer)
+        self.assertGreater(
+            installer.index('"${EDGE_TTS_TIMING_PATCH}"'),
+            installer.index('"${CAPTION_CUE_LIMIT_PATCH}"'),
+        )
+        self.assertIn('chunk["type"] == "WordBoundary"', patch)
+        self.assertIn("build_word_aligned_caption_timeline", patch)
+
+        for hunk in parse_patch_hunks(patch):
+            with self.subTest(header=hunk["header"], line=hunk["lineno"]):
+                self.assertEqual(hunk["old_count"], hunk["old_lines"])
+                self.assertEqual(hunk["new_count"], hunk["new_lines"])
+
     def test_talking_scene_patch_applies_after_talking_asset_patch(self):
         asset_patch = ROOT / "deploy/pixelle-video/patches/0010-support-talking-material-assets.patch"
         scene_patch = ROOT / "deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"

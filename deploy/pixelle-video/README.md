@@ -120,10 +120,12 @@ A fixed-mode video request may provide one to 20 `narration_segments`. Legacy
 callers may keep sending one `audio_asset_id` per segment. For single-line
 caption rotation, a segment can instead contain one to 20 ordered `cues`, each
 with `text` and an uploaded `audio_asset_id`; cue text must concatenate exactly
-to the segment text. Public-voice jobs split and synthesize the same cue shape
-inside Pixelle. Cue timing comes from the probed audio duration, while the
-segment still generates media only once and preserves the selected template's
-title, typography, colors, stroke, shadow, position, and non-caption motion.
+to the segment text. Public-voice jobs synthesize one continuous Edge TTS track
+and map caption changes to Edge's emitted word-boundary timestamps. If timing
+metadata is absent or does not match the narration, rendering falls back to the
+existing proportional timing. The segment still generates media only once and
+preserves the selected template's title, typography, colors, stroke, shadow,
+position, and non-caption motion.
 External narration cannot be combined with Pixelle TTS, voice, or
 reference-audio parameters. Assets are leased exclusively to one task,
 removed on every terminal task path, and removed after 24 hours as crash
@@ -216,6 +218,9 @@ longer. The talking path concatenates existing cue audio and never invokes a
 second TTS operation. Provider audio is stripped from every returned clip;
 the original narration and caption timeline remain authoritative for final
 composition, including caption end times and the user's selected speech rate.
+Provider video is re-encoded with regenerated timestamps and a zero-based PTS
+before cue slicing, preventing non-zero MP4 edit timelines from appearing as an
+initial blank frame in the final composition.
 
 Linux validation must run the POSIX mode-bit and real symlink security tests
 that are skipped on Windows. Local deterministic integration tests stub the

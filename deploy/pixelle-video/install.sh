@@ -34,6 +34,7 @@ TALKING_MATERIAL_ASSETS_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0010-
 TALKING_SCENES_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0011-render-talking-material-scenes.patch"
 CONTINUOUS_NARRATION_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0012-preserve-continuous-narration.patch"
 CAPTION_CUE_LIMIT_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0013-expand-caption-cue-limit.patch"
+EDGE_TTS_TIMING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0014-align-edge-tts-caption-timing.patch"
 TALKING_MATERIAL_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/talking_material.py"
 TALKING_CLIENT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/talking_client.py"
 PIXELLE_DISCONNECT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/disconnect.py"
@@ -173,7 +174,7 @@ if ! "${PROXY_READINESS_CHECK}"; then
   echo "${PROXY_SERVICE} is not ready on 127.0.0.1:7999" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${CONTINUOUS_NARRATION_PATCH}" || ! -s "${CAPTION_CUE_LIMIT_PATCH}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${CONTINUOUS_NARRATION_PATCH}" || ! -s "${CAPTION_CUE_LIMIT_PATCH}" || ! -s "${EDGE_TTS_TIMING_PATCH}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -239,6 +240,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${CONTINUOUS
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${CONTINUOUS_NARRATION_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${CAPTION_CUE_LIMIT_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${CAPTION_CUE_LIMIT_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --check "${EDGE_TTS_TIMING_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply "${EDGE_TTS_TIMING_PATCH}"
 install -o admin -g admin -m 0644 "${TASK_CAPACITY_OVERRIDE}" \
   "${RELEASE_DIR}/api/task_capacity.py"
 install -o admin -g admin -m 0644 "${PIXELLE_DISCONNECT_OVERRIDE}" \

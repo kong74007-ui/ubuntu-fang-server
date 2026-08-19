@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 
 MAX_CAPTION_UNITS = 28
 MAX_CAPTION_CUES = 100
@@ -207,6 +210,98 @@ def build_explicit_caption_timeline(
         timed.append(item)
         cursor = normalized_end
 
+    return timed
+
+
+def _spoken_units(text: object) -> list[str]:
+    return [char for char in str(text or "") if char.isalnum()]
+
+
+def load_tts_word_timing(audio_path: str) -> list[dict]:
+    """Consume Edge TTS word boundaries stored beside generated audio."""
+    timing_path = Path(f"{audio_path}.timing.json")
+    try:
+        payload = json.loads(timing_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    finally:
+        timing_path.unlink(missing_ok=True)
+    words = payload.get("words") if isinstance(payload, dict) else None
+    return list(words) if isinstance(words, list) else []
+
+
+def build_word_aligned_caption_timeline(
+    cues: list[dict], total_duration: float, words: list[dict]
+) -> list[dict]:
+    """Map display cue boundaries onto Edge TTS word-boundary timestamps."""
+    if not cues or not isinstance(total_duration, (int, float)) or total_duration <= 0:
+        raise ValueError("word-aligned caption timing requires cues and duration")
+
+    source_units: list[str] = []
+    cue_unit_counts: list[int] = []
+    for cue in cues:
+        text = cue.get("text") if isinstance(cue, dict) else None
+        validate_caption_cue_text(text)
+        units = _spoken_units(text)
+        if not units:
+            raise ValueError("caption cue has no spoken units")
+        source_units.extend(units)
+        cue_unit_counts.append(len(units))
+
+    recognized_units: list[str] = []
+    timed_units: list[dict] = []
+    for word in words or []:
+        text = word.get("text") if isinstance(word, dict) else None
+        start = word.get("start_time") if isinstance(word, dict) else None
+        end = word.get("end_time") if isinstance(word, dict) else None
+        if (
+            not isinstance(start, (int, float))
+            or isinstance(start, bool)
+            or not isinstance(end, (int, float))
+            or isinstance(end, bool)
+            or end <= start
+        ):
+            continue
+        units = _spoken_units(text)
+        if not units:
+            continue
+        span = float(end) - float(start)
+        for index, unit in enumerate(units):
+            recognized_units.append(unit)
+            timed_units.append(
+                {
+                    "start_time": float(start) + span * index / len(units),
+                    "end_time": float(start) + span * (index + 1) / len(units),
+                }
+            )
+
+    if recognized_units != source_units or len(timed_units) != len(source_units):
+        raise ValueError("TTS word timing does not match caption text")
+
+    boundaries = [0.0]
+    consumed = 0
+    for count in cue_unit_counts[:-1]:
+        consumed += count
+        boundary = max(
+            boundaries[-1],
+            min(float(total_duration), timed_units[consumed]["start_time"]),
+        )
+        if boundary <= boundaries[-1]:
+            raise ValueError("TTS word timing does not advance")
+        boundaries.append(boundary)
+    boundaries.append(float(total_duration))
+
+    timed: list[dict] = []
+    for index, cue in enumerate(cues):
+        start = boundaries[index]
+        end = boundaries[index + 1]
+        if end <= start:
+            raise ValueError("TTS word timing produced an empty caption cue")
+        item = dict(cue)
+        item["start_time"] = start
+        item["end_time"] = end
+        item["duration"] = end - start
+        timed.append(item)
     return timed
 
 
