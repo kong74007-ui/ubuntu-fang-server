@@ -158,6 +158,58 @@ def build_proportional_caption_timeline(
     return timed
 
 
+def build_explicit_caption_timeline(
+    cues: list[dict], total_duration: float, tolerance: float = 0.08
+) -> list[dict]:
+    """Validate caller-supplied speech timing for one continuous narration track."""
+    if not cues:
+        raise ValueError("caption cues must not be empty")
+    if not isinstance(total_duration, (int, float)) or total_duration <= 0:
+        raise ValueError("continuous narration duration must be positive")
+    if not isinstance(tolerance, (int, float)) or tolerance < 0:
+        raise ValueError("caption timing tolerance must not be negative")
+
+    duration = float(total_duration)
+    allowed_error = float(tolerance)
+    timed: list[dict] = []
+    cursor = 0.0
+    for index, cue in enumerate(cues):
+        text = cue.get("text") if isinstance(cue, dict) else None
+        validate_caption_cue_text(text)
+        raw_start = cue.get("start_time")
+        raw_end = cue.get("end_time")
+        if (
+            not isinstance(raw_start, (int, float))
+            or isinstance(raw_start, bool)
+            or not isinstance(raw_end, (int, float))
+            or isinstance(raw_end, bool)
+        ):
+            raise ValueError("caption cue timing must be numeric")
+        start = float(raw_start)
+        end = float(raw_end)
+        if start < 0 or end <= start:
+            raise ValueError("caption cue timing must be positive")
+        if abs(start - cursor) > allowed_error:
+            raise ValueError("caption cue timing must be continuous")
+        if index < len(cues) - 1 and end > duration + allowed_error:
+            raise ValueError("caption cue timing exceeds narration duration")
+        if index == len(cues) - 1 and abs(end - duration) > allowed_error:
+            raise ValueError("caption cue timing must cover narration duration")
+
+        normalized_start = cursor
+        normalized_end = duration if index == len(cues) - 1 else end
+        if normalized_end <= normalized_start:
+            raise ValueError("caption cue timing must advance")
+        item = dict(cue)
+        item["start_time"] = normalized_start
+        item["end_time"] = normalized_end
+        item["duration"] = normalized_end - normalized_start
+        timed.append(item)
+        cursor = normalized_end
+
+    return timed
+
+
 def caption_timeline_duration(cues: list[dict]) -> float:
     if not cues:
         raise ValueError("caption timeline must not be empty")

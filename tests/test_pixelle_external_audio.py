@@ -223,6 +223,53 @@ class ExternalAudioRegistryTests(unittest.TestCase):
             resolved[0]["cues"],
         )
 
+    def test_continuous_scene_preserves_explicit_caption_timing(self):
+        record = self.store("timed-continuous-scene")
+        cues = [
+            {"text": "第一句，", "start_time": 0.0, "end_time": 1.25},
+            {"text": "第二句。", "start_time": 1.25, "end_time": 3.5},
+        ]
+
+        _, resolved = self.module.lease_narration_segments(
+            [{
+                "text": "第一句，第二句。",
+                "audio_asset_id": record["asset_id"],
+                "caption_cues": cues,
+            }],
+            "task-timed-continuous",
+        )
+
+        self.assertEqual(cues, resolved[0]["cues"])
+
+    def test_continuous_scene_rejects_partial_caption_timing(self):
+        record = self.store("partial-timed-continuous-scene")
+
+        with self.assertRaisesRegex(ValueError, "provided together"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": "第一句，第二句。",
+                    "audio_asset_id": record["asset_id"],
+                    "caption_cues": [
+                        {"text": "第一句，", "start_time": 0.0},
+                        {"text": "第二句。"},
+                    ],
+                }],
+                "task-partial-timed-continuous",
+            )
+
+        with self.assertRaisesRegex(ValueError, "complete or omitted"):
+            self.module.lease_narration_segments(
+                [{
+                    "text": "第一句，第二句。",
+                    "audio_asset_id": record["asset_id"],
+                    "caption_cues": [
+                        {"text": "第一句，", "start_time": 0.0, "end_time": 1.0},
+                        {"text": "第二句。"},
+                    ],
+                }],
+                "task-mixed-timed-continuous",
+            )
+
     def test_continuous_caption_cue_limit_accepts_100_and_rejects_101(self):
         accepted = self.store("continuous-limit")
         cues = [{"text": "一"} for _ in range(self.module.MAX_CAPTION_CUES)]

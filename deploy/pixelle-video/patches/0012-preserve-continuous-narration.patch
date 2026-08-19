@@ -2,25 +2,44 @@ diff --git a/api/schemas/video.py b/api/schemas/video.py
 index 2ce303e..6769fd9 100644
 --- a/api/schemas/video.py
 +++ b/api/schemas/video.py
-@@ -26,0 +27,4 @@ class NarrationCue(BaseModel):
+@@ -26,0 +27,14 @@ class NarrationCue(BaseModel):
 +class NarrationCaptionCue(BaseModel):
 +    text: str = Field(..., min_length=1, max_length=1000)
++    start_time: Optional[float] = Field(None, ge=0)
++    end_time: Optional[float] = Field(None, gt=0)
++
++    @model_validator(mode="after")
++    def validate_timing_shape(self):
++        if (self.start_time is None) != (self.end_time is None):
++            raise ValueError("caption cue start_time and end_time must be provided together")
++        if self.start_time is not None and self.end_time <= self.start_time:
++            raise ValueError("caption cue end_time must be greater than start_time")
++        return self
 +
 +
-@@ -30,0 +35,3 @@ class NarrationSegment(BaseModel):
+@@ -30,0 +45,3 @@ class NarrationSegment(BaseModel):
 +    caption_cues: Optional[list[NarrationCaptionCue]] = Field(
 +        None, min_length=1, max_length=20
 +    )
-@@ -34 +41,4 @@ class NarrationSegment(BaseModel):
+@@ -34 +51,4 @@ class NarrationSegment(BaseModel):
 -        if bool(self.audio_asset_id) == bool(self.cues):
 +        if self.caption_cues:
 +            if not self.audio_asset_id or self.cues:
 +                raise ValueError("caption_cues require one scene audio_asset_id")
 +        elif bool(self.audio_asset_id) == bool(self.cues):
-@@ -38 +48,4 @@ class NarrationSegment(BaseModel):
+@@ -38 +58,13 @@ class NarrationSegment(BaseModel):
 -        if self.cues and "".join(cue.text for cue in self.cues) != self.text:
 +        for cue in self.caption_cues or []:
 +            validate_caption_cue_text(cue.text)
++        timed = [cue.start_time is not None for cue in self.caption_cues or []]
++        if any(timed) and not all(timed):
++            raise ValueError("caption cue timing must be complete or omitted")
++        if timed and all(timed):
++            if self.caption_cues[0].start_time > 0.08:
++                raise ValueError("caption cue timing must start at zero")
++            for previous, current in zip(self.caption_cues, self.caption_cues[1:]):
++                if abs(previous.end_time - current.start_time) > 0.08:
++                    raise ValueError("caption cue timing must be continuous")
 +        text_cues = self.caption_cues or self.cues
 +        if text_cues and "".join(cue.text for cue in text_cues) != self.text:
 diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
@@ -31,18 +50,24 @@ index a1336f9..63f086d 100644
 -                cue_values = external_segments[i]["cues"]
 +                external_segment = external_segments[i]
 +                cue_values = external_segment["cues"]
-@@ -331 +332 @@ class StandardPipeline(LinearVideoPipeline):
+@@ -331 +332,6 @@ class StandardPipeline(LinearVideoPipeline):
 -                    CaptionCue(text=cue["text"], audio_path=cue["audio_path"])
-+                    CaptionCue(text=cue["text"], audio_path=cue.get("audio_path"))
-@@ -343,0 +345 @@ class StandardPipeline(LinearVideoPipeline):
++                    CaptionCue(
++                        text=cue["text"],
++                        audio_path=cue.get("audio_path"),
++                        start_time=float(cue.get("start_time") or 0.0),
++                        end_time=float(cue.get("end_time") or 0.0),
++                    )
+@@ -343,0 +350 @@ class StandardPipeline(LinearVideoPipeline):
 +                audio_path=(external_segment.get("audio_path") if external_segments else None),
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
 index 5931412..29bbc45 100644
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
-@@ -35,0 +36 @@ from pixelle_video.services.caption_cues import (
+@@ -35,0 +36,2 @@ from pixelle_video.services.caption_cues import (
++    build_explicit_caption_timeline,
 +    build_proportional_caption_timeline,
-@@ -473,0 +475,35 @@ class FrameProcessor:
+@@ -473,0 +476,46 @@ class FrameProcessor:
 +        cue_has_audio = [bool(cue.audio_path) for cue in frame.caption_cues]
 +        if any(cue_has_audio) and not all(cue_has_audio):
 +            raise ValueError("caption cue audio must be either complete or display-only")
@@ -55,10 +80,21 @@ index 5931412..29bbc45 100644
 +                    config,
 +                )
 +            total_duration = await self._get_audio_duration_strict(frame.audio_path)
-+            timeline = build_proportional_caption_timeline(
-+                [{"text": cue.text} for cue in frame.caption_cues],
-+                total_duration,
-+            )
++            cue_values = [
++                {
++                    "text": cue.text,
++                    "start_time": cue.start_time,
++                    "end_time": cue.end_time,
++                }
++                for cue in frame.caption_cues
++            ]
++            if all(cue.end_time > cue.start_time for cue in frame.caption_cues):
++                timeline = build_explicit_caption_timeline(cue_values, total_duration)
++            else:
++                timeline = build_proportional_caption_timeline(
++                    [{"text": cue.text} for cue in frame.caption_cues],
++                    total_duration,
++                )
 +            for cue_index, (cue, timing) in enumerate(zip(frame.caption_cues, timeline)):
 +                cue.duration = timing["duration"]
 +                cue.start_time = timing["start_time"]
@@ -78,7 +114,7 @@ index 5931412..29bbc45 100644
 +            frame.duration = total_duration
 +            return
 +
-@@ -509,0 +546,23 @@ class FrameProcessor:
+@@ -509,0 +558,23 @@ class FrameProcessor:
 +    @staticmethod
 +    def _extract_audio_clip(
 +        audio_path: str,

@@ -83,6 +83,13 @@ def _install_import_stubs(monkeypatch):
         "pixelle_video.services.caption_cues": _module(
             "pixelle_video.services.caption_cues",
             build_caption_timeline=lambda *_args, **_kwargs: [],
+            build_explicit_caption_timeline=lambda cues, _duration: [
+                {
+                    **cue,
+                    "duration": cue["end_time"] - cue["start_time"],
+                }
+                for cue in cues
+            ],
             build_proportional_caption_timeline=lambda cues, duration: [
                 {
                     **cue,
@@ -254,6 +261,51 @@ def test_display_cues_generate_one_continuous_tts_track(tmp_path, monkeypatch):
     assert len(self_calls) == 2
     assert all(call.args[0] == full_audio for call in self_calls)
     assert frame.audio_path == full_audio
+    assert frame.duration == 4.0
+
+
+def test_explicit_cue_timing_reaches_patched_frame_processor(tmp_path, monkeypatch):
+    module = load_patched_frame_processor(tmp_path, monkeypatch)
+    processor = module.FrameProcessor(SimpleNamespace())
+    full_audio = str(tmp_path / "full.mp3")
+    processor._generate_audio_text = AsyncMock(return_value=full_audio)
+    processor._get_audio_duration_strict = AsyncMock(return_value=4.0)
+    processor._extract_audio_clip = Mock(
+        side_effect=lambda _audio, _start, _duration, output: output
+    )
+    frame = SimpleNamespace(
+        index=0,
+        narration="短句，后面是一段更长的内容。",
+        audio_path=None,
+        duration=0.0,
+        caption_cues=[
+            SimpleNamespace(
+                text="短句，",
+                audio_path=None,
+                duration=0.0,
+                start_time=0.0,
+                end_time=0.7,
+            ),
+            SimpleNamespace(
+                text="后面是一段更长的内容。",
+                audio_path=None,
+                duration=0.0,
+                start_time=0.7,
+                end_time=4.0,
+            ),
+        ],
+    )
+
+    asyncio.run(processor._prepare_caption_audio(frame, _config()))
+
+    slice_calls = processor._extract_audio_clip.call_args_list
+    assert [(call.args[1], call.args[2]) for call in slice_calls] == [
+        (0.0, 0.7),
+        (0.7, 3.3),
+    ]
+    assert [cue.start_time for cue in frame.caption_cues] == [0.0, 0.7]
+    assert [cue.end_time for cue in frame.caption_cues] == [0.7, 4.0]
+    assert [cue.duration for cue in frame.caption_cues] == [0.7, 3.3]
     assert frame.duration == 4.0
 
 
