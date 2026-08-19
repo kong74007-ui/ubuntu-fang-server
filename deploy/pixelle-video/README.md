@@ -142,10 +142,65 @@ is uploaded to the provider once and reused by its content fingerprint while
 the cache entry remains valid.
 
 Pixelle and the Huangque content service load the same internal token from
-`/etc/huangque/pixelle-talking.env`. Pixelle calls only the loopback route
-`http://127.0.0.1:8096/api/internal/pixelle/talking-clip`; it is not an nginx
-or public-browser endpoint. The bridge enforces a two-slot bridge limit across
-image conversion, provider image upload, and talking-video generation.
+`/etc/huangque/pixelle-talking.env`. The default Pixelle endpoint remains the
+loopback route `http://127.0.0.1:8096/api/internal/pixelle/talking-clip`.
+`PIXELLE_TALKING_ENDPOINT` may select another loopback HTTP port, but external
+hosts, HTTPS URLs, URL credentials, query strings, and fragments are rejected.
+The bridge enforces a two-slot bridge limit across image conversion, provider
+image upload, and talking-video generation.
+
+When the content service and Pixelle run on different hosts, keep the provider
+API and MCP OAuth credentials on the content host. Do not copy the MCP refresh
+token: it is rotated by the content service and must have one owner. Instead,
+forward the content host's existing loopback bridge through the restricted SSH
+unit in `deploy/systemd/huangque-pixelle-talking-tunnel.service`.
+
+Provision a dedicated SSH key owned by `admin` on the Pixelle host and authorize
+only that key on the content host. The `authorized_keys` entry must use an
+independently verified public key and restrict it to the bridge socket:
+
+```text
+restrict,port-forwarding,permitopen="127.0.0.1:8096" ssh-ed25519 <public-key> pixelle-talking-tunnel
+```
+
+Pin the content host key in a dedicated `known_hosts` file after verifying its
+fingerprint out of band. Then create the root-owned, mode `0600` file
+`/etc/huangque/pixelle-talking-tunnel.env` without placing it in Git:
+
+```bash
+PIXELLE_TALKING_SSH_TARGET=ubuntu@content-host.example
+PIXELLE_TALKING_SSH_KEY=/etc/huangque/pixelle-talking-tunnel/id_ed25519
+PIXELLE_TALKING_SSH_KNOWN_HOSTS=/etc/huangque/pixelle-talking-tunnel/known_hosts
+PIXELLE_TALKING_LOCAL_PORT=8097
+PIXELLE_TALKING_REMOTE_HOST=127.0.0.1
+PIXELLE_TALKING_REMOTE_PORT=8096
+```
+
+Install the reviewed runner and unit, then enable the tunnel:
+
+```bash
+sudo install -o root -g root -m 0755 \
+  deploy/pixelle-video/bin/run-talking-tunnel \
+  /usr/local/libexec/huangque/run-pixelle-talking-tunnel
+sudo install -o root -g root -m 0644 \
+  deploy/systemd/huangque-pixelle-talking-tunnel.service \
+  /etc/systemd/system/huangque-pixelle-talking-tunnel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now huangque-pixelle-talking-tunnel.service
+```
+
+Add the endpoint below to the existing root-managed
+`/etc/huangque/pixelle-talking.env`; keep the existing internal token in that
+file unchanged:
+
+```bash
+PIXELLE_TALKING_ENDPOINT=http://127.0.0.1:8097/api/internal/pixelle/talking-clip
+```
+
+After `systemctl daemon-reload`, start and verify the tunnel before restarting
+Pixelle. The tunnel uses strict host-key checking, ignores inherited SSH
+configuration, binds only to `127.0.0.1`, and can reach only the content host's
+loopback bridge when the matching `authorized_keys` restriction is present.
 
 Each provider attempt uses the existing 15-minute provider deadline. The
 Pixelle loopback caller uses a 20-minute client timeout so the provider

@@ -225,6 +225,39 @@ def test_client_requires_internal_token(monkeypatch):
         module.TalkingClient()
 
 
+def test_client_reads_loopback_endpoint_from_environment(monkeypatch):
+    module = load_module()
+    monkeypatch.setenv("PIXELLE_TALKING_INTERNAL_TOKEN", "internal-secret")
+    monkeypatch.setenv(
+        "PIXELLE_TALKING_ENDPOINT",
+        "http://127.0.0.1:8097/api/internal/pixelle/talking-clip",
+    )
+
+    client = module.TalkingClient()
+
+    assert client.endpoint == "http://127.0.0.1:8097/api/internal/pixelle/talking-clip"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://127.0.0.1:8097/api/internal/pixelle/talking-clip",
+        "http://129.204.166.13:8096/api/internal/pixelle/talking-clip",
+        "http://user:password@127.0.0.1:8097/api/internal/pixelle/talking-clip",
+        "http://127.0.0.1:8097/api/internal/pixelle/talking-clip?token=secret",
+        "http://127.0.0.1:invalid/api/internal/pixelle/talking-clip",
+        "http://127.0.0.1:8097/health",
+    ],
+)
+def test_client_rejects_non_loopback_or_embedded_credentials(monkeypatch, endpoint):
+    module = load_module()
+    monkeypatch.setenv("PIXELLE_TALKING_INTERNAL_TOKEN", "internal-secret")
+    monkeypatch.setenv("PIXELLE_TALKING_ENDPOINT", endpoint)
+
+    with pytest.raises(ValueError, match="talking bridge endpoint"):
+        module.TalkingClient()
+
+
 def test_client_cancellation_waits_for_ffmpeg_and_never_revives_output(tmp_path):
     asyncio.run(_assert_client_cancellation_waits_for_ffmpeg_and_never_revives_output(tmp_path))
 
