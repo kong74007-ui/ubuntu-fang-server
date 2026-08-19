@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -22,6 +24,13 @@ MODULE_PATH = (
     / "pixelle_video"
     / "services"
     / "caption_cues.py"
+)
+EDGE_TTS_TIMING_PATCH_PATH = (
+    ROOT
+    / "deploy"
+    / "pixelle-video"
+    / "patches"
+    / "0014-align-edge-tts-caption-timing.patch"
 )
 
 
@@ -152,6 +161,48 @@ class CaptionTimelineTests(unittest.TestCase):
         )
         self.assertAlmostEqual(3.8, sum(cue["duration"] for cue in timed))
 
+    def test_edge_word_boundaries_override_character_proportions(self):
+        cues = [{"text": "短句，"}, {"text": "后面是一段更长的内容。"}]
+        words = [
+            {"text": "短句", "start_time": 0.18, "end_time": 0.72},
+            {
+                "text": "后面是一段更长的内容",
+                "start_time": 1.35,
+                "end_time": 3.82,
+            },
+        ]
+
+        timed = self.module.build_word_aligned_caption_timeline(cues, 4.0, words)
+
+        self.assertEqual(
+            [(cue["start_time"], cue["end_time"]) for cue in timed],
+            [(0.0, 1.35), (1.35, 4.0)],
+        )
+        self.assertAlmostEqual(4.0, sum(cue["duration"] for cue in timed))
+
+    def test_edge_word_alignment_rejects_mismatched_text(self):
+        with self.assertRaises(ValueError):
+            self.module.build_word_aligned_caption_timeline(
+                [{"text": "原始内容"}],
+                2.0,
+                [{"text": "其他内容", "start_time": 0.1, "end_time": 1.8}],
+            )
+
+    def test_edge_word_timing_sidecar_is_consumed_after_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "narration.mp3"
+            timing_path = Path(f"{audio_path}.timing.json")
+            words = [
+                {"text": "测试", "start_time": 0.1, "end_time": 0.8}
+            ]
+            timing_path.write_text(
+                json.dumps({"version": 1, "words": words}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(words, self.module.load_tts_word_timing(str(audio_path)))
+            self.assertFalse(timing_path.exists())
+
     def test_explicit_timing_rejects_gaps_and_partial_fields(self):
         for cues in (
             [
@@ -256,6 +307,24 @@ class TalkingMaterialPatchContractTests(unittest.TestCase):
         self.assertIn("frame.talking_original_video_path = frame.video_path", patch)
         self.assertIn("frame.video_path = frame.talking_original_video_path", patch)
         self.assertIn("frame.media_type = frame.talking_original_media_type", patch)
+
+
+class EdgeTTSTimingPatchContractTests(unittest.TestCase):
+    def test_edge_tts_emits_atomic_word_timing_sidecar(self):
+        patch = EDGE_TTS_TIMING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('chunk["type"] == "WordBoundary"', patch)
+        self.assertIn('float(chunk.get("offset") or 0) / 10_000_000', patch)
+        self.assertIn('.timing.json', patch)
+        self.assertIn("os.replace(staged_timing_path, timing_path)", patch)
+
+    def test_frame_processor_prefers_word_timing_and_keeps_fallback(self):
+        patch = EDGE_TTS_TIMING_PATCH_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("load_tts_word_timing(frame.audio_path)", patch)
+        self.assertIn("build_word_aligned_caption_timeline(", patch)
+        self.assertIn("except ValueError:", patch)
+        self.assertIn("build_proportional_caption_timeline(", patch)
 
 
 if __name__ == "__main__":

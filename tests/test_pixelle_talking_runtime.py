@@ -28,6 +28,13 @@ CONTINUOUS_PATCH_PATH = (
     / "patches"
     / "0012-preserve-continuous-narration.patch"
 )
+EDGE_TTS_TIMING_PATCH_PATH = (
+    ROOT
+    / "deploy"
+    / "pixelle-video"
+    / "patches"
+    / "0014-align-edge-tts-caption-timing.patch"
+)
 FIXTURE_PATH = (
     ROOT
     / "tests"
@@ -99,7 +106,11 @@ def _install_import_stubs(monkeypatch):
                 }
                 for index, cue in enumerate(cues)
             ],
+            build_word_aligned_caption_timeline=lambda *_args, **_kwargs: (
+                (_ for _ in ()).throw(ValueError("word timing unavailable"))
+            ),
             caption_timeline_duration=lambda *_args, **_kwargs: 0.0,
+            load_tts_word_timing=lambda *_args, **_kwargs: [],
             split_caption_text=lambda text: [text],
         ),
         "pixelle_video.services.video": _module(
@@ -156,7 +167,9 @@ def _extract_frame_processor_fixture(source_root: Path) -> None:
 def load_patched_frame_processor(tmp_path: Path, monkeypatch):
     source_root = tmp_path / "patched"
     _extract_frame_processor_fixture(source_root)
-    for index, source_patch in enumerate((PATCH_PATH, CONTINUOUS_PATCH_PATH), 1):
+    for index, source_patch in enumerate(
+        (PATCH_PATH, CONTINUOUS_PATCH_PATH, EDGE_TTS_TIMING_PATCH_PATH), 1
+    ):
         patch_path = tmp_path / f"frame_processor-{index}.patch"
         patch_path.write_text(
             _frame_patch_text(source_patch), encoding="utf-8", newline="\n"
@@ -307,6 +320,68 @@ def test_explicit_cue_timing_reaches_patched_frame_processor(tmp_path, monkeypat
     assert [cue.end_time for cue in frame.caption_cues] == [0.7, 4.0]
     assert [cue.duration for cue in frame.caption_cues] == [0.7, 3.3]
     assert frame.duration == 4.0
+
+
+def test_edge_tts_word_timing_reaches_patched_frame_processor(tmp_path, monkeypatch):
+    module = load_patched_frame_processor(tmp_path, monkeypatch)
+    processor = module.FrameProcessor(SimpleNamespace())
+    full_audio = str(tmp_path / "full.mp3")
+    processor._generate_audio_text = AsyncMock(return_value=full_audio)
+    processor._get_audio_duration_strict = AsyncMock(return_value=4.0)
+    processor._extract_audio_clip = Mock(
+        side_effect=lambda _audio, _start, _duration, output: output
+    )
+    monkeypatch.setattr(
+        module,
+        "load_tts_word_timing",
+        lambda _path: [
+            {"text": "短句", "start_time": 0.1, "end_time": 0.7},
+            {
+                "text": "后面是一段更长的内容",
+                "start_time": 1.2,
+                "end_time": 3.8,
+            },
+        ],
+    )
+    aligned = [
+        {"text": "短句，", "start_time": 0.0, "end_time": 1.2, "duration": 1.2},
+        {
+            "text": "后面是一段更长的内容。",
+            "start_time": 1.2,
+            "end_time": 4.0,
+            "duration": 2.8,
+        },
+    ]
+    aligner = Mock(return_value=aligned)
+    monkeypatch.setattr(module, "build_word_aligned_caption_timeline", aligner)
+    frame = SimpleNamespace(
+        index=0,
+        narration="短句，后面是一段更长的内容。",
+        audio_path=None,
+        duration=0.0,
+        caption_cues=[
+            SimpleNamespace(
+                text="短句，", audio_path=None, duration=0.0,
+                start_time=0.0, end_time=0.0,
+            ),
+            SimpleNamespace(
+                text="后面是一段更长的内容。", audio_path=None, duration=0.0,
+                start_time=0.0, end_time=0.0,
+            ),
+        ],
+    )
+
+    asyncio.run(processor._prepare_caption_audio(frame, _config()))
+
+    aligner.assert_called_once()
+    assert [(cue.start_time, cue.end_time) for cue in frame.caption_cues] == [
+        (0.0, 1.2),
+        (1.2, 4.0),
+    ]
+    assert [(call.args[1], call.args[2]) for call in processor._extract_audio_clip.call_args_list] == [
+        (0.0, 1.2),
+        (1.2, 2.8),
+    ]
 
 
 @pytest.mark.parametrize("cue_count", [1, 2])

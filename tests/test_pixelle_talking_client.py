@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import threading
 import urllib.error
@@ -68,15 +69,31 @@ def make_files(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def fake_ffmpeg(command, **kwargs):
     assert kwargs == {"check": True, "capture_output": True}
-    assert command[-8:] == [
+    provider_path = command[5]
+    output_path = command[-1]
+    assert command == [
+        "ffmpeg",
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        provider_path,
         "-map",
         "0:v:0",
+        "-vf",
+        "setpts=PTS-STARTPTS",
         "-c:v",
-        "copy",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
         "-an",
         "-movflags",
         "+faststart",
-        command[-1],
+        output_path,
     ]
     Path(command[-1]).write_bytes(b"silent-video")
     return subprocess.CompletedProcess(command, 0)
@@ -84,6 +101,64 @@ def fake_ffmpeg(command, **kwargs):
 
 def test_client_retries_only_unbilled_retryable_failures(tmp_path):
     asyncio.run(_assert_client_retries_only_unbilled_retryable_failures(tmp_path))
+
+
+def test_client_normalizes_nonzero_provider_timestamps(tmp_path):
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    provider = tmp_path / "provider-offset.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=64x64:r=10:d=1",
+            "-vf",
+            "setpts=PTS+2/TB",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(provider),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    module = load_module()
+    image, audio, output = make_files(tmp_path)
+
+    def opener(_request, timeout):
+        assert timeout == 1200
+        return FakeResponse(
+            provider.read_bytes(),
+            {"X-Provider-Video-Id": "video-offset"},
+        )
+
+    client = module.TalkingClient(token="internal-secret", opener=opener)
+    asyncio.run(client.generate(str(image), str(audio), str(output), "req-offset", "9:16"))
+
+    start_time = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=start_time",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert abs(float(start_time.stdout.strip())) < 0.05
 
 
 async def _assert_client_retries_only_unbilled_retryable_failures(tmp_path):

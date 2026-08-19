@@ -1,0 +1,97 @@
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index b4e6c77..fdc6dd2 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -35,7 +35,9 @@ from pixelle_video.services.caption_cues import (
+     build_caption_timeline,
+     build_explicit_caption_timeline,
+     build_proportional_caption_timeline,
++    build_word_aligned_caption_timeline,
+     caption_timeline_duration,
++    load_tts_word_timing,
+     split_caption_text,
+ )
+ from pixelle_video.services.media_retry import RetryBudget, retry_async
+@@ -496,10 +498,19 @@ class FrameProcessor:
+             if all(cue.end_time > cue.start_time for cue in frame.caption_cues):
+                 timeline = build_explicit_caption_timeline(cue_values, total_duration)
+             else:
+-                timeline = build_proportional_caption_timeline(
+-                    [{"text": cue.text} for cue in frame.caption_cues],
+-                    total_duration,
+-                )
++                display_cues = [{"text": cue.text} for cue in frame.caption_cues]
++                word_timing = load_tts_word_timing(frame.audio_path)
++                try:
++                    timeline = build_word_aligned_caption_timeline(
++                        display_cues,
++                        total_duration,
++                        word_timing,
++                    )
++                except ValueError:
++                    timeline = build_proportional_caption_timeline(
++                        display_cues,
++                        total_duration,
++                    )
+             for cue_index, (cue, timing) in enumerate(zip(frame.caption_cues, timeline)):
+                 cue.duration = timing["duration"]
+                 cue.start_time = timing["start_time"]
+diff --git a/pixelle_video/utils/tts_util.py b/pixelle_video/utils/tts_util.py
+index 5c32832..2a22533 100644
+--- a/pixelle_video/utils/tts_util.py
++++ b/pixelle_video/utils/tts_util.py
+@@ -18,8 +18,12 @@ Currently, TTS service uses ComfyUI workflows only.
+ """
+ 
+ import asyncio
++import json
++import os
+ import ssl
+ import random
++from pathlib import Path
++import uuid
+ import certifi
+ import edge_tts as edge_tts_sdk
+ from edge_tts.exceptions import NoAudioReceived
+@@ -161,9 +165,18 @@ async def edge_tts(
+                 
+                 # Collect audio chunks
+                 audio_chunks = []
++                word_boundaries = []
+                 async for chunk in communicate.stream():
+                     if chunk["type"] == "audio":
+                         audio_chunks.append(chunk["data"])
++                    elif chunk["type"] == "WordBoundary":
++                        offset = float(chunk.get("offset") or 0) / 10_000_000
++                        duration = float(chunk.get("duration") or 0) / 10_000_000
++                        word_boundaries.append({
++                            "text": str(chunk.get("text") or ""),
++                            "start_time": offset,
++                            "end_time": offset + duration,
++                        })
+                 
+                 audio_data = b"".join(audio_chunks)
+                 
+@@ -176,6 +189,22 @@ async def edge_tts(
+                 if output_path:
+                     with open(output_path, "wb") as f:
+                         f.write(audio_data)
++                    timing_path = Path(f"{output_path}.timing.json")
++                    staged_timing_path = timing_path.with_name(
++                        f".{timing_path.name}.{uuid.uuid4().hex}.tmp"
++                    )
++                    try:
++                        staged_timing_path.write_text(
++                            json.dumps(
++                                {"version": 1, "words": word_boundaries},
++                                ensure_ascii=False,
++                                separators=(",", ":"),
++                            ),
++                            encoding="utf-8",
++                        )
++                        os.replace(staged_timing_path, timing_path)
++                    finally:
++                        staged_timing_path.unlink(missing_ok=True)
+                     logger.info(f"Audio saved to: {output_path}")
+                 
+                 return audio_data
