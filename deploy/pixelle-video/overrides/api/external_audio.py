@@ -228,7 +228,22 @@ def _normalize_narration_segments(segments) -> list[dict]:
         if caption_cues:
             if raw_cues or not scene_audio_asset_id:
                 raise ValueError("continuous narration requires one scene audio asset")
-            cues = [{"text": _segment_value(cue, "text")} for cue in caption_cues]
+            cues = []
+            for cue in caption_cues:
+                item = {"text": _segment_value(cue, "text")}
+                start_time = _optional_segment_value(cue, "start_time")
+                end_time = _optional_segment_value(cue, "end_time")
+                if start_time is not None or end_time is not None:
+                    if start_time is None or end_time is None:
+                        raise ValueError(
+                            "caption cue start_time and end_time must be provided together"
+                        )
+                    item["start_time"] = float(start_time)
+                    item["end_time"] = float(end_time)
+                cues.append(item)
+            timed = ["start_time" in cue for cue in cues]
+            if any(timed) and not all(timed):
+                raise ValueError("caption cue timing must be complete or omitted")
             for cue in cues:
                 validate_caption_cue_text(cue["text"])
             normalized_segment = {

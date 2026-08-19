@@ -138,6 +138,38 @@ class CaptionTimelineTests(unittest.TestCase):
         self.assertAlmostEqual(4.5, sum(cue["duration"] for cue in timed))
         self.assertGreater(timed[1]["duration"], timed[0]["duration"])
 
+    def test_explicit_speech_timing_overrides_character_proportions(self):
+        cues = [
+            {"text": "人工智能可以", "start_time": 0.0, "end_time": 1.1},
+            {"text": "改变生活方式", "start_time": 1.1, "end_time": 3.8},
+        ]
+
+        timed = self.module.build_explicit_caption_timeline(cues, 3.8)
+
+        self.assertEqual(
+            [(cue["start_time"], cue["end_time"]) for cue in timed],
+            [(0.0, 1.1), (1.1, 3.8)],
+        )
+        self.assertAlmostEqual(3.8, sum(cue["duration"] for cue in timed))
+
+    def test_explicit_timing_rejects_gaps_and_partial_fields(self):
+        for cues in (
+            [
+                {"text": "第一段", "start_time": 0.0, "end_time": 1.0},
+                {"text": "第二段", "start_time": 1.5, "end_time": 2.0},
+            ],
+            [
+                {"text": "第一段", "start_time": 0.0, "end_time": 1.0},
+                {"text": "第二段", "start_time": 1.0},
+            ],
+            [
+                {"text": "第一段", "start_time": 0.0, "end_time": 1.0},
+                {"text": "第二段", "start_time": 1.0, "end_time": 1.8},
+            ],
+        ):
+            with self.subTest(cues=cues), self.assertRaises(ValueError):
+                self.module.build_explicit_caption_timeline(cues, 2.0)
+
     def test_video_slices_advance_instead_of_restarting(self):
         timed = self.module.build_caption_timeline(
             [

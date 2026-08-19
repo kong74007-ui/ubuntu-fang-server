@@ -1109,6 +1109,8 @@ cleanup
             installer.index('"${TALKING_SCENES_PATCH}"'),
         )
         self.assertIn("caption_cues require one scene audio_asset_id", patch)
+        self.assertIn("caption cue start_time and end_time must be provided together", patch)
+        self.assertIn("build_explicit_caption_timeline", patch)
         self.assertIn("build_proportional_caption_timeline", patch)
         self.assertIn("_extract_audio_clip", patch)
 
