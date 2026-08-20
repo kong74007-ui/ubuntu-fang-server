@@ -1,0 +1,89 @@
+diff --git a/pixelle_video/pipelines/asset_based.py b/pixelle_video/pipelines/asset_based.py
+index 76710c1..8c5388f 100644
+--- a/pixelle_video/pipelines/asset_based.py
++++ b/pixelle_video/pipelines/asset_based.py
+@@ -34,0 +35 @@ Example:
++import asyncio
+@@ -820 +821,2 @@ class AssetBasedPipeline(LinearVideoPipeline):
+-        self.core.video.concat_videos(
++        await asyncio.to_thread(
++            self.core.video.concat_videos,
+diff --git a/pixelle_video/pipelines/custom.py b/pixelle_video/pipelines/custom.py
+index 749d458..2ed6d68 100644
+--- a/pixelle_video/pipelines/custom.py
++++ b/pixelle_video/pipelines/custom.py
+@@ -24,0 +25 @@ from typing import Optional, Callable
++import asyncio
+@@ -338 +339,2 @@ class CustomPipeline(BasePipeline):
+-            final_video_path = video_service.concat_videos(
++            final_video_path = await asyncio.to_thread(
++                video_service.concat_videos,
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+index c2b7daf..de84c11 100644
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -480 +480,2 @@ class StandardPipeline(LinearVideoPipeline):
+-        final_video_path = video_service.concat_videos(
++        final_video_path = await asyncio.to_thread(
++            video_service.concat_videos,
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index 45e612e..4cdc8e3 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -682 +682,2 @@ class FrameProcessor:
+-        frame.video_segment_path = video_service.concat_videos(
++        frame.video_segment_path = await asyncio.to_thread(
++            video_service.concat_videos,
+diff --git a/pixelle_video/services/video.py b/pixelle_video/services/video.py
+index 2376a8f..bea0f72 100644
+--- a/pixelle_video/services/video.py
++++ b/pixelle_video/services/video.py
+@@ -284,3 +284 @@ class VideoService:
+-        try:
+-            # Build filter_complex string manually
+-            n = len(videos)
++        from pixelle_video.services.video_concat import concat_with_normalized_streams
+@@ -288,3 +286,0 @@ class VideoService:
+-            # Build input stream labels: [0:v][0:a][1:v][1:a]...
+-            stream_spec = "".join([f"[{i}:v][{i}:a]" for i in range(n)])
+-            filter_complex = f"{stream_spec}concat=n={n}:v=1:a=1[v][a]"
+@@ -292,20 +287,0 @@ class VideoService:
+-            # Build ffmpeg command
+-            cmd = ['ffmpeg']
+-            for video in videos:
+-                cmd.extend(['-i', video])
+-            cmd.extend([
+-                '-filter_complex', filter_complex,
+-                '-map', '[v]',
+-                '-map', '[a]',
+-                '-c:v', 'libx264',
+-                '-preset', 'fast',
+-                '-crf', '20',
+-                '-pix_fmt', 'yuv420p',
+-                '-c:a', 'aac',
+-                '-b:a', '192k',
+-                '-ar', '44100',
+-                '-ac', '2',
+-                '-movflags', '+faststart',
+-                '-y',  # Overwrite output
+-                output
+-            ])
+@@ -313,8 +288,0 @@ class VideoService:
+-            # Run command
+-            import subprocess
+-            result = subprocess.run(
+-                cmd,
+-                capture_output=True,
+-                text=True,
+-                check=True
+-            )
+@@ -321,0 +289,2 @@ class VideoService:
++        try:
++            result = concat_with_normalized_streams(videos, output)
+@@ -323,5 +293 @@ class VideoService:
+-            return output
+-        except subprocess.CalledProcessError as e:
+-            error_msg = e.stderr if e.stderr else str(e)
+-            logger.error(f"FFmpeg concat filter error: {error_msg}")
+-            raise RuntimeError(f"Failed to concatenate videos: {error_msg}")
++            return result

@@ -686,8 +686,29 @@ cleanup
             / "0015-preserve-video-visual-and-audio-integrity.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
+        concat_patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0016-bound-final-video-concat.patch"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("MEDIA_INTEGRITY_PATCH=", installer)
+        self.assertIn("FINAL_CONCAT_PATCH=", installer)
+        self.assertIn("VIDEO_CONCAT_OVERRIDE=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${FINAL_CONCAT_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${FINAL_CONCAT_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/video_concat.py"',
+            installer,
+        )
         self.assertIn(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_INTEGRITY_PATCH}"',
             installer,
@@ -711,6 +732,11 @@ cleanup
             "'-ac', '2'",
         ):
             self.assertIn(marker, patch)
+        self.assertGreaterEqual(concat_patch.count("await asyncio.to_thread("), 4)
+        self.assertIn(
+            "concat_with_normalized_streams(videos, output)",
+            concat_patch,
+        )
 
     def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
         module_path = (

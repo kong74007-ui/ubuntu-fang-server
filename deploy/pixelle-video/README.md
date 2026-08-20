@@ -234,7 +234,12 @@ stays inside the safe area without clipping or overlapping. Multi-segment
 output uses FFmpeg's concat filter by
 default and normalizes the result to H.264/yuv420p video plus 44.1 kHz stereo
 AAC audio, preventing incompatible per-segment AAC headers from corrupting the
-final narration track.
+final narration track. Every input is first normalized to 30 fps with a
+zero-based timestamp, avoiding the FFmpeg 4.4 mixed-frame-rate concat behavior
+that can duplicate frames and run indefinitely. Concatenation runs outside the
+API event loop and has a 600-second hard deadline; a timeout kills FFmpeg,
+removes the partial output, and fails the task instead of leaving the service
+unresponsive.
 
 Linux validation must run the POSIX mode-bit and real symlink security tests
 that are skipped on Windows. Local deterministic integration tests stub the
