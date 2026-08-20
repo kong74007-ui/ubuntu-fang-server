@@ -222,6 +222,20 @@ Provider video is re-encoded with regenerated timestamps and a zero-based PTS
 before cue slicing, preventing non-zero MP4 edit timelines from appearing as an
 initial blank frame in the final composition.
 
+Video-backed scenes use a platform-owned transparent `video_default.html`
+overlay matching the selected output size whenever the chosen frame template
+is image-only. Portrait, landscape, and square overlays are installed as
+reviewed release assets; custom image templates resolve by size back to these
+platform overlays rather than assuming a sibling template exists. This
+keeps the talking or generated video visible instead of rendering its MP4 path
+inside an image element. Overlay titles and single-line captions use
+deterministic browser-side font fitting so valid long Chinese and English text
+stays inside the safe area without clipping or overlapping. Multi-segment
+output uses FFmpeg's concat filter by
+default and normalizes the result to H.264/yuv420p video plus 44.1 kHz stereo
+AAC audio, preventing incompatible per-segment AAC headers from corrupting the
+final narration track.
+
 Linux validation must run the POSIX mode-bit and real symlink security tests
 that are skipped on Windows. Local deterministic integration tests stub the
 loopback provider boundary and do not make a billable live-provider request.

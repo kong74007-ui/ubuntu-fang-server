@@ -641,7 +641,7 @@ cleanup
         self.assertIn("up to five RunningHub scenes", readme)
 
     def test_template_overrides_have_no_pixelle_branding(self):
-        templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("*.html"))
+        templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("image_*.html"))
         self.assertEqual(20, len(templates))
         markers = ("@Pixelle", "Pixelle-Video", "Pixelle.AI")
         for template in templates:
@@ -675,6 +675,155 @@ cleanup
                 any(line.startswith("-") and marker in line for line in patch.splitlines()),
                 marker,
             )
+
+    def test_media_integrity_patch_keeps_video_visible_and_audio_decodable(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0015-preserve-video-visual-and-audio-integrity.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("MEDIA_INTEGRITY_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_INTEGRITY_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${MEDIA_INTEGRITY_PATCH}"',
+            installer,
+        )
+        self.assertIn('get_template_type(config.frame_template or "")', patch)
+        self.assertIn('resolve_video_overlay_template(template_path)', patch)
+        self.assertIn(
+            'method: Literal["demuxer", "filter"] = "filter"',
+            patch,
+        )
+        for marker in (
+            "'-c:v', 'libx264'",
+            "'-pix_fmt', 'yuv420p'",
+            "'-c:a', 'aac'",
+            "'-b:a', '192k'",
+            "'-ar', '44100'",
+            "'-ac', '2'",
+        ):
+            self.assertIn(marker, patch)
+
+    def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
+        module_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "overrides"
+            / "pixelle_video"
+            / "services"
+            / "video_overlay.py"
+        )
+        spec = importlib.util.spec_from_file_location("pixelle_video_overlay", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for size in ("1080x1920", "1920x1080", "1080x1080"):
+                platform_template = root / "templates" / size / "video_default.html"
+                platform_template.parent.mkdir(parents=True, exist_ok=True)
+                platform_template.write_text("transparent", encoding="utf-8")
+
+                selected = root / "templates" / size / "image_full.html"
+                selected.write_text("image", encoding="utf-8")
+                self.assertEqual(
+                    platform_template,
+                    module.resolve_video_overlay_template(selected, root),
+                )
+
+                custom = root / "data" / "templates" / size / "image_custom.html"
+                custom.parent.mkdir(parents=True, exist_ok=True)
+                custom.write_text("custom", encoding="utf-8")
+                self.assertEqual(
+                    platform_template,
+                    module.resolve_video_overlay_template(custom, root),
+                )
+
+    def test_transparent_video_overlays_are_installed_for_every_supported_size(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        template_root = ROOT / "deploy" / "pixelle-video" / "templates"
+
+        for size in ("1080x1920", "1920x1080", "1080x1080"):
+            template = template_root / size / "video_default.html"
+            html = template.read_text(encoding="utf-8")
+            self.assertIn("background: transparent", html)
+            self.assertIn("{{title}}", html)
+            self.assertIn("{{text}}", html)
+            self.assertNotIn("<img", html)
+            self.assertNotIn("<video", html)
+            self.assertIn(
+                f'deploy/pixelle-video/templates/{size}/video_default.html',
+                installer,
+            )
+
+    def test_transparent_video_overlays_fit_long_captions_in_real_browser(self):
+        candidates = (
+            shutil.which("google-chrome-stable"),
+            shutil.which("google-chrome"),
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        )
+        chrome = next(
+            (str(candidate) for candidate in candidates if candidate and Path(candidate).is_file()),
+            None,
+        )
+        self.assertIsNotNone(chrome, "Chrome or Chromium is required for overlay layout tests")
+
+        template_root = ROOT / "deploy" / "pixelle-video" / "templates"
+        captions = ("字" * 28, "ABCDEFGHIJKLMNOPQRSTUVWXYZ12")
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_root = Path(tmp)
+            for size in ("1080x1920", "1920x1080", "1080x1080"):
+                width, height = size.split("x")
+                source = (template_root / size / "video_default.html").read_text(
+                    encoding="utf-8"
+                )
+                for index, caption in enumerate(captions):
+                    rendered = source.replace(
+                        "{{title}}", "AI培训内容创作与企业运营效率全面提升"
+                    ).replace("{{text}}", caption)
+                    page = temp_root / f"{size}-{index}.html"
+                    page.write_text(rendered, encoding="utf-8")
+                    profile = temp_root / f"profile-{size}-{index}"
+                    result = subprocess.run(
+                        [
+                            chrome,
+                            "--headless=new",
+                            "--disable-gpu",
+                            "--no-sandbox",
+                            "--hide-scrollbars",
+                            "--virtual-time-budget=1500",
+                            f"--window-size={width},{height}",
+                            f"--user-data-dir={profile}",
+                            "--dump-dom",
+                            page.as_uri(),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=20,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    for marker in (
+                        'data-layout-ready="true"',
+                        'data-title-fits="true"',
+                        'data-caption-fits="true"',
+                        'data-safe-zone="true"',
+                        'data-no-overlap="true"',
+                    ):
+                        self.assertIn(marker, result.stdout, f"{size}: {caption}")
 
     def test_external_narration_patch_and_overrides_are_fail_closed(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
