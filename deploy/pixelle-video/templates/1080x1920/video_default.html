@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="template:media-width" content="1080">
+  <meta name="template:media-height" content="1920">
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+    .frame { position: relative; width: 1080px; height: 1920px; background: transparent; }
+    .title, .caption { position: absolute; left: 5%; width: 90%; color: #fff; text-align: center; text-shadow: 0 2px 8px #000, 0 0 16px rgba(0,0,0,.8); }
+    .title { top: 7%; font-size: 72px; font-weight: 700; }
+    .caption { bottom: 10%; font-size: 48px; font-weight: 600; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="title">{{title}}</div>
+    <div class="caption">{{text}}</div>
+  </div>
+</body>
+</html>

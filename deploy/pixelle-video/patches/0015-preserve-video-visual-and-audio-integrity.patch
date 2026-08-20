@@ -1,23 +1,21 @@
 diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
-index fdc6dd2..a77d344 100644
+index fdc6dd2..3db519a 100644
 --- a/pixelle_video/services/frame_processor.py
 +++ b/pixelle_video/services/frame_processor.py
-@@ -849 +849 @@ class FrameProcessor:
+@@ -848,2 +848,3 @@ class FrameProcessor:
+         from pixelle_video.services.frame_html import HTMLFrameGenerator
++        from pixelle_video.services.video_overlay import resolve_video_overlay_template
 -        from pixelle_video.utils.template_util import resolve_template_path
 +        from pixelle_video.utils.template_util import get_template_type, resolve_template_path
-@@ -852 +852,10 @@ class FrameProcessor:
+@@ -852 +853,6 @@ class FrameProcessor:
 -        template_path = resolve_template_path(config.frame_template)
 +        template_path = Path(resolve_template_path(config.frame_template))
 +        if (
 +            frame.media_type == "video"
 +            and get_template_type(config.frame_template or "") != "video"
 +        ):
-+            template_path = template_path.with_name("video_default.html")
-+            if not template_path.is_file():
-+                raise FileNotFoundError(
-+                    f"Video overlay template not found: {template_path}"
-+                )
-@@ -867 +876 @@ class FrameProcessor:
++            template_path = resolve_video_overlay_template(template_path)
+@@ -867 +873 @@ class FrameProcessor:
 -        generator = HTMLFrameGenerator(template_path)
 +        generator = HTMLFrameGenerator(str(template_path))
 diff --git a/pixelle_video/services/video.py b/pixelle_video/services/video.py

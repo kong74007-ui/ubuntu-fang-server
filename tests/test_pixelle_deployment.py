@@ -641,7 +641,7 @@ cleanup
         self.assertIn("up to five RunningHub scenes", readme)
 
     def test_template_overrides_have_no_pixelle_branding(self):
-        templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("*.html"))
+        templates = sorted((ROOT / "deploy/pixelle-video/templates/1080x1920").glob("image_*.html"))
         self.assertEqual(20, len(templates))
         markers = ("@Pixelle", "Pixelle-Video", "Pixelle.AI")
         for template in templates:
@@ -697,7 +697,7 @@ cleanup
             installer,
         )
         self.assertIn('get_template_type(config.frame_template or "")', patch)
-        self.assertIn('template_path.with_name("video_default.html")', patch)
+        self.assertIn('resolve_video_overlay_template(template_path)', patch)
         self.assertIn(
             'method: Literal["demuxer", "filter"] = "filter"',
             patch,
@@ -711,6 +711,59 @@ cleanup
             "'-ac', '2'",
         ):
             self.assertIn(marker, patch)
+
+    def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
+        module_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "overrides"
+            / "pixelle_video"
+            / "services"
+            / "video_overlay.py"
+        )
+        spec = importlib.util.spec_from_file_location("pixelle_video_overlay", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for size in ("1080x1920", "1920x1080", "1080x1080"):
+                platform_template = root / "templates" / size / "video_default.html"
+                platform_template.parent.mkdir(parents=True, exist_ok=True)
+                platform_template.write_text("transparent", encoding="utf-8")
+
+                selected = root / "templates" / size / "image_full.html"
+                selected.write_text("image", encoding="utf-8")
+                self.assertEqual(
+                    platform_template,
+                    module.resolve_video_overlay_template(selected, root),
+                )
+
+                custom = root / "data" / "templates" / size / "image_custom.html"
+                custom.parent.mkdir(parents=True, exist_ok=True)
+                custom.write_text("custom", encoding="utf-8")
+                self.assertEqual(
+                    platform_template,
+                    module.resolve_video_overlay_template(custom, root),
+                )
+
+    def test_transparent_video_overlays_are_installed_for_every_supported_size(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        template_root = ROOT / "deploy" / "pixelle-video" / "templates"
+
+        for size in ("1080x1920", "1920x1080", "1080x1080"):
+            template = template_root / size / "video_default.html"
+            html = template.read_text(encoding="utf-8")
+            self.assertIn("background: transparent", html)
+            self.assertIn("{{title}}", html)
+            self.assertIn("{{text}}", html)
+            self.assertNotIn("<img", html)
+            self.assertNotIn("<video", html)
+            self.assertIn(
+                f'deploy/pixelle-video/templates/{size}/video_default.html',
+                installer,
+            )
 
     def test_external_narration_patch_and_overrides_are_fail_closed(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
