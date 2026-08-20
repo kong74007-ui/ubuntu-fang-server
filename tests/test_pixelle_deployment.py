@@ -765,6 +765,66 @@ cleanup
                 installer,
             )
 
+    def test_transparent_video_overlays_fit_long_captions_in_real_browser(self):
+        candidates = (
+            shutil.which("google-chrome-stable"),
+            shutil.which("google-chrome"),
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        )
+        chrome = next(
+            (str(candidate) for candidate in candidates if candidate and Path(candidate).is_file()),
+            None,
+        )
+        self.assertIsNotNone(chrome, "Chrome or Chromium is required for overlay layout tests")
+
+        template_root = ROOT / "deploy" / "pixelle-video" / "templates"
+        captions = ("字" * 28, "ABCDEFGHIJKLMNOPQRSTUVWXYZ12")
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_root = Path(tmp)
+            for size in ("1080x1920", "1920x1080", "1080x1080"):
+                width, height = size.split("x")
+                source = (template_root / size / "video_default.html").read_text(
+                    encoding="utf-8"
+                )
+                for index, caption in enumerate(captions):
+                    rendered = source.replace(
+                        "{{title}}", "AI培训内容创作与企业运营效率全面提升"
+                    ).replace("{{text}}", caption)
+                    page = temp_root / f"{size}-{index}.html"
+                    page.write_text(rendered, encoding="utf-8")
+                    profile = temp_root / f"profile-{size}-{index}"
+                    result = subprocess.run(
+                        [
+                            chrome,
+                            "--headless=new",
+                            "--disable-gpu",
+                            "--no-sandbox",
+                            "--hide-scrollbars",
+                            "--virtual-time-budget=1500",
+                            f"--window-size={width},{height}",
+                            f"--user-data-dir={profile}",
+                            "--dump-dom",
+                            page.as_uri(),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=20,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    for marker in (
+                        'data-layout-ready="true"',
+                        'data-title-fits="true"',
+                        'data-caption-fits="true"',
+                        'data-safe-zone="true"',
+                        'data-no-overlap="true"',
+                    ):
+                        self.assertIn(marker, result.stdout, f"{size}: {caption}")
+
     def test_external_narration_patch_and_overrides_are_fail_closed(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
         unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")

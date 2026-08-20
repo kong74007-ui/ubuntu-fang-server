@@ -9,7 +9,7 @@
     body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
     .frame { position: relative; width: 1080px; height: 1920px; background: transparent; }
     .title, .caption { position: absolute; left: 5%; width: 90%; color: #fff; text-align: center; text-shadow: 0 2px 8px #000, 0 0 16px rgba(0,0,0,.8); }
-    .title { top: 7%; font-size: 72px; font-weight: 700; }
+    .title { top: 7%; font-size: 72px; font-weight: 700; white-space: nowrap; }
     .caption { bottom: 10%; font-size: 48px; font-weight: 600; white-space: nowrap; }
   </style>
 </head>
@@ -18,5 +18,48 @@
     <div class="title">{{title}}</div>
     <div class="caption">{{text}}</div>
   </div>
+  <script>
+    function fitSingleLine(element, minimum) {
+      const maximum = parseFloat(getComputedStyle(element).fontSize);
+      let low = minimum;
+      let high = maximum;
+      let best = minimum;
+      while (high - low > 0.25) {
+        const candidate = (low + high) / 2;
+        element.style.fontSize = candidate + "px";
+        if (element.scrollWidth <= element.clientWidth) {
+          best = candidate;
+          low = candidate;
+        } else {
+          high = candidate;
+        }
+      }
+      element.style.fontSize = best + "px";
+    }
+    async function finalizeLayout() {
+      await document.fonts.ready;
+      const frame = document.querySelector(".frame");
+      const title = document.querySelector(".title");
+      const caption = document.querySelector(".caption");
+      fitSingleLine(title, 28);
+      fitSingleLine(caption, 20);
+      const frameRect = frame.getBoundingClientRect();
+      const titleRect = title.getBoundingClientRect();
+      const captionRect = caption.getBoundingClientRect();
+      frame.dataset.layoutReady = "true";
+      frame.dataset.titleFits = String(title.scrollWidth <= title.clientWidth);
+      frame.dataset.captionFits = String(caption.scrollWidth <= caption.clientWidth);
+      frame.dataset.safeZone = String(
+        titleRect.top >= frameRect.top &&
+        titleRect.left >= frameRect.left &&
+        titleRect.right <= frameRect.right &&
+        captionRect.left >= frameRect.left &&
+        captionRect.right <= frameRect.right &&
+        captionRect.bottom <= frameRect.bottom
+      );
+      frame.dataset.noOverlap = String(titleRect.bottom <= captionRect.top);
+    }
+    finalizeLayout();
+  </script>
 </body>
 </html>
