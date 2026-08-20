@@ -732,11 +732,12 @@ cleanup
             "'-ac', '2'",
         ):
             self.assertIn(marker, patch)
-        self.assertGreaterEqual(concat_patch.count("await asyncio.to_thread("), 4)
-        self.assertIn(
-            "concat_with_normalized_streams(videos, output)",
-            concat_patch,
+        self.assertEqual(
+            4,
+            concat_patch.count("await concat_videos_cancellable("),
         )
+        self.assertIn("concat_with_normalized_streams(", concat_patch)
+        self.assertIn("cancel_event=cancel_event", concat_patch)
 
     def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
         module_path = (
@@ -827,6 +828,7 @@ cleanup
                             chrome,
                             "--headless=new",
                             "--disable-gpu",
+                            "--disable-dev-shm-usage",
                             "--no-sandbox",
                             "--hide-scrollbars",
                             "--virtual-time-budget=1500",
@@ -839,7 +841,7 @@ cleanup
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=20,
+                        timeout=60,
                     )
                     self.assertEqual(0, result.returncode, result.stderr)
                     for marker in (

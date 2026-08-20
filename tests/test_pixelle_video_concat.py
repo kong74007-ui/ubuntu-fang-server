@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,17 +46,21 @@ class PixelleVideoConcatTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "partial.mp4"
-            output.write_bytes(b"partial")
-            with patch.object(
-                module.subprocess,
-                "run",
-                side_effect=subprocess.TimeoutExpired(["ffmpeg"], 600),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "timed out after 600 seconds"):
-                    module.concat_with_normalized_streams(
-                        ["one.mp4", "two.mp4"],
-                        str(output),
-                    )
+            child = (
+                "from pathlib import Path; import time; "
+                f"p=Path({str(output)!r}); p.write_bytes(b'partial'); "
+                "time.sleep(30); p.write_bytes(b'late')"
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "timed out after 0.2 seconds"):
+                module.run_cancellable_process(
+                    [sys.executable, "-c", child],
+                    str(output),
+                    timeout_seconds=0.2,
+                )
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertFalse(output.exists())
+            time.sleep(0.3)
             self.assertFalse(output.exists())
 
     def test_real_mixed_frame_rate_concat_finishes_with_bounded_duration(self):
@@ -117,6 +123,63 @@ class PixelleVideoConcatTests(unittest.TestCase):
             )
             self.assertGreater(duration, 1.8)
             self.assertLess(duration, 2.3)
+
+
+class PixelleVideoConcatCancellationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_task_cancellation_kills_worker_and_keeps_event_loop_responsive(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "cancelled.mp4"
+            started_file = root / "started.txt"
+
+            def fake_concat(*, videos, output, cancel_event=None):
+                child = (
+                    "from pathlib import Path; import os,time; "
+                    f"Path({str(started_file)!r}).write_text(str(os.getpid())); "
+                    f"p=Path({str(output)!r}); p.write_bytes(b'partial'); "
+                    "time.sleep(30); p.write_bytes(b'late')"
+                )
+                module.run_cancellable_process(
+                    [sys.executable, "-c", child],
+                    output,
+                    timeout_seconds=30,
+                    cancel_event=cancel_event,
+                )
+                return output
+
+            pulses = 0
+
+            async def pulse():
+                nonlocal pulses
+                while True:
+                    pulses += 1
+                    await asyncio.sleep(0.01)
+
+            pulse_task = asyncio.create_task(pulse())
+            task = asyncio.create_task(
+                module.concat_videos_cancellable(
+                    fake_concat,
+                    videos=["one.mp4", "two.mp4"],
+                    output=str(output),
+                )
+            )
+            for _ in range(200):
+                if started_file.exists():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(started_file.exists())
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+            pulse_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await pulse_task
+
+            self.assertGreater(pulses, 2)
+            self.assertFalse(output.exists())
+            await asyncio.sleep(0.3)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
