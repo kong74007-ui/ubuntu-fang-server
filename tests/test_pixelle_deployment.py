@@ -676,6 +676,42 @@ cleanup
                 marker,
             )
 
+    def test_media_integrity_patch_keeps_video_visible_and_audio_decodable(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch_path = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0015-preserve-video-visual-and-audio-integrity.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+
+        self.assertIn("MEDIA_INTEGRITY_PATCH=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_INTEGRITY_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${MEDIA_INTEGRITY_PATCH}"',
+            installer,
+        )
+        self.assertIn('get_template_type(config.frame_template or "")', patch)
+        self.assertIn('template_path.with_name("video_default.html")', patch)
+        self.assertIn(
+            'method: Literal["demuxer", "filter"] = "filter"',
+            patch,
+        )
+        for marker in (
+            "'-c:v', 'libx264'",
+            "'-pix_fmt', 'yuv420p'",
+            "'-c:a', 'aac'",
+            "'-b:a', '192k'",
+            "'-ar', '44100'",
+            "'-ac', '2'",
+        ):
+            self.assertIn(marker, patch)
+
     def test_external_narration_patch_and_overrides_are_fail_closed(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
         unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(encoding="utf-8")
