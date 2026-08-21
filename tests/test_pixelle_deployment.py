@@ -737,6 +737,8 @@ cleanup
             concat_patch.count("await concat_videos_cancellable("),
         )
         self.assertIn("concat_with_normalized_streams(", concat_patch)
+        self.assertIn("add_bgm_with_controlled_process", concat_patch)
+        self.assertIn("Path(temp_output).unlink(missing_ok=True)", concat_patch)
         self.assertIn("cancel_event=cancel_event", concat_patch)
 
     def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,6 +183,128 @@ class PixelleVideoConcatCancellationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(output.exists())
             await asyncio.sleep(0.3)
             self.assertFalse(output.exists())
+
+    async def test_bgm_cancellation_kills_second_ffmpeg_and_cleans_both_outputs(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.mp4"
+            bgm = root / "bgm.wav"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=0x223344:s=160x90:r=30:d=5",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=5",
+                    "-shortest",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-y",
+                    str(source),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=220:sample_rate=44100:duration=5",
+                    "-y",
+                    str(bgm),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            temp_output = root / "final_no_bgm.mp4"
+            final_output = root / "final.mp4"
+            process_started = threading.Event()
+            original_build = module.build_bgm_command
+            original_popen = module.subprocess.Popen
+
+            def slow_bgm_command(*args, **kwargs):
+                command = original_build(*args, **kwargs)
+                command.insert(command.index("-i"), "-re")
+                return command
+
+            def marked_popen(*args, **kwargs):
+                process = original_popen(*args, **kwargs)
+                process_started.set()
+                return process
+
+            def fake_concat(*, videos, output, cancel_event=None):
+                shutil.copy2(source, temp_output)
+                try:
+                    return module.add_bgm_with_controlled_process(
+                        str(temp_output),
+                        str(bgm),
+                        output,
+                        volume=0.2,
+                        loop=True,
+                        timeout_seconds=30,
+                        cancel_event=cancel_event,
+                    )
+                finally:
+                    temp_output.unlink(missing_ok=True)
+
+            with patch.object(module, "build_bgm_command", side_effect=slow_bgm_command), patch.object(
+                module.subprocess,
+                "Popen",
+                side_effect=marked_popen,
+            ):
+                task = asyncio.create_task(
+                    module.concat_videos_cancellable(
+                        fake_concat,
+                        videos=["one.mp4", "two.mp4"],
+                        output=str(final_output),
+                    )
+                )
+                started = await asyncio.to_thread(process_started.wait, 5)
+                self.assertTrue(started)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+
+                def timeout_bgm():
+                    shutil.copy2(source, temp_output)
+                    try:
+                        return module.add_bgm_with_controlled_process(
+                            str(temp_output),
+                            str(bgm),
+                            str(final_output),
+                            volume=0.2,
+                            loop=True,
+                            timeout_seconds=0.2,
+                        )
+                    finally:
+                        temp_output.unlink(missing_ok=True)
+
+                with self.assertRaisesRegex(RuntimeError, "timed out after 0.2 seconds"):
+                    await asyncio.to_thread(timeout_bgm)
+
+            self.assertFalse(temp_output.exists())
+            self.assertFalse(final_output.exists())
+            await asyncio.sleep(0.3)
+            self.assertFalse(temp_output.exists())
+            self.assertFalse(final_output.exists())
 
 
 if __name__ == "__main__":

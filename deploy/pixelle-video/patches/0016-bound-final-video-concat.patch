@@ -54,6 +54,29 @@ index 2376a8f..67ee2eb 100644
 +
 +                Path(temp_output).unlink(missing_ok=True)
 +                raise ConcatCancelled("Final video concatenation cancelled")
+@@ -150,7 +156,9 @@ class VideoService:
+-            final_result = self._add_bgm_to_video(
+-                video=concat_result,
+-                bgm_path=bgm_path,
+-                output=output,
+-                volume=bgm_volume,
+-                mode=bgm_mode
+-            )
++            try:
++                final_result = self._add_bgm_to_video(
++                    video=concat_result,
++                    bgm_path=bgm_path,
++                    output=output,
++                    volume=bgm_volume,
++                    mode=bgm_mode,
++                    cancel_event=cancel_event,
++                )
+@@ -158,3 +166,2 @@ class VideoService:
+-            # Clean up temp file
+-            if os.path.exists(temp_output):
+-                os.unlink(temp_output)
++            finally:
++                Path(temp_output).unlink(missing_ok=True)
 @@ -168 +174 @@ class VideoService:
 -                return self._concat_filter(videos, output)
 +                return self._concat_filter(videos, output, cancel_event)
@@ -113,3 +136,21 @@ index 2376a8f..67ee2eb 100644
 -            logger.error(f"FFmpeg concat filter error: {error_msg}")
 -            raise RuntimeError(f"Failed to concatenate videos: {error_msg}")
 +            return result
+@@ -847 +822,2 @@ class VideoService:
+-        mode: Literal["once", "loop"] = "loop"
++        mode: Literal["once", "loop"] = "loop",
++        cancel_event=None,
+@@ -868,3 +844,3 @@ class VideoService:
+-        # Add BGM using existing method
+-        loop = (mode == "loop")
+-        return self.add_bgm(
++        from pixelle_video.services.video_concat import add_bgm_with_controlled_process
++
++        return add_bgm_with_controlled_process(
+@@ -874,3 +850,3 @@ class VideoService:
+-            bgm_volume=volume,
+-            loop=loop,
+-            fade_in=0.0
++            volume=volume,
++            loop=(mode == "loop"),
++            cancel_event=cancel_event,

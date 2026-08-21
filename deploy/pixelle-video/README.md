@@ -237,10 +237,11 @@ AAC audio, preventing incompatible per-segment AAC headers from corrupting the
 final narration track. Every input is first normalized to 30 fps with a
 zero-based timestamp, avoiding the FFmpeg 4.4 mixed-frame-rate concat behavior
 that can duplicate frames and run indefinitely. Concatenation runs outside the
-API event loop and has a 600-second hard deadline. Both task cancellation and
-timeout terminate the FFmpeg process group, escalate to a forced kill when it
-does not exit, wait for process cleanup, and remove the partial output before
-the task reaches its terminal state. This prevents cancelled work from
+API event loop and has a 600-second hard deadline. The optional BGM mixing pass
+uses the same managed-process path. Both task cancellation and timeout terminate
+the active FFmpeg process group, escalate to a forced kill when it does not
+exit, wait for process cleanup, and remove the intermediate and partial outputs
+before the task reaches its terminal state. This prevents cancelled work from
 continuing to consume CPU or recreating `final.mp4` in the background.
 
 Linux validation must run the POSIX mode-bit and real symlink security tests

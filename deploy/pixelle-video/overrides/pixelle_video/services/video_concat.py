@@ -92,6 +92,62 @@ def concat_with_normalized_streams(
     return output
 
 
+def build_bgm_command(
+    video: str,
+    bgm: str,
+    output: str,
+    volume: float,
+    loop: bool,
+) -> list[str]:
+    if volume < 0:
+        raise ValueError("BGM volume cannot be negative")
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats"]
+    command.extend(("-i", video))
+    if loop:
+        command.extend(("-stream_loop", "-1"))
+    command.extend(("-i", bgm))
+    command.extend(
+        (
+            "-filter_complex",
+            f"[1:a]volume={volume:.6g}[bgm];"
+            "[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]",
+            "-map",
+            "0:v:0",
+            "-map",
+            "[a]",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output,
+        )
+    )
+    return command
+
+
+def add_bgm_with_controlled_process(
+    video: str,
+    bgm: str,
+    output: str,
+    volume: float,
+    loop: bool,
+    timeout_seconds: int = FINAL_CONCAT_TIMEOUT_SECONDS,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    run_cancellable_process(
+        build_bgm_command(video, bgm, output, volume, loop),
+        output,
+        timeout_seconds,
+        cancel_event,
+    )
+    return output
+
+
 def terminate_process_group(process: subprocess.Popen, grace_seconds: float = 2.0) -> None:
     if process.poll() is not None:
         return
