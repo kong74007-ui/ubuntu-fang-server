@@ -53,9 +53,8 @@ async def download_with_retry(
                 last_error = exc
             except Exception as exc:
                 partial_path.unlink(missing_ok=True)
-                detail = str(exc).strip() or type(exc).__name__
                 raise RuntimeError(
-                    f"Media download failed from {host}: {type(exc).__name__}: {detail}"
+                    f"Media download failed from {host}: {type(exc).__name__}"
                 ) from exc
 
             if attempt < DOWNLOAD_ATTEMPTS:
@@ -69,10 +68,11 @@ async def download_with_retry(
                 await sleep(2 ** attempt)
 
     error_type = type(last_error).__name__ if last_error else "UnknownError"
-    detail = str(last_error).strip() if last_error else "unknown failure"
-    if not detail:
-        detail = error_type
+    if isinstance(last_error, httpx.HTTPStatusError):
+        safe_detail = f"HTTP {last_error.response.status_code}"
+    else:
+        safe_detail = error_type
     raise RuntimeError(
         f"Media download failed from {host} after {DOWNLOAD_ATTEMPTS} attempts: "
-        f"{error_type}: {detail}"
+        f"{error_type}: {safe_detail}"
     ) from last_error

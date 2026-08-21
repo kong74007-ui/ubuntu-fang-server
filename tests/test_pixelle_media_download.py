@@ -98,7 +98,9 @@ class PixelleMediaDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_exhausted_timeout_has_nonempty_sanitized_error(self):
         module = load_module()
         request = httpx.Request("GET", "https://cdn.example.test/image.png?secret=hidden")
-        client = FakeClient([httpx.ReadTimeout("", request=request)] * 3)
+        client = FakeClient(
+            [httpx.ReadTimeout(f"failed to read {request.url}", request=request)] * 3
+        )
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(RuntimeError) as raised:
                 await module.download_with_retry(
@@ -110,8 +112,37 @@ class PixelleMediaDownloadTests(unittest.IsolatedAsyncioTestCase):
         message = str(raised.exception)
         self.assertIn("cdn.example.test", message)
         self.assertIn("ReadTimeout", message)
+        self.assertNotIn(str(request.url), message)
         self.assertNotIn("secret=hidden", message)
         self.assertEqual(3, client.calls)
+
+    async def test_retryable_http_errors_never_expose_signed_url(self):
+        module = load_module()
+        signed_url = (
+            "https://cdn.example.test/image.png?"
+            "X-Amz-Signature=TOPSECRET&token=hidden"
+        )
+        request = httpx.Request("GET", signed_url)
+        for status in (429, 503):
+            responses = [httpx.Response(status, request=request) for _ in range(3)]
+            client = FakeClient(responses)
+            with tempfile.TemporaryDirectory() as tmp, self.assertLogs(
+                module.logger, level="WARNING"
+            ) as logs:
+                with self.assertRaises(RuntimeError) as raised:
+                    await module.download_with_retry(
+                        signed_url,
+                        Path(tmp) / "frame.png",
+                        client_factory=lambda **_kwargs: client,
+                        sleep=lambda _delay: asyncio.sleep(0),
+                    )
+            combined = str(raised.exception) + "\n" + "\n".join(logs.output)
+            self.assertIn(f"HTTP {status}", combined)
+            self.assertIn("HTTPStatusError", combined)
+            self.assertNotIn(signed_url, combined)
+            self.assertNotIn("TOPSECRET", combined)
+            self.assertNotIn("token=hidden", combined)
+            self.assertEqual(3, client.calls)
 
     async def test_cancellation_is_not_retried(self):
         module = load_module()
