@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -51,6 +52,14 @@ def concat_with_normalized_streams(
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
 
+    if streams_are_copy_compatible(videos, cancel_event):
+        return concat_copy_compatible_streams(
+            videos,
+            output,
+            timeout_seconds,
+            cancel_event,
+        )
+
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats"]
     for video in videos:
         command.extend(("-i", video))
@@ -90,6 +99,125 @@ def concat_with_normalized_streams(
     run_cancellable_process(command, output, timeout_seconds, cancel_event)
 
     return output
+
+
+def stream_signature(
+    video: str,
+    cancel_event: threading.Event | None = None,
+) -> tuple[tuple[tuple[str, Any], ...], ...]:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ConcatCancelled("Final video concatenation cancelled")
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_data",
+            "-of",
+            "json",
+            video,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    keys_by_type = {
+        "video": (
+            "codec_name",
+            "profile",
+            "level",
+            "width",
+            "height",
+            "pix_fmt",
+            "r_frame_rate",
+            "avg_frame_rate",
+            "time_base",
+            "extradata",
+        ),
+        "audio": (
+            "codec_name",
+            "profile",
+            "sample_rate",
+            "channels",
+            "channel_layout",
+            "time_base",
+            "extradata",
+        ),
+    }
+    signature = []
+    for stream in streams:
+        codec_type = stream.get("codec_type")
+        if codec_type not in keys_by_type:
+            continue
+        values = [("codec_type", codec_type)]
+        values.extend((key, stream.get(key)) for key in keys_by_type[codec_type])
+        signature.append(tuple(values))
+    if [dict(item)["codec_type"] for item in signature] != ["video", "audio"]:
+        raise ValueError(f"Expected one video and one audio stream: {video}")
+    return tuple(signature)
+
+
+def streams_are_copy_compatible(
+    videos: Sequence[str],
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    try:
+        signatures = [stream_signature(video, cancel_event) for video in videos]
+    except ConcatCancelled:
+        raise
+    except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    return bool(signatures) and all(signature == signatures[0] for signature in signatures[1:])
+
+
+def concat_copy_compatible_streams(
+    videos: Sequence[str],
+    output: str,
+    timeout_seconds: int,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    filelist_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".txt",
+            encoding="utf-8",
+            newline="\n",
+            delete=False,
+        ) as filelist:
+            filelist_path = filelist.name
+            for video in videos:
+                path = str(Path(video).resolve()).replace("\\", "/")
+                escaped = path.replace("'", "'\\''")
+                filelist.write(f"file '{escaped}'\n")
+
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostats",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            filelist_path,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-y",
+            output,
+        ]
+        run_cancellable_process(command, output, timeout_seconds, cancel_event)
+        return output
+    finally:
+        if filelist_path:
+            Path(filelist_path).unlink(missing_ok=True)
 
 
 def build_bgm_command(

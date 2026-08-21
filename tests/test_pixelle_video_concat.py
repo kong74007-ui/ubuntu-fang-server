@@ -101,6 +101,7 @@ class PixelleVideoConcatTests(unittest.TestCase):
                 )
                 inputs.append(str(path))
 
+            self.assertFalse(module.streams_are_copy_compatible(inputs))
             output = root / "final.mp4"
             module.concat_with_normalized_streams(inputs, str(output), timeout_seconds=30)
             probe = subprocess.run(
@@ -126,6 +127,37 @@ class PixelleVideoConcatTests(unittest.TestCase):
             )
             self.assertGreater(duration, 1.8)
             self.assertLess(duration, 2.3)
+
+            copy_output = root / "copy-final.mp4"
+            compatible_inputs = [inputs[1], inputs[1]]
+            self.assertTrue(module.streams_are_copy_compatible(compatible_inputs))
+            module.concat_with_normalized_streams(
+                compatible_inputs,
+                str(copy_output),
+                timeout_seconds=30,
+            )
+            copy_probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(copy_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertGreater(float(copy_probe.stdout), 1.8)
+            self.assertLess(float(copy_probe.stdout), 2.3)
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(copy_output), "-f", "null", "-"],
+                check=True,
+                capture_output=True,
+            )
 
 
 class PixelleVideoConcatCancellationTests(unittest.IsolatedAsyncioTestCase):

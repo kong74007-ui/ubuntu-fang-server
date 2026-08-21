@@ -243,6 +243,12 @@ the active FFmpeg process group, escalate to a forced kill when it does not
 exit, wait for process cleanup, and remove the intermediate and partial outputs
 before the task reaches its terminal state. This prevents cancelled work from
 continuing to consume CPU or recreating `final.mp4` in the background.
+Before re-encoding, Pixelle compares the complete video and audio stream
+configuration, including codec extradata. Caption-cue segments with identical
+H.264/AAC configuration use managed concat stream copy; any difference in
+frame rate, time base, dimensions, profile, sample rate, channel layout, or
+codec configuration falls back to the normalized 30 fps encode. This keeps
+long caption carousels fast without reintroducing incompatible-AAC corruption.
 
 Linux validation must run the POSIX mode-bit and real symlink security tests
 that are skipped on Windows. Local deterministic integration tests stub the
