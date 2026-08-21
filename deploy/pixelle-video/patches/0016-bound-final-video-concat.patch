@@ -1,0 +1,156 @@
+diff --git a/pixelle_video/pipelines/asset_based.py b/pixelle_video/pipelines/asset_based.py
+index 76710c1..0fc1858 100644
+--- a/pixelle_video/pipelines/asset_based.py
++++ b/pixelle_video/pipelines/asset_based.py
+@@ -820 +820,4 @@ class AssetBasedPipeline(LinearVideoPipeline):
+-        self.core.video.concat_videos(
++        from pixelle_video.services.video_concat import concat_videos_cancellable
++
++        await concat_videos_cancellable(
++            self.core.video.concat_videos,
+diff --git a/pixelle_video/pipelines/custom.py b/pixelle_video/pipelines/custom.py
+index 749d458..eff8a1e 100644
+--- a/pixelle_video/pipelines/custom.py
++++ b/pixelle_video/pipelines/custom.py
+@@ -335,0 +336 @@ class CustomPipeline(BasePipeline):
++            from pixelle_video.services.video_concat import concat_videos_cancellable
+@@ -338 +339,2 @@ class CustomPipeline(BasePipeline):
+-            final_video_path = video_service.concat_videos(
++            final_video_path = await concat_videos_cancellable(
++                video_service.concat_videos,
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+index c2b7daf..0bfb04a 100644
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -478,0 +479 @@ class StandardPipeline(LinearVideoPipeline):
++        from pixelle_video.services.video_concat import concat_videos_cancellable
+@@ -480 +481,2 @@ class StandardPipeline(LinearVideoPipeline):
+-        final_video_path = video_service.concat_videos(
++        final_video_path = await concat_videos_cancellable(
++            video_service.concat_videos,
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index 45e612e..33c63c7 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -682 +682,4 @@ class FrameProcessor:
+-        frame.video_segment_path = video_service.concat_videos(
++        from pixelle_video.services.video_concat import concat_videos_cancellable
++
++        frame.video_segment_path = await concat_videos_cancellable(
++            video_service.concat_videos,
+diff --git a/pixelle_video/services/video.py b/pixelle_video/services/video.py
+index 2376a8f..67ee2eb 100644
+--- a/pixelle_video/services/video.py
++++ b/pixelle_video/services/video.py
+@@ -116 +116,2 @@ class VideoService:
+-        bgm_mode: Literal["once", "loop"] = "loop"
++        bgm_mode: Literal["once", "loop"] = "loop",
++        cancel_event=None,
+@@ -146 +147,6 @@ class VideoService:
+-            concat_result = self._concat_demuxer(videos, temp_output) if method == "demuxer" else self._concat_filter(videos, temp_output)
++            concat_result = self._concat_demuxer(videos, temp_output) if method == "demuxer" else self._concat_filter(videos, temp_output, cancel_event)
++            if cancel_event is not None and cancel_event.is_set():
++                from pixelle_video.services.video_concat import ConcatCancelled
++
++                Path(temp_output).unlink(missing_ok=True)
++                raise ConcatCancelled("Final video concatenation cancelled")
+@@ -150,7 +156,9 @@ class VideoService:
+-            final_result = self._add_bgm_to_video(
+-                video=concat_result,
+-                bgm_path=bgm_path,
+-                output=output,
+-                volume=bgm_volume,
+-                mode=bgm_mode
+-            )
++            try:
++                final_result = self._add_bgm_to_video(
++                    video=concat_result,
++                    bgm_path=bgm_path,
++                    output=output,
++                    volume=bgm_volume,
++                    mode=bgm_mode,
++                    cancel_event=cancel_event,
++                )
+@@ -158,3 +166,2 @@ class VideoService:
+-            # Clean up temp file
+-            if os.path.exists(temp_output):
+-                os.unlink(temp_output)
++            finally:
++                Path(temp_output).unlink(missing_ok=True)
+@@ -168 +174 @@ class VideoService:
+-                return self._concat_filter(videos, output)
++                return self._concat_filter(videos, output, cancel_event)
+@@ -276 +282 @@ class VideoService:
+-    def _concat_filter(self, videos: List[str], output: str) -> str:
++    def _concat_filter(self, videos: List[str], output: str, cancel_event=None) -> str:
+@@ -284,3 +290 @@ class VideoService:
+-        try:
+-            # Build filter_complex string manually
+-            n = len(videos)
++        from pixelle_video.services.video_concat import concat_with_normalized_streams
+@@ -288,3 +292,0 @@ class VideoService:
+-            # Build input stream labels: [0:v][0:a][1:v][1:a]...
+-            stream_spec = "".join([f"[{i}:v][{i}:a]" for i in range(n)])
+-            filter_complex = f"{stream_spec}concat=n={n}:v=1:a=1[v][a]"
+@@ -292,20 +293,0 @@ class VideoService:
+-            # Build ffmpeg command
+-            cmd = ['ffmpeg']
+-            for video in videos:
+-                cmd.extend(['-i', video])
+-            cmd.extend([
+-                '-filter_complex', filter_complex,
+-                '-map', '[v]',
+-                '-map', '[a]',
+-                '-c:v', 'libx264',
+-                '-preset', 'fast',
+-                '-crf', '20',
+-                '-pix_fmt', 'yuv420p',
+-                '-c:a', 'aac',
+-                '-b:a', '192k',
+-                '-ar', '44100',
+-                '-ac', '2',
+-                '-movflags', '+faststart',
+-                '-y',  # Overwrite output
+-                output
+-            ])
+@@ -313,8 +294,0 @@ class VideoService:
+-            # Run command
+-            import subprocess
+-            result = subprocess.run(
+-                cmd,
+-                capture_output=True,
+-                text=True,
+-                check=True
+-            )
+@@ -321,0 +295,6 @@ class VideoService:
++        try:
++            result = concat_with_normalized_streams(
++                videos,
++                output,
++                cancel_event=cancel_event,
++            )
+@@ -323,5 +302 @@ class VideoService:
+-            return output
+-        except subprocess.CalledProcessError as e:
+-            error_msg = e.stderr if e.stderr else str(e)
+-            logger.error(f"FFmpeg concat filter error: {error_msg}")
+-            raise RuntimeError(f"Failed to concatenate videos: {error_msg}")
++            return result
+@@ -847 +822,2 @@ class VideoService:
+-        mode: Literal["once", "loop"] = "loop"
++        mode: Literal["once", "loop"] = "loop",
++        cancel_event=None,
+@@ -868,3 +844,3 @@ class VideoService:
+-        # Add BGM using existing method
+-        loop = (mode == "loop")
+-        return self.add_bgm(
++        from pixelle_video.services.video_concat import add_bgm_with_controlled_process
++
++        return add_bgm_with_controlled_process(
+@@ -874,3 +850,3 @@ class VideoService:
+-            bgm_volume=volume,
+-            loop=loop,
+-            fade_in=0.0
++            volume=volume,
++            loop=(mode == "loop"),
++            cancel_event=cancel_event,

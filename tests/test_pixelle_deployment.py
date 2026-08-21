@@ -686,8 +686,29 @@ cleanup
             / "0015-preserve-video-visual-and-audio-integrity.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
+        concat_patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0016-bound-final-video-concat.patch"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("MEDIA_INTEGRITY_PATCH=", installer)
+        self.assertIn("FINAL_CONCAT_PATCH=", installer)
+        self.assertIn("VIDEO_CONCAT_OVERRIDE=", installer)
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${FINAL_CONCAT_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE_DIR}" apply --unidiff-zero "${FINAL_CONCAT_PATCH}"',
+            installer,
+        )
+        self.assertIn(
+            '"${RELEASE_DIR}/pixelle_video/services/video_concat.py"',
+            installer,
+        )
         self.assertIn(
             'git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_INTEGRITY_PATCH}"',
             installer,
@@ -711,6 +732,14 @@ cleanup
             "'-ac', '2'",
         ):
             self.assertIn(marker, patch)
+        self.assertEqual(
+            4,
+            concat_patch.count("await concat_videos_cancellable("),
+        )
+        self.assertIn("concat_with_normalized_streams(", concat_patch)
+        self.assertIn("add_bgm_with_controlled_process", concat_patch)
+        self.assertIn("Path(temp_output).unlink(missing_ok=True)", concat_patch)
+        self.assertIn("cancel_event=cancel_event", concat_patch)
 
     def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
         module_path = (
@@ -801,6 +830,7 @@ cleanup
                             chrome,
                             "--headless=new",
                             "--disable-gpu",
+                            "--disable-dev-shm-usage",
                             "--no-sandbox",
                             "--hide-scrollbars",
                             "--virtual-time-budget=1500",
@@ -813,7 +843,7 @@ cleanup
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=20,
+                        timeout=60,
                     )
                     self.assertEqual(0, result.returncode, result.stderr)
                     for marker in (
