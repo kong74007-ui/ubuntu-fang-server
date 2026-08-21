@@ -741,6 +741,23 @@ cleanup
         self.assertIn("Path(temp_output).unlink(missing_ok=True)", concat_patch)
         self.assertIn("cancel_event=cancel_event", concat_patch)
 
+    def test_media_download_retry_patch_and_override_are_installed(self):
+        installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")
+        patch = (
+            ROOT
+            / "deploy"
+            / "pixelle-video"
+            / "patches"
+            / "0017-retry-media-downloads.patch"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("MEDIA_DOWNLOAD_PATCH=", installer)
+        self.assertIn("MEDIA_DOWNLOAD_OVERRIDE=", installer)
+        self.assertIn('apply --unidiff-zero --check "${MEDIA_DOWNLOAD_PATCH}"', installer)
+        self.assertIn('apply --unidiff-zero "${MEDIA_DOWNLOAD_PATCH}"', installer)
+        self.assertIn('"${RELEASE_DIR}/pixelle_video/services/media_download.py"', installer)
+        self.assertIn("download_with_retry(url, output_path)", patch)
+
     def test_video_overlay_resolver_supports_all_sizes_and_custom_templates(self):
         module_path = (
             ROOT

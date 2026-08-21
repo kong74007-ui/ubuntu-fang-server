@@ -94,6 +94,13 @@ cancellation is never retried. The provider coroutine is cancelled on timeout,
 although an upstream provider job may continue remotely when its API does not
 expose cancellation.
 
+After a provider returns an image or video URL, Pixelle downloads that media
+with up to three transport attempts and 2/4-second backoff. HTTP 408, 425, 429,
+and 5xx gateway/service failures are retryable; other HTTP status failures are
+terminal. Downloads publish atomically through a `.part` file, cancellation is
+never retried, and exhausted errors identify the provider host and exception
+type without exposing signed query parameters.
+
 Parallel frame generation is fail-fast. If any frame fails or the parent task
 is cancelled, every running or semaphore-waiting sibling frame is cancelled
 and awaited before the original exception is propagated. Cancelled siblings do
