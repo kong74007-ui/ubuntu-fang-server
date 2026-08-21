@@ -1,0 +1,16 @@
+diff --git a/pixelle_video/services/frame_processor.py b/pixelle_video/services/frame_processor.py
+index 33c63c7..dcf557a 100644
+--- a/pixelle_video/services/frame_processor.py
++++ b/pixelle_video/services/frame_processor.py
+@@ -1009,4 +1009 @@ class FrameProcessor:
+-        timeout = httpx.Timeout(connect=10.0, read=60, write=60, pool=60)
+-        async with httpx.AsyncClient(timeout=timeout) as client:
+-            response = await client.get(url)
+-            response.raise_for_status()
++        from pixelle_video.services.media_download import download_with_retry
+@@ -1014,2 +1011,0 @@ class FrameProcessor:
+-            with open(output_path, 'wb') as f:
+-                f.write(response.content)
+@@ -1017 +1011 @@ class FrameProcessor:
+-        return output_path
++        return str(await download_with_retry(url, output_path))
