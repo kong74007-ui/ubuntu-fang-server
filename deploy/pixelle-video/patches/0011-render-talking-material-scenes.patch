@@ -423,7 +423,7 @@ index c0c9cee..5931412 100644
 +                except TalkingClipError as error:
 +                    self._discard_talking_window_slices(frame, window_slice_indices)
 +                    frame.talking_attempts += error.attempts
-+                    warnings.append(f"第 {window_index + 1} 段口播生成失败，已使用普通素材（{error.code}，重试 {error.attempts} 次）")
++                    warnings.append(f"第 {window_index + 1} 段口播生成失败，已使用普通素材（{error.code}，共尝试 {error.attempts} 次）")
 +                    logger.warning(
 +                        f"Talking material fallback for {frame.scene_id}: {error.code}"
 +                    )
