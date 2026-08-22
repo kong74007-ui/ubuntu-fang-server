@@ -445,7 +445,9 @@ def test_three_talking_scenes_reuse_two_images_and_preserve_authoritative_audio(
     assert all(frame.talking_warning is None for frame in frames)
 
 
-def test_talking_failure_keeps_the_existing_ordinary_visual(tmp_path, monkeypatch):
+@pytest.mark.parametrize("attempts", [1, 3])
+def test_talking_failure_keeps_the_existing_ordinary_visual(
+        tmp_path, monkeypatch, attempts):
     class VideoService:
         def concat_audios(self, _inputs, output):
             Path(output).write_bytes(b"audio")
@@ -468,7 +470,7 @@ def test_talking_failure_keeps_the_existing_ordinary_visual(tmp_path, monkeypatc
                 "provider unavailable",
                 retryable=False,
                 billed=False,
-                attempts=1,
+                attempts=attempts,
             )
 
     monkeypatch.setattr(frame_module, "TalkingClient", FailingClient)
@@ -489,4 +491,7 @@ def test_talking_failure_keeps_the_existing_ordinary_visual(tmp_path, monkeypatc
     assert frame.video_path == ordinary
     assert frame.visual_source == "ordinary"
     assert frame.talking_cue_video_paths == {}
-    assert frame.talking_warning == "provider_unavailable after 1 attempt(s)"
+    assert frame.talking_warning == (
+        "第 1 段口播生成失败，已使用普通素材"
+        f"（provider_unavailable，共尝试 {attempts} 次）"
+    )

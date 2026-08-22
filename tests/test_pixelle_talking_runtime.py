@@ -507,5 +507,8 @@ def test_partial_cue_slice_is_cleaned_when_later_slice_fails(tmp_path, monkeypat
 
     assert frame.talking_cue_video_paths == {}
     assert frame.visual_source == "ordinary"
-    assert "talking_material_processing_failed" in frame.talking_warning
+    assert frame.talking_warning == (
+        "第 1 段口播处理失败，已使用普通素材"
+        "（talking_material_processing_failed）"
+    )
     assert not list(tmp_path.glob("*_talking_cue_*.mp4"))

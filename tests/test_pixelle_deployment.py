@@ -1281,6 +1281,9 @@ cleanup
         self.assertIn('"scene_id": frame.scene_id', patch)
         self.assertIn('"message": frame.talking_warning', patch)
         self.assertIn('if frame.talking_warning', patch)
+        self.assertIn('第 {window_index + 1} 段口播生成失败，已使用普通素材', patch)
+        self.assertIn('共尝试 {error.attempts} 次', patch)
+        self.assertIn('第 {window_index + 1} 段口播处理失败，已使用普通素材', patch)
 
     def test_continuous_narration_patch_is_applied_after_talking_scenes(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
