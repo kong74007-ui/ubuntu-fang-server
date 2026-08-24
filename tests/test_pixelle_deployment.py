@@ -246,9 +246,9 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1 --port 8103", unit)
         self.assertIn("MemoryMax=1800M", unit)
         self.assertIn("CPUQuota=150%", unit)
-        self.assertIn("After=network-online.target mihomo-new.service", unit)
-        self.assertIn("Requires=mihomo-new.service", unit)
-        self.assertIn("Environment=HTTPS_PROXY=http://127.0.0.1:7999", unit)
+        self.assertIn("After=network-online.target huangque-pixelle-novix-tunnel.service", unit)
+        self.assertIn("Requires=huangque-pixelle-novix-tunnel.service", unit)
+        self.assertIn("Environment=HTTPS_PROXY=http://127.0.0.1:10811", unit)
         self.assertIn("Environment=NO_PROXY=127.0.0.1,localhost", unit)
         self.assertNotIn("Environment=OPENAI_API_KEY", unit)
         self.assertNotIn("Environment=RUNNINGHUB_API_KEY", unit)
@@ -322,7 +322,7 @@ class PixelleDeploymentTests(unittest.TestCase):
         self.assertIn('trap cleanup EXIT', installer)
         self.assertIn('mv "${LEGACY_SOURCE_BACKUP}" "${SOURCE_DIR}"', installer)
 
-    def test_installer_requires_ready_mihomo_before_preparing_release(self):
+    def test_installer_requires_ready_novix_tunnel_before_preparing_release(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(
             encoding="utf-8"
         )
@@ -469,12 +469,12 @@ cleanup
                     calls = trace_path.read_text(encoding="utf-8").splitlines()
                     self.assertNotIn("start huangque-pixelle-video.service", calls)
 
-    def test_readme_documents_mihomo_egress_dependency(self):
+    def test_readme_documents_novix_egress_dependency(self):
         readme = (ROOT / "deploy/pixelle-video/README.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("mihomo-new.service", readme)
-        self.assertNotIn("huangque-egress-tunnel.service", readme)
+        self.assertIn("huangque-pixelle-novix-tunnel.service", readme)
+        self.assertIn("127.0.0.1:10811", readme)
 
     def test_installer_confirms_service_is_inactive_before_switch(self):
         installer = (ROOT / "deploy/pixelle-video/install.sh").read_text(encoding="utf-8")

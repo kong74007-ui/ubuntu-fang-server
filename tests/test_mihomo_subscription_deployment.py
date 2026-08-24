@@ -45,13 +45,16 @@ def find_bash() -> str:
 
 
 class MihomoSubscriptionDeploymentTests(unittest.TestCase):
-    def test_pixelle_unit_requires_ready_mihomo_proxy(self):
+    def test_pixelle_unit_requires_ready_novix_tunnel(self):
         unit = (ROOT / "deploy/systemd/huangque-pixelle-video.service").read_text(
             encoding="utf-8"
         )
-        self.assertIn("After=network-online.target mihomo-new.service", unit)
-        self.assertIn("Requires=mihomo-new.service", unit)
-        self.assertNotIn("huangque-egress-tunnel.service", unit)
+        self.assertIn(
+            "After=network-online.target huangque-pixelle-novix-tunnel.service",
+            unit,
+        )
+        self.assertIn("Requires=huangque-pixelle-novix-tunnel.service", unit)
+        self.assertNotIn("Requires=mihomo-new.service", unit)
 
     def test_mihomo_unit_waits_for_openai_proxy_readiness(self):
         unit = (ROOT / "deploy/systemd/mihomo-new.service").read_text(

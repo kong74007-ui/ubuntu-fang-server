@@ -16,7 +16,8 @@ third-party source remains in its upstream Git repository.
 - Service: `huangque-pixelle-video.service`
 - Address: `http://127.0.0.1:8103`
 - Health: `GET /health`
-- Egress: local `mihomo-new.service` proxy on `127.0.0.1:7999`
+- Egress: restricted SSH tunnel on `127.0.0.1:10811` to the production
+  host's loopback Novix Reality proxy on `127.0.0.1:10810`
 
 The API is not exposed as a public browser API. The generated nginx config
 provides `/internal/pixelle/` as a backend-only bridge, restricted to the
@@ -58,8 +59,9 @@ reviewed video-capacity patch, installs Python 3.11 with uv, rewrites only the
 locked PyPI package host to the byte-identical Aliyun mirror, syncs dependencies
 with the upstream SHA256 checks intact, overlays the reviewed templates,
 installs Chromium for Playwright, and restarts the service.
-Before preparing a release, it fails closed unless `mihomo-new.service` is
-installed, active, and able to reach OpenAI through `127.0.0.1:7999`.
+Before preparing a release, it fails closed unless
+`huangque-pixelle-novix-tunnel.service` is installed, active, and able to
+reach OpenAI through `127.0.0.1:10811`.
 Existing output and task data are migrated to `/var/lib` on first deployment
 of this layout and survive later source releases and service redeployments.
 Every candidate release is patched, dependency-synced, and compile-checked in
@@ -82,6 +84,53 @@ restarts as task loss and retain their own job records. Generated files remain
 under the runtime output directory until the website publication/retention
 worker removes them. The runtime `output` and `data` paths are links to the
 persistent directories under `/var/lib`.
+
+## Novix egress tunnel
+
+Keep the Novix client and its credentials on the production host. Pixelle uses
+a dedicated SSH key that can only forward to the production host's loopback
+Novix socket. Do not copy the Novix client configuration into this repository
+or onto the generation host.
+
+On the production host, authorize the independently verified public key with
+an exact forwarding restriction:
+
+```text
+restrict,port-forwarding,permitopen="127.0.0.1:10810" ssh-ed25519 <public-key> pixelle-novix-tunnel
+```
+
+On the generation host, pin the production host key after verifying its
+fingerprint out of band. Store the private key under a root-owned directory
+that is readable only by the `admin` service group. Create the root-owned mode
+`0600` file `/etc/huangque/pixelle-novix-tunnel.env` without placing secrets in
+Git:
+
+```bash
+PIXELLE_NOVIX_SSH_TARGET=ubuntu@129.204.166.13
+PIXELLE_NOVIX_SSH_KEY=/etc/huangque/pixelle-novix-tunnel/id_ed25519
+PIXELLE_NOVIX_SSH_KNOWN_HOSTS=/etc/huangque/pixelle-novix-tunnel/known_hosts
+PIXELLE_NOVIX_LOCAL_PORT=10811
+PIXELLE_NOVIX_REMOTE_HOST=127.0.0.1
+PIXELLE_NOVIX_REMOTE_PORT=10810
+```
+
+Install and verify the tunnel before deploying Pixelle:
+
+```bash
+sudo bash deploy/pixelle-video/install-novix-tunnel.sh
+curl --proxy http://127.0.0.1:10811 \
+  --output /dev/null --write-out '%{http_code}\n' \
+  https://api.openai.com/v1/models
+# Expected without an API key: 401
+
+sudo bash deploy/pixelle-video/install.sh
+```
+
+The local port is loopback-only. The runner ignores inherited SSH
+configuration, requires a pinned `known_hosts` file, fails closed when the
+forward cannot be created, and never places the SSH key or Novix credentials
+in the repository. Pixelle requires the tunnel service and will not start with
+the obsolete `7999` route.
 
 Each image or video scene gets one initial attempt plus at most three retries
 with bounded exponential backoff (2 seconds, 4 seconds, then 8 seconds). An
