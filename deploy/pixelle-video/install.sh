@@ -256,8 +256,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${FINAL_CONC
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${FINAL_CONCAT_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_DOWNLOAD_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${MEDIA_DOWNLOAD_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply --check "${MATERIAL_LIBRARY_PATCH}"
-sudo -u admin git -C "${RELEASE_DIR}" apply "${MATERIAL_LIBRARY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MATERIAL_LIBRARY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${MATERIAL_LIBRARY_PATCH}"
 install -o admin -g admin -m 0644 "${VIDEO_OVERLAY_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/video_overlay.py"
 install -o admin -g admin -m 0644 "${VIDEO_CONCAT_OVERRIDE}" \

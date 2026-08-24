@@ -155,3 +155,23 @@ async def prepare_library_materials(
         for item in downloaded
     ]
     return {"visuals": visuals, "bgm_path": bgm["path"], "manifest": manifest}
+
+
+async def check_library_health() -> dict:
+    base, token = _settings()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3, read=5, write=5, pool=3),
+            trust_env=False,
+        ) as client:
+            response = await client.get(
+                f"{base}/health",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise MaterialLibraryClientError(f"material library health check failed: {exc}") from exc
+    if payload.get("ok") is not True or int(payload.get("records") or 0) < 1:
+        raise MaterialLibraryClientError("material library is not ready")
+    return {"ready": True, "records": int(payload["records"])}

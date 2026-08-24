@@ -78,6 +78,8 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         })
 
     def test_downloads_unique_task_owned_visuals_and_bgm(self):
+        health = asyncio.run(self.client.check_library_health())
+        self.assertEqual({"ready": True, "records": 3}, health)
         result = asyncio.run(self.client.prepare_library_materials(
             ["医美抗衰方案", "门店服务流程"],
             task_id="task-1",
@@ -118,6 +120,7 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         self.assertIn('frame.image_path = visual["path"]', patch_text)
         self.assertIn('frame.video_path = visual["path"]', patch_text)
         self.assertIn('material_source: Literal["ai", "library"]', patch_text)
+        self.assertIn('@router.get("/material-library/health")', patch_text)
         self.assertNotIn("AI fallback", patch_text)
 
 
