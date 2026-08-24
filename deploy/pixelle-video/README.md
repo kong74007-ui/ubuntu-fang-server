@@ -92,8 +92,12 @@ a dedicated SSH key that can only forward to the production host's loopback
 Novix socket. Do not copy the Novix client configuration into this repository
 or onto the generation host.
 
-On the production host, authorize the independently verified public key with
-an exact forwarding restriction:
+On the production host, create the dedicated `pixelle_tunnel` account and
+install the reviewed `Match User` policy. Do not reuse the production `ubuntu`
+account. The policy sets `AllowTcpForwarding local`, `PermitOpen
+127.0.0.1:10810`, `PermitListen none`, disables PTY/agent/X11/user-rc/tunnel,
+and forces `/usr/bin/false` for every session command. Its authorized key also
+keeps the exact forwarding restriction:
 
 ```text
 restrict,port-forwarding,command="/usr/bin/false",permitopen="127.0.0.1:10810" ssh-ed25519 <public-key> pixelle-novix-tunnel
@@ -109,7 +113,19 @@ deploy/pixelle-video/bin/render-novix-authorized-key \
 
 The forced `/usr/bin/false` command is required: `restrict` does not deny
 remote command execution. `port-forwarding` re-enables only TCP forwarding and
-`permitopen` limits its destination to the Novix loopback socket.
+`permitopen` limits local-forward destinations, while the production
+`AllowTcpForwarding local` and `PermitListen none` policy independently blocks
+all `-R` remote forwarding.
+
+Run the production installer with a temporary copy of the reviewed generation
+host public key. It backs up existing managed files, validates the complete
+sshd configuration, verifies the effective `Match User` policy, and reloads
+without restarting SSH:
+
+```bash
+sudo bash deploy/pixelle-video/install-novix-production-sshd.sh \
+  /tmp/pixelle-novix-tunnel.pub
+```
 
 On the generation host, pin the production host key after verifying its
 fingerprint out of band. Store the private key under a root-owned directory
@@ -118,7 +134,7 @@ that is readable only by the `admin` service group. Create the root-owned mode
 Git:
 
 ```bash
-PIXELLE_NOVIX_SSH_TARGET=ubuntu@129.204.166.13
+PIXELLE_NOVIX_SSH_TARGET=pixelle_tunnel@129.204.166.13
 PIXELLE_NOVIX_SSH_KEY=/etc/huangque/pixelle-novix-tunnel/id_ed25519
 PIXELLE_NOVIX_SSH_KNOWN_HOSTS=/etc/huangque/pixelle-novix-tunnel/known_hosts
 PIXELLE_NOVIX_LOCAL_PORT=10811
@@ -141,12 +157,17 @@ ssh -F /dev/null -T \
   -o BatchMode=yes -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile=/etc/huangque/pixelle-novix-tunnel/known_hosts \
-  ubuntu@129.204.166.13 id -un
+  pixelle_tunnel@129.204.166.13 id -un
 status=$?
 set -e
 # Expected: no stdout and status=1 because the forced command is /usr/bin/false.
 # Status 0 means a critical command-execution permission leak; status 255 is
 # not a pass because authentication or network failure makes denial unverifiable.
+
+/usr/local/libexec/huangque/check-pixelle-novix-remote-forward-denied
+# Expected: exit 0 after an actual `ssh -R` request is rejected by sshd.
+# A timeout means remote forwarding was incorrectly allowed and is a critical
+# failure.
 
 sudo bash deploy/pixelle-video/install.sh
 ```

@@ -9,7 +9,7 @@ LOCAL_PORT="${PIXELLE_NOVIX_LOCAL_PORT:-10811}"
 REMOTE_HOST="${PIXELLE_NOVIX_REMOTE_HOST:-127.0.0.1}"
 REMOTE_PORT="${PIXELLE_NOVIX_REMOTE_PORT:-10810}"
 
-if [[ ! "${PIXELLE_NOVIX_SSH_TARGET}" =~ ^[a-z_][a-z0-9_-]*@[A-Za-z0-9.-]+$ ]]; then
+if [[ ! "${PIXELLE_NOVIX_SSH_TARGET}" =~ ^pixelle_tunnel@[A-Za-z0-9.-]+$ ]]; then
   echo "invalid PIXELLE_NOVIX_SSH_TARGET" >&2
   exit 2
 fi
