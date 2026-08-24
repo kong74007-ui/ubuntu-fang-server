@@ -17,8 +17,8 @@ SERVICE_NAME="huangque-pixelle-video.service"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SERVICE_UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/${SERVICE_NAME}"
 SERVICE_UNIT_TARGET="/etc/systemd/system/${SERVICE_NAME}"
-PROXY_SERVICE="mihomo-new.service"
-PROXY_READINESS_CHECK="/usr/local/libexec/huangque/check-mihomo-openai-proxy"
+PROXY_SERVICE="huangque-pixelle-novix-tunnel.service"
+PROXY_READINESS_CHECK="/usr/local/libexec/huangque/check-pixelle-novix-openai"
 PYPI_INDEX="https://mirrors.aliyun.com/pypi/simple"
 TASK_CAPACITY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/api/task_capacity.py"
 TASK_CAPACITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0001-enforce-video-task-capacity.patch"
@@ -177,7 +177,7 @@ if [[ ! -x "${PROXY_READINESS_CHECK}" ]]; then
   exit 2
 fi
 if ! "${PROXY_READINESS_CHECK}"; then
-  echo "${PROXY_SERVICE} is not ready on 127.0.0.1:7999" >&2
+  echo "${PROXY_SERVICE} is not ready on 127.0.0.1:10811" >&2
   exit 2
 fi
 if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${CONTINUOUS_NARRATION_PATCH}" || ! -s "${CAPTION_CUE_LIMIT_PATCH}" || ! -s "${EDGE_TTS_TIMING_PATCH}" || ! -s "${MEDIA_INTEGRITY_PATCH}" || ! -s "${FINAL_CONCAT_PATCH}" || ! -s "${MEDIA_DOWNLOAD_PATCH}" || ! -s "${VIDEO_OVERLAY_OVERRIDE}" || ! -s "${VIDEO_CONCAT_OVERRIDE}" || ! -s "${MEDIA_DOWNLOAD_OVERRIDE}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then

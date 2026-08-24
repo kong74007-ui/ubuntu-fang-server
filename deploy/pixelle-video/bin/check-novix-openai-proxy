@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROXY_URL="${PIXELLE_NOVIX_PROXY_URL:-http://127.0.0.1:10811}"
+OPENAI_URL="${PIXELLE_NOVIX_OPENAI_PROBE_URL:-https://api.openai.com/v1/models}"
+
+if [[ "${PROXY_URL}" != "http://127.0.0.1:10811" ]]; then
+  echo "unexpected Pixelle Novix proxy URL" >&2
+  exit 2
+fi
+
+STATUS="$(curl --silent --show-error \
+  --proxy "${PROXY_URL}" \
+  --connect-timeout 10 \
+  --max-time 20 \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  "${OPENAI_URL}" || true)"
+
+if [[ "${STATUS}" != "200" && "${STATUS}" != "401" ]]; then
+  echo "Novix tunnel cannot reach the OpenAI API (HTTP ${STATUS:-none})" >&2
+  exit 1
+fi
+
+echo "Novix tunnel OpenAI probe passed (HTTP ${STATUS})"
