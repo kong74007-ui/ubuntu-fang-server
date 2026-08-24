@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_MATERIAL_SSH_TARGET:?missing PIXELLE_MATERIAL_SSH_TARGET}"
+: "${PIXELLE_MATERIAL_SSH_KEY:?missing PIXELLE_MATERIAL_SSH_KEY}"
+: "${PIXELLE_MATERIAL_SSH_KNOWN_HOSTS:?missing PIXELLE_MATERIAL_SSH_KNOWN_HOSTS}"
+
+LOCAL_PORT="${PIXELLE_MATERIAL_LOCAL_PORT:-8111}"
+REMOTE_HOST="${PIXELLE_MATERIAL_REMOTE_HOST:-127.0.0.1}"
+REMOTE_PORT="${PIXELLE_MATERIAL_REMOTE_PORT:-8110}"
+
+if [[ ! "${PIXELLE_MATERIAL_SSH_TARGET}" =~ ^[a-z_][a-z0-9_-]*@[A-Za-z0-9.-]+$ ]]; then
+  echo "invalid PIXELLE_MATERIAL_SSH_TARGET" >&2
+  exit 2
+fi
+if [[ "${LOCAL_PORT}" != "8111" || "${REMOTE_HOST}" != "127.0.0.1" || "${REMOTE_PORT}" != "8110" ]]; then
+  echo "material tunnel must be 127.0.0.1:8111 -> 127.0.0.1:8110" >&2
+  exit 2
+fi
+for path in "${PIXELLE_MATERIAL_SSH_KEY}" "${PIXELLE_MATERIAL_SSH_KNOWN_HOSTS}"; do
+  if [[ ! -f "${path}" || -L "${path}" || ! -r "${path}" ]]; then
+    echo "material tunnel credential is missing, unreadable, or a symlink" >&2
+    exit 2
+  fi
+done
+
+exec /usr/bin/ssh -F /dev/null -NT \
+  -i "${PIXELLE_MATERIAL_SSH_KEY}" \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  -o ExitOnForwardFailure=yes \
+  -o PermitLocalCommand=no \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${PIXELLE_MATERIAL_SSH_KNOWN_HOSTS}" \
+  -L "127.0.0.1:${LOCAL_PORT}:${REMOTE_HOST}:${REMOTE_PORT}" \
+  "${PIXELLE_MATERIAL_SSH_TARGET}"

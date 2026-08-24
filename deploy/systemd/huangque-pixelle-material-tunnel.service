@@ -1,0 +1,32 @@
+[Unit]
+Description=Restricted tunnel from Pixelle to Huangque material library
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+EnvironmentFile=/etc/huangque/pixelle-material-tunnel.env
+EnvironmentFile=/etc/huangque/pixelle-material-library.env
+ExecStart=/usr/local/libexec/huangque/run-pixelle-material-tunnel
+ExecStartPost=/usr/local/libexec/huangque/check-pixelle-material-tunnel
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

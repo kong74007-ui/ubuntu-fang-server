@@ -60,6 +60,15 @@ class MaterialLibraryApiTests(unittest.TestCase):
         self.assertEqual(1, payload["records"])
         self.assertNotIn(str(self.root), json.dumps(payload))
 
+    def test_authenticated_ping_validates_the_runtime_token(self):
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            self.request("/v1/ping")
+        self.assertEqual(401, denied.exception.code)
+        with self.request("/v1/ping", token="test-token") as response:
+            payload = json.load(response)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["records"])
+
     def test_select_requires_bearer_token_and_hides_server_path(self):
         body = {
             "scenes": [{"scene_id": "s1", "query": "医美 抗衰", "media_type": "image"}],

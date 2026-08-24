@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_MATERIAL_LIBRARY_TOKEN:?missing PIXELLE_MATERIAL_LIBRARY_TOKEN}"
+URL="${PIXELLE_MATERIAL_LIBRARY_URL:-http://127.0.0.1:8111}"
+if [[ "${URL}" != "http://127.0.0.1:8111" ]]; then
+  echo "material library health URL must be http://127.0.0.1:8111" >&2
+  exit 2
+fi
+
+for _ in $(seq 1 30); do
+  if python3 - "${URL}/v1/ping" <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    sys.argv[1],
+    headers={"Authorization": "Bearer " + os.environ["PIXELLE_MATERIAL_LIBRARY_TOKEN"]},
+)
+try:
+    with urllib.request.urlopen(request, timeout=3) as response:
+        data = json.load(response)
+    ready = data.get("ok") is True and int(data.get("records") or 0) > 0
+except Exception:
+    ready = False
+raise SystemExit(0 if ready else 1)
+PY
+  then
+    exit 0
+  fi
+  sleep 0.5
+done
+echo "material library tunnel did not become ready" >&2
+exit 1

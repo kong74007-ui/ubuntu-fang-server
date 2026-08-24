@@ -77,6 +77,14 @@ class MaterialHandler(BaseHTTPRequestHandler):
             except Exception:
                 self._json(503, {"ok": False})
             return
+        if path == "/v1/ping":
+            if not self._require_auth():
+                return
+            try:
+                self._json(200, {"ok": True, **self.library.stats()})
+            except Exception:
+                self._json(503, {"ok": False})
+            return
         match = SHA_PATH_RE.fullmatch(path)
         if not match:
             self._json(404, {"error": "not_found"})

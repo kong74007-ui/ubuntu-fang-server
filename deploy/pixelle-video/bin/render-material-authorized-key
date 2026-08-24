@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: render-material-authorized-key PUBLIC_KEY_FILE" >&2
+  exit 2
+fi
+PUBLIC_KEY_FILE="$1"
+if [[ ! -f "${PUBLIC_KEY_FILE}" || -L "${PUBLIC_KEY_FILE}" || ! -r "${PUBLIC_KEY_FILE}" ]]; then
+  echo "public key file is missing, unreadable, or a symlink" >&2
+  exit 2
+fi
+if [[ "$(wc -l < "${PUBLIC_KEY_FILE}")" -ne 1 ]]; then
+  echo "public key file must contain exactly one line" >&2
+  exit 2
+fi
+read -r KEY_TYPE KEY_BLOB _COMMENT < "${PUBLIC_KEY_FILE}"
+if [[ "${KEY_TYPE}" != "ssh-ed25519" || ! "${KEY_BLOB}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+  echo "only one valid ssh-ed25519 public key is accepted" >&2
+  exit 2
+fi
+ssh-keygen -l -f "${PUBLIC_KEY_FILE}" >/dev/null
+printf '%s %s %s\n' \
+  'restrict,port-forwarding,command="/usr/bin/false",permitopen="127.0.0.1:8110"' \
+  "${KEY_TYPE}" "${KEY_BLOB} pixelle-material-library-tunnel"

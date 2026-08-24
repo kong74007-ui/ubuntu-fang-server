@@ -165,7 +165,7 @@ async def check_library_health() -> dict:
             trust_env=False,
         ) as client:
             response = await client.get(
-                f"{base}/health",
+                f"{base}/v1/ping",
                 headers={"Authorization": f"Bearer {token}"},
             )
             response.raise_for_status()
