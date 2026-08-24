@@ -35,6 +35,10 @@ SEARCH_FIELDS = {
     "行业": 2,
     "画面方向": 2,
 }
+SEARCH_FIELD_ALIASES = {
+    "主体": ("主体", "画面主体"),
+}
+SHA256_FIELDS = ("sha256", "SHA256")
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 20_000
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -96,6 +100,29 @@ def _search_values(value: Any) -> tuple[str, ...]:
     return tuple(text for item in values if (text := _text(item)))
 
 
+def _search_values_for_row(row: dict[str, Any], field: str) -> tuple[str, ...]:
+    aliases = SEARCH_FIELD_ALIASES.get(field, (field,))
+    values: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        for text in _search_values(row.get(alias)):
+            if text not in seen:
+                seen.add(text)
+                values.append(text)
+    return tuple(values)
+
+
+def _material_sha256(row: dict[str, Any]) -> str:
+    values = {
+        value
+        for field in SHA256_FIELDS
+        if (value := _text(row.get(field)))
+    }
+    if len(values) > 1:
+        raise MaterialLibraryError("conflicting material sha256 aliases")
+    return next(iter(values), "")
+
+
 def _orientation(value: Any) -> str:
     text = _text(value)
     if any(word in text for word in ("竖", "portrait", "9:16")):
@@ -134,7 +161,7 @@ def _record_to_material(root: Path, row: dict[str, Any]) -> Material | None:
     relative_path = _safe_relative_path(root, row.get("server_relative_path"))
     suffix = Path(relative_path).suffix.lower()
     media_type = ALLOWED_EXTENSIONS.get(suffix)
-    sha256 = _text(row.get("sha256"))
+    sha256 = _material_sha256(row)
     if not media_type or not SHA256_RE.fullmatch(sha256):
         return None
     file_path = (root / relative_path).resolve()
@@ -143,7 +170,7 @@ def _record_to_material(root: Path, row: dict[str, Any]) -> Material | None:
     searchable = tuple(
         (text, weight)
         for field, weight in SEARCH_FIELDS.items()
-        for text in _search_values(row.get(field))
+        for text in _search_values_for_row(row, field)
     )
     return Material(
         record_id=str(row.get("record_id") or sha256[:16]),

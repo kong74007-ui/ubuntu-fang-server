@@ -3,6 +3,10 @@
 This deploys a read-only, loopback-only API over an approved `index.jsonl` library.
 It never generates AI media and never returns absolute server paths.
 
+The index accepts the canonical `sha256` and `主体` fields as well as the
+existing export aliases `SHA256` and `画面主体`. Conflicting lowercase and
+uppercase SHA values fail closed instead of selecting an ambiguous asset.
+
 ## Install
 
 Run from a reviewed repository checkout on the material server:
