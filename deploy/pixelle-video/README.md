@@ -96,8 +96,20 @@ On the production host, authorize the independently verified public key with
 an exact forwarding restriction:
 
 ```text
-restrict,port-forwarding,permitopen="127.0.0.1:10810" ssh-ed25519 <public-key> pixelle-novix-tunnel
+restrict,port-forwarding,command="/usr/bin/false",permitopen="127.0.0.1:10810" ssh-ed25519 <public-key> pixelle-novix-tunnel
 ```
+
+Generate this line from the generation host's reviewed public key instead of
+assembling options by hand:
+
+```bash
+deploy/pixelle-video/bin/render-novix-authorized-key \
+  /etc/huangque/pixelle-novix-tunnel/id_ed25519.pub
+```
+
+The forced `/usr/bin/false` command is required: `restrict` does not deny
+remote command execution. `port-forwarding` re-enables only TCP forwarding and
+`permitopen` limits its destination to the Novix loopback socket.
 
 On the generation host, pin the production host key after verifying its
 fingerprint out of band. Store the private key under a root-owned directory
@@ -122,6 +134,19 @@ curl --proxy http://127.0.0.1:10811 \
   --output /dev/null --write-out '%{http_code}\n' \
   https://api.openai.com/v1/models
 # Expected without an API key: 401
+
+set +e
+ssh -F /dev/null -T \
+  -i /etc/huangque/pixelle-novix-tunnel/id_ed25519 \
+  -o BatchMode=yes -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=/etc/huangque/pixelle-novix-tunnel/known_hosts \
+  ubuntu@129.204.166.13 id -un
+status=$?
+set -e
+# Expected: no stdout and status=1 because the forced command is /usr/bin/false.
+# Status 0 means a critical command-execution permission leak; status 255 is
+# not a pass because authentication or network failure makes denial unverifiable.
 
 sudo bash deploy/pixelle-video/install.sh
 ```

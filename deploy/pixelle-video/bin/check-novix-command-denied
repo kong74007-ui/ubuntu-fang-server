@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_NOVIX_SSH_TARGET:?missing PIXELLE_NOVIX_SSH_TARGET}"
+: "${PIXELLE_NOVIX_SSH_KEY:?missing PIXELLE_NOVIX_SSH_KEY}"
+: "${PIXELLE_NOVIX_SSH_KNOWN_HOSTS:?missing PIXELLE_NOVIX_SSH_KNOWN_HOSTS}"
+
+if [[ ! "${PIXELLE_NOVIX_SSH_TARGET}" =~ ^[a-z_][a-z0-9_-]*@[A-Za-z0-9.-]+$ ]]; then
+  echo "invalid PIXELLE_NOVIX_SSH_TARGET" >&2
+  exit 2
+fi
+for path in "${PIXELLE_NOVIX_SSH_KEY}" "${PIXELLE_NOVIX_SSH_KNOWN_HOSTS}"; do
+  if [[ ! -f "${path}" || -L "${path}" || ! -r "${path}" ]]; then
+    echo "Novix command-denial credential file is missing, unreadable, or a symlink" >&2
+    exit 2
+  fi
+done
+
+set +e
+OUTPUT="$(/usr/bin/ssh -F /dev/null -T \
+  -i "${PIXELLE_NOVIX_SSH_KEY}" \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  -o PermitLocalCommand=no \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${PIXELLE_NOVIX_SSH_KNOWN_HOSTS}" \
+  "${PIXELLE_NOVIX_SSH_TARGET}" id -un 2>/dev/null)"
+STATUS=$?
+set -e
+
+if [[ "${STATUS}" -ne 1 || -n "${OUTPUT}" ]]; then
+  echo "Novix tunnel key can execute commands or command denial is unverifiable (status ${STATUS})" >&2
+  exit 1
+fi
+
+echo "Novix tunnel remote-command denial verified"

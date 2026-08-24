@@ -10,6 +10,7 @@ Group=admin
 EnvironmentFile=/etc/huangque/pixelle-novix-tunnel.env
 ExecStart=/usr/local/libexec/huangque/run-pixelle-novix-tunnel
 ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-openai
+ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-command-denied
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

@@ -4,9 +4,11 @@ set -euo pipefail
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/run-novix-tunnel"
 CHECK_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-novix-openai-proxy"
+COMMAND_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-novix-command-denied"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-pixelle-novix-tunnel.service"
 RUNNER_TARGET="/usr/local/libexec/huangque/run-pixelle-novix-tunnel"
 CHECK_TARGET="/usr/local/libexec/huangque/check-pixelle-novix-openai"
+COMMAND_CHECK_TARGET="/usr/local/libexec/huangque/check-pixelle-novix-command-denied"
 UNIT_TARGET="/etc/systemd/system/huangque-pixelle-novix-tunnel.service"
 ENV_FILE="/etc/huangque/pixelle-novix-tunnel.env"
 SERVICE="huangque-pixelle-novix-tunnel.service"
@@ -15,7 +17,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-for source in "${RUNNER_SOURCE}" "${CHECK_SOURCE}" "${UNIT_SOURCE}"; do
+for source in "${RUNNER_SOURCE}" "${CHECK_SOURCE}" "${COMMAND_CHECK_SOURCE}" "${UNIT_SOURCE}"; do
   if [[ ! -s "${source}" || -L "${source}" ]]; then
     echo "missing or unsafe Novix tunnel deployment file: ${source}" >&2
     exit 2
@@ -69,9 +71,11 @@ fi
 install -d -o root -g root -m 0755 /usr/local/libexec/huangque
 install -o root -g root -m 0755 "${RUNNER_SOURCE}" "${RUNNER_TARGET}"
 install -o root -g root -m 0755 "${CHECK_SOURCE}" "${CHECK_TARGET}"
+install -o root -g root -m 0755 "${COMMAND_CHECK_SOURCE}" "${COMMAND_CHECK_TARGET}"
 install -o root -g root -m 0644 "${UNIT_SOURCE}" "${UNIT_TARGET}"
 systemctl daemon-reload
 systemctl enable --now "${SERVICE}"
 systemctl is-active --quiet "${SERVICE}"
 "${CHECK_TARGET}"
+"${COMMAND_CHECK_TARGET}"
 echo "${SERVICE} is active and OpenAI connectivity is healthy"

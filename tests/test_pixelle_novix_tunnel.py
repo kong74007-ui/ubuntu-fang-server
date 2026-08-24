@@ -11,6 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "deploy/pixelle-video/bin/run-novix-tunnel"
 CHECKER = ROOT / "deploy/pixelle-video/bin/check-novix-openai-proxy"
+COMMAND_CHECKER = ROOT / "deploy/pixelle-video/bin/check-novix-command-denied"
+KEY_RENDERER = ROOT / "deploy/pixelle-video/bin/render-novix-authorized-key"
 INSTALLER = ROOT / "deploy/pixelle-video/install-novix-tunnel.sh"
 UNIT = ROOT / "deploy/systemd/huangque-pixelle-novix-tunnel.service"
 PIXELLE_UNIT = ROOT / "deploy/systemd/huangque-pixelle-video.service"
@@ -155,12 +157,76 @@ def test_readiness_checker_rejects_proxy_override_before_curl(tmp_path):
     assert not marker.exists()
 
 
+def test_authorized_key_renderer_forces_false_and_limits_forward(tmp_path):
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        pytest.skip("ssh-keygen is required")
+    key = tmp_path / "id_ed25519"
+    subprocess.run(
+        [ssh_keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        check=True,
+    )
+    result = subprocess.run(
+        [find_bash(), KEY_RENDERER.as_posix(), key.with_suffix(".pub").as_posix()],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        'restrict,port-forwarding,command="/usr/bin/false",permitopen="127.0.0.1:10810" '
+    )
+    assert "ssh-ed25519 " in result.stdout
+    assert result.stdout.rstrip().endswith("pixelle-novix-tunnel")
+
+
+@pytest.mark.parametrize(("status", "output", "expected"), [
+    (1, "", 0),
+    (0, "ubuntu", 1),
+    (255, "", 1),
+    (1, "unexpected", 1),
+])
+def test_command_denial_checker_requires_exact_forced_false_result(
+        tmp_path, status, output, expected):
+    key = tmp_path / "id_ed25519"
+    known_hosts = tmp_path / "known_hosts"
+    key.write_text("key", encoding="utf-8")
+    known_hosts.write_text("host", encoding="utf-8")
+    fake_ssh = tmp_path / "ssh"
+    fake_ssh.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ -n \"${FAKE_SSH_OUTPUT:-}\" ]; then printf '%s\\n' \"${FAKE_SSH_OUTPUT}\"; fi\n"
+        "exit \"${FAKE_SSH_STATUS}\"\n",
+        encoding="utf-8",
+    )
+    fake_ssh.chmod(0o755)
+    checker = tmp_path / "check-command-denied"
+    checker.write_text(
+        COMMAND_CHECKER.read_text(encoding="utf-8").replace(
+            "/usr/bin/ssh", fake_ssh.as_posix()),
+        encoding="utf-8",
+    )
+    env = dict(
+        os.environ,
+        PIXELLE_NOVIX_SSH_TARGET="ubuntu@129.204.166.13",
+        PIXELLE_NOVIX_SSH_KEY=key.as_posix(),
+        PIXELLE_NOVIX_SSH_KNOWN_HOSTS=known_hosts.as_posix(),
+        FAKE_SSH_STATUS=str(status),
+        FAKE_SSH_OUTPUT=output,
+    )
+    result = subprocess.run(
+        [find_bash(), checker.as_posix()], check=False, capture_output=True,
+        text=True, env=env,
+    )
+    assert result.returncode == expected
+
+
 def test_units_and_installer_keep_credentials_out_of_repository():
     unit = UNIT.read_text(encoding="utf-8")
     pixelle = PIXELLE_UNIT.read_text(encoding="utf-8")
     installer = INSTALLER.read_text(encoding="utf-8")
+    readme = (ROOT / "deploy/pixelle-video/README.md").read_text(encoding="utf-8")
     assert "EnvironmentFile=/etc/huangque/pixelle-novix-tunnel.env" in unit
     assert "ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-openai" in unit
+    assert "ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-command-denied" in unit
     assert "User=admin" in unit
     assert "NoNewPrivileges=true" in unit
     assert "ProtectSystem=strict" in unit
@@ -170,11 +236,14 @@ def test_units_and_installer_keep_credentials_out_of_repository():
     assert "127.0.0.1:7999" not in pixelle
     assert "/etc/huangque/pixelle-novix-tunnel.env" in installer
     assert "enable --now" in installer
+    assert "check-pixelle-novix-command-denied" in installer
     assert "PIXELLE_NOVIX_SSH_KEY=" not in installer
+    assert 'command="/usr/bin/false",permitopen="127.0.0.1:10810"' in readme
+    assert "status=1" in readme
 
 
 def test_deployment_files_contain_no_private_key_material():
-    for path in (RUNNER, CHECKER, INSTALLER, UNIT, PIXELLE_UNIT):
+    for path in (RUNNER, CHECKER, COMMAND_CHECKER, KEY_RENDERER, INSTALLER, UNIT, PIXELLE_UNIT):
         text = path.read_text(encoding="utf-8")
         assert "BEGIN OPENSSH PRIVATE KEY" not in text
         assert "BEGIN PRIVATE KEY" not in text
