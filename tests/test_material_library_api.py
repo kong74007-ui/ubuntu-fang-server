@@ -58,6 +58,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
             payload = json.load(response)
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["records"])
+        self.assertEqual("development", payload["build_id"])
         self.assertNotIn(str(self.root), json.dumps(payload))
 
     def test_authenticated_ping_validates_the_runtime_token(self):

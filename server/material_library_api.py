@@ -35,6 +35,15 @@ MAX_BODY_BYTES = 512 * 1024
 SHA_PATH_RE = re.compile(r"^/v1/assets/([0-9a-f]{64})$")
 
 
+def runtime_build_id() -> str:
+    path = Path(__file__).resolve().parents[1] / "BUILD_ID"
+    try:
+        value = path.read_text(encoding="ascii").strip().lower()
+    except OSError:
+        return "development"
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else "invalid"
+
+
 class MaterialHandler(BaseHTTPRequestHandler):
     server_version = "HuangqueMaterialLibrary/1.0"
 
@@ -73,7 +82,7 @@ class MaterialHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/health":
             try:
-                self._json(200, {"ok": True, **self.library.stats()})
+                self._json(200, {"ok": True, "build_id": runtime_build_id(), **self.library.stats()})
             except Exception:
                 self._json(503, {"ok": False})
             return
@@ -81,7 +90,7 @@ class MaterialHandler(BaseHTTPRequestHandler):
             if not self._require_auth():
                 return
             try:
-                self._json(200, {"ok": True, **self.library.stats()})
+                self._json(200, {"ok": True, "build_id": runtime_build_id(), **self.library.stats()})
             except Exception:
                 self._json(503, {"ok": False})
             return

@@ -65,6 +65,18 @@ class MaterialLibraryTunnelTests(unittest.TestCase):
         self.assertIn("sshd -t", material)
         self.assertIn("PASSWORD_CHANGED", material)
         self.assertIn("MATERIAL_TUNNEL_SOURCE_ADDRESS", material)
+        self.assertGreater(
+            material.index("trap cleanup EXIT"),
+            material.index('for source in "${PUBLIC_KEY_FILE}"'),
+        )
+        service_installer = (ROOT / "deploy/material-library/install.sh").read_text(encoding="utf-8")
+        self.assertGreater(
+            service_installer.index("trap cleanup EXIT"),
+            service_installer.index('systemctl is-enabled --quiet "${SERVICE}"'),
+        )
+        self.assertIn('systemctl stop "${SERVICE}"', service_installer)
+        self.assertIn('systemctl start "${SERVICE}"', service_installer)
+        self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', service_installer)
         checker = (ROOT / "deploy/pixelle-video/bin/check-material-library-account").read_text(encoding="utf-8")
         for rule in ("allowstreamlocalforwarding no", "gatewayports no", "permittunnel no", "permituserrc no"):
             self.assertIn(rule, checker)
