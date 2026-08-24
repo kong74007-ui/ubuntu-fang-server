@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_MATERIAL_SSH_TARGET:?missing PIXELLE_MATERIAL_SSH_TARGET}"
+: "${PIXELLE_MATERIAL_SSH_KEY:?missing PIXELLE_MATERIAL_SSH_KEY}"
+: "${PIXELLE_MATERIAL_SSH_KNOWN_HOSTS:?missing PIXELLE_MATERIAL_SSH_KNOWN_HOSTS}"
+if [[ ! "${PIXELLE_MATERIAL_SSH_TARGET}" =~ ^material_tunnel@[A-Za-z0-9.-]+$ ]]; then
+  echo "invalid PIXELLE_MATERIAL_SSH_TARGET" >&2
+  exit 2
+fi
+
+set +e
+ERROR_OUTPUT="$(/usr/bin/timeout 8 /usr/bin/ssh -F /dev/null -NT \
+  -i "${PIXELLE_MATERIAL_SSH_KEY}" \
+  -o BatchMode=yes -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes \
+  -o ConnectTimeout=5 \
+  -o PermitLocalCommand=no -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${PIXELLE_MATERIAL_SSH_KNOWN_HOSTS}" \
+  -R "127.0.0.1:0:127.0.0.1:8110" \
+  "${PIXELLE_MATERIAL_SSH_TARGET}" 2>&1 >/dev/null)"
+STATUS=$?
+set -e
+if [[ "${STATUS}" -ne 255 ]] || ! grep -Eqi \
+    'remote port forwarding failed|administratively prohibited|port forwarding failed' \
+    <<<"${ERROR_OUTPUT}"; then
+  echo "material tunnel remote-forward denial is missing or unverifiable (status ${STATUS})" >&2
+  exit 1
+fi
+echo "material tunnel remote port-forward denial verified"

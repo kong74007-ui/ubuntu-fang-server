@@ -38,6 +38,7 @@ EDGE_TTS_TIMING_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0014-align-ed
 MEDIA_INTEGRITY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0015-preserve-video-visual-and-audio-integrity.patch"
 FINAL_CONCAT_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0016-bound-final-video-concat.patch"
 MEDIA_DOWNLOAD_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0017-retry-media-downloads.patch"
+MATERIAL_LIBRARY_PATCH="${DEPLOY_ROOT}/deploy/pixelle-video/patches/0018-support-strict-material-library.patch"
 VIDEO_OVERLAY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/video_overlay.py"
 VIDEO_CONCAT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/video_concat.py"
 MEDIA_DOWNLOAD_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/media_download.py"
@@ -52,6 +53,7 @@ MEDIA_RETRY_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_vide
 RUNNINGHUB_GUARD_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/runninghub_guard.py"
 FAIL_FAST_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/fail_fast.py"
 CAPTION_CUES_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/caption_cues.py"
+MATERIAL_LIBRARY_CLIENT_OVERRIDE="${DEPLOY_ROOT}/deploy/pixelle-video/overrides/pixelle_video/services/material_library_client.py"
 SERVICE_CONTROL_LIB="${DEPLOY_ROOT}/deploy/pixelle-video/lib/service_control.sh"
 RELEASE_DIR=""
 NEXT_SOURCE_LINK=""
@@ -180,7 +182,7 @@ if ! "${PROXY_READINESS_CHECK}"; then
   echo "${PROXY_SERVICE} is not ready on 127.0.0.1:10811" >&2
   exit 2
 fi
-if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${CONTINUOUS_NARRATION_PATCH}" || ! -s "${CAPTION_CUE_LIMIT_PATCH}" || ! -s "${EDGE_TTS_TIMING_PATCH}" || ! -s "${MEDIA_INTEGRITY_PATCH}" || ! -s "${FINAL_CONCAT_PATCH}" || ! -s "${MEDIA_DOWNLOAD_PATCH}" || ! -s "${VIDEO_OVERLAY_OVERRIDE}" || ! -s "${VIDEO_CONCAT_OVERRIDE}" || ! -s "${MEDIA_DOWNLOAD_OVERRIDE}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" ]]; then
+if [[ ! -s "${TASK_CAPACITY_OVERRIDE}" || ! -s "${TASK_CAPACITY_PATCH}" || ! -s "${VIDEO_TEMPLATE_BRANDING_PATCH}" || ! -s "${EXTERNAL_NARRATION_PATCH}" || ! -s "${DEEPSEEK_V4_PATCH}" || ! -s "${IMAGE_RETRY_PATCH}" || ! -s "${RUNNINGHUB_GUARD_PATCH}" || ! -s "${PARALLEL_FAIL_FAST_PATCH}" || ! -s "${TTS_SPEED_PATCH}" || ! -s "${CAPTION_CUES_PATCH}" || ! -s "${TALKING_MATERIAL_ASSETS_PATCH}" || ! -s "${TALKING_SCENES_PATCH}" || ! -s "${CONTINUOUS_NARRATION_PATCH}" || ! -s "${CAPTION_CUE_LIMIT_PATCH}" || ! -s "${EDGE_TTS_TIMING_PATCH}" || ! -s "${MEDIA_INTEGRITY_PATCH}" || ! -s "${FINAL_CONCAT_PATCH}" || ! -s "${MEDIA_DOWNLOAD_PATCH}" || ! -s "${MATERIAL_LIBRARY_PATCH}" || ! -s "${VIDEO_OVERLAY_OVERRIDE}" || ! -s "${VIDEO_CONCAT_OVERRIDE}" || ! -s "${MEDIA_DOWNLOAD_OVERRIDE}" || ! -s "${TALKING_MATERIAL_OVERRIDE}" || ! -s "${TALKING_CLIENT_OVERRIDE}" || ! -s "${PIXELLE_DISCONNECT_OVERRIDE}" || ! -s "${EXTERNAL_AUDIO_OVERRIDE}" || ! -s "${VOICE_ASSETS_ROUTER_OVERRIDE}" || ! -s "${AVATAR_ASSETS_OVERRIDE}" || ! -s "${AVATAR_ASSETS_ROUTER_OVERRIDE}" || ! -s "${MEDIA_RETRY_OVERRIDE}" || ! -s "${RUNNINGHUB_GUARD_OVERRIDE}" || ! -s "${FAIL_FAST_OVERRIDE}" || ! -s "${CAPTION_CUES_OVERRIDE}" || ! -s "${MATERIAL_LIBRARY_CLIENT_OVERRIDE}" ]]; then
   echo "missing Pixelle deployment files" >&2
   exit 2
 fi
@@ -254,6 +256,8 @@ sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${FINAL_CONC
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${FINAL_CONCAT_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MEDIA_DOWNLOAD_PATCH}"
 sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${MEDIA_DOWNLOAD_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero --check "${MATERIAL_LIBRARY_PATCH}"
+sudo -u admin git -C "${RELEASE_DIR}" apply --unidiff-zero "${MATERIAL_LIBRARY_PATCH}"
 install -o admin -g admin -m 0644 "${VIDEO_OVERLAY_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/video_overlay.py"
 install -o admin -g admin -m 0644 "${VIDEO_CONCAT_OVERRIDE}" \
@@ -291,6 +295,8 @@ install -o admin -g admin -m 0644 "${FAIL_FAST_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/fail_fast.py"
 install -o admin -g admin -m 0644 "${CAPTION_CUES_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/caption_cues.py"
+install -o admin -g admin -m 0644 "${MATERIAL_LIBRARY_CLIENT_OVERRIDE}" \
+  "${RELEASE_DIR}/pixelle_video/services/material_library_client.py"
 install -o admin -g admin -m 0644 "${TALKING_MATERIAL_OVERRIDE}" \
   "${RELEASE_DIR}/pixelle_video/services/talking_material.py"
 install -o admin -g admin -m 0644 "${TALKING_CLIENT_OVERRIDE}" \

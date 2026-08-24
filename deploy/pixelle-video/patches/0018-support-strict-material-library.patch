@@ -1,0 +1,97 @@
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -87,0 +88,5 @@ class TalkingMaterialConfig(BaseModel):
++class MaterialLibraryProbeRequest(BaseModel):
++    scene_count: int = Field(..., ge=1, le=20)
++    orientation: Literal["portrait", "landscape", "square"]
++
++
+@@ -139,0 +145,4 @@ class VideoGenerateRequest(BaseModel):
++    material_source: Literal["ai", "library"] = Field(
++        "ai",
++        description="Visual source. Library mode is strict and never falls back to AI media generation.",
++    )
+diff --git a/api/routers/video.py b/api/routers/video.py
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -28,0 +29 @@ from api.schemas.video import (
++    MaterialLibraryProbeRequest,
+@@ -33,0 +35,5 @@ from api import avatar_assets
++from pixelle_video.services.material_library_client import (
++    MaterialLibraryClientError,
++    check_library_health,
++    probe_library_capacity,
++)
+@@ -37,0 +44,18 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
++@router.get("/material-library/health")
++async def material_library_health():
++    try:
++        return await check_library_health()
++    except MaterialLibraryClientError as exc:
++        raise HTTPException(status_code=503, detail=str(exc)) from exc
++
++
++@router.post("/material-library/probe")
++async def material_library_probe(request_body: MaterialLibraryProbeRequest):
++    try:
++        return await probe_library_capacity(
++            request_body.scene_count, request_body.orientation
++        )
++    except MaterialLibraryClientError as exc:
++        raise HTTPException(status_code=409, detail=str(exc)) from exc
++
++
+@@ -187,0 +212 @@ async def generate_video_sync(
++            "material_source": request_body.material_source,
+@@ -348,0 +374 @@ async def generate_video_async(
++                "material_source": request_body.material_source,
+@@ -401,0 +428 @@ async def generate_video_async(
++                "material_manifest": result.storyboard.config.material_manifest or [],
+diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
+--- a/pixelle_video/models/storyboard.py
++++ b/pixelle_video/models/storyboard.py
+@@ -51,0 +52,2 @@ class StoryboardConfig:
++    material_source: str = "ai"               # "ai" or strict external "library"
++    material_manifest: Optional[List[Dict[str, Any]]] = None
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -57,0 +58 @@ from pixelle_video.services.fail_fast import FailFastSemaphore, gather_cancel_on
++from pixelle_video.services.material_library_client import prepare_library_materials
+@@ -168,0 +170,16 @@ class StandardPipeline(LinearVideoPipeline):
++        if ctx.params.get("material_source") == "library":
++            self._report_progress(ctx.progress_callback, "selecting_library_materials", 0.15)
++            prepared = await prepare_library_materials(
++                ctx.narrations,
++                task_id=ctx.task_id,
++                task_dir=ctx.task_dir,
++                width=int(ctx.params.get("media_width") or 0),
++                height=int(ctx.params.get("media_height") or 0),
++            )
++            ctx.library_visuals = prepared["visuals"]
++            ctx.library_bgm_path = prepared["bgm_path"]
++            ctx.library_material_manifest = prepared["manifest"]
++            ctx.image_prompts = [None] * len(ctx.narrations)
++            logger.info("Using {} strict material-library visuals", len(ctx.library_visuals))
++            return
++
+@@ -309,0 +327,2 @@ class StandardPipeline(LinearVideoPipeline):
++            material_source=ctx.params.get("material_source", "ai"),
++            material_manifest=getattr(ctx, "library_material_manifest", None),
+@@ -353,0 +373,12 @@ class StandardPipeline(LinearVideoPipeline):
++            library_visuals = getattr(ctx, "library_visuals", [])
++            if library_visuals:
++                visual = library_visuals[i]
++                if visual["media_type"] == "video":
++                    frame.media_type = "video"
++                    frame.video_path = visual["path"]
++                elif visual["media_type"] == "image":
++                    frame.media_type = "image"
++                    frame.image_path = visual["path"]
++                else:
++                    raise ValueError("material library returned a non-visual scene asset")
++                frame.visual_source = "library"
+@@ -485 +516 @@ class StandardPipeline(LinearVideoPipeline):
+-            bgm_path=ctx.params.get("bgm_path"),
++            bgm_path=getattr(ctx, "library_bgm_path", None) or ctx.params.get("bgm_path"),

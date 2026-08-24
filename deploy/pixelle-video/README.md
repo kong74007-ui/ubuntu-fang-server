@@ -5,6 +5,26 @@ isolated, loopback-only service. The repository owns the systemd unit,
 configuration renderer, deployment procedure, and tested template overrides;
 third-party source remains in its upstream Git repository.
 
+## Strict material-library mode
+
+Requests may set `material_source` to `library`. After narration planning,
+Pixelle selects one approved image or video per scene plus one BGM track through
+the internal material-library API. Selection is `exact -> loose -> random`,
+SHA256 values cannot repeat inside a task, and any shortage or integrity failure
+fails the task. This mode never calls the media-generation workflow.
+
+Configure the separately reviewed loopback transport in a root-owned `0600`
+file that is not committed:
+
+```text
+PIXELLE_MATERIAL_LIBRARY_URL=http://127.0.0.1:8111
+PIXELLE_MATERIAL_LIBRARY_TOKEN=<same random token as the library service>
+```
+
+The URL validator accepts loopback HTTP only. Port `8111` must be provided by a
+restricted tunnel or equivalent private transport; this repository does not
+embed server credentials.
+
 ## Runtime layout
 
 - Active source link: `/opt/huangque/pixelle-video/source`
