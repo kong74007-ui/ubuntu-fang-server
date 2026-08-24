@@ -135,6 +135,47 @@ class MaterialLibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "21"):
             library.select([{"scene_id": str(index)} for index in range(22)])
 
+    def test_real_export_schema_accepts_uppercase_sha_and_subject_alias(self):
+        payload = b"real-export"
+        digest = hashlib.sha256(payload).hexdigest()
+        path = Path("files") / "real-export.jpg"
+        (self.root / path).write_bytes(payload)
+        self.rows.append({
+            "record_id": "real-export",
+            "SHA256": digest,
+            "素材名称": "real-export",
+            "状态": "可使用",
+            "画面方向": "竖屏",
+            "画面主体": "专业医生",
+            "server_relative_path": path.as_posix(),
+        })
+        self.add("unrelated", 标签=["自然风景"])
+
+        result = self.library().select(
+            [{"scene_id": "s1", "query": "专业医生", "media_type": "image"}],
+            orientation="portrait",
+        )
+
+        self.assertEqual(digest, result["materials"][0]["sha256"])
+        self.assertEqual("loose", result["materials"][0]["match_level"])
+
+    def test_conflicting_sha_aliases_fail_closed(self):
+        payload = b"conflicting-export"
+        path = Path("files") / "conflicting-export.jpg"
+        (self.root / path).write_bytes(payload)
+        self.rows.append({
+            "record_id": "conflicting-export",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "SHA256": "f" * 64,
+            "素材名称": "conflicting-export",
+            "状态": "可使用",
+            "画面方向": "竖屏",
+            "server_relative_path": path.as_posix(),
+        })
+
+        with self.assertRaisesRegex(MaterialLibraryError, "conflicting material sha256"):
+            self.library().refresh()
+
     def test_chinese_sentence_matches_individual_tags_without_spaces(self):
         expected = self.add("beauty", 标签=["医美", "抗衰"])
         self.add("other", 标签=["办公", "会议"])
