@@ -1,0 +1,24 @@
+[Unit]
+Description=Huangque read-only material library API
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/huangque/material-library/source/server
+EnvironmentFile=/etc/huangque/material-library.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/huangque/material-library/source/server/material_library_api.py --host 127.0.0.1 --port 8110
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/ubuntu/material-libraries/huangque-media
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
