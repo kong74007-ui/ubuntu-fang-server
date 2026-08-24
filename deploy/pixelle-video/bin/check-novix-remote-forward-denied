@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PIXELLE_NOVIX_SSH_TARGET:?missing PIXELLE_NOVIX_SSH_TARGET}"
+: "${PIXELLE_NOVIX_SSH_KEY:?missing PIXELLE_NOVIX_SSH_KEY}"
+: "${PIXELLE_NOVIX_SSH_KNOWN_HOSTS:?missing PIXELLE_NOVIX_SSH_KNOWN_HOSTS}"
+
+if [[ ! "${PIXELLE_NOVIX_SSH_TARGET}" =~ ^pixelle_tunnel@[A-Za-z0-9.-]+$ ]]; then
+  echo "invalid PIXELLE_NOVIX_SSH_TARGET" >&2
+  exit 2
+fi
+for path in "${PIXELLE_NOVIX_SSH_KEY}" "${PIXELLE_NOVIX_SSH_KNOWN_HOSTS}"; do
+  if [[ ! -f "${path}" || -L "${path}" || ! -r "${path}" ]]; then
+    echo "Novix remote-forward check credential is missing, unreadable, or a symlink" >&2
+    exit 2
+  fi
+done
+
+set +e
+ERROR_OUTPUT="$(/usr/bin/timeout 8 /usr/bin/ssh -F /dev/null -NT \
+  -i "${PIXELLE_NOVIX_SSH_KEY}" \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  -o ExitOnForwardFailure=yes \
+  -o PermitLocalCommand=no \
+  -o StrictHostKeyChecking=yes \
+  -o "UserKnownHostsFile=${PIXELLE_NOVIX_SSH_KNOWN_HOSTS}" \
+  -R "127.0.0.1:0:127.0.0.1:10810" \
+  "${PIXELLE_NOVIX_SSH_TARGET}" 2>&1 >/dev/null)"
+STATUS=$?
+set -e
+
+if [[ "${STATUS}" -ne 255 ]] || ! grep -Eqi \
+    'remote port forwarding failed|administratively prohibited|port forwarding failed' \
+    <<<"${ERROR_OUTPUT}"; then
+  echo "Novix tunnel key remote-forward denial is missing or unverifiable (status ${STATUS})" >&2
+  exit 1
+fi
+
+echo "Novix tunnel remote port-forward denial verified"
