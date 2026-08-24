@@ -132,6 +132,7 @@ printf '{"ok":true,"build_id":"%s","records":1}\n' "$build"
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertNotEqual("0" * 64, (runtime / "source" / "BUILD_ID").read_text().strip())
+            self.assertEqual(0o755, stat.S_IMODE((runtime / "source").resolve().stat().st_mode))
             self.assertEqual("101", (state / "pid").read_text().strip())
             self.assertIn("stop huangque-material-library.service", (state / "trace").read_text())
             self.assertIn("start huangque-material-library.service", (state / "trace").read_text())

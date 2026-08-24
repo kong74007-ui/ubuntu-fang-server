@@ -130,6 +130,7 @@ fi
 
 install -d -o root -g root -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}"
 RELEASE_DIR="$(mktemp -d "${RELEASES_DIR}/release.XXXXXX")"
+chmod 0755 "${RELEASE_DIR}"
 install -d -o root -g root -m 0755 "${RELEASE_DIR}/server"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/server/material_library.py" "${RELEASE_DIR}/server/material_library.py"
 install -o root -g root -m 0644 "${SOURCE_ROOT}/server/material_library_api.py" "${RELEASE_DIR}/server/material_library_api.py"
