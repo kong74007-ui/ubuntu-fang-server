@@ -110,25 +110,69 @@ def test_readiness_checker_accepts_only_reachable_openai(tmp_path, status, expec
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_curl = fake_bin / "curl"
+    fake_sleep = fake_bin / "sleep"
     fake_curl.write_text(
         "#!/usr/bin/env bash\n"
-        "if [ -n \"${FAKE_CURL_MARKER:-}\" ]; then printf called > \"${FAKE_CURL_MARKER}\"; fi\n"
-        "printf '%s' \"${FAKE_HTTP_STATUS}\"\n",
+        "count=0\n"
+        "if [ -f \"${FAKE_CURL_MARKER}\" ]; then count=$(cat \"${FAKE_CURL_MARKER}\"); fi\n"
+        "count=$((count + 1)); printf '%s' \"${count}\" > \"${FAKE_CURL_MARKER}\"\n"
+        "if [ -n \"${FAKE_HTTP_SEQUENCE:-}\" ]; then\n"
+        "  status=$(printf '%s' \"${FAKE_HTTP_SEQUENCE}\" | cut -d, -f\"${count}\")\n"
+        "  if [ -z \"${status}\" ]; then status=$(printf '%s' \"${FAKE_HTTP_SEQUENCE}\" | awk -F, '{print $NF}'); fi\n"
+        "  printf '%s' \"${status}\"\n"
+        "else\n"
+        "  printf '%s' \"${FAKE_HTTP_STATUS}\"\n"
+        "fi\n",
         encoding="utf-8",
     )
+    fake_sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_curl.chmod(0o755)
+    fake_sleep.chmod(0o755)
     checker = tmp_path / "check-novix-openai-proxy"
     checker.write_text(
-        CHECKER.read_text(encoding="utf-8").replace(
-            "curl --silent", fake_curl.as_posix() + " --silent"),
+        CHECKER.read_text(encoding="utf-8")
+        .replace("curl --silent", fake_curl.as_posix() + " --silent")
+        .replace("/usr/bin/sleep", fake_sleep.as_posix()),
         encoding="utf-8",
     )
-    env = dict(os.environ, FAKE_HTTP_STATUS=status)
+    marker = tmp_path / "curl-count"
+    env = dict(os.environ, FAKE_HTTP_STATUS=status, FAKE_CURL_MARKER=marker.as_posix())
     result = subprocess.run(
         [find_bash(), checker.as_posix()], check=False, capture_output=True,
         text=True, env=env,
     )
     assert result.returncode == expected
+    assert int(marker.read_text(encoding="utf-8")) == (1 if expected == 0 else 6)
+
+
+def test_readiness_checker_waits_for_delayed_tunnel_listener(tmp_path):
+    fake_curl = tmp_path / "curl"
+    fake_sleep = tmp_path / "sleep"
+    marker = tmp_path / "curl-count"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "count=0; if [ -f \"${FAKE_CURL_MARKER}\" ]; then count=$(cat \"${FAKE_CURL_MARKER}\"); fi\n"
+        "count=$((count + 1)); printf '%s' \"${count}\" > \"${FAKE_CURL_MARKER}\"\n"
+        "case \"${count}\" in 1|2) printf 000 ;; *) printf 401 ;; esac\n",
+        encoding="utf-8",
+    )
+    fake_sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    fake_sleep.chmod(0o755)
+    checker = tmp_path / "checker"
+    checker.write_text(
+        CHECKER.read_text(encoding="utf-8")
+        .replace("curl --silent", fake_curl.as_posix() + " --silent")
+        .replace("/usr/bin/sleep", fake_sleep.as_posix()),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [find_bash(), checker.as_posix()], check=False, capture_output=True,
+        text=True, env=dict(os.environ, FAKE_CURL_MARKER=marker.as_posix()),
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8") == "3"
+    assert "attempt 3" in result.stdout
 
 
 @pytest.mark.parametrize("override", [
@@ -282,10 +326,16 @@ def test_units_and_installer_keep_credentials_out_of_repository():
     assert "ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-openai" in unit
     assert "ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-command-denied" in unit
     assert "ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-remote-forward-denied" in unit
+    assert "TimeoutStartSec=45" in unit
     assert "User=admin" in unit
     assert "NoNewPrivileges=true" in unit
     assert "ProtectSystem=strict" in unit
     assert "PIXELLE_NOVIX_SSH_TARGET=" not in unit
+    checker = CHECKER.read_text(encoding="utf-8")
+    assert "MAX_ATTEMPTS=6" in checker
+    assert "--connect-timeout 2" in checker
+    assert "--max-time 3" in checker
+    assert "PIXELLE_NOVIX_READINESS_ATTEMPTS" not in checker
     assert "Requires=huangque-pixelle-novix-tunnel.service" in pixelle
     assert "Environment=HTTPS_PROXY=http://127.0.0.1:10811" in pixelle
     assert "127.0.0.1:7999" not in pixelle

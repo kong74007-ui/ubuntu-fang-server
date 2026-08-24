@@ -186,6 +186,13 @@ set -e
 sudo bash deploy/pixelle-video/install.sh
 ```
 
+The tunnel process may authenticate before its local listener is ready. The
+OpenAI readiness checker therefore makes at most six attempts, each bounded to
+three seconds, with one-second intervals. The systemd start budget is 45
+seconds. These limits are fixed in reviewed files and cannot be weakened by an
+environment override. Exhaustion still fails closed and leaves Pixelle on the
+previous release.
+
 The local port is loopback-only. The runner ignores inherited SSH
 configuration, requires a pinned `known_hosts` file, fails closed when the
 forward cannot be created, and never places the SSH key or Novix credentials
