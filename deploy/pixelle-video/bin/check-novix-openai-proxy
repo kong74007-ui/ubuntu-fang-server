@@ -3,23 +3,31 @@ set -euo pipefail
 
 PROXY_URL="http://127.0.0.1:10811"
 OPENAI_URL="https://api.openai.com/v1/models"
+MAX_ATTEMPTS=6
+DELAY_SECONDS=1
 
 if [[ -n "${PIXELLE_NOVIX_PROXY_URL:-}" || -n "${PIXELLE_NOVIX_OPENAI_PROBE_URL:-}" ]]; then
   echo "Pixelle Novix readiness endpoints cannot be overridden" >&2
   exit 2
 fi
 
-STATUS="$(curl --silent --show-error \
-  --proxy "${PROXY_URL}" \
-  --connect-timeout 10 \
-  --max-time 20 \
-  --output /dev/null \
-  --write-out '%{http_code}' \
-  "${OPENAI_URL}" || true)"
+STATUS=""
+for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+  STATUS="$(curl --silent --show-error \
+    --proxy "${PROXY_URL}" \
+    --connect-timeout 2 \
+    --max-time 3 \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    "${OPENAI_URL}" || true)"
+  if [[ "${STATUS}" == "200" || "${STATUS}" == "401" ]]; then
+    echo "Novix tunnel OpenAI probe passed on attempt ${attempt} (HTTP ${STATUS})"
+    exit 0
+  fi
+  if [[ "${attempt}" -lt "${MAX_ATTEMPTS}" ]]; then
+    /usr/bin/sleep "${DELAY_SECONDS}"
+  fi
+done
 
-if [[ "${STATUS}" != "200" && "${STATUS}" != "401" ]]; then
-  echo "Novix tunnel cannot reach the OpenAI API (HTTP ${STATUS:-none})" >&2
-  exit 1
-fi
-
-echo "Novix tunnel OpenAI probe passed (HTTP ${STATUS})"
+echo "Novix tunnel cannot reach the OpenAI API after ${MAX_ATTEMPTS} attempts (HTTP ${STATUS:-none})" >&2
+exit 1

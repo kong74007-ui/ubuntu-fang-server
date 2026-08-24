@@ -14,6 +14,7 @@ ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-command-denied
 ExecStartPost=/usr/local/libexec/huangque/check-pixelle-novix-remote-forward-denied
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=45
 NoNewPrivileges=true
 PrivateDevices=true
 PrivateTmp=true
