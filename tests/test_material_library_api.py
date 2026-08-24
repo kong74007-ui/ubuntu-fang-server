@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
-from server.material_library_api import build_server
+from server import material_library_api as api
+
+
+build_server = api.build_server
 
 
 class MaterialLibraryApiTests(unittest.TestCase):
@@ -105,6 +110,59 @@ class MaterialLibraryApiTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as corrupted:
             self.request(f"/v1/assets/{self.sha}", token="test-token")
         self.assertEqual(409, corrupted.exception.code)
+
+    def test_atomic_path_replacement_after_validation_streams_only_snapshot(self):
+        asset = self.root / "files" / "approved.jpg"
+        replacement = self.root / "files" / "replacement.jpg"
+        replacement.write_bytes(b"replacement-bytes")
+        real_snapshot = api.verified_asset_snapshot
+
+        @api.contextlib.contextmanager
+        def replace_after_snapshot(path, expected_sha256):
+            with real_snapshot(path, expected_sha256) as verified:
+                os.replace(replacement, asset)
+                yield verified
+
+        with mock.patch.object(api, "verified_asset_snapshot", replace_after_snapshot):
+            with self.request(f"/v1/assets/{self.sha}", token="test-token") as response:
+                returned = response.read()
+        self.assertEqual(b"approved-image", returned)
+        self.assertEqual(b"replacement-bytes", asset.read_bytes())
+
+    def test_source_mutation_during_snapshot_never_returns_http_200(self):
+        asset = (self.root / "files" / "approved.jpg").resolve()
+        original_open = Path.open
+
+        class MutatingReader:
+            def __init__(self, raw):
+                self.raw = raw
+                self.changed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                self.raw.close()
+
+            def read(self, size=-1):
+                chunk = self.raw.read(size)
+                if chunk and not self.changed:
+                    self.changed = True
+                    with original_open(asset, "r+b", buffering=0) as writer:
+                        writer.seek(len(chunk))
+                        writer.write(b"X" * max(0, asset.stat().st_size - len(chunk)))
+                return chunk
+
+        def controlled_open(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+            if path.resolve() == asset and mode == "rb":
+                return MutatingReader(original_open(path, mode, buffering=0))
+            return original_open(path, mode, buffering, encoding, errors, newline)
+
+        with mock.patch.object(api, "SNAPSHOT_CHUNK_BYTES", 4), \
+             mock.patch.object(Path, "open", controlled_open), \
+             self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(f"/v1/assets/{self.sha}", token="test-token")
+        self.assertEqual(409, rejected.exception.code)
 
 
 if __name__ == "__main__":

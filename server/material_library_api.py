@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import hmac
 import json
 import os
 import re
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from shutil import copyfileobj
@@ -19,19 +22,19 @@ try:
         MaterialLibraryError,
         MaterialShortageError,
         content_type_for,
-        sha256_file,
-    )
+)
 except ImportError:
     from material_library import (
         MaterialLibrary,
         MaterialLibraryError,
         MaterialShortageError,
         content_type_for,
-        sha256_file,
     )
 
 
 MAX_BODY_BYTES = 512 * 1024
+MAX_ASSET_BYTES = 512 * 1024 * 1024
+SNAPSHOT_CHUNK_BYTES = 1024 * 1024
 SHA_PATH_RE = re.compile(r"^/v1/assets/([0-9a-f]{64})$")
 
 
@@ -42,6 +45,30 @@ def runtime_build_id() -> str:
     except OSError:
         return "development"
     return value if re.fullmatch(r"[0-9a-f]{64}", value) else "invalid"
+
+
+@contextlib.contextmanager
+def verified_asset_snapshot(path: Path, expected_sha256: str):
+    digest = hashlib.sha256()
+    total = 0
+    snapshot = tempfile.TemporaryFile(mode="w+b", prefix="hq-material-")
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(SNAPSHOT_CHUNK_BYTES):
+                total += len(chunk)
+                if total > MAX_ASSET_BYTES:
+                    raise MaterialLibraryError("material file is too large")
+                digest.update(chunk)
+                snapshot.write(chunk)
+        if not total or not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise MaterialLibraryError("material checksum mismatch")
+        snapshot.flush()
+        snapshot.seek(0)
+        yield snapshot, total
+    except OSError as exc:
+        raise MaterialLibraryError("material snapshot failed") from exc
+    finally:
+        snapshot.close()
 
 
 class MaterialHandler(BaseHTTPRequestHandler):
@@ -102,17 +129,14 @@ class MaterialHandler(BaseHTTPRequestHandler):
             return
         try:
             material, file_path = self.library.resolve(match.group(1))
-            if sha256_file(file_path) != material.sha256:
-                raise MaterialLibraryError("material checksum mismatch")
-            size = file_path.stat().st_size
-            self.send_response(200)
-            self.send_header("Content-Type", content_type_for(file_path))
-            self.send_header("Content-Length", str(size))
-            self.send_header("Cache-Control", "private, max-age=3600, immutable")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            with file_path.open("rb") as handle:
-                copyfileobj(handle, self.wfile, length=1024 * 1024)
+            with verified_asset_snapshot(file_path, material.sha256) as (snapshot, size):
+                self.send_response(200)
+                self.send_header("Content-Type", content_type_for(file_path))
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "private, max-age=3600, immutable")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                copyfileobj(snapshot, self.wfile, length=SNAPSHOT_CHUNK_BYTES)
         except KeyError:
             self._json(404, {"error": "asset_not_found"})
         except MaterialLibraryError as exc:
