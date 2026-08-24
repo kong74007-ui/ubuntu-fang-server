@@ -12,6 +12,7 @@ fi
 
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RENDERER="${DEPLOY_ROOT}/deploy/pixelle-video/bin/render-novix-authorized-key"
+ACCOUNT_CHECKER="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-novix-production-account"
 CONFIG_SOURCE="${DEPLOY_ROOT}/deploy/sshd/60-huangque-pixelle-novix.conf"
 CONFIG_TARGET="/etc/ssh/sshd_config.d/60-huangque-pixelle-novix.conf"
 PUBLIC_KEY_FILE="$1"
@@ -23,6 +24,8 @@ BACKUP_DIR="$(mktemp -d /var/tmp/pixelle-novix-sshd.XXXXXX)"
 CONFIG_EXISTED=0
 KEYS_EXISTED=0
 USER_CREATED=0
+PASSWORD_CHANGED=0
+ORIGINAL_PASSWORD_HASH=""
 SUCCEEDED=0
 
 cleanup() {
@@ -40,6 +43,9 @@ cleanup() {
     elif [[ "${USER_CREATED}" -eq 0 ]]; then
       rm -f "${AUTHORIZED_KEYS}"
     fi
+    if [[ "${USER_CREATED}" -eq 0 && "${PASSWORD_CHANGED}" -eq 1 ]]; then
+      printf '%s:%s\n' "${TUNNEL_USER}" "${ORIGINAL_PASSWORD_HASH}" | /usr/sbin/chpasswd -e || true
+    fi
     /usr/sbin/sshd -t || true
     systemctl reload ssh.service || true
     if [[ "${USER_CREATED}" -eq 1 ]]; then
@@ -51,7 +57,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for source in "${RENDERER}" "${CONFIG_SOURCE}" "${PUBLIC_KEY_FILE}"; do
+for source in "${RENDERER}" "${ACCOUNT_CHECKER}" "${CONFIG_SOURCE}" "${PUBLIC_KEY_FILE}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe production SSH source: ${source}" >&2
     exit 2
@@ -69,6 +75,22 @@ else
   useradd --system --create-home --home-dir "${TUNNEL_HOME}" \
     --shell /usr/bin/false "${TUNNEL_USER}"
   USER_CREATED=1
+fi
+
+PASSWORD_STATE="$(passwd -S "${TUNNEL_USER}" | awk '{print $2}')"
+if [[ "${PASSWORD_STATE}" != "P" ]]; then
+  command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 2; }
+  ORIGINAL_PASSWORD_HASH="$(getent shadow "${TUNNEL_USER}" | cut -d: -f2)"
+  RANDOM_PASSWORD="$(openssl rand -base64 48)"
+  RANDOM_PASSWORD_HASH="$(printf '%s' "${RANDOM_PASSWORD}" | openssl passwd -6 -stdin)"
+  unset RANDOM_PASSWORD
+  printf '%s:%s\n' "${TUNNEL_USER}" "${RANDOM_PASSWORD_HASH}" | /usr/sbin/chpasswd -e
+  unset RANDOM_PASSWORD_HASH
+  PASSWORD_CHANGED=1
+fi
+if [[ "$(passwd -S "${TUNNEL_USER}" | awk '{print $2}')" != "P" ]]; then
+  echo "failed to place ${TUNNEL_USER} in non-locked state P" >&2
+  exit 1
 fi
 
 install -d -o "${TUNNEL_USER}" -g "${TUNNEL_USER}" -m 0700 "${SSH_DIR}"
@@ -101,7 +123,9 @@ grep -Fxq "forcecommand /usr/bin/false" <<<"${effective}"
 grep -Fxq "permittty no" <<<"${effective}"
 grep -Fxq "allowagentforwarding no" <<<"${effective}"
 grep -Fxq "x11forwarding no" <<<"${effective}"
+"${ACCOUNT_CHECKER}"
 
 systemctl reload ssh.service
+"${ACCOUNT_CHECKER}"
 SUCCEEDED=1
 echo "production SSH forwarding-only account installed and sshd reloaded"
