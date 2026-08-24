@@ -127,7 +127,7 @@ class MaterialHandler(BaseHTTPRequestHandler):
                 used_sha256=payload.get("used_sha256") or [],
             )
             self._json(200, result)
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             self._json(400, {"error": "invalid_request", "detail": str(exc)})
         except MaterialShortageError as exc:
             self._json(409, {"error": "material_shortage", "detail": str(exc)})

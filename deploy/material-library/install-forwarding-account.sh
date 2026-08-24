@@ -7,6 +7,12 @@ if [[ "$(id -u)" -ne 0 || "$#" -ne 1 ]]; then
 fi
 
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
+if [[ ! -f "${ROLLBACK_LIB}" || -L "${ROLLBACK_LIB}" ]]; then
+  echo "missing or unsafe rollback library" >&2
+  exit 2
+fi
+source "${ROLLBACK_LIB}"
 PUBLIC_KEY_FILE="$1"
 RENDERER="${DEPLOY_ROOT}/deploy/pixelle-video/bin/render-material-authorized-key"
 CHECKER="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-material-library-account"
@@ -20,6 +26,7 @@ BACKUP="$(mktemp -d /var/tmp/material-library-sshd.XXXXXX)"
 USER_CREATED=0
 CONFIG_EXISTED=0
 KEYS_EXISTED=0
+SSH_DIR_EXISTED=0
 PASSWORD_CHANGED=0
 ORIGINAL_PASSWORD_HASH=""
 SUCCEEDED=0
@@ -33,10 +40,10 @@ cleanup() {
     else
       rm -f "${CONFIG_TARGET}"
     fi
-    if [[ "${KEYS_EXISTED}" -eq 1 ]]; then
-      install -o "${TUNNEL_USER}" -g "${TUNNEL_USER}" -m 0600 \
-        "${BACKUP}/authorized_keys" "${AUTHORIZED_KEYS}"
-    fi
+    material_restore_authorized_key \
+      "${AUTHORIZED_KEYS}" "${KEYS_EXISTED}" "${USER_CREATED}" \
+      "${SSH_DIR_EXISTED}" "${SSH_DIR}" "${BACKUP}/authorized_keys" \
+      "${TUNNEL_USER}"
     if [[ "${USER_CREATED}" -eq 0 && "${PASSWORD_CHANGED}" -eq 1 ]]; then
       printf '%s:%s\n' "${TUNNEL_USER}" "${ORIGINAL_PASSWORD_HASH}" | chpasswd -e || true
     fi
@@ -57,6 +64,11 @@ for source in "${PUBLIC_KEY_FILE}" "${RENDERER}" "${CHECKER}" "${CONFIG_SOURCE}"
     exit 2
   fi
 done
+: "${MATERIAL_TUNNEL_SOURCE_ADDRESS:?set MATERIAL_TUNNEL_SOURCE_ADDRESS to the real generation-server source IP}"
+if [[ ! "${MATERIAL_TUNNEL_SOURCE_ADDRESS}" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+  echo "invalid MATERIAL_TUNNEL_SOURCE_ADDRESS" >&2
+  exit 2
+fi
 
 if id "${TUNNEL_USER}" >/dev/null 2>&1; then
   entry="$(getent passwd "${TUNNEL_USER}")"
@@ -79,6 +91,9 @@ if [[ "$(passwd -S "${TUNNEL_USER}" | awk '{print $2}')" != "P" ]]; then
   PASSWORD_CHANGED=1
 fi
 
+if [[ -d "${SSH_DIR}" ]]; then
+  SSH_DIR_EXISTED=1
+fi
 install -d -o "${TUNNEL_USER}" -g "${TUNNEL_USER}" -m 0700 "${SSH_DIR}"
 if [[ -f "${AUTHORIZED_KEYS}" ]]; then
   managed_lines="$(grep -Ev '^[[:space:]]*(#|$)' "${AUTHORIZED_KEYS}" || true)"

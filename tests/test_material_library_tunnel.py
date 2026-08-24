@@ -36,6 +36,8 @@ class MaterialLibraryTunnelTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", unit)
         self.assertIn("ProtectSystem=strict", unit)
         self.assertIn("EnvironmentFile=/etc/huangque/pixelle-material-library.env", unit)
+        self.assertIn("check-pixelle-material-command-denied", unit)
+        self.assertIn("check-pixelle-material-remote-forward-denied", unit)
 
     def test_authorized_key_renderer_restricts_real_ed25519_key(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -62,6 +64,10 @@ class MaterialLibraryTunnelTests(unittest.TestCase):
         self.assertIn("refusing to replace non-managed", material)
         self.assertIn("sshd -t", material)
         self.assertIn("PASSWORD_CHANGED", material)
+        self.assertIn("MATERIAL_TUNNEL_SOURCE_ADDRESS", material)
+        checker = (ROOT / "deploy/pixelle-video/bin/check-material-library-account").read_text(encoding="utf-8")
+        for rule in ("allowstreamlocalforwarding no", "gatewayports no", "permittunnel no", "permituserrc no"):
+            self.assertIn(rule, checker)
         self.assertIn("root:root mode 600", generation)
         self.assertIn("pixelle-material-tunnel", generation)
         for script in (
@@ -71,8 +77,64 @@ class MaterialLibraryTunnelTests(unittest.TestCase):
             "deploy/pixelle-video/bin/check-material-library-tunnel",
             "deploy/pixelle-video/bin/render-material-authorized-key",
             "deploy/pixelle-video/bin/check-material-library-account",
+            "deploy/pixelle-video/bin/check-material-command-denied",
+            "deploy/pixelle-video/bin/check-material-remote-forward-denied",
+            "deploy/material-library/lib/rollback.sh",
         ):
             subprocess.run([bash_path(), "-n", str(ROOT / script)], check=True)
+
+    def test_existing_account_without_key_removes_new_key_on_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ssh_dir = Path(temp) / ".ssh"
+            ssh_dir.mkdir()
+            authorized = ssh_dir / "authorized_keys"
+            authorized.write_text("new-key", encoding="utf-8")
+            command = f'''source "{(ROOT / "deploy/material-library/lib/rollback.sh").as_posix()}"
+material_restore_authorized_key "{authorized.as_posix()}" 0 0 0 "{ssh_dir.as_posix()}" "{(Path(temp) / "missing").as_posix()}" ignored
+[[ ! -e "{authorized.as_posix()}" && ! -d "{ssh_dir.as_posix()}" ]]
+'''
+            subprocess.run([bash_path(), "-c", command], check=True)
+
+    def test_failed_release_restores_source_unit_and_cleans_first_install_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.write_text("new", encoding="utf-8")
+            legacy = root / "legacy"
+            legacy.mkdir()
+            (legacy / "version").write_text("old", encoding="utf-8")
+            unit = root / "service.unit"
+            unit.write_text("new-unit", encoding="utf-8")
+            backup = root / "old.unit"
+            backup.write_text("old-unit", encoding="utf-8")
+            env_file = root / "created.env"
+            env_file.write_text("token", encoding="utf-8")
+            release = root / "release"
+            release.mkdir()
+            command = f'''source "{(ROOT / "deploy/material-library/lib/rollback.sh").as_posix()}"
+material_restore_release "{source.as_posix()}" "" "{legacy.as_posix()}" 1 "{backup.as_posix()}" "{unit.as_posix()}" 1 "{env_file.as_posix()}" "{release.as_posix()}"
+[[ "$(cat "{source.as_posix()}/version")" = old ]]
+[[ "$(cat "{unit.as_posix()}")" = old-unit ]]
+[[ ! -e "{env_file.as_posix()}" && ! -e "{release.as_posix()}" ]]
+'''
+            subprocess.run([bash_path(), "-c", command], check=True)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.write_text("new", encoding="utf-8")
+            unit = root / "service.unit"
+            unit.write_text("new-unit", encoding="utf-8")
+            env_file = root / "created.env"
+            env_file.write_text("token", encoding="utf-8")
+            release = root / "release"
+            release.mkdir()
+            command = f'''source "{(ROOT / "deploy/material-library/lib/rollback.sh").as_posix()}"
+material_restore_release "{source.as_posix()}" "" "" 0 "{(root / "missing-unit").as_posix()}" "{unit.as_posix()}" 1 "{env_file.as_posix()}" "{release.as_posix()}"
+[[ ! -e "{source.as_posix()}" && ! -e "{unit.as_posix()}" ]]
+[[ ! -e "{env_file.as_posix()}" && ! -e "{release.as_posix()}" ]]
+'''
+            subprocess.run([bash_path(), "-c", command], check=True)
 
 
 if __name__ == "__main__":

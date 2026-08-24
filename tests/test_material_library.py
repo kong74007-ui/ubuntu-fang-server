@@ -127,6 +127,14 @@ class MaterialLibraryTests(unittest.TestCase):
         second = library.select(scene, seed="same")["materials"][0]["sha256"]
         self.assertEqual(first, second)
 
+    def test_scene_contract_rejects_non_objects_and_more_than_twenty_one(self):
+        self.add("only", 标签=["库存"])
+        library = self.library()
+        with self.assertRaisesRegex(ValueError, "object"):
+            library.select(["bad"])
+        with self.assertRaisesRegex(ValueError, "21"):
+            library.select([{"scene_id": str(index)} for index in range(22)])
+
     def test_chinese_sentence_matches_individual_tags_without_spaces(self):
         expected = self.add("beauty", 标签=["医美", "抗衰"])
         self.add("other", 标签=["办公", "会议"])

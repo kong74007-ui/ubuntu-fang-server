@@ -85,6 +85,12 @@ class MaterialLibraryApiTests(unittest.TestCase):
         self.assertNotIn("relative_path", serialized)
         self.assertNotIn(str(self.root), serialized)
 
+    def test_select_rejects_non_object_root_and_scene_entries(self):
+        for payload in ([{"scene_id": "bad"}], {"scenes": ["bad"]}):
+            with self.subTest(payload=payload), self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("/v1/select", method="POST", payload=payload, token="test-token")
+            self.assertEqual(400, rejected.exception.code)
+
     def test_asset_download_requires_token_and_valid_checksum(self):
         with self.assertRaises(urllib.error.HTTPError) as denied:
             self.request(f"/v1/assets/{self.sha}")

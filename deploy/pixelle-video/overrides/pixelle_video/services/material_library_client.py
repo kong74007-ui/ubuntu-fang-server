@@ -30,6 +30,29 @@ class MaterialLibraryClientError(RuntimeError):
     pass
 
 
+def _validate_selection(selected: list, scene_ids: list[str]) -> list[dict]:
+    if not isinstance(selected, list) or any(not isinstance(item, dict) for item in selected):
+        raise MaterialLibraryClientError("material library returned an invalid selection")
+    if len(selected) != len(scene_ids):
+        raise MaterialLibraryClientError("material library returned an incomplete selection")
+    by_scene = {str(item.get("scene_id") or ""): item for item in selected}
+    if len(by_scene) != len(selected) or set(by_scene) != set(scene_ids):
+        raise MaterialLibraryClientError("material library scene binding is invalid")
+    sha_values = [str(item.get("sha256") or "").lower() for item in selected]
+    if any(not SHA256_RE.fullmatch(value) for value in sha_values):
+        raise MaterialLibraryClientError("material library SHA binding is invalid")
+    if len(set(sha_values)) != len(selected):
+        raise MaterialLibraryClientError("material library returned duplicate assets")
+    for scene_id in scene_ids:
+        media_type = str(by_scene[scene_id].get("media_type") or "")
+        if scene_id == "bgm":
+            if media_type != "bgm":
+                raise MaterialLibraryClientError("material library BGM binding is invalid")
+        elif media_type not in {"image", "video"}:
+            raise MaterialLibraryClientError("material library visual binding is invalid")
+    return [by_scene[scene_id] for scene_id in scene_ids]
+
+
 def _settings() -> tuple[str, str]:
     base = os.environ.get(
         "PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"
@@ -131,11 +154,10 @@ async def prepare_library_materials(
             )
             response.raise_for_status()
             payload = response.json()
-            selected = payload.get("materials") or []
-            if len(selected) != len(scenes):
-                raise MaterialLibraryClientError("material library returned an incomplete selection")
-            if len({item.get("sha256") for item in selected}) != len(selected):
-                raise MaterialLibraryClientError("material library returned duplicate assets")
+            selected = _validate_selection(
+                payload.get("materials") or [],
+                [scene["scene_id"] for scene in scenes],
+            )
             downloaded = []
             for item in selected:
                 path = await _download(client, base, headers, item, target_dir)
@@ -155,6 +177,33 @@ async def prepare_library_materials(
         for item in downloaded
     ]
     return {"visuals": visuals, "bgm_path": bgm["path"], "manifest": manifest}
+
+
+async def probe_library_capacity(scene_count: int, orientation: str) -> dict:
+    if isinstance(scene_count, bool) or not isinstance(scene_count, int) or not 1 <= scene_count <= 20:
+        raise MaterialLibraryClientError("material library probe scene_count is invalid")
+    if orientation not in {"portrait", "landscape", "square"}:
+        raise MaterialLibraryClientError("material library probe orientation is invalid")
+    base, token = _settings()
+    scene_ids = [f"scene_{index + 1:02d}" for index in range(scene_count)] + ["bgm"]
+    scenes = [
+        {"scene_id": scene_id, "query": "库存预检", "media_type": "bgm" if scene_id == "bgm" else "visual"}
+        for scene_id in scene_ids
+    ]
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3, read=10, write=5, pool=3), trust_env=False
+        ) as client:
+            response = await client.post(
+                f"{base}/v1/select",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"scenes": scenes, "orientation": orientation, "seed": "capacity-probe"},
+            )
+            response.raise_for_status()
+            selected = _validate_selection(response.json().get("materials") or [], scene_ids)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise MaterialLibraryClientError(f"material library capacity probe failed: {exc}") from exc
+    return {"ready": True, "scene_count": scene_count, "selected_count": len(selected)}
 
 
 async def check_library_health() -> dict:

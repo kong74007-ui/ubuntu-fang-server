@@ -96,6 +96,30 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertEqual((self.task / "library_materials").resolve(), path.parent.resolve())
         self.assertNotIn("path", result["manifest"][0])
+        probe = asyncio.run(self.client.probe_library_capacity(2, "portrait"))
+        self.assertEqual({"ready": True, "scene_count": 2, "selected_count": 3}, probe)
+        with self.assertRaises(self.client.MaterialLibraryClientError):
+            asyncio.run(self.client.probe_library_capacity(3, "portrait"))
+
+    def test_selection_binding_rejects_order_drift_duplicates_unknown_and_type_mismatch(self):
+        valid = [
+            {"scene_id": "scene_02", "sha256": "b" * 64, "media_type": "video"},
+            {"scene_id": "bgm", "sha256": "c" * 64, "media_type": "bgm"},
+            {"scene_id": "scene_01", "sha256": "a" * 64, "media_type": "image"},
+        ]
+        ordered = self.client._validate_selection(valid, ["scene_01", "scene_02", "bgm"])
+        self.assertEqual(["scene_01", "scene_02", "bgm"], [item["scene_id"] for item in ordered])
+        invalid_values = [
+            valid[:-1],
+            [valid[0], valid[0], valid[2]],
+            [valid[0], valid[1], {**valid[2], "scene_id": "unknown"}],
+            [{**valid[2], "media_type": "bgm"}, valid[0], valid[1]],
+            [valid[2], valid[0], {**valid[1], "media_type": "image"}],
+            [{**valid[2], "sha256": "bad"}, valid[0], valid[1]],
+        ]
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaises(self.client.MaterialLibraryClientError):
+                self.client._validate_selection(value, ["scene_01", "scene_02", "bgm"])
 
     def test_external_or_credential_bearing_urls_are_rejected(self):
         for value in (
@@ -121,6 +145,7 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         self.assertIn('frame.video_path = visual["path"]', patch_text)
         self.assertIn('material_source: Literal["ai", "library"]', patch_text)
         self.assertIn('@router.get("/material-library/health")', patch_text)
+        self.assertIn('@router.post("/material-library/probe")', patch_text)
         self.assertNotIn("AI fallback", patch_text)
 
 

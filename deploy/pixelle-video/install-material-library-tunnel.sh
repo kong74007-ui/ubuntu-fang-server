@@ -4,9 +4,13 @@ set -euo pipefail
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/run-material-library-tunnel"
 CHECK_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-material-library-tunnel"
+COMMAND_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-material-command-denied"
+REMOTE_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/pixelle-video/bin/check-material-remote-forward-denied"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-pixelle-material-tunnel.service"
 RUNNER_TARGET="/usr/local/libexec/huangque/run-pixelle-material-tunnel"
 CHECK_TARGET="/usr/local/libexec/huangque/check-pixelle-material-tunnel"
+COMMAND_CHECK_TARGET="/usr/local/libexec/huangque/check-pixelle-material-command-denied"
+REMOTE_CHECK_TARGET="/usr/local/libexec/huangque/check-pixelle-material-remote-forward-denied"
 UNIT_TARGET="/etc/systemd/system/huangque-pixelle-material-tunnel.service"
 TUNNEL_ENV="/etc/huangque/pixelle-material-tunnel.env"
 LIBRARY_ENV="/etc/huangque/pixelle-material-library.env"
@@ -16,7 +20,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "run this installer as root" >&2
   exit 2
 fi
-for source in "${RUNNER_SOURCE}" "${CHECK_SOURCE}" "${UNIT_SOURCE}"; do
+for source in "${RUNNER_SOURCE}" "${CHECK_SOURCE}" "${COMMAND_CHECK_SOURCE}" "${REMOTE_CHECK_SOURCE}" "${UNIT_SOURCE}"; do
   if [[ ! -s "${source}" || -L "${source}" ]]; then
     echo "missing or unsafe material tunnel deployment file: ${source}" >&2
     exit 2
@@ -66,9 +70,13 @@ fi
 install -d -o root -g root -m 0755 /usr/local/libexec/huangque
 install -o root -g root -m 0755 "${RUNNER_SOURCE}" "${RUNNER_TARGET}"
 install -o root -g root -m 0755 "${CHECK_SOURCE}" "${CHECK_TARGET}"
+install -o root -g root -m 0755 "${COMMAND_CHECK_SOURCE}" "${COMMAND_CHECK_TARGET}"
+install -o root -g root -m 0755 "${REMOTE_CHECK_SOURCE}" "${REMOTE_CHECK_TARGET}"
 install -o root -g root -m 0644 "${UNIT_SOURCE}" "${UNIT_TARGET}"
 systemctl daemon-reload
 systemctl enable --now "${SERVICE}"
 systemctl is-active --quiet "${SERVICE}"
 "${CHECK_TARGET}"
+"${COMMAND_CHECK_TARGET}"
+"${REMOTE_CHECK_TARGET}"
 echo "${SERVICE} is active and the material library is healthy"

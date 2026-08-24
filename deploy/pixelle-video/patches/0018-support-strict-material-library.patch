@@ -1,35 +1,48 @@
 diff --git a/api/schemas/video.py b/api/schemas/video.py
 --- a/api/schemas/video.py
 +++ b/api/schemas/video.py
-@@ -137,6 +137,10 @@ class VideoGenerateRequest(BaseModel):
-     # === Media Parameters ===
-     # Note: media_width and media_height are auto-determined from template meta tags
-     media_workflow: Optional[str] = Field(None, description="Custom media workflow (image or video)")
+@@ -85,0 +86,5 @@ class TalkingMaterialConfig(BaseModel):
++
++class MaterialLibraryProbeRequest(BaseModel):
++    scene_count: int = Field(..., ge=1, le=20)
++    orientation: Literal["portrait", "landscape", "square"]
++
+@@ -139,0 +145,4 @@ class VideoGenerateRequest(BaseModel):
 +    material_source: Literal["ai", "library"] = Field(
 +        "ai",
 +        description="Visual source. Library mode is strict and never falls back to AI media generation.",
 +    )
-     
-     # === Video Parameters ===
-     video_fps: int = Field(30, ge=15, le=60, description="Video FPS")
 diff --git a/api/routers/video.py b/api/routers/video.py
 --- a/api/routers/video.py
 +++ b/api/routers/video.py
-@@ -35,0 +36,13 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
-+
+@@ -28,0 +29,1 @@ from api.schemas.video import (
++    MaterialLibraryProbeRequest,
+@@ -33,0 +35,5 @@ from api import avatar_assets
++from pixelle_video.services.material_library_client import (
++    MaterialLibraryClientError,
++    check_library_health,
++    probe_library_capacity,
++)
+@@ -35,0 +42,18 @@ router = APIRouter(prefix="/video", tags=["Video Generation"])
 +@router.get("/material-library/health")
 +async def material_library_health():
-+    from pixelle_video.services.material_library_client import (
-+        MaterialLibraryClientError,
-+        check_library_health,
-+    )
 +    try:
 +        return await check_library_health()
 +    except MaterialLibraryClientError as exc:
 +        raise HTTPException(status_code=503, detail=str(exc)) from exc
 +
 +
-@@ -185,6 +198,7 @@ async def generate_video_sync(
++@router.post("/material-library/probe")
++async def material_library_probe(request_body: MaterialLibraryProbeRequest):
++    try:
++        return await probe_library_capacity(
++            request_body.scene_count, request_body.orientation
++        )
++    except MaterialLibraryClientError as exc:
++        raise HTTPException(status_code=409, detail=str(exc)) from exc
++
++
+@@ -185,6 +209,7 @@ async def generate_video_sync(
              "media_width": media_width,
              "media_height": media_height,
              "media_workflow": request_body.media_workflow,
@@ -37,7 +50,7 @@ diff --git a/api/routers/video.py b/api/routers/video.py
              "video_fps": request_body.video_fps,
              "frame_template": request_body.frame_template,
              "prompt_prefix": request_body.prompt_prefix,
-@@ -346,6 +360,7 @@ async def generate_video_async(
+@@ -346,6 +371,7 @@ async def generate_video_async(
                  "media_width": media_width,
                  "media_height": media_height,
                  "media_workflow": request_body.media_workflow,
@@ -45,7 +58,7 @@ diff --git a/api/routers/video.py b/api/routers/video.py
                  "video_fps": request_body.video_fps,
                  "frame_template": request_body.frame_template,
                  "prompt_prefix": request_body.prompt_prefix,
-@@ -399,6 +414,7 @@ async def generate_video_async(
+@@ -399,6 +425,7 @@ async def generate_video_async(
                      for frame in result.storyboard.frames
                      if frame.talking_warning
                  ],

@@ -241,8 +241,12 @@ class MaterialLibrary:
         used_sha256: Iterable[str] = (),
     ) -> dict[str, Any]:
         self.refresh()
-        if not scenes:
+        if not isinstance(scenes, list) or not scenes:
             raise ValueError("scenes must not be empty")
+        if len(scenes) > 21:
+            raise ValueError("scenes must not exceed 21 items")
+        if any(not isinstance(scene, dict) for scene in scenes):
+            raise ValueError("each scene must be an object")
         requested_orientation = _orientation(orientation)
         used = {str(value).lower() for value in used_sha256 if SHA256_RE.fullmatch(str(value).lower())}
         selected: list[dict[str, Any]] = []

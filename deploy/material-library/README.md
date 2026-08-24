@@ -22,7 +22,8 @@ Create a dedicated ed25519 key on the generation server. Install only its public
 key on the material server:
 
 ```bash
-sudo bash deploy/material-library/install-forwarding-account.sh /path/to/id_ed25519.pub
+sudo MATERIAL_TUNNEL_SOURCE_ADDRESS=<generation-server-source-ip> \
+  bash deploy/material-library/install-forwarding-account.sh /path/to/id_ed25519.pub
 ```
 
 The account cannot run commands, allocate a TTY, forward agents, open remote
