@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TUNNEL_USER="pixelle_tunnel"
+EXPECTED_HOME="/var/lib/huangque-pixelle-tunnel"
+EXPECTED_SHELL="/usr/bin/false"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "run the production account check as root" >&2
+  exit 2
+fi
+entry="$(getent passwd "${TUNNEL_USER}" || true)"
+if [[ -z "${entry}" ]]; then
+  echo "missing ${TUNNEL_USER} account" >&2
+  exit 1
+fi
+IFS=: read -r _ _ _ _ _ actual_home actual_shell <<<"${entry}"
+if [[ "${actual_home}" != "${EXPECTED_HOME}" || "${actual_shell}" != "${EXPECTED_SHELL}" ]]; then
+  echo "${TUNNEL_USER} account has an unexpected home or shell" >&2
+  exit 1
+fi
+PASSWORD_STATE="$(passwd -S "${TUNNEL_USER}" | awk '{print $2}')"
+if [[ "${PASSWORD_STATE}" != "P" ]]; then
+  echo "${TUNNEL_USER} account must be non-locked state P" >&2
+  exit 1
+fi
+
+effective="$(/usr/sbin/sshd -T -C user=${TUNNEL_USER},host=localhost,addr=8.134.216.162)"
+for expected in \
+    "authenticationmethods publickey" \
+    "passwordauthentication no" \
+    "kbdinteractiveauthentication no" \
+    "allowtcpforwarding local" \
+    "permitopen 127.0.0.1:10810" \
+    "permitlisten none" \
+    "forcecommand /usr/bin/false" \
+    "permittty no" \
+    "allowagentforwarding no" \
+    "x11forwarding no"; do
+  if ! grep -Fxq "${expected}" <<<"${effective}"; then
+    echo "missing effective sshd restriction: ${expected}" >&2
+    exit 1
+  fi
+done
+
+echo "production Pixelle tunnel account and sshd restrictions verified"

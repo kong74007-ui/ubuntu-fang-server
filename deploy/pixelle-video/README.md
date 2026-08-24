@@ -127,6 +127,20 @@ sudo bash deploy/pixelle-video/install-novix-production-sshd.sh \
   /tmp/pixelle-novix-tunnel.pub
 ```
 
+`useradd --system` creates a locked account that OpenSSH rejects before public
+key authentication. The installer therefore assigns an unknowable random
+SHA-512 password hash and immediately discards the random plaintext. The
+account must report state `P`, while `AuthenticationMethods publickey`,
+`PasswordAuthentication no`, and `KbdInteractiveAuthentication no` continue
+to make password login impossible. If installation fails, an existing
+account's original shadow hash is restored; a newly created account is removed.
+
+```bash
+sudo passwd -S pixelle_tunnel
+# Expected second field: P
+sudo deploy/pixelle-video/bin/check-novix-production-account
+```
+
 On the generation host, pin the production host key after verifying its
 fingerprint out of band. Store the private key under a root-owned directory
 that is readable only by the `admin` service group. Create the root-owned mode

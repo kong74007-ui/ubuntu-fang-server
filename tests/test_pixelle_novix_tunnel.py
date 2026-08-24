@@ -15,6 +15,7 @@ COMMAND_CHECKER = ROOT / "deploy/pixelle-video/bin/check-novix-command-denied"
 REMOTE_FORWARD_CHECKER = ROOT / "deploy/pixelle-video/bin/check-novix-remote-forward-denied"
 KEY_RENDERER = ROOT / "deploy/pixelle-video/bin/render-novix-authorized-key"
 PRODUCTION_INSTALLER = ROOT / "deploy/pixelle-video/install-novix-production-sshd.sh"
+PRODUCTION_ACCOUNT_CHECKER = ROOT / "deploy/pixelle-video/bin/check-novix-production-account"
 SSHD_MATCH = ROOT / "deploy/sshd/60-huangque-pixelle-novix.conf"
 INSTALLER = ROOT / "deploy/pixelle-video/install-novix-tunnel.sh"
 UNIT = ROOT / "deploy/systemd/huangque-pixelle-novix-tunnel.service"
@@ -318,11 +319,69 @@ def test_production_match_user_policy_is_local_forward_only():
     ):
         assert expected in installer
     assert "refusing to replace non-managed" in installer
+    assert "openssl rand -base64 48" in installer
+    assert "openssl passwd -6 -stdin" in installer
+    assert "/usr/sbin/chpasswd -e" in installer
+    assert '!= "P"' in installer
+    assert "ORIGINAL_PASSWORD_HASH" in installer
+    assert "unset RANDOM_PASSWORD" in installer
+    assert "${ACCOUNT_CHECKER}" in installer
+
+
+@pytest.mark.parametrize(("password_state", "drop_restriction", "expected"), [
+    ("P", "", 0),
+    ("L", "", 1),
+    ("P", "passwordauthentication no", 1),
+])
+def test_production_account_checker_requires_unlocked_publickey_only_account(
+        tmp_path, password_state, drop_restriction, expected):
+    fake_id = tmp_path / "id"
+    fake_getent = tmp_path / "getent"
+    fake_passwd = tmp_path / "passwd"
+    fake_sshd = tmp_path / "sshd"
+    fake_id.write_text("#!/usr/bin/env bash\nprintf '0\\n'\n", encoding="utf-8")
+    fake_getent.write_text(
+        "#!/usr/bin/env bash\nprintf 'pixelle_tunnel:x:997:997::/var/lib/huangque-pixelle-tunnel:/usr/bin/false\\n'\n",
+        encoding="utf-8",
+    )
+    fake_passwd.write_text(
+        "#!/usr/bin/env bash\nprintf 'pixelle_tunnel %s 2026-08-24 0 99999 7 -1\\n' \"${FAKE_PASSWORD_STATE}\"\n",
+        encoding="utf-8",
+    )
+    effective = [
+        "authenticationmethods publickey", "passwordauthentication no",
+        "kbdinteractiveauthentication no", "allowtcpforwarding local",
+        "permitopen 127.0.0.1:10810", "permitlisten none",
+        "forcecommand /usr/bin/false", "permittty no",
+        "allowagentforwarding no", "x11forwarding no",
+    ]
+    if drop_restriction:
+        effective.remove(drop_restriction)
+    fake_sshd.write_text(
+        "#!/usr/bin/env bash\ncat <<'EOF'\n" + "\n".join(effective) + "\nEOF\n",
+        encoding="utf-8",
+    )
+    for path in (fake_id, fake_getent, fake_passwd, fake_sshd):
+        path.chmod(0o755)
+    checker = tmp_path / "check-production-account"
+    checker.write_text(
+        PRODUCTION_ACCOUNT_CHECKER.read_text(encoding="utf-8")
+        .replace("id -u", fake_id.as_posix() + " -u")
+        .replace("getent passwd", fake_getent.as_posix() + " passwd")
+        .replace("passwd -S", fake_passwd.as_posix() + " -S")
+        .replace("/usr/sbin/sshd", fake_sshd.as_posix()),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [find_bash(), checker.as_posix()], check=False, capture_output=True,
+        text=True, env=dict(os.environ, FAKE_PASSWORD_STATE=password_state),
+    )
+    assert result.returncode == expected
 
 
 def test_deployment_files_contain_no_private_key_material():
     for path in (RUNNER, CHECKER, COMMAND_CHECKER, REMOTE_FORWARD_CHECKER,
-                 KEY_RENDERER, INSTALLER, PRODUCTION_INSTALLER, UNIT,
+                 KEY_RENDERER, PRODUCTION_ACCOUNT_CHECKER, INSTALLER, PRODUCTION_INSTALLER, UNIT,
                  PIXELLE_UNIT, SSHD_MATCH):
         text = path.read_text(encoding="utf-8")
         assert "BEGIN OPENSSH PRIVATE KEY" not in text
