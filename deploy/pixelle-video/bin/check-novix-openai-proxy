@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROXY_URL="${PIXELLE_NOVIX_PROXY_URL:-http://127.0.0.1:10811}"
-OPENAI_URL="${PIXELLE_NOVIX_OPENAI_PROBE_URL:-https://api.openai.com/v1/models}"
+PROXY_URL="http://127.0.0.1:10811"
+OPENAI_URL="https://api.openai.com/v1/models"
 
-if [[ "${PROXY_URL}" != "http://127.0.0.1:10811" ]]; then
-  echo "unexpected Pixelle Novix proxy URL" >&2
+if [[ -n "${PIXELLE_NOVIX_PROXY_URL:-}" || -n "${PIXELLE_NOVIX_OPENAI_PROBE_URL:-}" ]]; then
+  echo "Pixelle Novix readiness endpoints cannot be overridden" >&2
   exit 2
 fi
 

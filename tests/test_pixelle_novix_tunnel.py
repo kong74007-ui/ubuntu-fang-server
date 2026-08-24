@@ -104,7 +104,9 @@ def test_readiness_checker_accepts_only_reachable_openai(tmp_path, status, expec
     fake_bin.mkdir()
     fake_curl = fake_bin / "curl"
     fake_curl.write_text(
-        "#!/usr/bin/env bash\nprintf '%s' \"${FAKE_HTTP_STATUS}\"\n",
+        "#!/usr/bin/env bash\n"
+        "if [ -n \"${FAKE_CURL_MARKER:-}\" ]; then printf called > \"${FAKE_CURL_MARKER}\"; fi\n"
+        "printf '%s' \"${FAKE_HTTP_STATUS}\"\n",
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
@@ -120,6 +122,37 @@ def test_readiness_checker_accepts_only_reachable_openai(tmp_path, status, expec
         text=True, env=env,
     )
     assert result.returncode == expected
+
+
+@pytest.mark.parametrize("override", [
+    "http://attacker.invalid/health",
+    "https://example.com/v1/models",
+    "https://user:pass@api.openai.com/v1/models",
+    "https://api.openai.com/v1/models?probe=1",
+    "https://api.openai.com/v1/models#probe",
+])
+def test_readiness_checker_rejects_openai_url_override_before_curl(tmp_path, override):
+    marker = tmp_path / "curl-called"
+    env = dict(os.environ, PIXELLE_NOVIX_OPENAI_PROBE_URL=override,
+               FAKE_CURL_MARKER=str(marker))
+    result = subprocess.run(
+        [find_bash(), CHECKER.as_posix()], check=False, capture_output=True,
+        text=True, env=env,
+    )
+    assert result.returncode == 2
+    assert not marker.exists()
+
+
+def test_readiness_checker_rejects_proxy_override_before_curl(tmp_path):
+    marker = tmp_path / "curl-called"
+    env = dict(os.environ, PIXELLE_NOVIX_PROXY_URL="http://127.0.0.1:7999",
+               FAKE_CURL_MARKER=str(marker))
+    result = subprocess.run(
+        [find_bash(), CHECKER.as_posix()], check=False, capture_output=True,
+        text=True, env=env,
+    )
+    assert result.returncode == 2
+    assert not marker.exists()
 
 
 def test_units_and_installer_keep_credentials_out_of_repository():
