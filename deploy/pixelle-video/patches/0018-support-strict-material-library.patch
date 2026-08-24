@@ -1,0 +1,124 @@
+diff --git a/api/schemas/video.py b/api/schemas/video.py
+--- a/api/schemas/video.py
++++ b/api/schemas/video.py
+@@ -137,6 +137,10 @@ class VideoGenerateRequest(BaseModel):
+     # === Media Parameters ===
+     # Note: media_width and media_height are auto-determined from template meta tags
+     media_workflow: Optional[str] = Field(None, description="Custom media workflow (image or video)")
++    material_source: Literal["ai", "library"] = Field(
++        "ai",
++        description="Visual source. Library mode is strict and never falls back to AI media generation.",
++    )
+     
+     # === Video Parameters ===
+     video_fps: int = Field(30, ge=15, le=60, description="Video FPS")
+diff --git a/api/routers/video.py b/api/routers/video.py
+--- a/api/routers/video.py
++++ b/api/routers/video.py
+@@ -185,6 +185,7 @@ async def generate_video_sync(
+             "media_width": media_width,
+             "media_height": media_height,
+             "media_workflow": request_body.media_workflow,
++            "material_source": request_body.material_source,
+             "video_fps": request_body.video_fps,
+             "frame_template": request_body.frame_template,
+             "prompt_prefix": request_body.prompt_prefix,
+@@ -346,6 +347,7 @@ async def generate_video_async(
+                 "media_width": media_width,
+                 "media_height": media_height,
+                 "media_workflow": request_body.media_workflow,
++                "material_source": request_body.material_source,
+                 "video_fps": request_body.video_fps,
+                 "frame_template": request_body.frame_template,
+                 "prompt_prefix": request_body.prompt_prefix,
+@@ -399,6 +401,7 @@ async def generate_video_async(
+                     for frame in result.storyboard.frames
+                     if frame.talking_warning
+                 ],
++                "material_manifest": result.storyboard.config.material_manifest or [],
+             }
+         
+         async def execute_video_generation_with_capacity(
+diff --git a/pixelle_video/models/storyboard.py b/pixelle_video/models/storyboard.py
+--- a/pixelle_video/models/storyboard.py
++++ b/pixelle_video/models/storyboard.py
+@@ -49,6 +49,8 @@ class StoryboardConfig:
+     
+     # Media workflow
+     media_workflow: Optional[str] = None       # Media workflow filename (image or video, None = use default)
++    material_source: str = "ai"               # "ai" or strict external "library"
++    material_manifest: Optional[List[Dict[str, Any]]] = None
+     api_video_params: Optional[Dict[str, Any]] = None  # Extra direct API video generation parameters
+     talking_material: Optional[Dict[str, Any]] = None  # Normalized talking-scene selection
+     talking_avatar_paths: Optional[Dict[str, str]] = None  # Leased server-side avatar paths
+diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/standard.py
+--- a/pixelle_video/pipelines/standard.py
++++ b/pixelle_video/pipelines/standard.py
+@@ -55,6 +55,7 @@ from pixelle_video.services.talking_material import (
+ from pixelle_video.utils.prompt_helper import build_image_prompt
+ from pixelle_video.services.video import VideoService
+ from pixelle_video.services.fail_fast import FailFastSemaphore, gather_cancel_on_error
++from pixelle_video.services.material_library_client import prepare_library_materials
+ 
+ 
+ 
+@@ -166,6 +167,22 @@ class StandardPipeline(LinearVideoPipeline):
+ 
+     async def plan_visuals(self, ctx: PipelineContext):
+         """Step 4: Generate image prompts or visual descriptions."""
++        if ctx.params.get("material_source") == "library":
++            self._report_progress(ctx.progress_callback, "selecting_library_materials", 0.15)
++            prepared = await prepare_library_materials(
++                ctx.narrations,
++                task_id=ctx.task_id,
++                task_dir=ctx.task_dir,
++                width=int(ctx.params.get("media_width") or 0),
++                height=int(ctx.params.get("media_height") or 0),
++            )
++            ctx.library_visuals = prepared["visuals"]
++            ctx.library_bgm_path = prepared["bgm_path"]
++            ctx.library_material_manifest = prepared["manifest"]
++            ctx.image_prompts = [None] * len(ctx.narrations)
++            logger.info("Using {} strict material-library visuals", len(ctx.library_visuals))
++            return
++
+         # Detect template type to determine if media generation is needed
+         frame_template = ctx.params.get("frame_template") or "1080x1920/default.html"
+         
+@@ -307,6 +324,8 @@ class StandardPipeline(LinearVideoPipeline):
+             media_width=ctx.params.get("media_width"),
+             media_height=ctx.params.get("media_height"),
+             media_workflow=ctx.params.get("media_workflow"),
++            material_source=ctx.params.get("material_source", "ai"),
++            material_manifest=getattr(ctx, "library_material_manifest", None),
+             api_video_params=ctx.params.get("api_video_params"),
+             talking_material=talking_material,
+             talking_avatar_paths=talking_avatar_paths,
+@@ -351,6 +370,18 @@ class StandardPipeline(LinearVideoPipeline):
+                 caption_cues=caption_cues,
+                 created_at=datetime.now()
+             )
++            library_visuals = getattr(ctx, "library_visuals", [])
++            if library_visuals:
++                visual = library_visuals[i]
++                if visual["media_type"] == "video":
++                    frame.media_type = "video"
++                    frame.video_path = visual["path"]
++                elif visual["media_type"] == "image":
++                    frame.media_type = "image"
++                    frame.image_path = visual["path"]
++                else:
++                    raise ValueError("material library returned a non-visual scene asset")
++                frame.visual_source = "library"
+             ctx.storyboard.frames.append(frame)
+ 
+     async def produce_assets(self, ctx: PipelineContext):
+@@ -482,7 +513,7 @@ class StandardPipeline(LinearVideoPipeline):
+             video_service.concat_videos,
+             videos=segment_paths,
+             output=ctx.final_video_path,
+-            bgm_path=ctx.params.get("bgm_path"),
++            bgm_path=getattr(ctx, "library_bgm_path", None) or ctx.params.get("bgm_path"),
+             bgm_volume=ctx.params.get("bgm_volume", 0.2),
+             bgm_mode=ctx.params.get("bgm_mode", "loop")
+         )

@@ -10,6 +10,7 @@ User=admin
 Group=admin
 WorkingDirectory=/opt/huangque/pixelle-video/source
 EnvironmentFile=/etc/huangque/pixelle-talking.env
+EnvironmentFile=-/etc/huangque/pixelle-material-library.env
 Environment=HOME=/home/admin
 Environment=PYTHONUNBUFFERED=1
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/huangque/pixelle-video/browsers
