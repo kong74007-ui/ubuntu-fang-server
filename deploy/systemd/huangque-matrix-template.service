@@ -1,0 +1,30 @@
+[Unit]
+Description=Huangque matrix template video API
+After=network-online.target huangque-pixelle-material-tunnel.service
+Wants=network-online.target
+Requires=huangque-pixelle-material-tunnel.service
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/huangque/matrix-template-video/source
+EnvironmentFile=/etc/huangque/matrix-template.env
+EnvironmentFile=/etc/huangque/pixelle-material-library.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/huangque/matrix-template-video/source/api.py --host 127.0.0.1 --port 8112
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/huangque-matrix-template
+MemoryHigh=1400M
+MemoryMax=2200M
+CPUQuota=200%
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
