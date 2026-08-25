@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -30,6 +31,11 @@ MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 RENDER_TIMEOUT_SECONDS = 900
+DEFAULT_RETENTION_SECONDS = 72 * 60 * 60
+DEFAULT_DELIVERY_GRACE_SECONDS = 60 * 60
+DEFAULT_CLEANUP_INTERVAL_SECONDS = 15 * 60
+DEFAULT_CLEANUP_BATCH_SIZE = 10
+DEFAULT_DISK_HIGH_WATER_PERCENT = 95.0
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -46,6 +52,10 @@ class MatrixTemplateError(RuntimeError):
 
 
 class QueueCapacityError(MatrixTemplateError):
+    pass
+
+
+class DiskCapacityError(MatrixTemplateError):
     pass
 
 
@@ -105,6 +115,11 @@ class JobStore:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "delivered_at" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN delivered_at INTEGER")
+            if "cleaned_at" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN cleaned_at INTEGER")
             db.execute("UPDATE jobs SET status='pending', error=NULL WHERE status='running'")
 
     @contextlib.contextmanager
@@ -120,7 +135,7 @@ class JobStore:
         finally:
             db.close()
 
-    def create(self, request_id: str, payload: dict) -> tuple[dict, bool]:
+    def create(self, request_id: str, payload: dict, admission_guard=None) -> tuple[dict, bool]:
         now = _now()
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -136,9 +151,13 @@ class JobStore:
             ).fetchone()[0])
             if waiting >= MAX_WAITING_JOBS:
                 raise QueueCapacityError("任务队列已满")
+            if admission_guard is not None:
+                admission_guard()
             job_id = uuid.uuid4().hex
             db.execute(
-                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                """INSERT INTO jobs(
+                    id,request_id,status,payload,result,error,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
                 (job_id, request_id, "pending", json.dumps(payload, ensure_ascii=False),
                  None, None, now, now),
             )
@@ -154,6 +173,35 @@ class JobStore:
             return [row[0] for row in db.execute(
                 "SELECT id FROM jobs WHERE status='pending' ORDER BY created_at,id"
             )]
+
+    def cleanup_candidates(self, *, now: int, retention_seconds: int,
+                           delivery_grace_seconds: int, limit: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute("""
+                SELECT * FROM jobs
+                WHERE cleaned_at IS NULL
+                  AND status IN ('completed','failed')
+                  AND (
+                    updated_at <= ?
+                    OR (delivered_at IS NOT NULL AND delivered_at <= ?)
+                  )
+                ORDER BY updated_at,id
+                LIMIT ?
+            """, (now - retention_seconds, now - delivery_grace_seconds, limit)))
+
+    def mark_delivered(self, job_id: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE jobs SET delivered_at=COALESCE(delivered_at,?) WHERE id=? AND status='completed'",
+                (_now(), job_id),
+            )
+
+    def mark_cleaned(self, job_id: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE jobs SET cleaned_at=? WHERE id=? AND status IN ('completed','failed')",
+                (_now(), job_id),
+            )
 
     def update(self, job_id: str, status: str, *, result=None, error=None) -> None:
         with self.connect() as db:
@@ -174,13 +222,20 @@ class JobStore:
             value["result"] = result
         if row["error"]:
             value["error"] = row["error"]
+        if "cleaned_at" in row.keys() and row["cleaned_at"]:
+            value["cleaned_at"] = row["cleaned_at"]
         return value
 
 
 class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str, python: str = sys.executable,
-                 start_worker: bool = True):
+                 start_worker: bool = True,
+                 retention_seconds: int = DEFAULT_RETENTION_SECONDS,
+                 delivery_grace_seconds: int = DEFAULT_DELIVERY_GRACE_SECONDS,
+                 cleanup_interval_seconds: int = DEFAULT_CLEANUP_INTERVAL_SECONDS,
+                 cleanup_batch_size: int = DEFAULT_CLEANUP_BATCH_SIZE,
+                 disk_high_water_percent: float = DEFAULT_DISK_HIGH_WATER_PERCENT):
         self.data_root = data_root.resolve()
         self.skill_root = skill_root.resolve()
         self.library_url = library_url.rstrip("/")
@@ -197,6 +252,13 @@ class MatrixTemplateService:
         if not self.library_token:
             raise MatrixTemplateError("material library token is missing")
         self.python = python
+        self.retention_seconds = max(60, int(retention_seconds))
+        self.delivery_grace_seconds = max(60, int(delivery_grace_seconds))
+        self.cleanup_interval_seconds = max(1, int(cleanup_interval_seconds))
+        self.cleanup_batch_size = max(1, int(cleanup_batch_size))
+        self.disk_high_water_percent = float(disk_high_water_percent)
+        if not 1 <= self.disk_high_water_percent <= 100:
+            raise MatrixTemplateError("disk high-water percent must be between 1 and 100")
         self.store = JobStore(self.data_root / "jobs.db")
         # Recovery may legitimately contain one formerly-running job plus the
         # full waiting allowance. Admission is bounded transactionally in DB;
@@ -204,16 +266,23 @@ class MatrixTemplateService:
         self.jobs: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
         self.process_lock = threading.Lock()
+        self.file_lock = threading.Lock()
+        self.active_downloads: set[str] = set()
         self.active_process = None
         self.worker = None
+        self.cleanup_worker = None
         self.catalog = self._load_catalog()
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
+        self._purge_trash()
+        self.cleanup_once()
         for job_id in self.store.pending_ids():
             self.jobs.put_nowait(job_id)
         if start_worker:
             self.worker = threading.Thread(target=self._worker, daemon=True)
             self.worker.start()
+            self.cleanup_worker = threading.Thread(target=self._cleanup_worker, daemon=True)
+            self.cleanup_worker.start()
 
     def _load_catalog(self) -> list[dict]:
         path = self.skill_root / "assets/templates/catalog.json"
@@ -263,10 +332,90 @@ class MatrixTemplateService:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
         payload = self.validate_payload(raw)
-        job, created = self.store.create(request_id, payload)
+        job, created = self.store.create(
+            request_id, payload, admission_guard=self._ensure_disk_capacity
+        )
         if created:
             self.jobs.put_nowait(job["job_id"])
         return job
+
+    def _ensure_disk_capacity(self) -> None:
+        usage = shutil.disk_usage(self.data_root)
+        used_percent = 100.0 * usage.used / max(1, usage.total)
+        if used_percent >= self.disk_high_water_percent:
+            raise DiskCapacityError("生成服务器存储空间不足，请稍后再试")
+
+    def _purge_trash(self) -> None:
+        trash = self.data_root / ".trash"
+        if not trash.is_dir():
+            return
+        for path in list(trash.iterdir())[:self.cleanup_batch_size]:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+
+    def cleanup_once(self, *, now: int | None = None) -> int:
+        cleaned = 0
+        current = _now() if now is None else int(now)
+        candidates = self.store.cleanup_candidates(
+            now=current,
+            retention_seconds=self.retention_seconds,
+            delivery_grace_seconds=self.delivery_grace_seconds,
+            limit=self.cleanup_batch_size,
+        )
+        trash = self.data_root / ".trash"
+        for row in candidates:
+            job_id = row["id"]
+            with self.file_lock:
+                if job_id in self.active_downloads:
+                    continue
+                root = self.data_root / job_id
+                moved = None
+                if root.exists():
+                    trash.mkdir(parents=True, exist_ok=True)
+                    moved = trash / f"{job_id}-{uuid.uuid4().hex}"
+                    os.replace(root, moved)
+                self.store.mark_cleaned(job_id)
+            if moved is not None:
+                shutil.rmtree(moved, ignore_errors=True)
+            cleaned += 1
+        return cleaned
+
+    def _cleanup_worker(self) -> None:
+        while not self.stop_event.wait(self.cleanup_interval_seconds):
+            try:
+                self._purge_trash()
+                self.cleanup_once()
+            except Exception as exc:
+                print(f"[matrix-template] cleanup failed: {exc}", flush=True)
+
+    @contextlib.contextmanager
+    def open_completed_file(self, job_id: str):
+        with self.file_lock:
+            row = self.store.get(job_id)
+            expected_url = f"/v1/files/{job_id}.mp4"
+            result = json.loads(row["result"]) if row and row["result"] else {}
+            if (
+                not row or row["status"] != "completed" or row["cleaned_at"]
+                or result.get("file_url") != expected_url
+            ):
+                raise FileNotFoundError(job_id)
+            output = self.data_root / job_id / "output/published.mp4"
+            handle = output.open("rb")
+            self.active_downloads.add(job_id)
+        try:
+            yield handle
+            self.store.mark_delivered(job_id)
+        finally:
+            handle.close()
+            with self.file_lock:
+                self.active_downloads.discard(job_id)
+
+    def _discard_output(self, job_id: str) -> None:
+        output_dir = self.data_root / job_id / "output"
+        for name in ("final.mp4", "published.mp4"):
+            (output_dir / name).unlink(missing_ok=True)
 
     def _library_request(self, method: str, path: str, body=None):
         data = _json_bytes(body) if body is not None else None
@@ -473,6 +622,7 @@ class MatrixTemplateService:
         row = self.store.get(job_id)
         payload = json.loads(row["payload"])
         root = self.data_root / job_id
+        self._discard_output(job_id)
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
@@ -482,7 +632,12 @@ class MatrixTemplateService:
         project_path.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
         self._render(project_path)
         output = root / "output/final.mp4"
-        probe = self._probe(output)
+        try:
+            probe = self._probe(output)
+            os.replace(output, root / "output/published.mp4")
+        except Exception:
+            self._discard_output(job_id)
+            raise
         return {
             **probe,
             "template_id": payload["template_id"],
@@ -493,18 +648,27 @@ class MatrixTemplateService:
             } for item in materials],
         }
 
+    def _run_job(self, job_id: str) -> None:
+        self.store.update(job_id, "running")
+        try:
+            result = self._execute(job_id)
+            try:
+                self.store.update(job_id, "completed", result=result)
+            except Exception:
+                self._discard_output(job_id)
+                raise
+        except Exception as exc:
+            self._discard_output(job_id)
+            self.store.update(job_id, "failed", error=exc)
+
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
                 job_id = self.jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
-            self.store.update(job_id, "running")
             try:
-                result = self._execute(job_id)
-                self.store.update(job_id, "completed", result=result)
-            except Exception as exc:
-                self.store.update(job_id, "failed", error=exc)
+                self._run_job(job_id)
             finally:
                 self.jobs.task_done()
 
@@ -516,6 +680,8 @@ class MatrixTemplateService:
             self._terminate(process)
         if self.worker is not None:
             self.worker.join(timeout=3)
+        if self.cleanup_worker is not None:
+            self.cleanup_worker.join(timeout=3)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -567,11 +733,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         match = re.fullmatch(r"/v1/files/([0-9a-f]{32})\.mp4", path)
         if match:
-            output = self.service.data_root / match.group(1) / "output/final.mp4"
-            if not output.is_file():
+            file_context = self.service.open_completed_file(match.group(1))
+            try:
+                handle = file_context.__enter__()
+            except (FileNotFoundError, OSError):
                 self.send_json(404, {"error": "not_found"})
                 return
-            with output.open("rb") as handle:
+            try:
                 size = os.fstat(handle.fileno()).st_size
                 self.send_response(200)
                 self.send_header("Content-Type", "video/mp4")
@@ -579,6 +747,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "private, max-age=3600")
                 self.end_headers()
                 copyfileobj(handle, self.wfile, 1024 * 1024)
+            except BaseException:
+                file_context.__exit__(*sys.exc_info())
+                raise
+            else:
+                file_context.__exit__(None, None, None)
             return
         self.send_json(404, {"error": "not_found"})
 
@@ -623,6 +796,21 @@ def main() -> None:
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
         python=os.environ.get("MATRIX_TEMPLATE_PYTHON", sys.executable),
+        retention_seconds=int(os.environ.get(
+            "MATRIX_TEMPLATE_RETENTION_SECONDS", DEFAULT_RETENTION_SECONDS
+        )),
+        delivery_grace_seconds=int(os.environ.get(
+            "MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS", DEFAULT_DELIVERY_GRACE_SECONDS
+        )),
+        cleanup_interval_seconds=int(os.environ.get(
+            "MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS", DEFAULT_CLEANUP_INTERVAL_SECONDS
+        )),
+        cleanup_batch_size=int(os.environ.get(
+            "MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE", DEFAULT_CLEANUP_BATCH_SIZE
+        )),
+        disk_high_water_percent=float(os.environ.get(
+            "MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT", DEFAULT_DISK_HIGH_WATER_PERCENT
+        )),
     )
     server = build_server(
         args.host, args.port, service,

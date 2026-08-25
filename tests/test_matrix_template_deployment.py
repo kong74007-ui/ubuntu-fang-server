@@ -19,6 +19,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
         self.assertIn('d.get("templates")==13', installer)
         self.assertNotIn("MATRIX_TEMPLATE_API_TOKEN=sk-", installer)
+        self.assertIn("MATRIX_TEMPLATE_RETENTION_SECONDS=259200", installer)
+        self.assertIn("MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600", installer)
+        self.assertIn("MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS=900", installer)
+        self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
+        self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
     def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")

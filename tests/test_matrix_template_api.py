@@ -9,6 +9,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from server import matrix_template_api as matrix
@@ -68,9 +69,34 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**body, "bottom_text": "私信领取资料"}, "request-1")
 
+    def test_concurrent_request_id_creates_one_job_and_one_queue_entry(self):
+        body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
+        barrier = threading.Barrier(3)
+        results = []
+        errors = []
+
+        def submit():
+            barrier.wait()
+            try:
+                results.append(self.service.submit(body, "concurrent-request"))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=3)
+        self.assertFalse(errors)
+        self.assertEqual(2, len(results))
+        self.assertEqual(1, len({item["job_id"] for item in results}))
+        self.assertEqual(1, self.service.jobs.qsize())
+
     def test_admission_caps_waiting_but_restart_recovers_running_plus_full_queue(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "bgm": False,
         })
         for index in range(20):
             self.service.store.create(f"waiting-{index}", payload)
@@ -79,7 +105,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         with self.service.store.connect() as db:
             db.execute(
-                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                """INSERT INTO jobs(
+                    id,request_id,status,payload,result,error,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
                 ("f" * 32, "former-running", "running",
                  json.dumps(payload, ensure_ascii=False), None, None, 1, 1),
             )
@@ -154,6 +182,127 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual("huangque-internal-api", project["material_library"]["index_source"])
         self.assertEqual("/v1/files/%s.mp4" % job["job_id"], result["file_url"])
         self.assertEqual(["v1", "i1", "m1"], [item["record_id"] for item in result["material_manifest"]])
+        self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
+        self.assertFalse((self.service.data_root / job["job_id"] / "output/final.mp4").exists())
+
+    def test_probe_failure_removes_unpublished_output(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "bgm": False,
+        })
+        job, _ = self.service.store.create("probe-failure", payload)
+        root = self.service.data_root / job["job_id"]
+
+        def render(_project_path):
+            output = root / "output/final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"invalid")
+
+        with mock.patch.object(self.service, "_select_materials", return_value=[]), \
+             mock.patch.object(self.service, "_render", side_effect=render), \
+             mock.patch.object(self.service, "_probe", side_effect=matrix.MatrixTemplateError("bad probe")):
+            with self.assertRaisesRegex(matrix.MatrixTemplateError, "bad probe"):
+                self.service._execute(job["job_id"])
+        self.assertFalse((root / "output/final.mp4").exists())
+        self.assertFalse((root / "output/published.mp4").exists())
+
+    def test_completed_persistence_failure_removes_published_output(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        job, _ = self.service.store.create("persist-failure", payload)
+        output = self.service.data_root / job["job_id"] / "output/published.mp4"
+
+        def execute(_job_id):
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"published")
+            return {"file_url": f"/v1/files/{job['job_id']}.mp4"}
+
+        original_update = self.service.store.update
+
+        def update(job_id, status, **kwargs):
+            if status == "completed":
+                raise OSError("database write failed")
+            return original_update(job_id, status, **kwargs)
+
+        with mock.patch.object(self.service, "_execute", side_effect=execute), \
+             mock.patch.object(self.service.store, "update", side_effect=update):
+            self.service._run_job(job["job_id"])
+        self.assertEqual("failed", self.service.store.get(job["job_id"])["status"])
+        self.assertFalse(output.exists())
+
+    def test_file_delivery_requires_completed_bound_result_and_marks_delivery(self):
+        body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
+        job = self.service.submit(body, "file-contract")
+        root = self.service.data_root / job["job_id"]
+        output = root / "output/published.mp4"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"published-video")
+
+        for status, result in (
+            ("pending", None),
+            ("running", None),
+            ("failed", None),
+            ("completed", {"file_url": "/v1/files/wrong.mp4"}),
+        ):
+            self.service.store.update(job["job_id"], status, result=result, error="failed" if status == "failed" else None)
+            with self.assertRaises(FileNotFoundError):
+                with self.service.open_completed_file(job["job_id"]):
+                    pass
+
+        result = {"file_url": f"/v1/files/{job['job_id']}.mp4"}
+        self.service.store.update(job["job_id"], "completed", result=result)
+        with self.service.open_completed_file(job["job_id"]) as handle:
+            self.assertEqual(b"published-video", handle.read())
+        row = self.service.store.get(job["job_id"])
+        self.assertIsNotNone(row["delivered_at"])
+
+    def test_cleanup_skips_active_and_removes_expired_terminal_jobs(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        completed, _ = self.service.store.create("cleanup-completed", payload)
+        failed, _ = self.service.store.create("cleanup-failed", payload)
+        active, _ = self.service.store.create("cleanup-active", payload)
+        for job in (completed, failed, active):
+            (self.service.data_root / job["job_id"] / "output").mkdir(parents=True)
+        completed_output = self.service.data_root / completed["job_id"] / "output/published.mp4"
+        active_output = self.service.data_root / active["job_id"] / "output/published.mp4"
+        completed_output.write_bytes(b"completed")
+        active_output.write_bytes(b"active")
+        self.service.store.update(completed["job_id"], "completed", result={
+            "file_url": f"/v1/files/{completed['job_id']}.mp4",
+        })
+        self.service.store.update(failed["job_id"], "failed", error="failed")
+        self.service.store.update(active["job_id"], "completed", result={
+            "file_url": f"/v1/files/{active['job_id']}.mp4",
+        })
+        with self.service.store.connect() as db:
+            db.execute(
+                "UPDATE jobs SET updated_at=1 WHERE id IN (?,?)",
+                (completed["job_id"], failed["job_id"]),
+            )
+
+        with self.service.open_completed_file(active["job_id"]):
+            with self.service.store.connect() as db:
+                db.execute("UPDATE jobs SET updated_at=1 WHERE id=?", (active["job_id"],))
+            self.assertEqual(2, self.service.cleanup_once(now=matrix.DEFAULT_RETENTION_SECONDS + 2))
+            self.assertTrue((self.service.data_root / active["job_id"]).exists())
+
+        self.assertEqual(1, self.service.cleanup_once(now=matrix.DEFAULT_RETENTION_SECONDS + 2))
+        for job in (completed, failed, active):
+            self.assertFalse((self.service.data_root / job["job_id"]).exists())
+            self.assertIsNotNone(self.service.store.get(job["job_id"])["cleaned_at"])
+
+    def test_disk_high_water_rejects_new_job_but_allows_idempotent_replay(self):
+        body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
+        first = self.service.submit(body, "disk-replay")
+        full = SimpleNamespace(total=100, used=96, free=4)
+        with mock.patch.object(matrix.shutil, "disk_usage", return_value=full):
+            replay = self.service.submit(body, "disk-replay")
+            self.assertEqual(first["job_id"], replay["job_id"])
+            with self.assertRaises(matrix.DiskCapacityError):
+                self.service.submit(body, "disk-new")
 
     def test_http_auth_templates_submit_and_status(self):
         server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
@@ -187,6 +336,25 @@ class MatrixTemplateApiTests(unittest.TestCase):
             self.assertEqual("pending", job["status"])
             with request("/v1/jobs/" + job["job_id"], token="api-token") as response:
                 self.assertEqual(job["job_id"], json.load(response)["job_id"])
+            output = self.service.data_root / job["job_id"] / "output/published.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"published-video")
+            with self.assertRaises(urllib.error.HTTPError) as pending_file:
+                request(f"/v1/files/{job['job_id']}.mp4", token="api-token")
+            self.assertEqual(404, pending_file.exception.code)
+            self.service.store.update(job["job_id"], "failed", error="probe failed")
+            with self.assertRaises(urllib.error.HTTPError) as failed_file:
+                request(f"/v1/files/{job['job_id']}.mp4", token="api-token")
+            self.assertEqual(404, failed_file.exception.code)
+            self.service.store.update(job["job_id"], "completed", result={
+                "file_url": f"/v1/files/{job['job_id']}.mp4",
+            })
+            with request(f"/v1/files/{job['job_id']}.mp4", token="api-token") as response:
+                self.assertEqual(b"published-video", response.read())
+            deadline = time.time() + 1
+            while time.time() < deadline and self.service.store.get(job["job_id"])["delivered_at"] is None:
+                time.sleep(0.01)
+            self.assertIsNotNone(self.service.store.get(job["job_id"])["delivered_at"])
         finally:
             server.shutdown()
             server.server_close()

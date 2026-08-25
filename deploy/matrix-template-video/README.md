@@ -15,3 +15,16 @@ sudo bash deploy/matrix-template-video/install.sh
 
 Secrets are created or loaded from root-owned environment files and are never
 committed. Deploy only after the material-library tunnel is healthy.
+
+## Storage and delivery policy
+
+- Render output is published atomically only after the H.264/AAC 1080x1920 probe passes.
+- Files are downloadable only while the job is `completed` and its persisted result binds the requested URL.
+- Terminal job directories expire after 72 hours, or one hour after a successful download, whichever comes first.
+- Cleanup runs at startup and every 15 minutes, removes at most 10 jobs per pass, and skips active jobs and downloads.
+- New jobs fail closed when the state filesystem reaches 95% usage; idempotent replay of an accepted request remains available.
+- SQLite rows remain as tombstones after file cleanup so request-id idempotency and job history are preserved.
+
+The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
+`MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS`, `MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS`,
+`MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE`, and `MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT`.
