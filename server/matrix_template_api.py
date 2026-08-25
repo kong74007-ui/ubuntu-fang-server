@@ -28,7 +28,7 @@ from urllib.parse import urlsplit
 
 MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
-MAX_QUEUE_SIZE = 20
+MAX_WAITING_JOBS = 20
 RENDER_TIMEOUT_SECONDS = 900
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -42,6 +42,10 @@ CONTENT_SUFFIXES = {
 
 
 class MatrixTemplateError(RuntimeError):
+    pass
+
+
+class QueueCapacityError(MatrixTemplateError):
     pass
 
 
@@ -119,6 +123,7 @@ class JobStore:
     def create(self, request_id: str, payload: dict) -> tuple[dict, bool]:
         now = _now()
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
                 "SELECT * FROM jobs WHERE request_id=?", (request_id,)
             ).fetchone()
@@ -126,6 +131,11 @@ class JobStore:
                 if json.loads(existing["payload"]) != payload:
                     raise ValueError("request_id already belongs to another payload")
                 return self.public(existing), False
+            waiting = int(db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status='pending'"
+            ).fetchone()[0])
+            if waiting >= MAX_WAITING_JOBS:
+                raise QueueCapacityError("任务队列已满")
             job_id = uuid.uuid4().hex
             db.execute(
                 "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
@@ -188,7 +198,10 @@ class MatrixTemplateService:
             raise MatrixTemplateError("material library token is missing")
         self.python = python
         self.store = JobStore(self.data_root / "jobs.db")
-        self.jobs: queue.Queue[str] = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+        # Recovery may legitimately contain one formerly-running job plus the
+        # full waiting allowance. Admission is bounded transactionally in DB;
+        # the in-memory recovery queue must not impose a second, smaller cap.
+        self.jobs: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
         self.process_lock = threading.Lock()
         self.active_process = None
@@ -252,11 +265,7 @@ class MatrixTemplateService:
         payload = self.validate_payload(raw)
         job, created = self.store.create(request_id, payload)
         if created:
-            try:
-                self.jobs.put_nowait(job["job_id"])
-            except queue.Full as exc:
-                self.store.update(job["job_id"], "failed", error="任务队列已满")
-                raise MatrixTemplateError("任务队列已满") from exc
+            self.jobs.put_nowait(job["job_id"])
         return job
 
     def _library_request(self, method: str, path: str, body=None):

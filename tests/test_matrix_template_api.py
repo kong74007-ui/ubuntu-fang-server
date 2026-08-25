@@ -68,6 +68,34 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**body, "bottom_text": "私信领取资料"}, "request-1")
 
+    def test_admission_caps_waiting_but_restart_recovers_running_plus_full_queue(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        for index in range(20):
+            self.service.store.create(f"waiting-{index}", payload)
+        with self.assertRaises(matrix.QueueCapacityError):
+            self.service.store.create("waiting-overflow", payload)
+
+        with self.service.store.connect() as db:
+            db.execute(
+                "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                ("f" * 32, "former-running", "running",
+                 json.dumps(payload, ensure_ascii=False), None, None, 1, 1),
+            )
+        recovered = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            start_worker=False,
+        )
+        try:
+            self.assertEqual(21, recovered.jobs.qsize())
+            self.assertEqual(21, len(recovered.store.pending_ids()))
+        finally:
+            recovered.shutdown()
+
     def test_material_selection_requires_video_unique_sha_and_optional_bgm(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
