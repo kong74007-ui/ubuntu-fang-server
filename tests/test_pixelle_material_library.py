@@ -319,6 +319,16 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         self.assertIn('@router.post("/material-library/probe")', patch_text)
         self.assertNotIn("AI fallback", patch_text)
 
+    def test_material_patch_binds_visuals_after_storyboard_constructor(self):
+        patch_text = (
+            ROOT
+            / "deploy/pixelle-video/patches/0018-support-strict-material-library.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "@@ -353,0 +374,12 @@ class StandardPipeline(LinearVideoPipeline):",
+            patch_text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
