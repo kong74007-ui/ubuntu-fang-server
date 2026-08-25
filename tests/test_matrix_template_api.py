@@ -227,9 +227,167 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         with mock.patch.object(self.service, "_execute", side_effect=execute), \
              mock.patch.object(self.service.store, "update", side_effect=update):
-            self.service._run_job(job["job_id"])
+            self.assertTrue(self.service._run_job(job["job_id"]))
         self.assertEqual("failed", self.service.store.get(job["job_id"])["status"])
         self.assertFalse(output.exists())
+
+    def test_running_write_failure_requeues_once_without_duplicate_execution(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        job, _ = self.service.store.create("running-write-retry", payload)
+        original_update = self.service.store.update
+        running_calls = 0
+        execute_calls = 0
+        duplicate_enqueue_results = []
+
+        def update(job_id, status, **kwargs):
+            nonlocal running_calls
+            if status == "running":
+                running_calls += 1
+                if running_calls <= matrix.STATUS_WRITE_ATTEMPTS:
+                    raise OSError("database temporarily unavailable")
+            return original_update(job_id, status, **kwargs)
+
+        def execute(_job_id):
+            nonlocal execute_calls
+            execute_calls += 1
+            duplicate_enqueue_results.append(self.service._enqueue(job["job_id"]))
+            return {"file_url": f"/v1/files/{job['job_id']}.mp4"}
+
+        self.service._enqueue(job["job_id"])
+        with mock.patch.object(self.service.store, "update", side_effect=update), \
+             mock.patch.object(self.service, "_execute", side_effect=execute), \
+             mock.patch.object(matrix, "STATUS_WRITE_RETRY_SECONDS", 0), \
+             mock.patch.object(matrix, "JOB_REQUEUE_SECONDS", 0):
+            self.service.worker = threading.Thread(target=self.service._worker, daemon=True)
+            self.service.worker.start()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if self.service.store.get(job["job_id"])["status"] == "completed":
+                    break
+                time.sleep(0.01)
+            self.assertEqual("completed", self.service.store.get(job["job_id"])["status"])
+            self.assertTrue(self.service.worker.is_alive())
+            self.assertEqual(1, execute_calls)
+            self.assertEqual([False], duplicate_enqueue_results)
+            self.assertEqual(matrix.STATUS_WRITE_ATTEMPTS + 1, running_calls)
+        self.service.shutdown()
+
+    def test_failed_write_failure_requeues_and_keeps_worker_alive(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        job, _ = self.service.store.create("failed-write-retry", payload)
+        original_update = self.service.store.update
+        failed_calls = 0
+        execute_calls = 0
+        active = 0
+        max_active = 0
+
+        def update(job_id, status, **kwargs):
+            nonlocal failed_calls
+            if status == "failed":
+                failed_calls += 1
+                if failed_calls <= matrix.STATUS_WRITE_ATTEMPTS:
+                    raise OSError("database temporarily unavailable")
+            return original_update(job_id, status, **kwargs)
+
+        def execute(_job_id):
+            nonlocal execute_calls, active, max_active
+            execute_calls += 1
+            active += 1
+            max_active = max(max_active, active)
+            active -= 1
+            raise matrix.MatrixTemplateError("render failed")
+
+        self.service._enqueue(job["job_id"])
+        with mock.patch.object(self.service.store, "update", side_effect=update), \
+             mock.patch.object(self.service, "_execute", side_effect=execute), \
+             mock.patch.object(matrix, "STATUS_WRITE_RETRY_SECONDS", 0), \
+             mock.patch.object(matrix, "JOB_REQUEUE_SECONDS", 0):
+            self.service.worker = threading.Thread(target=self.service._worker, daemon=True)
+            self.service.worker.start()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if self.service.store.get(job["job_id"])["status"] == "failed":
+                    break
+                time.sleep(0.01)
+            self.assertEqual("failed", self.service.store.get(job["job_id"])["status"])
+            self.assertTrue(self.service.worker.is_alive())
+            self.assertEqual(2, execute_calls)
+            self.assertEqual(1, max_active)
+        self.service.shutdown()
+
+    def test_health_returns_503_when_an_expected_worker_is_dead(self):
+        self.service.workers_expected = True
+        self.service.worker = threading.Thread(target=lambda: None)
+        self.service.worker.start()
+        self.service.worker.join(timeout=1)
+        cleanup_stop = threading.Event()
+        self.service.cleanup_worker = threading.Thread(target=cleanup_stop.wait, daemon=True)
+        self.service.cleanup_worker.start()
+        server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as unavailable:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/health" % server.server_port, timeout=3
+                )
+            self.assertEqual(503, unavailable.exception.code)
+            body = json.loads(unavailable.exception.read())
+            self.assertFalse(body["ok"])
+            self.assertFalse(body["worker_alive"])
+            self.assertTrue(body["cleanup_worker_alive"])
+            worker_stop = threading.Event()
+            self.service.worker = threading.Thread(target=worker_stop.wait, daemon=True)
+            self.service.worker.start()
+            cleanup_stop.set()
+            self.service.cleanup_worker.join(timeout=1)
+            with self.assertRaises(urllib.error.HTTPError) as cleanup_unavailable:
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/health" % server.server_port, timeout=3
+                )
+            cleanup_body = json.loads(cleanup_unavailable.exception.read())
+            self.assertFalse(cleanup_body["ok"])
+            self.assertTrue(cleanup_body["worker_alive"])
+            self.assertFalse(cleanup_body["cleanup_worker_alive"])
+            worker_stop.set()
+        finally:
+            cleanup_stop.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            self.service.shutdown()
+
+    def test_persistent_status_failure_keeps_job_and_marks_readiness_degraded(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        job, _ = self.service.store.create("persistent-status-failure", payload)
+        self.service._enqueue(job["job_id"])
+        self.service.workers_expected = True
+        cleanup_stop = threading.Event()
+        self.service.cleanup_worker = threading.Thread(target=cleanup_stop.wait, daemon=True)
+        self.service.cleanup_worker.start()
+        with mock.patch.object(
+            self.service.store, "update", side_effect=OSError("database unavailable")
+        ), mock.patch.object(matrix, "STATUS_WRITE_RETRY_SECONDS", 0), \
+             mock.patch.object(matrix, "JOB_REQUEUE_SECONDS", 1):
+            self.service.worker = threading.Thread(target=self.service._worker, daemon=True)
+            self.service.worker.start()
+            deadline = time.time() + 2
+            while time.time() < deadline and not self.service.worker_degraded.is_set():
+                time.sleep(0.01)
+            health = self.service.health()
+            self.assertFalse(health["ok"])
+            self.assertTrue(health["worker_alive"])
+            self.assertTrue(health["worker_degraded"])
+            self.assertEqual("pending", self.service.store.get(job["job_id"])["status"])
+            self.assertIn(job["job_id"], self.service.store.pending_ids())
+            cleanup_stop.set()
+            self.service.shutdown()
 
     def test_file_delivery_requires_completed_bound_result_and_marks_delivery(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}

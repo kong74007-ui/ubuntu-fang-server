@@ -36,6 +36,9 @@ DEFAULT_DELIVERY_GRACE_SECONDS = 60 * 60
 DEFAULT_CLEANUP_INTERVAL_SECONDS = 15 * 60
 DEFAULT_CLEANUP_BATCH_SIZE = 10
 DEFAULT_DISK_HIGH_WATER_PERCENT = 95.0
+STATUS_WRITE_ATTEMPTS = 3
+STATUS_WRITE_RETRY_SECONDS = 0.1
+JOB_REQUEUE_SECONDS = 0.25
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -264,20 +267,25 @@ class MatrixTemplateService:
         # full waiting allowance. Admission is bounded transactionally in DB;
         # the in-memory recovery queue must not impose a second, smaller cap.
         self.jobs: queue.Queue[str] = queue.Queue()
+        self.queue_lock = threading.Lock()
+        self.queued_jobs: set[str] = set()
+        self.active_jobs: set[str] = set()
         self.stop_event = threading.Event()
+        self.worker_degraded = threading.Event()
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
         self.active_downloads: set[str] = set()
         self.active_process = None
         self.worker = None
         self.cleanup_worker = None
+        self.workers_expected = start_worker
         self.catalog = self._load_catalog()
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()
         self.cleanup_once()
         for job_id in self.store.pending_ids():
-            self.jobs.put_nowait(job_id)
+            self._enqueue(job_id)
         if start_worker:
             self.worker = threading.Thread(target=self._worker, daemon=True)
             self.worker.start()
@@ -336,8 +344,30 @@ class MatrixTemplateService:
             request_id, payload, admission_guard=self._ensure_disk_capacity
         )
         if created:
-            self.jobs.put_nowait(job["job_id"])
+            self._enqueue(job["job_id"])
         return job
+
+    def _enqueue(self, job_id: str) -> bool:
+        with self.queue_lock:
+            if job_id in self.queued_jobs or job_id in self.active_jobs:
+                return False
+            self.queued_jobs.add(job_id)
+            self.jobs.put_nowait(job_id)
+            return True
+
+    def health(self) -> dict:
+        worker_alive = self.worker is not None and self.worker.is_alive()
+        cleanup_alive = self.cleanup_worker is not None and self.cleanup_worker.is_alive()
+        worker_degraded = self.worker_degraded.is_set()
+        ready = not self.workers_expected or (
+            worker_alive and cleanup_alive and not worker_degraded
+        )
+        return {
+            "ok": ready,
+            "worker_alive": worker_alive,
+            "cleanup_worker_alive": cleanup_alive,
+            "worker_degraded": worker_degraded,
+        }
 
     def _ensure_disk_capacity(self) -> None:
         usage = shutil.disk_usage(self.data_root)
@@ -648,18 +678,37 @@ class MatrixTemplateService:
             } for item in materials],
         }
 
-    def _run_job(self, job_id: str) -> None:
-        self.store.update(job_id, "running")
+    def _update_with_retry(self, job_id: str, status: str, **kwargs) -> bool:
+        for attempt in range(1, STATUS_WRITE_ATTEMPTS + 1):
+            try:
+                self.store.update(job_id, status, **kwargs)
+                return True
+            except Exception as exc:
+                print(
+                    f"[matrix-template] status write failed job={job_id} "
+                    f"status={status} attempt={attempt}: {exc}",
+                    flush=True,
+                )
+                if attempt < STATUS_WRITE_ATTEMPTS:
+                    self.stop_event.wait(STATUS_WRITE_RETRY_SECONDS)
+        return False
+
+    def _run_job(self, job_id: str) -> bool:
+        if not self._update_with_retry(job_id, "running"):
+            return False
         try:
             result = self._execute(job_id)
-            try:
-                self.store.update(job_id, "completed", result=result)
-            except Exception:
-                self._discard_output(job_id)
-                raise
+            if self._update_with_retry(job_id, "completed", result=result):
+                return True
+            self._discard_output(job_id)
+            if self._update_with_retry(
+                job_id, "failed", error="模板成片完成状态保存失败"
+            ):
+                return True
+            return False
         except Exception as exc:
             self._discard_output(job_id)
-            self.store.update(job_id, "failed", error=exc)
+            return self._update_with_retry(job_id, "failed", error=exc)
 
     def _worker(self) -> None:
         while not self.stop_event.is_set():
@@ -667,10 +716,27 @@ class MatrixTemplateService:
                 job_id = self.jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
+            with self.queue_lock:
+                self.queued_jobs.discard(job_id)
+                self.active_jobs.add(job_id)
+            finished = False
             try:
-                self._run_job(job_id)
+                finished = self._run_job(job_id)
+            except Exception as exc:
+                print(
+                    f"[matrix-template] unexpected worker error job={job_id}: {exc}",
+                    flush=True,
+                )
             finally:
+                with self.queue_lock:
+                    self.active_jobs.discard(job_id)
                 self.jobs.task_done()
+            if finished:
+                self.worker_degraded.clear()
+            else:
+                self.worker_degraded.set()
+                if not self.stop_event.wait(JOB_REQUEUE_SECONDS):
+                    self._enqueue(job_id)
 
     def shutdown(self) -> None:
         self.stop_event.set()
@@ -712,8 +778,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/health":
-            self.send_json(200, {
-                "ok": True, "build_id": runtime_build_id(),
+            health = self.service.health()
+            self.send_json(200 if health["ok"] else 503, {
+                **health, "build_id": runtime_build_id(),
                 "templates": len(self.service.catalog), "concurrency": 1,
             })
             return
