@@ -80,7 +80,7 @@ diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/stand
 @@ -309,0 +327,2 @@ class StandardPipeline(LinearVideoPipeline):
 +            material_source=ctx.params.get("material_source", "ai"),
 +            material_manifest=getattr(ctx, "library_material_manifest", None),
-@@ -353,0 +373,12 @@ class StandardPipeline(LinearVideoPipeline):
+@@ -353,0 +374,12 @@ class StandardPipeline(LinearVideoPipeline):
 +            library_visuals = getattr(ctx, "library_visuals", [])
 +            if library_visuals:
 +                visual = library_visuals[i]
