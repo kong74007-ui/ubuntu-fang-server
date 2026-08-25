@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -128,6 +129,39 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
             ))
         self.assertIn("没有足够", str(rejected.exception))
         self.assertNotIn("developer.mozilla.org", str(rejected.exception))
+
+    def test_cross_orientation_media_uses_blurred_background_fit(self):
+        source = self.task / "library_materials" / "wide.jpg"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"source")
+
+        def fake_run(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"adapted")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(self.client.subprocess, "run", side_effect=fake_run) as run:
+            adapted = self.client._adapt_fallback_media(
+                str(source),
+                {"media_type": "image", "orientation_match": "fallback"},
+                1024,
+                1024,
+            )
+        self.assertTrue(adapted.endswith("_fit.jpg"))
+        command = run.call_args.args[0]
+        self.assertIn("boxblur=20:5", command[command.index("-filter_complex") + 1])
+        self.assertIn("force_original_aspect_ratio=decrease", command[command.index("-filter_complex") + 1])
+
+    def test_same_orientation_media_skips_adaptation(self):
+        source = self.task / "same.jpg"
+        with mock.patch.object(self.client.subprocess, "run") as run:
+            result = self.client._adapt_fallback_media(
+                str(source),
+                {"media_type": "image", "orientation_match": "same"},
+                1024,
+                1024,
+            )
+        self.assertEqual(str(source), result)
+        run.assert_not_called()
 
     def test_selection_binding_rejects_order_drift_duplicates_unknown_and_type_mismatch(self):
         valid = [

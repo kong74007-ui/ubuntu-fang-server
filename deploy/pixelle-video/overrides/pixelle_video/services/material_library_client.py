@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -102,6 +104,48 @@ def _selection_http_error(error: httpx.HTTPStatusError) -> MaterialLibraryClient
     )
 
 
+def _adapt_fallback_media(path: str, item: dict, width: int, height: int) -> str:
+    if item.get("orientation_match") != "fallback":
+        return path
+    if width <= 0 or height <= 0:
+        raise MaterialLibraryClientError("material adaptation dimensions are invalid")
+    media_type = str(item.get("media_type") or "")
+    if media_type not in {"image", "video"}:
+        return path
+    source = Path(path)
+    suffix = ".jpg" if media_type == "image" else ".mp4"
+    output = source.with_name(source.stem + "_fit" + suffix)
+    graph = (
+        f"[0:v]split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},boxblur=20:5[bg];"
+        f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[out]"
+    )
+    command = [
+        "ffmpeg", "-y", "-v", "error", "-i", str(source),
+        "-filter_complex", graph, "-map", "[out]",
+    ]
+    if media_type == "image":
+        command.extend(["-frames:v", "1", str(output)])
+    else:
+        command.extend([
+            "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
+        ])
+    try:
+        subprocess.run(
+            command, check=True, timeout=180,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        output.unlink(missing_ok=True)
+        raise MaterialLibraryClientError("素材比例自动适配失败") from exc
+    if not output.is_file() or output.stat().st_size <= 0:
+        raise MaterialLibraryClientError("素材比例自动适配失败")
+    return str(output)
+
+
 async def _download(
     client: httpx.AsyncClient,
     base: str,
@@ -190,6 +234,9 @@ async def prepare_library_materials(
             downloaded = []
             for item in selected:
                 path = await _download(client, base, headers, item, target_dir)
+                path = await asyncio.to_thread(
+                    _adapt_fallback_media, path, item, width, height
+                )
                 downloaded.append({**item, "path": path})
     except httpx.HTTPStatusError as exc:
         raise _selection_http_error(exc) from exc
@@ -204,6 +251,7 @@ async def prepare_library_materials(
         {key: item.get(key) for key in (
             "scene_id", "record_id", "sha256", "name", "media_type",
             "orientation", "duration_seconds", "match_level", "match_score",
+            "orientation_match",
         )}
         for item in downloaded
     ]
