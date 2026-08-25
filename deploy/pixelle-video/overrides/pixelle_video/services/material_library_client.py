@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
+import subprocess
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,6 +15,7 @@ import httpx
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+TEMPLATE_SIZE_RE = re.compile(r"(?:^|/)([1-9][0-9]*)x([1-9][0-9]*)(?:/|$)")
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 CONTENT_SUFFIXES = {
     "image/jpeg": ".jpg",
@@ -30,7 +34,9 @@ class MaterialLibraryClientError(RuntimeError):
     pass
 
 
-def _validate_selection(selected: list, scene_ids: list[str]) -> list[dict]:
+def _validate_selection(
+    selected: list, scene_ids: list[str], requested_orientation: str
+) -> list[dict]:
     if not isinstance(selected, list) or any(not isinstance(item, dict) for item in selected):
         raise MaterialLibraryClientError("material library returned an invalid selection")
     if len(selected) != len(scene_ids):
@@ -44,13 +50,27 @@ def _validate_selection(selected: list, scene_ids: list[str]) -> list[dict]:
     if len(set(sha_values)) != len(selected):
         raise MaterialLibraryClientError("material library returned duplicate assets")
     for scene_id in scene_ids:
-        media_type = str(by_scene[scene_id].get("media_type") or "")
+        item = by_scene[scene_id]
+        media_type = str(item.get("media_type") or "")
+        declared_match = str(item.get("orientation_match") or "")
         if scene_id == "bgm":
             if media_type != "bgm":
                 raise MaterialLibraryClientError("material library BGM binding is invalid")
+            if declared_match != "not_applicable":
+                raise MaterialLibraryClientError("material library BGM orientation binding is invalid")
         elif media_type not in {"image", "video"}:
             raise MaterialLibraryClientError("material library visual binding is invalid")
-    return [by_scene[scene_id] for scene_id in scene_ids]
+        else:
+            orientation = str(item.get("orientation") or "")
+            if orientation not in {"portrait", "landscape", "square", "unknown"}:
+                raise MaterialLibraryClientError("material library asset orientation is invalid")
+            expected_match = (
+                "same" if orientation in {requested_orientation, "unknown"}
+                else "fallback"
+            )
+            if declared_match not in {"same", "fallback"} or declared_match != expected_match:
+                raise MaterialLibraryClientError("material library orientation binding is invalid")
+    return [dict(by_scene[scene_id]) for scene_id in scene_ids]
 
 
 def _settings() -> tuple[str, str]:
@@ -72,6 +92,112 @@ def _orientation(width: int, height: int) -> str:
     if width == height:
         return "square"
     return "portrait" if height > width else "landscape"
+
+
+def _canvas_orientation(frame_template: str, media_width: int, media_height: int) -> str:
+    match = TEMPLATE_SIZE_RE.search(str(frame_template or "").replace("\\", "/"))
+    if match:
+        return _orientation(int(match.group(1)), int(match.group(2)))
+    return _orientation(media_width, media_height)
+
+
+def _selection_http_error(error: httpx.HTTPStatusError) -> MaterialLibraryClientError:
+    code = ""
+    detail = ""
+    try:
+        payload = error.response.json()
+        if isinstance(payload, dict):
+            code = str(payload.get("error") or "")
+            detail = str(payload.get("detail") or "")
+    except ValueError:
+        pass
+    if error.response.status_code == 409 and code == "material_shortage":
+        return MaterialLibraryClientError(
+            "平台素材库中没有足够的不重复素材，请减少分镜或补充素材"
+        )
+    safe = " ".join(detail.split())[:240]
+    return MaterialLibraryClientError(
+        "material library rejected selection" + (f": {safe}" if safe else "")
+    )
+
+
+def _run_managed_process(
+    command: list[str], output: str, timeout_seconds: float,
+    cancel_event: threading.Event | None,
+) -> None:
+    from pixelle_video.services.video_concat import run_cancellable_process
+
+    run_cancellable_process(
+        command, output, timeout_seconds, cancel_event
+    )
+
+
+def _adapt_fallback_media(
+    path: str, item: dict, width: int, height: int,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    if item.get("orientation_match") != "fallback":
+        return path
+    if width <= 0 or height <= 0:
+        raise MaterialLibraryClientError("material adaptation dimensions are invalid")
+    media_type = str(item.get("media_type") or "")
+    if media_type not in {"image", "video"}:
+        return path
+    source = Path(path)
+    suffix = ".jpg" if media_type == "image" else ".mp4"
+    output = source.with_name(source.stem + "_fit" + suffix)
+    graph = (
+        f"[0:v]split=2[bgsrc][fgsrc];"
+        f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},boxblur=20:5[bg];"
+        f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[out]"
+    )
+    command = [
+        "ffmpeg", "-y", "-v", "error", "-i", str(source),
+        "-filter_complex", graph, "-map", "[out]",
+    ]
+    if media_type == "image":
+        command.extend(["-frames:v", "1", str(output)])
+    else:
+        command.extend([
+            "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
+        ])
+    try:
+        _run_managed_process(command, str(output), 180, cancel_event)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        output.unlink(missing_ok=True)
+        raise MaterialLibraryClientError("素材比例自动适配失败") from exc
+    if not output.is_file() or output.stat().st_size <= 0:
+        raise MaterialLibraryClientError("素材比例自动适配失败")
+    return str(output)
+
+
+async def _adapt_fallback_media_cancellable(
+    path: str, item: dict, width: int, height: int
+) -> str:
+    cancel_event = threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(
+        _adapt_fallback_media,
+        path,
+        item,
+        width,
+        height,
+        cancel_event,
+    ))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        try:
+            await asyncio.shield(worker)
+        except (MaterialLibraryClientError, RuntimeError):
+            pass
+        source = Path(path)
+        suffix = ".jpg" if item.get("media_type") == "image" else ".mp4"
+        source.with_name(source.stem + "_fit" + suffix).unlink(missing_ok=True)
+        raise
 
 
 async def _download(
@@ -118,6 +244,7 @@ async def prepare_library_materials(
     task_dir: str,
     width: int,
     height: int,
+    frame_template: str,
 ) -> dict:
     if not narrations or len(narrations) > 20:
         raise MaterialLibraryClientError("material library requires 1-20 scenes")
@@ -148,20 +275,29 @@ async def prepare_library_materials(
                 headers=headers,
                 json={
                     "scenes": scenes,
-                    "orientation": _orientation(width, height),
+                    "orientation": _canvas_orientation(frame_template, width, height),
                     "seed": task_id,
                 },
             )
             response.raise_for_status()
             payload = response.json()
+            canvas_orientation = _canvas_orientation(
+                frame_template, width, height
+            )
             selected = _validate_selection(
                 payload.get("materials") or [],
                 [scene["scene_id"] for scene in scenes],
+                canvas_orientation,
             )
             downloaded = []
             for item in selected:
                 path = await _download(client, base, headers, item, target_dir)
+                path = await _adapt_fallback_media_cancellable(
+                    path, item, width, height
+                )
                 downloaded.append({**item, "path": path})
+    except httpx.HTTPStatusError as exc:
+        raise _selection_http_error(exc) from exc
     except (httpx.HTTPError, ValueError) as exc:
         raise MaterialLibraryClientError(f"material library request failed: {exc}") from exc
 
@@ -173,6 +309,7 @@ async def prepare_library_materials(
         {key: item.get(key) for key in (
             "scene_id", "record_id", "sha256", "name", "media_type",
             "orientation", "duration_seconds", "match_level", "match_score",
+            "orientation_match",
         )}
         for item in downloaded
     ]
@@ -200,7 +337,9 @@ async def probe_library_capacity(scene_count: int, orientation: str) -> dict:
                 json={"scenes": scenes, "orientation": orientation, "seed": "capacity-probe"},
             )
             response.raise_for_status()
-            selected = _validate_selection(response.json().get("materials") or [], scene_ids)
+            selected = _validate_selection(
+                response.json().get("materials") or [], scene_ids, orientation
+            )
     except (httpx.HTTPError, ValueError) as exc:
         raise MaterialLibraryClientError(f"material library capacity probe failed: {exc}") from exc
     return {"ready": True, "scene_count": scene_count, "selected_count": len(selected)}

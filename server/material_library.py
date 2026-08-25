@@ -64,7 +64,9 @@ class Material:
     duration_seconds: float | None
     searchable: tuple[tuple[str, int], ...]
 
-    def public_dict(self, match_level: str, scene_id: str) -> dict[str, Any]:
+    def public_dict(
+        self, match_level: str, scene_id: str, orientation_match: str
+    ) -> dict[str, Any]:
         return {
             "scene_id": scene_id,
             "record_id": self.record_id,
@@ -74,6 +76,7 @@ class Material:
             "orientation": self.orientation,
             "duration_seconds": self.duration_seconds,
             "match_level": match_level,
+            "orientation_match": orientation_match,
         }
 
 
@@ -289,11 +292,6 @@ class MaterialLibrary:
                 for item in self._materials
                 if item.sha256 not in used
                 and item.media_type in allowed_types
-                and (
-                    requested_orientation == "unknown"
-                    or item.orientation in {requested_orientation, "unknown"}
-                    or item.media_type == "bgm"
-                )
             ]
             if not candidates:
                 raise MaterialShortageError(f"no unique approved material remains for {scene_id}")
@@ -307,28 +305,63 @@ class MaterialLibrary:
             tokens = _tokens(*query_values)
             query_text = " ".join(_text(value) for value in query_values)
             scored = [(item, _score(item, tokens, query_text)) for item in candidates]
-            exact = [(item, score) for item, score in scored if score >= 8]
-            loose = [(item, score) for item, score in scored if score > 0]
-            if exact:
-                pool, match_level = exact, "exact"
-            elif loose:
-                pool, match_level = loose, "loose"
-            else:
-                pool, match_level = [(item, 0) for item in candidates], "random"
+            same_orientation = lambda item: (
+                item.media_type == "bgm"
+                or requested_orientation == "unknown"
+                or item.orientation in {requested_orientation, "unknown"}
+            )
+            exact_same = [
+                (item, score) for item, score in scored
+                if score >= 8 and same_orientation(item)
+            ]
+            loose_same = [
+                (item, score) for item, score in scored
+                if score > 0 and same_orientation(item)
+            ]
+            exact_any = [(item, score) for item, score in scored if score >= 8]
+            loose_any = [(item, score) for item, score in scored if score > 0]
+            random_same = [
+                (item, 0) for item, _score_value in scored
+                if same_orientation(item)
+            ]
+            tiers = (
+                (exact_same, "exact"),
+                (loose_same, "loose"),
+                (exact_any, "exact"),
+                (loose_any, "loose"),
+                (random_same, "random"),
+                ([(item, 0) for item, _score_value in scored], "random"),
+            )
+            pool, match_level = next(
+                (tier, level) for tier, level in tiers if tier
+            )
             rank_seed = f"{seed}:{scene_id}:{position}"
             material, score = sorted(
                 pool,
                 key=lambda pair: (-pair[1], _stable_rank(rank_seed, pair[0])),
             )[0]
             used.add(material.sha256)
-            item = material.public_dict(match_level, scene_id)
+            orientation_match = (
+                "not_applicable" if material.media_type == "bgm"
+                else "same" if same_orientation(material)
+                else "fallback"
+            )
+            item = material.public_dict(
+                match_level, scene_id, orientation_match
+            )
             item["match_score"] = score
             selected.append(item)
 
         return {
             "materials": selected,
             "used_sha256": sorted(used),
-            "fallback_policy": ["exact", "loose", "random"],
+            "fallback_policy": [
+                "exact_same_orientation",
+                "loose_same_orientation",
+                "exact_any_orientation",
+                "loose_any_orientation",
+                "random_unique",
+            ],
             "ai_fallback": False,
         }
 

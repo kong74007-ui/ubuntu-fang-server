@@ -69,15 +69,35 @@ class MaterialLibraryTests(unittest.TestCase):
         )
         self.assertEqual(second, result["materials"][0]["sha256"])
 
-    def test_unapproved_missing_and_wrong_orientation_are_excluded(self):
+    def test_same_orientation_is_preferred_before_cross_orientation_exact_match(self):
         self.add("blocked", status="待审核", 标签=["人物"])
-        self.add("wide", direction="横屏", 标签=["人物"])
+        self.add("wide", direction="横屏", 标签=["人物", "医生"], 一级场景="诊室")
         portrait = self.add("portrait", 标签=["人物"])
         result = self.library().select(
-            [{"scene_id": "s1", "query": "人物", "media_type": "image"}],
+            [{"scene_id": "s1", "query": "人物 医生 诊室", "media_type": "image"}],
             orientation="竖屏",
         )
         self.assertEqual(portrait, result["materials"][0]["sha256"])
+        self.assertEqual("same", result["materials"][0]["orientation_match"])
+
+    def test_cross_orientation_fallback_fills_unique_scenes_without_ai(self):
+        portrait = self.add("portrait", direction="竖屏", 标签=["人物"])
+        wide_a = self.add("wide-a", direction="横屏", 标签=["门店"])
+        wide_b = self.add("wide-b", direction="横屏", 标签=["产品"])
+        result = self.library().select([
+            {"scene_id": "s1", "query": "人物", "media_type": "image"},
+            {"scene_id": "s2", "query": "门店", "media_type": "image"},
+            {"scene_id": "s3", "query": "产品", "media_type": "image"},
+        ], orientation="portrait", seed="fallback")
+        self.assertEqual(
+            {portrait, wide_a, wide_b},
+            {item["sha256"] for item in result["materials"]},
+        )
+        self.assertEqual(
+            ["same", "fallback", "fallback"],
+            [item["orientation_match"] for item in result["materials"]],
+        )
+        self.assertFalse(result["ai_fallback"])
 
     def test_video_image_and_bgm_types_are_supported(self):
         image = self.add("still", media=".png", 标签=["产品"])
