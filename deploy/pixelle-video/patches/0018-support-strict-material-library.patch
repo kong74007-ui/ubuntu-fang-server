@@ -59,7 +59,7 @@ diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/stand
 +++ b/pixelle_video/pipelines/standard.py
 @@ -57,0 +58 @@ from pixelle_video.services.fail_fast import FailFastSemaphore, gather_cancel_on
 +from pixelle_video.services.material_library_client import prepare_library_materials
-@@ -168,0 +170,16 @@ class StandardPipeline(LinearVideoPipeline):
+@@ -168,0 +170,17 @@ class StandardPipeline(LinearVideoPipeline):
 +        if ctx.params.get("material_source") == "library":
 +            self._report_progress(ctx.progress_callback, "selecting_library_materials", 0.15)
 +            prepared = await prepare_library_materials(
@@ -68,6 +68,7 @@ diff --git a/pixelle_video/pipelines/standard.py b/pixelle_video/pipelines/stand
 +                task_dir=ctx.task_dir,
 +                width=int(ctx.params.get("media_width") or 0),
 +                height=int(ctx.params.get("media_height") or 0),
++                frame_template=ctx.params.get("frame_template") or "",
 +            )
 +            ctx.library_visuals = prepared["visuals"]
 +            ctx.library_bgm_path = prepared["bgm_path"]

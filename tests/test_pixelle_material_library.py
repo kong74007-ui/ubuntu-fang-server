@@ -86,6 +86,7 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
             task_dir=str(self.task),
             width=1080,
             height=1920,
+            frame_template="1080x1920/image_default.html",
         ))
         self.assertEqual(2, len(result["visuals"]))
         self.assertTrue(Path(result["bgm_path"]).is_file())
@@ -100,6 +101,33 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         self.assertEqual({"ready": True, "scene_count": 2, "selected_count": 3}, probe)
         with self.assertRaises(self.client.MaterialLibraryClientError):
             asyncio.run(self.client.probe_library_capacity(3, "portrait"))
+
+    def test_portrait_canvas_overrides_square_internal_media_slot(self):
+        result = asyncio.run(self.client.prepare_library_materials(
+            ["医美抗衰方案", "门店服务流程"],
+            task_id="task-square-slot",
+            task_dir=str(self.task),
+            width=1024,
+            height=1024,
+            frame_template="1080x1920/image_blur_card.html",
+        ))
+        self.assertEqual(2, len(result["visuals"]))
+        self.assertEqual("portrait", self.client._canvas_orientation(
+            "1080x1920/image_blur_card.html", 1024, 1024
+        ))
+
+    def test_selection_shortage_returns_actionable_error_without_httpx_url(self):
+        with self.assertRaises(self.client.MaterialLibraryClientError) as rejected:
+            asyncio.run(self.client.prepare_library_materials(
+                ["第一幕", "第二幕", "第三幕"],
+                task_id="task-shortage",
+                task_dir=str(self.task),
+                width=1024,
+                height=1024,
+                frame_template="1080x1920/image_default.html",
+            ))
+        self.assertIn("没有足够", str(rejected.exception))
+        self.assertNotIn("developer.mozilla.org", str(rejected.exception))
 
     def test_selection_binding_rejects_order_drift_duplicates_unknown_and_type_mismatch(self):
         valid = [
@@ -144,6 +172,7 @@ class PixelleMaterialLibraryClientTests(unittest.TestCase):
         self.assertIn('frame.image_path = visual["path"]', patch_text)
         self.assertIn('frame.video_path = visual["path"]', patch_text)
         self.assertIn('material_source: Literal["ai", "library"]', patch_text)
+        self.assertIn('frame_template=ctx.params.get("frame_template") or ""', patch_text)
         self.assertIn('@router.get("/material-library/health")', patch_text)
         self.assertIn('@router.post("/material-library/probe")', patch_text)
         self.assertNotIn("AI fallback", patch_text)
