@@ -61,6 +61,20 @@ class MatrixTemplateApiTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
 
+    def test_duration_boundary_counts_visible_chinese_and_english_only(self):
+        accepted = self.service.validate_payload({
+            "top_text": "中" * 60,
+            "bottom_text": "A" * 7 + "，。！？",
+            "template_id": "native-bold",
+        })
+        self.assertEqual(14.9, accepted["duration"])
+        with self.assertRaisesRegex(ValueError, "文案过长"):
+            self.service.validate_payload({
+                "top_text": "中" * 60,
+                "bottom_text": "A" * 8,
+                "template_id": "native-bold",
+            })
+
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         first = self.service.submit(body, "request-1")
@@ -485,6 +499,23 @@ class MatrixTemplateApiTests(unittest.TestCase):
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
                 self.assertEqual(13, len(json.load(response)["templates"]))
+            with request(
+                "/v1/preflight", "POST",
+                {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},
+                "api-token",
+            ) as response:
+                preflight = json.load(response)
+            self.assertEqual((14.9, 3), (
+                preflight["duration"], preflight["required_visuals"]))
+            self.assertEqual([], self.service.store.pending_ids())
+            self.assertEqual(0, self.service.jobs.qsize())
+            with self.assertRaises(urllib.error.HTTPError) as too_long:
+                request(
+                    "/v1/preflight", "POST",
+                    {"top_text": "中" * 60, "bottom_text": "A" * 8},
+                    "api-token",
+                )
+            self.assertEqual(400, too_long.exception.code)
             with request(
                 "/v1/jobs", "POST",
                 {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"},
