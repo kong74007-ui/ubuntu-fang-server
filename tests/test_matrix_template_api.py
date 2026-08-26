@@ -83,7 +83,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         first = self.service.submit(body, "request-1")
-        second = self.service.submit(body, "request-1")
+        with mock.patch.object(
+            self.service, "_run_layout_preflight",
+            side_effect=matrix.MatrixTemplateError("preflight unavailable"),
+        ):
+            second = self.service.submit(body, "request-1")
         self.assertEqual(first["job_id"], second["job_id"])
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**body, "bottom_text": "私信领取资料"}, "request-1")
