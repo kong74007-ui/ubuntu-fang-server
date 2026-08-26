@@ -405,7 +405,7 @@ class MatrixTemplateService:
         if template_id not in self.templates:
             raise ValueError("请选择有效模板")
         duration = _duration(top, bottom, raw.get("duration"))
-        bgm = raw.get("bgm", True)
+        bgm = raw.get("bgm", False)
         if not isinstance(bgm, bool):
             raise ValueError("bgm must be boolean")
         return {
