@@ -51,15 +51,15 @@ CONTENT_SUFFIXES = {
 FONT_VARIANTS = {
     "native-bold": (
         ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("heavy", "AaHouDiHei", "GenSenRounded TW H"),
-        ("poster", "Kingnam Bobo", "Gen Jyuu Gothic Heavy"),
-        ("display", "zihunbiantaoti", "GenSenRounded TW H"),
+        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
+        ("rounded", "GenSenRounded TW H", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
     ),
     "video-diary": (
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
         ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
         ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("playful", "YS HelloFont BangBangTi", "GenSenRounded TW H"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
     ),
     "minimal-headline": (
         ("geometric", "Gen Jyuu Gothic Heavy", "GenSenRounded TW H"),
@@ -69,14 +69,14 @@ FONT_VARIANTS = {
     ),
     "airy-blush": (
         ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
         ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("playful", "YS HelloFont BangBangTi", "GenSenRounded TW H"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
     ),
     "yellow-blue-pop": (
-        ("heavy", "AaHouDiHei", "GenSenRounded TW H"),
-        ("poster", "Kingnam Bobo", "GenSenRounded TW H"),
-        ("display", "zihunbiantaoti", "GenSenRounded TW H"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+        ("rounded", "GenSenRounded TW H", "Noto Sans SC"),
         ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
     ),
     "business-black": (
@@ -87,33 +87,33 @@ FONT_VARIANTS = {
     ),
     "black-gold-premium": (
         ("serif", "HouZunSongTi", "GenSenRounded TW H"),
-        ("heritage", "DaigoMinteuA", "Noto Sans SC"),
+        ("heritage", "Ma Shan Zheng", "ZCOOL XiaoWei"),
         ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
+        ("clean", "Noto Sans SC", "GenSenRounded TW H"),
     ),
     "data-compare": (
         ("geometric", "Gen Jyuu Gothic Heavy", "GenSenRounded TW H"),
         ("rounded", "GenSenRounded TW H", "GenSenRounded TW H"),
         ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("heavy", "AaHouDiHei", "GenSenRounded TW H"),
+        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
     ),
     "chinese-title": (
         ("serif", "HouZunSongTi", "ZCOOL XiaoWei"),
-        ("heritage", "DaigoMinteuA", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
         ("brush", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
+        ("friendly", "ZCOOL KuaiLe", "GenSenRounded TW H"),
     ),
     "torn-magazine": (
-        ("poster", "Kingnam Bobo", "GenSenRounded TW H"),
-        ("heavy", "AaHouDiHei", "GenSenRounded TW H"),
-        ("display", "zihunbiantaoti", "GenSenRounded TW H"),
+        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
         ("clean", "Noto Sans SC", "Noto Sans SC"),
     ),
     "vlog-journal": (
-        ("playful", "YS HelloFont BangBangTi", "GenSenRounded TW H"),
-        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
         ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
     ),
     "bilingual-split": (
         ("geometric", "Gen Jyuu Gothic Heavy", "GenSenRounded TW H"),
@@ -123,9 +123,9 @@ FONT_VARIANTS = {
     ),
     "portrait-quote": (
         ("serif", "HouZunSongTi", "GenSenRounded TW H"),
-        ("heritage", "DaigoMinteuA", "Noto Sans SC"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
         ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("relaxed", "Pangmenzhengdaoqingsongti", "GenSenRounded TW H"),
+        ("modern", "Smiley Sans Oblique", "GenSenRounded TW H"),
     ),
 }
 

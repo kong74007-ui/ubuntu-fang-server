@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_installer_pins_skill_and_uses_atomic_release_contract(self):
         installer = (ROOT / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
-        self.assertIn('UPSTREAM_COMMIT="3d1a8ddf10c63a89c730e7c5b5d740cc8b3fac58"', installer)
+        self.assertIn('UPSTREAM_COMMIT="e648fd6b721f8dbd1b611543e859cbf41e648c39"', installer)
         self.assertIn('git -C "${RELEASE}/upstream" rev-parse HEAD', installer)
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
-UPSTREAM_COMMIT="3d1a8ddf10c63a89c730e7c5b5d740cc8b3fac58"
+UPSTREAM_COMMIT="e648fd6b721f8dbd1b611543e859cbf41e648c39"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"

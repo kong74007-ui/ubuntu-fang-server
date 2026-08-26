@@ -78,10 +78,8 @@ class MatrixTemplateApiTests(unittest.TestCase):
     def test_font_selection_is_stable_varied_and_uses_full_bundled_font_library(self):
         allowed = {
             "Noto Sans SC", "ZCOOL XiaoWei", "Ma Shan Zheng", "ZCOOL KuaiLe",
-            "zihunbiantaoti", "Smiley Sans Oblique", "DaigoMinteuA",
-            "Gen Jyuu Gothic Heavy", "GenSenRounded TW H", "HouZunSongTi",
-            "AaHouDiHei", "Pangmenzhengdaoqingsongti", "Kingnam Bobo",
-            "YS HelloFont BangBangTi",
+            "Smiley Sans Oblique", "Gen Jyuu Gothic Heavy",
+            "GenSenRounded TW H", "HouZunSongTi",
         }
         self.assertEqual(13, len(matrix.FONT_VARIANTS))
         represented = set()
