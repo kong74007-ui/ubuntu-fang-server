@@ -75,6 +75,31 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "template_id": "native-bold",
             })
 
+    def test_font_selection_is_stable_varied_and_uses_bundled_open_fonts(self):
+        allowed = {
+            "Noto Sans SC", "ZCOOL XiaoWei", "Ma Shan Zheng", "ZCOOL KuaiLe",
+        }
+        self.assertEqual(13, len(matrix.FONT_VARIANTS))
+        for template_id in matrix.FONT_VARIANTS:
+            with self.subTest(template_id=template_id):
+                selections = [
+                    matrix._font_selection(template_id, format(index, "032x"))
+                    for index in range(30)
+                ]
+                self.assertEqual(
+                    selections[7],
+                    matrix._font_selection(template_id, format(7, "032x")),
+                )
+                self.assertGreaterEqual(
+                    len({item["variant"] for item in selections}), 2)
+                self.assertTrue(all(
+                    item["top_font"] in allowed and item["bottom_font"] in allowed
+                    for item in selections
+                ))
+        fallback = matrix._font_selection("future-template", "f" * 32)
+        self.assertIn(fallback["top_font"], allowed)
+        self.assertIn(fallback["bottom_font"], allowed)
+
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         first = self.service.submit(body, "request-1")
@@ -190,7 +215,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
             result = self.service._execute(job["job_id"])
 
         project = json.loads((self.service.data_root / job["job_id"] / "project.json").read_text(encoding="utf-8"))
-        self.assertEqual({"template_id": "native-bold"}, project["layout"])
+        self.assertEqual("native-bold", project["layout"]["template_id"])
+        self.assertEqual(project["font_selection"]["top_font"], project["layout"]["top_font"])
+        self.assertEqual(project["font_selection"]["bottom_font"], project["layout"]["bottom_font"])
+        self.assertEqual(project["font_selection"], result["font_selection"])
         self.assertFalse(project["voice"]["enabled"])
         self.assertEqual(2, len(project["scenes"][0]["media"]))
         self.assertEqual("huangque-internal-api", project["material_library"]["index_source"])
