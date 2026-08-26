@@ -52,7 +52,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "template_id": "native-bold",
         })
         self.assertEqual(8.0, payload["duration"])
-        self.assertTrue(payload["bgm"])
+        self.assertFalse(payload["bgm"])
         for invalid in (
             {"top_text": "A", "bottom_text": "行动"},
             {"top_text": "有效标题", "bottom_text": "A"},
@@ -166,6 +166,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
     def test_material_selection_requires_video_unique_sha_and_optional_bgm(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "bgm": True,
         })
         captured = {}
 
@@ -184,9 +185,28 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual("portrait", captured["orientation"])
         self.assertEqual(3, len(set(item["sha256"] for item in materials)))
 
+    def test_default_material_selection_does_not_request_bgm(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        captured = {}
+
+        def selection(_method, _path, body):
+            captured.update(body)
+            return {"materials": [
+                {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video"},
+                {"scene_id": "media_02", "sha256": "b" * 64, "media_type": "image"},
+            ]}
+
+        with mock.patch.object(self.service, "_library_request", side_effect=selection):
+            materials = self.service._select_materials(payload, "e" * 32)
+        self.assertEqual(["video", "image"], [item["media_type"] for item in materials])
+        self.assertNotIn("bgm", [item["scene_id"] for item in captured["scenes"]])
+
     def test_execute_builds_skill_project_and_returns_provenance(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "bgm": True,
         })
         job, _ = self.service.store.create("execute-1", payload)
         materials = [
