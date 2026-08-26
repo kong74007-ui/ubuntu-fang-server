@@ -16,6 +16,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -60,6 +61,27 @@ class QueueCapacityError(MatrixTemplateError):
 
 class DiskCapacityError(MatrixTemplateError):
     pass
+
+
+class LayoutPreflightError(MatrixTemplateError):
+    MESSAGES = {
+        "top_text": "顶部标题在当前模板中无法完整显示，请缩短或拆分文案",
+        "bottom_text": "底部行动文案在当前模板中无法完整显示，请缩短或拆分文案",
+    }
+
+    def __init__(self, field: str):
+        self.field = field if field in self.MESSAGES else "text"
+        self.code = "text_overflow"
+        super().__init__(self.MESSAGES.get(self.field, "文案在当前模板中无法完整显示，请缩短或拆分文案"))
+
+    def as_dict(self) -> dict:
+        return {
+            "ok": False,
+            "code": self.code,
+            "field": self.field,
+            "detail": str(self),
+            "suggestion": "缩短文案、加入换行，或改用可容纳更多文字的模板",
+        }
 
 
 def runtime_build_id() -> str:
@@ -336,10 +358,65 @@ class MatrixTemplateService:
             "bgm": bgm,
         }
 
+    def _layout_project(self, payload: dict) -> dict:
+        return {
+            "version": 1,
+            "project_id": "layout-preflight",
+            "source_text": payload["top_text"] + "\n" + payload["bottom_text"],
+            "platforms": ["douyin", "xiaohongshu", "wechat_channels"],
+            "canvas": {"width": 1080, "height": 1920, "fps": 30},
+            "layout": {"template_id": payload["template_id"]},
+            "voice": {"enabled": False},
+            "scenes": [{
+                "id": "s01", "role": "hook", "text": "",
+                "top_text": payload["top_text"],
+                "bottom_text": payload["bottom_text"],
+                "duration": payload["duration"], "media": [],
+                "caption_chunks": [], "sfx": [],
+            }],
+        }
+
+    @staticmethod
+    def _last_json_object(value: str) -> dict:
+        for line in reversed(str(value or "").splitlines()):
+            try:
+                parsed = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    def _run_layout_preflight(self, payload: dict) -> dict:
+        with tempfile.TemporaryDirectory(prefix=".layout-preflight-", dir=self.data_root) as temp:
+            project_path = Path(temp) / "project.json"
+            project_path.write_text(
+                json.dumps(self._layout_project(payload), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            try:
+                result = subprocess.run([
+                    self.python, str(self.skill_root / "scripts/render_video.py"),
+                    str(project_path), "--layout-preflight",
+                ], check=False, capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise MatrixTemplateError("模板排版预检服务暂不可用") from exc
+        output = self._last_json_object(result.stdout if result.returncode == 0 else result.stderr)
+        if result.returncode == 0 and output.get("ok") is True:
+            return output
+        if output.get("code") == "text_overflow":
+            raise LayoutPreflightError(str(output.get("field") or ""))
+        raise MatrixTemplateError("模板排版预检失败")
+
+    def preflight(self, raw: dict) -> dict:
+        payload = self.validate_payload(raw)
+        result = self._run_layout_preflight(payload)
+        return {**result, "payload": payload}
+
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
-        payload = self.validate_payload(raw)
+        payload = self.preflight(raw)["payload"]
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity
         )
@@ -823,7 +900,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/v1/jobs":
+        path = urlsplit(self.path).path
+        if path not in {"/v1/jobs", "/v1/preflight"}:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -834,9 +912,14 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > MAX_BODY_BYTES:
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
-            request_id = str(self.headers.get("X-Request-Id") or "")
-            job = self.service.submit(body, request_id)
-            self.send_json(202, job)
+            if path == "/v1/preflight":
+                self.send_json(200, self.service.preflight(body))
+            else:
+                request_id = str(self.headers.get("X-Request-Id") or "")
+                job = self.service.submit(body, request_id)
+                self.send_json(202, job)
+        except LayoutPreflightError as exc:
+            self.send_json(422, exc.as_dict())
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": "invalid_request", "detail": str(exc)})
         except MatrixTemplateError as exc:

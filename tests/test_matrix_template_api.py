@@ -31,7 +31,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
             json.dumps({"version": 1, "templates": templates}, ensure_ascii=False),
             encoding="utf-8",
         )
-        (self.skill / "scripts/render_video.py").write_text("# fixture\n", encoding="utf-8")
+        (self.skill / "scripts/render_video.py").write_text(
+            "import json, sys\n"
+            "if '--layout-preflight' in sys.argv:\n"
+            "    print(json.dumps({'ok': True, 'template_id': 'native-bold', 'regions': []}))\n",
+            encoding="utf-8",
+        )
         self.service = matrix.MatrixTemplateService(
             data_root=self.root / "data",
             skill_root=self.skill,
@@ -68,6 +73,46 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(first["job_id"], second["job_id"])
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**body, "bottom_text": "私信领取资料"}, "request-1")
+
+    def test_preflight_rejects_overflow_before_job_storage_or_queueing(self):
+        body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
+        failure = SimpleNamespace(
+            returncode=2,
+            stdout="",
+            stderr=json.dumps({
+                "ok": False, "code": "text_overflow", "field": "top_text",
+                "error": "top_text cannot fit at the minimum font size",
+            }, ensure_ascii=False),
+        )
+        with mock.patch.object(matrix.subprocess, "run", return_value=failure):
+            with self.assertRaises(matrix.LayoutPreflightError) as caught:
+                self.service.submit(body, "overflow-request")
+        self.assertEqual("top_text", caught.exception.field)
+        self.assertIn("顶部标题", str(caught.exception))
+        self.assertEqual([], self.service.store.pending_ids())
+        self.assertEqual(0, self.service.jobs.qsize())
+
+    def test_preflight_project_contains_no_media_and_needs_no_render_tools(self):
+        payload = self.service.validate_payload({
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+        })
+        captured = {}
+
+        def run(command, **kwargs):
+            captured["command"] = command
+            project = json.loads(Path(command[2]).read_text(encoding="utf-8"))
+            captured["project"] = project
+            return SimpleNamespace(
+                returncode=0, stderr="",
+                stdout=json.dumps({"ok": True, "template_id": "native-bold", "regions": []}),
+            )
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=run):
+            result = self.service.preflight(payload)
+        self.assertTrue(result["ok"])
+        self.assertEqual("--layout-preflight", captured["command"][-1])
+        self.assertEqual([], captured["project"]["scenes"][0]["media"])
+        self.assertNotIn("bgm", captured["project"])
 
     def test_concurrent_request_id_creates_one_job_and_one_queue_entry(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
@@ -485,6 +530,26 @@ class MatrixTemplateApiTests(unittest.TestCase):
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
                 self.assertEqual(13, len(json.load(response)["templates"]))
+            with request(
+                "/v1/preflight", "POST",
+                {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"},
+                "api-token",
+            ) as response:
+                self.assertTrue(json.load(response)["ok"])
+            with mock.patch.object(
+                self.service, "_run_layout_preflight",
+                side_effect=matrix.LayoutPreflightError("bottom_text"),
+            ), self.assertRaises(urllib.error.HTTPError) as overflow:
+                request(
+                    "/v1/preflight", "POST",
+                    {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"},
+                    "api-token",
+                )
+            self.assertEqual(422, overflow.exception.code)
+            overflow_body = json.loads(overflow.exception.read())
+            self.assertEqual(("text_overflow", "bottom_text"), (
+                overflow_body["code"], overflow_body["field"],
+            ))
             with request(
                 "/v1/jobs", "POST",
                 {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"},
