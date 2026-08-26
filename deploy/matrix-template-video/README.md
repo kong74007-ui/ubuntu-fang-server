@@ -18,7 +18,7 @@ committed. Deploy only after the material-library tunnel is healthy.
 
 ## Typography variants
 
-- Every template has three curated top/bottom font pairs selected from the bundled OFL fonts: Noto Sans SC, ZCOOL XiaoWei, Ma Shan Zheng, and ZCOOL KuaiLe.
+- Every template has four curated top/bottom font pairs selected from the 14-font bundled cover library. The bundle combines four OFL baseline families with ten user-authorized cover fonts.
 - Selection is deterministic from `template_id + job_id`: a retry keeps the same typography while a new job receives a varied pair.
 - Pairs are template-specific. Business and data templates stay restrained; handwritten fonts are limited to editorial, diary, portrait, and Chinese-title templates.
 - The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.

@@ -75,11 +75,16 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "template_id": "native-bold",
             })
 
-    def test_font_selection_is_stable_varied_and_uses_bundled_open_fonts(self):
+    def test_font_selection_is_stable_varied_and_uses_full_bundled_font_library(self):
         allowed = {
             "Noto Sans SC", "ZCOOL XiaoWei", "Ma Shan Zheng", "ZCOOL KuaiLe",
+            "zihunbiantaoti", "Smiley Sans Oblique", "DaigoMinteuA",
+            "Gen Jyuu Gothic Heavy", "GenSenRounded TW H", "HouZunSongTi",
+            "AaHouDiHei", "Pangmenzhengdaoqingsongti", "Kingnam Bobo",
+            "YS HelloFont BangBangTi",
         }
         self.assertEqual(13, len(matrix.FONT_VARIANTS))
+        represented = set()
         for template_id in matrix.FONT_VARIANTS:
             with self.subTest(template_id=template_id):
                 selections = [
@@ -96,6 +101,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
                     item["top_font"] in allowed and item["bottom_font"] in allowed
                     for item in selections
                 ))
+                for _, top_font, bottom_font in matrix.FONT_VARIANTS[template_id]:
+                    represented.update((top_font, bottom_font))
+        self.assertEqual(allowed, represented)
         fallback = matrix._font_selection("future-template", "f" * 32)
         self.assertIn(fallback["top_font"], allowed)
         self.assertIn(fallback["bottom_font"], allowed)
