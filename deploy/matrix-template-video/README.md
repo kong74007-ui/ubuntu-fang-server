@@ -16,6 +16,13 @@ sudo bash deploy/matrix-template-video/install.sh
 Secrets are created or loaded from root-owned environment files and are never
 committed. Deploy only after the material-library tunnel is healthy.
 
+## Typography variants
+
+- Every template has three curated top/bottom font pairs selected from the bundled OFL fonts: Noto Sans SC, ZCOOL XiaoWei, Ma Shan Zheng, and ZCOOL KuaiLe.
+- Selection is deterministic from `template_id + job_id`: a retry keeps the same typography while a new job receives a varied pair.
+- Pairs are template-specific. Business and data templates stay restrained; handwritten fonts are limited to editorial, diary, portrait, and Chinese-title templates.
+- The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.
+
 ## Storage and delivery policy
 
 - Render output is published atomically only after the H.264/AAC 1080x1920 probe passes.

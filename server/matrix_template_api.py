@@ -48,6 +48,84 @@ CONTENT_SUFFIXES = {
     "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
     "audio/mp4": ".m4a",
 }
+FONT_VARIANTS = {
+    "native-bold": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+    ),
+    "video-diary": (
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+    ),
+    "minimal-headline": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+    "airy-blush": (
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+    ),
+    "yellow-blue-pop": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+    ),
+    "business-black": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+    "black-gold-premium": (
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("heritage", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("clean", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+    "data-compare": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+    "chinese-title": (
+        ("brush", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("friendly", "ZCOOL KuaiLe", "ZCOOL XiaoWei"),
+    ),
+    "torn-magazine": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+    ),
+    "vlog-journal": (
+        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+    ),
+    "bilingual-split": (
+        ("clean", "Noto Sans SC", "Noto Sans SC"),
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+    "portrait-quote": (
+        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
+        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
+        ("clean", "Noto Sans SC", "ZCOOL XiaoWei"),
+    ),
+}
+
+
+def _font_selection(template_id: str, job_id: str) -> dict:
+    options = FONT_VARIANTS.get(template_id) or FONT_VARIANTS["native-bold"]
+    digest = hashlib.sha256(f"{template_id}:{job_id}".encode("utf-8")).digest()
+    variant, top_font, bottom_font = options[int.from_bytes(digest[:4], "big") % len(options)]
+    return {
+        "variant": variant,
+        "top_font": top_font,
+        "bottom_font": bottom_font,
+    }
 
 
 class MatrixTemplateError(RuntimeError):
@@ -540,6 +618,7 @@ class MatrixTemplateService:
 
     def _project(self, payload: dict, job_id: str, materials: list[dict], paths: list[Path]) -> dict:
         count = _required_visuals(payload["duration"])
+        font_selection = _font_selection(payload["template_id"], job_id)
         media = []
         for item, path in zip(materials[:count], paths[:count]):
             media.append({
@@ -557,7 +636,12 @@ class MatrixTemplateService:
                 "enabled": True, "index_source": "huangque-internal-api",
                 "required_status": "可使用", "selection_policy": "library-only",
             },
-            "layout": {"template_id": payload["template_id"]},
+            "layout": {
+                "template_id": payload["template_id"],
+                "top_font": font_selection["top_font"],
+                "bottom_font": font_selection["bottom_font"],
+            },
+            "font_selection": font_selection,
             "material_policy": {"allow_image_only": False, "image_only_reason": ""},
             "voice": {"enabled": False},
             "scenes": [{
@@ -672,6 +756,7 @@ class MatrixTemplateService:
             **probe,
             "template_id": payload["template_id"],
             "file_url": f"/v1/files/{job_id}.mp4",
+            "font_selection": project["font_selection"],
             "material_manifest": [{
                 "record_id": item.get("record_id"), "sha256": item.get("sha256"),
                 "media_type": item.get("media_type"), "match_level": item.get("match_level"),
