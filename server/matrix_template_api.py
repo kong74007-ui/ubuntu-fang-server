@@ -823,7 +823,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/v1/jobs":
+        path = urlsplit(self.path).path
+        if path not in {"/v1/jobs", "/v1/preflight"}:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -834,6 +835,15 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > MAX_BODY_BYTES:
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
+            if path == "/v1/preflight":
+                payload = self.service.validate_payload(body)
+                self.send_json(200, {
+                    "ok": True,
+                    "payload": payload,
+                    "duration": payload["duration"],
+                    "required_visuals": _required_visuals(payload["duration"]),
+                })
+                return
             request_id = str(self.headers.get("X-Request-Id") or "")
             job = self.service.submit(body, request_id)
             self.send_json(202, job)
