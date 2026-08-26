@@ -66,6 +66,20 @@ class MatrixTemplateApiTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
 
+    def test_duration_boundary_counts_visible_chinese_and_english_only(self):
+        accepted = self.service.validate_payload({
+            "top_text": "中" * 60,
+            "bottom_text": "A" * 7 + "，。！？",
+            "template_id": "native-bold",
+        })
+        self.assertEqual(14.9, accepted["duration"])
+        with self.assertRaisesRegex(ValueError, "文案过长"):
+            self.service.validate_payload({
+                "top_text": "中" * 60,
+                "bottom_text": "A" * 8,
+                "template_id": "native-bold",
+            })
+
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         first = self.service.submit(body, "request-1")
@@ -535,7 +549,29 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"},
                 "api-token",
             ) as response:
-                self.assertTrue(json.load(response)["ok"])
+                preflight = json.load(response)
+            self.assertTrue(preflight["ok"])
+            self.assertEqual((8.0, 2), (
+                preflight["duration"], preflight["required_visuals"],
+            ))
+            with request(
+                "/v1/preflight", "POST",
+                {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},
+                "api-token",
+            ) as response:
+                duration_boundary = json.load(response)
+            self.assertEqual((14.9, 3), (
+                duration_boundary["duration"], duration_boundary["required_visuals"],
+            ))
+            self.assertEqual([], self.service.store.pending_ids())
+            self.assertEqual(0, self.service.jobs.qsize())
+            with self.assertRaises(urllib.error.HTTPError) as too_long:
+                request(
+                    "/v1/preflight", "POST",
+                    {"top_text": "中" * 60, "bottom_text": "A" * 8},
+                    "api-token",
+                )
+            self.assertEqual(400, too_long.exception.code)
             with mock.patch.object(
                 self.service, "_run_layout_preflight",
                 side_effect=matrix.LayoutPreflightError("bottom_text"),

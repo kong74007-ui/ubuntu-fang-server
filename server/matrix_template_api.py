@@ -411,7 +411,12 @@ class MatrixTemplateService:
     def preflight(self, raw: dict) -> dict:
         payload = self.validate_payload(raw)
         result = self._run_layout_preflight(payload)
-        return {**result, "payload": payload}
+        return {
+            **result,
+            "payload": payload,
+            "duration": payload["duration"],
+            "required_visuals": _required_visuals(payload["duration"]),
+        }
 
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
