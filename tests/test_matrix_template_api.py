@@ -67,10 +67,17 @@ class MatrixTemplateApiTests(unittest.TestCase):
         })
         self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
+        self.assertNotIn("font_family", payload)
+        fonts = self.service.public_fonts()
+        self.assertEqual({""} | matrix.BASE_FONT_FAMILIES, {
+            item["value"] for item in fonts
+        })
+        self.assertEqual("自动搭配", fonts[0]["label"])
         for invalid in (
             {"top_text": "A", "bottom_text": "行动"},
             {"top_text": "有效标题", "bottom_text": "A"},
             {"top_text": "有效标题", "bottom_text": "有效行动", "template_id": "bad"},
+            {"top_text": "有效标题", "bottom_text": "有效行动", "font_family": "Missing Font"},
         ):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
@@ -217,6 +224,19 @@ class MatrixTemplateApiTests(unittest.TestCase):
             }],
         }), encoding="utf-8")
         self.service.private_fonts = matrix._load_private_fonts(private_root)
+        selected_payload = self.service.validate_payload({
+            "top_text": "指定字体标题", "bottom_text": "指定字体行动文案",
+            "font_family": "AaHouDiHei", "bgm": False,
+        })
+        frozen = self.service._freeze_font_provenance("b" * 32, selected_payload)
+        self.assertEqual({
+            "variant": "user-selected",
+            "top_font": "AaHouDiHei",
+            "bottom_font": "AaHouDiHei",
+        }, frozen["_font_provenance"]["selection"])
+        self.assertIn("AaHouDiHei", {
+            item["value"] for item in self.service.public_fonts()
+        })
         job_root = self.root / "data" / ("a" * 32)
         relative = self.service._stage_project_fonts(job_root, {"fonts": [{
             "family": "AaHouDiHei", "file": private_file.name,
@@ -737,7 +757,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
-                self.assertEqual(13, len(json.load(response)["templates"]))
+                catalog = json.load(response)
+                self.assertEqual(13, len(catalog["templates"]))
+                self.assertEqual("", catalog["default_font"])
+                self.assertEqual(5, len(catalog["fonts"]))
             with request(
                 "/v1/preflight", "POST",
                 {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},
