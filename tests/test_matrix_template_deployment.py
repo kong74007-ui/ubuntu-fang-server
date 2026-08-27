@@ -13,7 +13,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_installer_pins_skill_and_uses_atomic_release_contract(self):
         installer = (ROOT / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn('UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"', installer)
-        self.assertIn('LAYOUT_PATCH_SHA256="c5566c1f0e237cf62bfd8a89c06a558d40650619c9800d1f89cc00bfc78013a3"', installer)
+        self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,

@@ -428,6 +428,32 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**body, "bottom_text": "私信领取资料"}, "request-1")
 
+    def test_retired_template_replays_existing_request_but_rejects_new_request(self):
+        body = {"top_text": "历史标题", "bottom_text": "历史行动文案", "bgm": False}
+        stored_payload = {
+            **body,
+            "template_id": "native-bold",
+            "duration": matrix._duration(body["top_text"], body["bottom_text"], None),
+        }
+        existing, _created = self.service.store.create(
+            "retired-template-replay", stored_payload
+        )
+
+        replay = self.service.submit(body, "retired-template-replay")
+        explicit_replay = self.service.submit(
+            {**body, "template_id": "native-bold"}, "retired-template-replay"
+        )
+        self.assertEqual(existing["job_id"], replay["job_id"])
+        self.assertEqual(existing["job_id"], explicit_replay["job_id"])
+        with self.assertRaisesRegex(ValueError, "请选择有效模板"):
+            self.service.submit(
+                {**body, "template_id": "native-bold"}, "retired-template-new"
+            )
+        with self.assertRaisesRegex(ValueError, "another payload"):
+            self.service.submit(
+                {**body, "bottom_text": "不同内容"}, "retired-template-replay"
+            )
+
     def test_concurrent_request_id_creates_one_job_and_one_queue_entry(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         barrier = threading.Barrier(3)

@@ -428,6 +428,12 @@ class JobStore:
         with self.connect() as db:
             return db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
+    def get_by_request_id(self, request_id: str):
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM jobs WHERE request_id=?", (request_id,)
+            ).fetchone()
+
     def pending_ids(self) -> list[str]:
         with self.connect() as db:
             return [row[0] for row in db.execute(
@@ -604,7 +610,9 @@ class MatrixTemplateService:
         self.template_text_limits = text_limits
         return result
 
-    def validate_payload(self, raw: dict, *, require_available_font: bool = True) -> dict:
+    def validate_payload(self, raw: dict, *, require_available_font: bool = True,
+                         allowed_template_ids=None,
+                         default_template_id: str = "full-overlay-bold") -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
         top = " ".join(str(raw.get("top_text") or "").split())
@@ -613,8 +621,12 @@ class MatrixTemplateService:
             raise ValueError("顶部标题需要 2-60 个字符")
         if not 2 <= len(bottom) <= 80:
             raise ValueError("底部行动文案需要 2-80 个字符")
-        template_id = str(raw.get("template_id") or "full-overlay-bold")
-        if template_id not in self.templates:
+        template_id = str(raw.get("template_id") or default_template_id)
+        allowed_templates = (
+            set(self.templates) if allowed_template_ids is None
+            else set(allowed_template_ids)
+        )
+        if template_id not in allowed_templates:
             raise ValueError("请选择有效模板")
         font_family = str(raw.get("font_family") or "").strip()
         if font_family and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family):
@@ -653,7 +665,18 @@ class MatrixTemplateService:
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
-        payload = self.validate_payload(raw, require_available_font=False)
+        existing = self.store.get_by_request_id(request_id)
+        if existing is not None:
+            stored_payload = json.loads(existing["payload"])
+            stored_template_id = str(stored_payload.get("template_id") or "")
+            payload = self.validate_payload(
+                raw,
+                require_available_font=False,
+                allowed_template_ids={stored_template_id},
+                default_template_id=stored_template_id,
+            )
+        else:
+            payload = self.validate_payload(raw, require_available_font=False)
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
             freeze_payload=self._freeze_font_provenance,

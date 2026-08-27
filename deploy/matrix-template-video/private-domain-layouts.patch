@@ -42,7 +42,7 @@ index a1cb814..67e04d1 100644
 +++ b/scripts/render_video.py
 @@ -1056,72 +1056,87 @@ def resolve_layout(
          return None
- 
+
      variant = str(raw.get("variant", "native-bold")).strip().lower()
 -    if variant not in {"native-bold", "classic"}:
 +    if variant not in {"native-bold", "classic", "full-overlay-bold", "poster-split"}:
@@ -52,7 +52,7 @@ index a1cb814..67e04d1 100644
 +    full_overlay = variant == "full-overlay-bold"
 +    poster_split = variant == "poster-split"
 +    bold_layout = variant != "classic"
- 
+
      media = raw.get("media") or {}
      if not isinstance(media, dict):
          media = {}
@@ -79,7 +79,7 @@ index a1cb814..67e04d1 100644
      if media_x + media_width > width or media_y + media_height > height:
          warnings.append("text-media-text media region exceeded the canvas; used default region")
          media_x, media_y, media_width, media_height = default_x, default_y, default_w, default_h
- 
+
 -    border_width = nonnegative_even_int(raw.get("media_border_width"), 0 if native_bold else 4)
 +    border_width = nonnegative_even_int(raw.get("media_border_width"), 0 if bold_layout else 4)
      border_width = min(border_width, media_x, media_y, width - media_x - media_width, height - media_y - media_height)
@@ -102,13 +102,13 @@ index a1cb814..67e04d1 100644
      if bottom_mode not in {"captions", "fixed"}:
          warnings.append(f"unsupported bottom_text_mode {bottom_mode!r}; used 'captions'")
          bottom_mode = "captions"
- 
+
 -    background_mode = str(raw.get("background_mode", "blurred-media" if native_bold else "solid")).strip().lower()
 +    background_mode = str(raw.get("background_mode", "blurred-media" if bold_layout and not poster_split else "solid")).strip().lower()
      if background_mode not in {"solid", "blurred-media"}:
          warnings.append(f"unsupported background_mode {background_mode!r}; used 'solid'")
          background_mode = "solid"
- 
+
 -    top_font_size = bounded_int(raw.get("top_font_size"), "layout.top_font_size", 80 if native_bold else 76, 12, height // 2)
 -    bottom_font_size = bounded_int(raw.get("bottom_font_size"), "layout.bottom_font_size", 70 if native_bold else 62, 12, height // 2)
 +    top_font_size = bounded_int(raw.get("top_font_size"), "layout.top_font_size", 86 if full_overlay else 80 if bold_layout else 76, 12, height // 2)
@@ -123,7 +123,7 @@ index a1cb814..67e04d1 100644
 -        bounded_int(raw.get("bottom_min_font_size"), "layout.bottom_min_font_size", 46 if native_bold else 42, 12, height // 2),
 +        bounded_int(raw.get("bottom_min_font_size"), "layout.bottom_min_font_size", 48 if full_overlay else 46 if bold_layout else 42, 12, height // 2),
      )
- 
+
 -    accent_color = str(raw.get("accent_color", "#FFD400" if native_bold else "#D97745"))
 +    accent_color = str(raw.get("accent_color", "#FFD400" if bold_layout else "#D97745"))
      secondary_accent_color = str(raw.get("secondary_accent_color", "#FF453A"))
@@ -401,4 +401,3 @@ index 16a8102..f348bdc 100644
      assert set(profiles) == set(ids)
      for template_id in ids:
          project, resolved_id = renderer.resolve_template({"layout": {"template_id": template_id}})
-
