@@ -607,7 +607,7 @@ class MatrixTemplateService:
         self.template_text_limits = text_limits
         return result
 
-    def validate_payload(self, raw: dict) -> dict:
+    def validate_payload(self, raw: dict, *, require_available_font: bool = True) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
         top = " ".join(str(raw.get("top_text") or "").split())
@@ -620,7 +620,12 @@ class MatrixTemplateService:
         if template_id not in self.templates:
             raise ValueError("请选择有效模板")
         font_family = str(raw.get("font_family") or "").strip()
-        if font_family and font_family not in self.available_font_families():
+        if font_family and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family):
+            raise ValueError("字体参数格式无效")
+        if (
+            require_available_font and font_family
+            and font_family not in self.available_font_families()
+        ):
             raise ValueError("请选择当前可用字体")
         duration = _duration(top, bottom, raw.get("duration"))
         bgm = raw.get("bgm", True)
@@ -651,7 +656,7 @@ class MatrixTemplateService:
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
-        payload = self.validate_payload(raw)
+        payload = self.validate_payload(raw, require_available_font=False)
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
             freeze_payload=self._freeze_font_provenance,
@@ -662,6 +667,8 @@ class MatrixTemplateService:
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
         requested_font = str(payload.get("font_family") or "")
+        if requested_font and requested_font not in self.available_font_families():
+            raise ValueError("请选择当前可用字体")
         selection = (
             {"variant": "user-selected", "top_font": requested_font, "bottom_font": requested_font}
             if requested_font else
