@@ -78,6 +78,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             {"top_text": "有效标题", "bottom_text": "A"},
             {"top_text": "有效标题", "bottom_text": "有效行动", "template_id": "bad"},
             {"top_text": "有效标题", "bottom_text": "有效行动", "font_family": "Missing Font"},
+            {"top_text": "有效标题", "bottom_text": "有效行动", "batch_id": "bad", "batch_index": 1, "batch_size": 5},
         ):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
@@ -641,7 +642,89 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(["video", "image", "bgm"], [item["media_type"] for item in materials])
         self.assertEqual("video", captured["scenes"][0]["media_type"])
         self.assertEqual("portrait", captured["orientation"])
+        self.assertEqual([], captured["used_sha256"])
         self.assertEqual(3, len(set(item["sha256"] for item in materials)))
+
+    def test_concurrent_batch_jobs_reserve_distinct_visual_materials(self):
+        batch_id = "b" * 32
+        requests = []
+        request_lock = threading.Lock()
+        visual_pool = [format(index, "064x") for index in range(1, 21)]
+        bgm_sha = "f" * 64
+
+        def select(_method, _path, body):
+            with request_lock:
+                requests.append(dict(body))
+            used = set(body.get("used_sha256") or [])
+            available = [value for value in visual_pool if value not in used]
+            return {"materials": [
+                {"scene_id": "media_01", "sha256": available[0], "media_type": "video", "record_id": "v-" + available[0][:4]},
+                {"scene_id": "media_02", "sha256": available[1], "media_type": "image", "record_id": "i-" + available[1][:4]},
+                {"scene_id": "bgm", "sha256": bgm_sha, "media_type": "bgm", "record_id": "bgm-1"},
+            ]}
+
+        results = {}
+        errors = []
+        barrier = threading.Barrier(6)
+
+        def run(index):
+            payload = self.service.validate_payload({
+                "top_text": "批量素材标题", "bottom_text": "批量素材行动文案",
+                "batch_id": batch_id, "batch_index": index, "batch_size": 5,
+            })
+            job_id = format(index, "032x")
+            barrier.wait()
+            try:
+                results[index] = self.service._select_materials(payload, job_id)
+            except Exception as exc:
+                errors.append(exc)
+
+        with mock.patch.object(self.service, "_library_request", side_effect=select):
+            threads = [threading.Thread(target=run, args=(index,)) for index in range(1, 6)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=3)
+            self.assertFalse(errors)
+            self.assertEqual(5, len(results))
+            self.assertEqual(10, len({
+                item["sha256"] for materials in results.values()
+                for item in materials if item["media_type"] in {"image", "video"}
+            }))
+            self.assertEqual([0, 2, 4, 6, 8], sorted(
+                len(item["used_sha256"]) for item in requests
+            ))
+            before = len(requests)
+            frozen = self.service._select_materials(
+                self.service.validate_payload({
+                    "top_text": "批量素材标题", "bottom_text": "批量素材行动文案",
+                    "batch_id": batch_id, "batch_index": 1, "batch_size": 5,
+                }), format(1, "032x")
+            )
+            self.assertEqual(results[1], frozen)
+            self.assertEqual(before, len(requests))
+        restarted = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            start_worker=False,
+        )
+        try:
+            with mock.patch.object(
+                restarted, "_library_request",
+                side_effect=AssertionError("frozen batch selection must survive restart"),
+            ):
+                restored = restarted._select_materials(
+                    restarted.validate_payload({
+                        "top_text": "批量素材标题", "bottom_text": "批量素材行动文案",
+                        "batch_id": batch_id, "batch_index": 1, "batch_size": 5,
+                    }), format(1, "032x")
+                )
+            self.assertEqual(results[1], restored)
+        finally:
+            restarted.shutdown()
 
     def test_execute_builds_skill_project_and_returns_provenance(self):
         payload = self.service.validate_payload({

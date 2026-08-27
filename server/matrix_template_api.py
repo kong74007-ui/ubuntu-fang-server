@@ -43,6 +43,7 @@ JOB_REQUEUE_SECONDS = 0.25
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+BATCH_RE = re.compile(r"^[0-9a-f]{32}$")
 CONTENT_SUFFIXES = {
     "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
     "video/mp4": ".mp4", "video/quicktime": ".mov",
@@ -374,6 +375,20 @@ class JobStore:
             if "cleaned_at" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN cleaned_at INTEGER")
             db.execute("UPDATE jobs SET status='pending', error=NULL WHERE status='running'")
+            db.execute("""CREATE TABLE IF NOT EXISTS batch_material_selections(
+                job_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                materials TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS batch_material_reservations(
+                batch_id TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(batch_id,sha256)
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_batch_material_job ON batch_material_reservations(job_id)")
 
     @contextlib.contextmanager
     def connect(self):
@@ -439,6 +454,50 @@ class JobStore:
             return [row[0] for row in db.execute(
                 "SELECT id FROM jobs WHERE status='pending' ORDER BY created_at,id"
             )]
+
+    def batch_material_selection(self, job_id: str) -> list[dict] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT materials FROM batch_material_selections WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        return json.loads(row["materials"]) if row else None
+
+    def batch_used_visuals(self, batch_id: str) -> list[str]:
+        with self.connect() as db:
+            return [row[0] for row in db.execute(
+                "SELECT sha256 FROM batch_material_reservations WHERE batch_id=? ORDER BY sha256",
+                (batch_id,),
+            )]
+
+    def reserve_batch_materials(self, batch_id: str, job_id: str,
+                                materials: list[dict]) -> None:
+        visual_shas = [
+            str(item.get("sha256") or "").lower() for item in materials
+            if item.get("media_type") in {"image", "video"}
+        ]
+        if not visual_shas or any(not SHA_RE.fullmatch(value) for value in visual_shas):
+            raise MatrixTemplateError("batch visual material reservation is invalid")
+        now = _now()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT materials,batch_id FROM batch_material_selections WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if existing:
+                if existing["batch_id"] != batch_id or json.loads(existing["materials"]) != materials:
+                    raise MatrixTemplateError("batch material selection conflict")
+                return
+            for sha256 in visual_shas:
+                db.execute(
+                    "INSERT INTO batch_material_reservations(batch_id,sha256,job_id,created_at) VALUES(?,?,?,?)",
+                    (batch_id, sha256, job_id, now),
+                )
+            db.execute(
+                "INSERT INTO batch_material_selections(job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
+                (job_id, batch_id, json.dumps(materials, ensure_ascii=False), now),
+            )
 
     def cleanup_candidates(self, *, now: int, retention_seconds: int,
                            delivery_grace_seconds: int, limit: int) -> list[sqlite3.Row]:
@@ -548,6 +607,7 @@ class MatrixTemplateService:
         self.degraded_jobs: set[str] = set()
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
+        self.batch_material_lock = threading.Lock()
         self.active_downloads: set[str] = set()
         self.active_processes: set[subprocess.Popen] = set()
         self.active_process = None
@@ -647,6 +707,22 @@ class MatrixTemplateService:
         }
         if font_family:
             result["font_family"] = font_family
+        batch_id = str(raw.get("batch_id") or "").strip().lower()
+        batch_index = raw.get("batch_index")
+        batch_size = raw.get("batch_size")
+        if batch_id or batch_index is not None or batch_size is not None:
+            if (
+                not BATCH_RE.fullmatch(batch_id)
+                or isinstance(batch_index, bool) or not isinstance(batch_index, int)
+                or isinstance(batch_size, bool) or not isinstance(batch_size, int)
+                or not 1 <= batch_index <= batch_size <= 5
+            ):
+                raise ValueError("批量任务参数无效")
+            result.update({
+                "batch_id": batch_id,
+                "batch_index": batch_index,
+                "batch_size": batch_size,
+            })
         return result
 
     def available_font_families(self) -> set[str]:
@@ -844,7 +920,8 @@ class MatrixTemplateService:
         except (urllib.error.URLError, TimeoutError) as exc:
             raise MatrixTemplateError("平台素材库暂不可用") from exc
 
-    def _select_materials(self, payload: dict, job_id: str) -> list[dict]:
+    def _select_materials_once(self, payload: dict, job_id: str,
+                               used_sha256=()) -> list[dict]:
         count = _required_visuals(payload["duration"])
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
@@ -862,6 +939,7 @@ class MatrixTemplateService:
             })
         result = self._library_request("POST", "/v1/select", {
             "scenes": scenes, "orientation": "portrait", "seed": job_id,
+            "used_sha256": list(used_sha256),
         })
         values = result.get("materials") or []
         by_scene = {str(item.get("scene_id") or ""): item for item in values if isinstance(item, dict)}
@@ -880,6 +958,21 @@ class MatrixTemplateService:
         if payload["bgm"] and ordered[-1].get("media_type") != "bgm":
             raise MatrixTemplateError("素材库返回了无效背景音乐")
         return ordered
+
+    def _select_materials(self, payload: dict, job_id: str) -> list[dict]:
+        batch_id = str(payload.get("batch_id") or "")
+        if not batch_id:
+            return self._select_materials_once(payload, job_id)
+        with self.batch_material_lock:
+            frozen = self.store.batch_material_selection(job_id)
+            if frozen is not None:
+                return frozen
+            used = self.store.batch_used_visuals(batch_id)
+            selected = self._select_materials_once(
+                payload, job_id, used_sha256=used
+            )
+            self.store.reserve_batch_materials(batch_id, job_id, selected)
+            return selected
 
     def _download(self, item: dict, target_dir: Path) -> Path:
         sha = str(item["sha256"]).lower()
@@ -1114,6 +1207,9 @@ class MatrixTemplateService:
         return {
             **probe,
             "template_id": payload["template_id"],
+            "batch_id": payload.get("batch_id") or "",
+            "batch_index": payload.get("batch_index"),
+            "batch_size": payload.get("batch_size"),
             "file_url": f"/v1/files/{job_id}.mp4",
             "font_selection": project["font_selection"],
             "display_top_text": str(payload.get("_display_top_text") or payload["top_text"]),
