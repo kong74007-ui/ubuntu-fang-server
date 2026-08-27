@@ -3,6 +3,7 @@ set -euo pipefail
 
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
 UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"
+LAYOUT_PATCH_SHA256="3b1e68d990f00a578fcbb9c0078ce5ca6fe87c7a7cc8190735323740e6666377"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -13,6 +14,7 @@ ENV_FILE="/etc/huangque/matrix-template.env"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-matrix-template.service"
 UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
 API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
+LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -59,7 +61,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -97,12 +99,18 @@ git -C "${RELEASE}/upstream" clean -fdx
 if [[ "$(git -C "${RELEASE}/upstream" rev-parse HEAD)" != "${UPSTREAM_COMMIT}" ]]; then
   echo "upstream commit mismatch" >&2; exit 1
 fi
+if [[ "$(sha256sum "${LAYOUT_PATCH_SOURCE}" | awk '{print $1}')" != "${LAYOUT_PATCH_SHA256}" ]]; then
+  echo "private-domain layout patch hash mismatch" >&2; exit 1
+fi
+git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video "${LAYOUT_PATCH_SOURCE}"
+git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video "${LAYOUT_PATCH_SOURCE}"
 install -o root -g root -m 0644 "${API_SOURCE}" "${RELEASE}/api.py"
 SKILL_ROOT="${RELEASE}/upstream/script-to-matrix-video"
 python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py"
 python3 "${SKILL_ROOT}/scripts/check_environment.py"
 python3 "${SKILL_ROOT}/scripts/test_template_catalog.py"
-BUILD_ID="$(printf '%s\n' "${UPSTREAM_COMMIT}" "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" | sha256sum | awk '{print $1}')"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
+BUILD_ID="$(printf '%s\n' "${UPSTREAM_COMMIT}" "${LAYOUT_PATCH_SHA256}" "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
 
 if [[ ! -e "${ENV_FILE}" ]]; then
@@ -153,7 +161,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==13 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==15 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

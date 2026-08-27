@@ -88,6 +88,8 @@ FONT_VARIANTS = {
     "vlog-journal": (("friendly", "ZCOOL KuaiLe", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei")),
     "bilingual-split": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
     "portrait-quote": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("clean", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "full-overlay-bold": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
+    "poster-split": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
 }
 PRIVATE_FONT_VARIANTS = {
     "native-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
@@ -103,6 +105,8 @@ PRIVATE_FONT_VARIANTS = {
     "vlog-journal": (("private-playful", "YS HelloFont BangBangTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
     "bilingual-split": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
     "portrait-quote": (("private-serif", "HouZunSongTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
+    "full-overlay-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
+    "poster-split": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
 }
 
 
@@ -602,8 +606,11 @@ class MatrixTemplateService:
                 "description": str(item.get("description") or "")[:160],
                 "tags": [str(tag)[:20] for tag in (item.get("tags") or [])[:8]],
             })
-        if len(result) != 13 or len({item["id"] for item in result}) != 13:
-            raise MatrixTemplateError("expected exactly 13 unique templates")
+        if len(result) != 15 or len({item["id"] for item in result}) != 15:
+            raise MatrixTemplateError("expected exactly 15 unique templates")
+        required = {"full-overlay-bold", "poster-split"}
+        if not required.issubset({item["id"] for item in result}):
+            raise MatrixTemplateError("required private-domain templates are missing")
         self.template_text_limits = text_limits
         return result
 

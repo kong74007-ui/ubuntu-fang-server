@@ -40,7 +40,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "id": "native-bold" if index == 0 else f"template-{index:02d}",
             "name": f"模板 {index}", "description": "测试模板",
             "tags": ["测试"], "layout": {}, "render": {},
-        } for index in range(13)]
+        } for index in range(15)]
+        templates[-2]["id"] = "full-overlay-bold"
+        templates[-1]["id"] = "poster-split"
         (self.skill / "assets/templates/catalog.json").write_text(
             json.dumps({"version": 1, "templates": templates}, ensure_ascii=False),
             encoding="utf-8",
@@ -59,7 +61,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_catalog_and_payload_contract(self):
-        self.assertEqual(13, len(self.service.catalog))
+        self.assertEqual(15, len(self.service.catalog))
         payload = self.service.validate_payload({
             "top_text": "AI 工作流",
             "bottom_text": "评论区留下关键词",
@@ -81,6 +83,57 @@ class MatrixTemplateApiTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
+
+    def test_catalog_rejects_missing_private_domain_layout(self):
+        catalog_path = self.skill / "assets/templates/catalog.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["templates"][-1]["id"] = "replacement-template"
+        catalog_path.write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError,
+            "required private-domain templates are missing",
+        ):
+            self.service._load_catalog()
+
+    def test_private_domain_layouts_preserve_auto_and_explicit_font_contracts(self):
+        for index, template_id in enumerate(("full-overlay-bold", "poster-split"), 1):
+            with self.subTest(template_id=template_id, mode="automatic"):
+                automatic = self.service.validate_payload({
+                    "top_text": "私域布局自动字体",
+                    "bottom_text": "评论区获取活动资料",
+                    "template_id": template_id,
+                    "bgm": False,
+                })
+                frozen = self.service._freeze_font_provenance(
+                    format(index, "032x"), automatic,
+                )["_font_provenance"]
+                self.assertNotEqual("user-selected", frozen["selection"]["variant"])
+                self.assertTrue({
+                    frozen["selection"]["top_font"],
+                    frozen["selection"]["bottom_font"],
+                }.issubset(matrix.BASE_FONT_FAMILIES))
+
+            with self.subTest(template_id=template_id, mode="explicit"):
+                explicit = self.service.validate_payload({
+                    "top_text": "私域布局显式字体",
+                    "bottom_text": "评论区获取活动资料",
+                    "template_id": template_id,
+                    "font_family": "Noto Sans SC",
+                    "bgm": False,
+                })
+                frozen = self.service._freeze_font_provenance(
+                    format(index + 10, "032x"), explicit,
+                )["_font_provenance"]
+                self.assertEqual({
+                    "variant": "user-selected",
+                    "top_font": "Noto Sans SC",
+                    "bottom_font": "Noto Sans SC",
+                }, frozen["selection"])
+                self.assertEqual(["bundled"], [
+                    item["source"] for item in frozen["fonts"]
+                ])
 
     def test_duration_boundary_counts_visible_chinese_and_english_only(self):
         accepted = self.service.validate_payload({
@@ -168,7 +221,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
     def test_font_selection_uses_baseline_and_only_available_private_fonts(self):
         allowed = matrix.BASE_FONT_FAMILIES
-        self.assertEqual(13, len(matrix.FONT_VARIANTS))
+        self.assertEqual(15, len(matrix.FONT_VARIANTS))
         represented = set()
         for template_id in matrix.FONT_VARIANTS:
             with self.subTest(template_id=template_id):
@@ -810,13 +863,16 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         try:
             with request("/health") as response:
-                self.assertEqual(13, json.load(response)["templates"])
+                self.assertEqual(15, json.load(response)["templates"])
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
                 catalog = json.load(response)
-                self.assertEqual(13, len(catalog["templates"]))
+                self.assertEqual(15, len(catalog["templates"]))
+                self.assertTrue({"full-overlay-bold", "poster-split"}.issubset(
+                    {item["id"] for item in catalog["templates"]}
+                ))
                 self.assertEqual("", catalog["default_font"])
                 self.assertEqual(5, len(catalog["fonts"]))
             with request(

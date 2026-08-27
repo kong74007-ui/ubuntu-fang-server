@@ -1,0 +1,313 @@
+diff --git a/assets/templates/catalog.json b/assets/templates/catalog.json
+index 2deba43..f7a8449 100644
+--- a/assets/templates/catalog.json
++++ b/assets/templates/catalog.json
+@@ -13,7 +13,9 @@
+     "torn-magazine": {"scale": 1.18, "min_scale": 1.06, "color": "#191815", "outline_width": 12, "outline_color": "#F8D35C", "underline": true, "angle": -1.5, "role_colors": {"contrast": "#F04438"}},
+     "vlog-journal": {"scale": 1.18, "min_scale": 1.06, "color": "#FF9C5A", "outline_width": 5, "outline_color": "#FFFCEB", "underline": true, "angle": -1.0, "role_colors": {"benefit": "#62B8AE"}},
+     "bilingual-split": {"scale": 1.16, "min_scale": 1.05, "color": "#E64C3C", "outline_width": 0, "outline_color": "#EEF2F5", "underline": true, "role_colors": {"benefit": "#1C6DB2"}},
+-    "portrait-quote": {"scale": 1.22, "min_scale": 1.08, "color": "#D9B56E", "outline_width": 2, "outline_color": "#1E2630", "italic": true}
++    "portrait-quote": {"scale": 1.22, "min_scale": 1.08, "color": "#D9B56E", "outline_width": 2, "outline_color": "#1E2630", "italic": true},
++    "full-overlay-bold": {"scale": 1.18, "min_scale": 1.06, "color": "#FFD400", "outline_width": 8, "outline_color": "#111111", "role_colors": {"number": "#FFD400", "benefit": "#FFD400", "cta": "#FFD400"}},
++    "poster-split": {"scale": 1.16, "min_scale": 1.05, "color": "#FFD400", "outline_width": 7, "outline_color": "#111111", "role_colors": {"number": "#FFD400", "benefit": "#FFFFFF", "cta": "#FFD400"}}
+   },
+   "templates": [
+     {
+@@ -119,6 +121,22 @@
+       "tags": ["人物", "金句", "访谈"],
+       "render": {"subtitle_font": "ZCOOL XiaoWei", "subtitle_font_size": 62, "subtitle_margin_v": 180},
+       "layout": {"preset": "text-media-text", "variant": "classic", "background_mode": "solid", "background_color": "#1E2630", "band_color": "#1E2630", "top_text_color": "#F4F0E5", "bottom_text_color": "#F4F0E5", "text_outline_color": "#1E2630", "top_text_outline": 0, "bottom_text_outline": 0, "text_shadow": 1, "accent_color": "#D9B56E", "secondary_accent_color": "#9AB1C1", "auto_highlight": false, "text_pop_in": false, "top_font": "ZCOOL XiaoWei", "bottom_font": "Noto Sans SC", "top_font_size": 86, "bottom_font_size": 62, "top_min_font_size": 54, "bottom_min_font_size": 44, "top_max_chars": 12, "top_max_lines": 2, "bottom_max_chars": 15, "bottom_max_lines": 2, "top_text_y": 300, "bottom_text_y": 1690, "bottom_text_mode": "fixed", "media_border_width": 6, "media_border_color": "#D9B56E", "media": {"x": 148, "y": 470, "width": 784, "height": 1050}, "kicker": {"text": "人物说", "x": 162, "y": 128, "font_size": 30, "color": "#1E2630", "background_color": "#D9B56E", "font": "ZCOOL XiaoWei", "padding": 14}, "surface_boxes": [{"x": 74, "y": 464, "width": 42, "height": 166, "color": "#D9B56E", "opacity": 0.9}, {"x": 964, "y": 1360, "width": 42, "height": 166, "color": "#D9B56E", "opacity": 0.9}]}
++    },
++    {
++      "id": "full-overlay-bold",
++      "name": "沉浸强标题",
++      "description": "素材全屏铺底、上下渐暗文字区与黄白强标题，适合同城圈层、资源链接和私域转化短视频。",
++      "tags": ["私域", "全屏", "强标题", "同城圈层"],
++      "render": {"subtitle_font": "Noto Sans SC", "subtitle_font_size": 70, "subtitle_margin_v": 170},
++      "layout": {"preset": "text-media-text", "variant": "full-overlay-bold", "background_mode": "blurred-media", "band_color": "#080808", "top_band_height": 650, "top_band_opacity": 0.14, "bottom_band_y": 1380, "bottom_band_opacity": 0.38, "top_text_color": "#FFFFFF", "bottom_text_color": "#FFFFFF", "text_outline_color": "#111111", "top_text_outline": 8, "bottom_text_outline": 7, "accent_color": "#FFD400", "secondary_accent_color": "#FF453A", "auto_highlight": true, "text_pop_in": true, "top_font_size": 86, "bottom_font_size": 78, "top_min_font_size": 54, "bottom_min_font_size": 48, "top_max_chars": 12, "top_max_lines": 4, "bottom_max_chars": 12, "bottom_max_lines": 3, "top_text_y": 320, "bottom_text_y": 1610, "bottom_text_mode": "fixed", "media": {"x": 0, "y": 0, "width": 1080, "height": 1920}}
++    },
++    {
++      "id": "poster-split",
++      "name": "三段式活动海报",
++      "description": "上标题、中素材、下行动号召的三段式海报结构，使用绿橙双层描边强化活动与社群招募信息。",
++      "tags": ["私域", "活动海报", "社群招募", "三段式"],
++      "render": {"subtitle_font": "Noto Sans SC", "subtitle_font_size": 68, "subtitle_margin_v": 174},
++      "layout": {"preset": "text-media-text", "variant": "poster-split", "background_mode": "solid", "background_color": "#70577C", "band_color": "#211A24", "top_band_opacity": 0.08, "bottom_band_opacity": 0.64, "top_text_color": "#FFFFFF", "bottom_text_color": "#FFFFFF", "text_outline_color": "#111111", "top_text_outline": 7, "bottom_text_outline": 6, "top_outer_outline": 13, "bottom_outer_outline": 12, "top_outer_outline_color": "#B8EF31", "bottom_outer_outline_color": "#FF9A3D", "accent_color": "#FFD400", "secondary_accent_color": "#FF453A", "auto_highlight": true, "text_pop_in": true, "top_font_size": 80, "bottom_font_size": 70, "top_min_font_size": 50, "bottom_min_font_size": 44, "top_max_chars": 12, "top_max_lines": 4, "bottom_max_chars": 13, "bottom_max_lines": 3, "top_text_y": 245, "bottom_text_y": 1620, "bottom_text_mode": "fixed", "media": {"x": 0, "y": 600, "width": 1080, "height": 820}}
+     }
+   ]
+ }
+diff --git a/scripts/render_video.py b/scripts/render_video.py
+index a1cb814..acd4d51 100644
+--- a/scripts/render_video.py
++++ b/scripts/render_video.py
+@@ -1056,72 +1056,87 @@ def resolve_layout(
+         return None
+
+     variant = str(raw.get("variant", "native-bold")).strip().lower()
+-    if variant not in {"native-bold", "classic"}:
++    if variant not in {"native-bold", "classic", "full-overlay-bold", "poster-split"}:
+         warnings.append(f"unsupported text-media-text variant {variant!r}; used 'native-bold'")
+         variant = "native-bold"
+     native_bold = variant == "native-bold"
++    full_overlay = variant == "full-overlay-bold"
++    poster_split = variant == "poster-split"
++    bold_layout = variant != "classic"
+
+     media = raw.get("media") or {}
+     if not isinstance(media, dict):
+         media = {}
+-    default_x = even_int(round(width * (0.0185 if native_bold else 0.0556)), 20 if native_bold else 60)
+-    default_y = even_int(round(height * (0.2604 if native_bold else 0.21875)), 500 if native_bold else 420)
+-    default_w = even_int(round(width * (0.9630 if native_bold else 0.8889)), 1040 if native_bold else 960)
+-    default_h = even_int(round(height * (0.4896 if native_bold else 0.5417)), 940 if native_bold else 1040)
+-    media_x = even_int(media.get("x"), default_x)
+-    media_y = even_int(media.get("y"), default_y)
++    if full_overlay:
++        default_x, default_y, default_w, default_h = 0, 0, width, height
++    elif poster_split:
++        default_x, default_y = 0, even_int(round(height * 0.3125), 600)
++        default_w, default_h = width, even_int(round(height * 0.4271), 820)
++    else:
++        default_x = even_int(round(width * (0.0185 if native_bold else 0.0556)), 20 if native_bold else 60)
++        default_y = even_int(round(height * (0.2604 if native_bold else 0.21875)), 500 if native_bold else 420)
++        default_w = even_int(round(width * (0.9630 if native_bold else 0.8889)), 1040 if native_bold else 960)
++        default_h = even_int(round(height * (0.4896 if native_bold else 0.5417)), 940 if native_bold else 1040)
++    media_x = nonnegative_even_int(media.get("x"), default_x)
++    media_y = nonnegative_even_int(media.get("y"), default_y)
+     media_width = even_int(media.get("width"), default_w)
+     media_height = even_int(media.get("height"), default_h)
+     if media_x + media_width > width or media_y + media_height > height:
+         warnings.append("text-media-text media region exceeded the canvas; used default region")
+         media_x, media_y, media_width, media_height = default_x, default_y, default_w, default_h
+
+-    border_width = nonnegative_even_int(raw.get("media_border_width"), 0 if native_bold else 4)
++    border_width = nonnegative_even_int(raw.get("media_border_width"), 0 if bold_layout else 4)
+     border_width = min(border_width, media_x, media_y, width - media_x - media_width, height - media_y - media_height)
+     border_width = max(0, border_width - border_width % 2)
+-    top_y = int(raw.get("top_text_y", round(height * (0.1406 if native_bold else 0.115))))
+-    bottom_y = int(raw.get("bottom_text_y", round(height * (0.8594 if native_bold else 0.855))))
+-    top_y = min(max(80, top_y), max(80, media_y - 70))
+-    bottom_y = min(max(media_y + media_height + 70, bottom_y), height - 170)
++    default_top_y = round(height * (0.1667 if full_overlay else 0.1276 if poster_split else 0.1406 if native_bold else 0.115))
++    default_bottom_y = round(height * (0.8385 if full_overlay else 0.8438 if poster_split else 0.8594 if native_bold else 0.855))
++    top_y = int(raw.get("top_text_y", default_top_y))
++    bottom_y = int(raw.get("bottom_text_y", default_bottom_y))
++    if full_overlay:
++        top_y = min(max(80, top_y), height - 360)
++        bottom_y = min(max(top_y + 260, bottom_y), height - 170)
++    else:
++        top_y = min(max(80, top_y), max(80, media_y - 70))
++        bottom_y = min(max(media_y + media_height + 70, bottom_y), height - 170)
+     bottom_mode = str(raw.get("bottom_text_mode", "captions")).strip().lower()
+     if bottom_mode not in {"captions", "fixed"}:
+         warnings.append(f"unsupported bottom_text_mode {bottom_mode!r}; used 'captions'")
+         bottom_mode = "captions"
+
+-    background_mode = str(raw.get("background_mode", "blurred-media" if native_bold else "solid")).strip().lower()
++    background_mode = str(raw.get("background_mode", "blurred-media" if bold_layout and not poster_split else "solid")).strip().lower()
+     if background_mode not in {"solid", "blurred-media"}:
+         warnings.append(f"unsupported background_mode {background_mode!r}; used 'solid'")
+         background_mode = "solid"
+
+-    top_font_size = bounded_int(raw.get("top_font_size"), "layout.top_font_size", 80 if native_bold else 76, 12, height // 2)
+-    bottom_font_size = bounded_int(raw.get("bottom_font_size"), "layout.bottom_font_size", 70 if native_bold else 62, 12, height // 2)
++    top_font_size = bounded_int(raw.get("top_font_size"), "layout.top_font_size", 86 if full_overlay else 80 if bold_layout else 76, 12, height // 2)
++    bottom_font_size = bounded_int(raw.get("bottom_font_size"), "layout.bottom_font_size", 78 if full_overlay else 70 if bold_layout else 62, 12, height // 2)
+     top_min_font_size = min(
+         top_font_size,
+-        bounded_int(raw.get("top_min_font_size"), "layout.top_min_font_size", 52 if native_bold else 48, 12, height // 2),
++        bounded_int(raw.get("top_min_font_size"), "layout.top_min_font_size", 54 if full_overlay else 52 if bold_layout else 48, 12, height // 2),
+     )
+     bottom_min_font_size = min(
+         bottom_font_size,
+-        bounded_int(raw.get("bottom_min_font_size"), "layout.bottom_min_font_size", 46 if native_bold else 42, 12, height // 2),
++        bounded_int(raw.get("bottom_min_font_size"), "layout.bottom_min_font_size", 48 if full_overlay else 46 if bold_layout else 42, 12, height // 2),
+     )
+
+-    accent_color = str(raw.get("accent_color", "#FFD400" if native_bold else "#D97745"))
++    accent_color = str(raw.get("accent_color", "#FFD400" if bold_layout else "#D97745"))
+     secondary_accent_color = str(raw.get("secondary_accent_color", "#FF453A"))
+     return {
+         "preset": preset,
+         "variant": variant,
+         "background_mode": background_mode,
+-        "background_color": str(raw.get("background_color", "#11151C" if native_bold else "#F5F1E8")),
++        "background_color": str(raw.get("background_color", "#70577C" if poster_split else "#11151C" if bold_layout else "#F5F1E8")),
+         "background_blur": min(60.0, max(0.0, float(raw.get("background_blur", 28.0)))),
+         "background_brightness": min(1.0, max(-1.0, float(raw.get("background_brightness", -0.22)))),
+         "background_saturation": min(3.0, max(0.0, float(raw.get("background_saturation", 0.78)))),
+-        "band_color": str(raw.get("band_color", "#101318")),
+-        "top_band_height": min(height, max(0, int(raw.get("top_band_height", media_y)))),
+-        "top_band_opacity": min(1.0, max(0.0, float(raw.get("top_band_opacity", 0.42 if native_bold else 0.0)))),
+-        "bottom_band_y": min(height, max(0, int(raw.get("bottom_band_y", media_y + media_height)))),
+-        "bottom_band_opacity": min(1.0, max(0.0, float(raw.get("bottom_band_opacity", 0.58 if native_bold else 0.0)))),
++        "band_color": str(raw.get("band_color", "#211A24" if poster_split else "#101318")),
++        "top_band_height": min(height, max(0, int(raw.get("top_band_height", round(height * 0.34) if full_overlay else media_y)))),
++        "top_band_opacity": min(1.0, max(0.0, float(raw.get("top_band_opacity", 0.14 if full_overlay else 0.08 if poster_split else 0.42 if native_bold else 0.0)))),
++        "bottom_band_y": min(height, max(0, int(raw.get("bottom_band_y", round(height * 0.72) if full_overlay else media_y + media_height)))),
++        "bottom_band_opacity": min(1.0, max(0.0, float(raw.get("bottom_band_opacity", 0.38 if full_overlay else 0.64 if poster_split else 0.58 if native_bold else 0.0)))),
+         "divider_height": max(0, int(raw.get("divider_height", 0))),
+         "divider_color": str(raw.get("divider_color", raw.get("accent_color", "#FFD400"))),
+-        "media_border_color": str(raw.get("media_border_color", "#FFFFFF" if native_bold else "#D8D2C8")),
++        "media_border_color": str(raw.get("media_border_color", "#FFFFFF" if bold_layout else "#D8D2C8")),
+         "media_border_width": border_width,
+         "media_x": media_x,
+         "media_y": media_y,
+@@ -1136,22 +1151,26 @@ def resolve_layout(
+         "top_min_font_size": top_min_font_size,
+         "bottom_min_font_size": bottom_min_font_size,
+         "top_max_chars": max(6, int(raw.get("top_max_chars", 12))),
+-        "top_max_lines": min(4, max(1, int(raw.get("top_max_lines", 4 if native_bold else 2)))),
+-        "bottom_max_chars": max(6, int(raw.get("bottom_max_chars", 12 if native_bold else 14))),
+-        "bottom_max_lines": min(3, max(1, int(raw.get("bottom_max_lines", 3 if native_bold else 2)))),
+-        "top_text_color": str(raw.get("top_text_color", "#FFFFFF" if native_bold else "#1F2430")),
+-        "bottom_text_color": str(raw.get("bottom_text_color", "#FFFFFF" if native_bold else "#1F2430")),
++        "top_max_lines": min(4, max(1, int(raw.get("top_max_lines", 4 if bold_layout else 2)))),
++        "bottom_max_chars": max(6, int(raw.get("bottom_max_chars", 12 if bold_layout else 14))),
++        "bottom_max_lines": min(3, max(1, int(raw.get("bottom_max_lines", 3 if bold_layout else 2)))),
++        "top_text_color": str(raw.get("top_text_color", "#FFFFFF" if bold_layout else "#1F2430")),
++        "bottom_text_color": str(raw.get("bottom_text_color", "#FFFFFF" if bold_layout else "#1F2430")),
+         "text_outline_color": str(raw.get("text_outline_color", "#111111")),
+-        "top_text_outline": min(12, max(0, int(raw.get("top_text_outline", 8 if native_bold else 0)))),
+-        "bottom_text_outline": min(12, max(0, int(raw.get("bottom_text_outline", 7 if native_bold else 0)))),
+-        "text_shadow": min(6, max(0, int(raw.get("text_shadow", 2 if native_bold else 0)))),
++        "top_text_outline": min(12, max(0, int(raw.get("top_text_outline", 8 if bold_layout else 0)))),
++        "bottom_text_outline": min(12, max(0, int(raw.get("bottom_text_outline", 7 if bold_layout else 0)))),
++        "top_outer_outline": min(18, max(0, int(raw.get("top_outer_outline", 13 if poster_split else 0)))),
++        "bottom_outer_outline": min(18, max(0, int(raw.get("bottom_outer_outline", 12 if poster_split else 0)))),
++        "top_outer_outline_color": validated_color(raw.get("top_outer_outline_color", "#B8EF31"), "layout.top_outer_outline_color"),
++        "bottom_outer_outline_color": validated_color(raw.get("bottom_outer_outline_color", "#FF9A3D"), "layout.bottom_outer_outline_color"),
++        "text_shadow": min(6, max(0, int(raw.get("text_shadow", 2 if bold_layout else 0)))),
+         "accent_color": accent_color,
+         "secondary_accent_color": secondary_accent_color,
+         "emphasis_profile": resolve_emphasis_profile(
+             raw.get("emphasis_profile"), accent_color, secondary_accent_color
+         ),
+-        "auto_highlight": bool(raw.get("auto_highlight", native_bold)),
+-        "text_pop_in": bool(raw.get("text_pop_in", native_bold)),
++        "auto_highlight": bool(raw.get("auto_highlight", bold_layout)),
++        "text_pop_in": bool(raw.get("text_pop_in", bold_layout)),
+         "bottom_text_mode": bottom_mode,
+         "kicker": resolve_kicker(raw.get("kicker"), width, height),
+         "surface_boxes": resolve_surface_boxes(raw.get("surface_boxes"), width, height),
+@@ -1190,10 +1209,14 @@ def write_ass(
+         top_color = ass_primary_color(layout["top_text_color"])
+         bottom_color = ass_primary_color(layout["bottom_text_color"])
+         outline_color = ass_primary_color(layout["text_outline_color"])
++        top_outer_color = ass_primary_color(layout["top_outer_outline_color"])
++        bottom_outer_color = ass_primary_color(layout["bottom_outer_outline_color"])
+         top_font = layout["top_font"] or font
+         bottom_font = layout["bottom_font"] or font
+         lines.extend(
+             [
++                f"Style: TopTextGlow,{top_font},{layout['top_font_size']},&H00FFFFFF,&H00000000,{top_outer_color},&H00000000,-1,0,0,0,100,100,0,0,1,{layout['top_outer_outline']},0,5,54,54,0,1",
++                f"Style: BottomTextGlow,{bottom_font},{layout['bottom_font_size']},&H00FFFFFF,&H00000000,{bottom_outer_color},&H00000000,-1,0,0,0,100,100,0,0,1,{layout['bottom_outer_outline']},0,5,54,54,0,1",
+                 f"Style: TopText,{top_font},{layout['top_font_size']},{top_color},&H00000000,{outline_color},&H78000000,-1,0,0,0,100,100,0,0,1,{layout['top_text_outline']},{layout['text_shadow']},5,54,54,0,1",
+                 f"Style: BottomText,{bottom_font},{layout['bottom_font_size']},{bottom_color},&H00000000,{outline_color},&H78000000,-1,0,0,0,100,100,0,0,1,{layout['bottom_text_outline']},{layout['text_shadow']},5,54,54,0,1",
+             ]
+@@ -1271,6 +1294,10 @@ def write_ass(
+                 layout["top_text_outline"],
+                 layout["text_outline_color"],
+             )
++            if layout["top_outer_outline"] > 0:
++                lines.append(
++                    f"Dialogue: 0,{ass_time(0)},{ass_time(cover_end)},TopTextGlow,,0,0,0,,{cover_tags}{ass_escape(cover_text)}"
++                )
+             lines.append(
+                 f"Dialogue: 1,{ass_time(0)},{ass_time(cover_end)},TopText,,0,0,0,,{cover_tags}{cover_rendered}"
+             )
+@@ -1329,6 +1356,10 @@ def write_ass(
+                         layout["top_text_outline"],
+                         layout["text_outline_color"],
+                     )
++                    if layout["top_outer_outline"] > 0:
++                        lines.append(
++                            f"Dialogue: 0,{ass_time(top_start)},{ass_time(entry['start'] + entry['duration'])},TopTextGlow,,0,0,0,,{top_tags}{ass_escape(top_text)}"
++                        )
+                     lines.append(
+                         f"Dialogue: 1,{ass_time(top_start)},{ass_time(entry['start'] + entry['duration'])},TopText,,0,0,0,,{top_tags}{top_rendered}"
+                     )
+@@ -1402,6 +1433,10 @@ def write_ass(
+                     layout["bottom_text_outline"],
+                     layout["text_outline_color"],
+                 )
++                if layout["bottom_outer_outline"] > 0:
++                    lines.append(
++                        f"Dialogue: 0,{ass_time(entry['start'])},{ass_time(entry['start'] + entry['duration'])},BottomTextGlow,,0,0,0,,{bottom_tags}{ass_escape(fixed_bottom_text)}"
++                    )
+                 lines.append(
+                     f"Dialogue: 0,{ass_time(entry['start'])},{ass_time(entry['start'] + entry['duration'])},BottomText,,0,0,0,,{bottom_tags}{bottom_rendered}"
+                 )
+diff --git a/scripts/test_private_domain_layouts.py b/scripts/test_private_domain_layouts.py
+new file mode 100644
+index 0000000..ca1d9e4
+--- /dev/null
++++ b/scripts/test_private_domain_layouts.py
+@@ -0,0 +1,54 @@
++#!/usr/bin/env python3
++"""Regression checks for generation-server private-domain layouts."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++import tempfile
++
++import render_video
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main() -> None:
++    catalog = json.loads((ROOT / "assets/templates/catalog.json").read_text(encoding="utf-8"))
++    templates = {item["id"]: item for item in catalog["templates"]}
++    expected = {
++        "full-overlay-bold": (0, 0, 1080, 1920),
++        "poster-split": (0, 600, 1080, 820),
++    }
++    for template_id, geometry in expected.items():
++        project, resolved = render_video.resolve_template({"layout": {"template_id": template_id}})
++        assert resolved == template_id
++        warnings: list[str] = []
++        layout = render_video.resolve_layout(project, 1080, 1920, warnings)
++        assert layout and not warnings
++        assert layout["variant"] == template_id
++        assert (
++            layout["media_x"], layout["media_y"],
++            layout["media_width"], layout["media_height"],
++        ) == geometry
++        scene = {
++            "top_text": "在深圳有5000人\n高净值女性圈",
++            "bottom_text": "评论区扣“666”邀请您参加",
++            "top_highlights": [{"text": "5000人", "color": "#FFD400"}],
++            "bottom_highlights": [{"text": "666", "color": "#FFD400"}],
++        }
++        with tempfile.TemporaryDirectory() as temp:
++            ass_path = Path(temp) / "layout.ass"
++            render_video.write_ass(
++                project, ass_path, 1080, 1920,
++                [{"scene": scene, "start": 0.0, "duration": 8.0}], layout,
++            )
++            ass = ass_path.read_text(encoding="utf-8-sig")
++        assert "评论区" in ass and "Style: TopText" in ass
++        if template_id == "poster-split":
++            assert ",TopTextGlow," in ass and ",BottomTextGlow," in ass
++    print("private-domain layouts: 2 passed")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/test_template_catalog.py b/scripts/test_template_catalog.py
+index 16a8102..a7d8faa 100644
+--- a/scripts/test_template_catalog.py
++++ b/scripts/test_template_catalog.py
+@@ -32,7 +32,7 @@ def check_real_catalog() -> None:
+     ids = [item.get("id") for item in catalog.get("templates", []) if isinstance(item, dict)]
+     profiles = catalog.get("emphasis_profiles") or {}
+     assert catalog.get("version") == 1
+-    assert len(ids) == 13 and len(ids) == len(set(ids)) and all(ids)
++    assert len(ids) == 15 and len(ids) == len(set(ids)) and all(ids)
+     assert set(profiles) == set(ids)
+     for template_id in ids:
+         project, resolved_id = renderer.resolve_template({"layout": {"template_id": template_id}})

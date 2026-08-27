@@ -6,8 +6,13 @@ one render at a time, and uses the existing material-library tunnel at
 `127.0.0.1:8111`. It never calls an AI image or video provider.
 
 The installer clones and verifies commit
-`243d5c168d9ab2d95daf04fef5c5e75924114eb8`, validates the 13-template catalog,
-atomically switches releases, and checks the exact runtime build id.
+`243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the
+generation-server-owned private-domain layout patch, validates the 15-template
+catalog, atomically switches releases, and checks the exact runtime build id.
+The patch adds `full-overlay-bold` and `poster-split`; its SHA-256 is locked in
+`install.sh`, so a missing or changed patch fails before the active release is
+switched. The public Skill repository remains unchanged until the generation
+server contract is accepted and the same patch is deliberately upstreamed.
 
 ```bash
 sudo bash deploy/matrix-template-video/install.sh
@@ -18,7 +23,7 @@ committed. Deploy only after the material-library tunnel is healthy.
 
 ## Typography variants
 
-- The pinned public Skill remains unchanged and supplies its four baseline OFL families.
+- The pinned public Skill supplies its four baseline OFL families; the server-owned patch adds the two private-domain layout definitions without changing the upstream repository.
 - Up to ten project-authorized fonts may be provisioned privately under `/var/lib/huangque-matrix-template/private-fonts`; font binaries are never committed to Git.
 - Copy `private-fonts.manifest.example.json` to that directory as `sources.json` together with the matching font files. The service accepts only the ten named families, requires `authorized: true`, rejects symlinks and unsafe filenames, and verifies every SHA-256 at startup.
 - Selection, selected file SHA-256 values, and the complete private-bundle fingerprint are frozen in the SQLite job payload in the same transaction that creates the job. Recovery and retries consume only this frozen provenance and fail closed if a selected file changes.
