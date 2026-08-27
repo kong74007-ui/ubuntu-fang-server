@@ -3,7 +3,7 @@ set -euo pipefail
 
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
 UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"
-LAYOUT_PATCH_SHA256="3b1e68d990f00a578fcbb9c0078ce5ca6fe87c7a7cc8190735323740e6666377"
+LAYOUT_PATCH_SHA256="c5566c1f0e237cf62bfd8a89c06a558d40650619c9800d1f89cc00bfc78013a3"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -110,6 +110,9 @@ python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py
 python3 "${SKILL_ROOT}/scripts/check_environment.py"
 python3 "${SKILL_ROOT}/scripts/test_template_catalog.py"
 python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"
+python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
 BUILD_ID="$(printf '%s\n' "${UPSTREAM_COMMIT}" "${LAYOUT_PATCH_SHA256}" "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
 
@@ -161,7 +164,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==15 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==2 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

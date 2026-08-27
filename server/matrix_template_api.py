@@ -75,36 +75,10 @@ FONT_LABELS = {
     "YS HelloFont BangBangTi": "优设字由棒棒体",
 }
 FONT_VARIANTS = {
-    "native-bold": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
-    "video-diary": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
-    "minimal-headline": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
-    "airy-blush": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
-    "yellow-blue-pop": (("clean", "Noto Sans SC", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC")),
-    "business-black": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
-    "black-gold-premium": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("heritage", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("clean", "Noto Sans SC", "ZCOOL XiaoWei")),
-    "data-compare": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
-    "chinese-title": (("brush", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "ZCOOL XiaoWei")),
-    "torn-magazine": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
-    "vlog-journal": (("friendly", "ZCOOL KuaiLe", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei")),
-    "bilingual-split": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
-    "portrait-quote": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("clean", "Noto Sans SC", "ZCOOL XiaoWei")),
     "full-overlay-bold": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
     "poster-split": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
 }
 PRIVATE_FONT_VARIANTS = {
-    "native-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
-    "video-diary": (("private-relaxed", "Pangmenzhengdaoqingsongti", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC"), ("private-playful", "YS HelloFont BangBangTi", "Noto Sans SC")),
-    "minimal-headline": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-serif", "HouZunSongTi", "Noto Sans SC")),
-    "airy-blush": (("private-modern", "Smiley Sans Oblique", "Noto Sans SC"), ("private-relaxed", "Pangmenzhengdaoqingsongti", "Noto Sans SC")),
-    "yellow-blue-pop": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
-    "business-black": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
-    "black-gold-premium": (("private-serif", "HouZunSongTi", "Noto Sans SC"), ("private-heritage", "DaigoMinteuA", "Noto Sans SC")),
-    "data-compare": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
-    "chinese-title": (("private-serif", "HouZunSongTi", "ZCOOL XiaoWei"), ("private-heritage", "DaigoMinteuA", "Noto Sans SC")),
-    "torn-magazine": (("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-heavy", "AaHouDiHei", "Noto Sans SC")),
-    "vlog-journal": (("private-playful", "YS HelloFont BangBangTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
-    "bilingual-split": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
-    "portrait-quote": (("private-serif", "HouZunSongTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
     "full-overlay-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
     "poster-split": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
 }
@@ -112,7 +86,7 @@ PRIVATE_FONT_VARIANTS = {
 
 def _font_selection(template_id: str, job_id: str,
                     private_families: set[str] | frozenset[str] = frozenset()) -> dict:
-    options = list(FONT_VARIANTS.get(template_id) or FONT_VARIANTS["native-bold"])
+    options = list(FONT_VARIANTS.get(template_id) or FONT_VARIANTS["full-overlay-bold"])
     options.extend(
         item for item in PRIVATE_FONT_VARIANTS.get(template_id, ())
         if item[1] in private_families and item[2] in private_families | BASE_FONT_FAMILIES
@@ -606,10 +580,10 @@ class MatrixTemplateService:
                 "description": str(item.get("description") or "")[:160],
                 "tags": [str(tag)[:20] for tag in (item.get("tags") or [])[:8]],
             })
-        if len(result) != 15 or len({item["id"] for item in result}) != 15:
-            raise MatrixTemplateError("expected exactly 15 unique templates")
+        if len(result) != 2 or len({item["id"] for item in result}) != 2:
+            raise MatrixTemplateError("expected exactly 2 unique templates")
         required = {"full-overlay-bold", "poster-split"}
-        if not required.issubset({item["id"] for item in result}):
+        if {item["id"] for item in result} != required:
             raise MatrixTemplateError("required private-domain templates are missing")
         self.template_text_limits = text_limits
         return result
@@ -623,7 +597,7 @@ class MatrixTemplateService:
             raise ValueError("顶部标题需要 2-60 个字符")
         if not 2 <= len(bottom) <= 80:
             raise ValueError("底部行动文案需要 2-80 个字符")
-        template_id = str(raw.get("template_id") or "native-bold")
+        template_id = str(raw.get("template_id") or "full-overlay-bold")
         if template_id not in self.templates:
             raise ValueError("请选择有效模板")
         font_family = str(raw.get("font_family") or "").strip()
@@ -1216,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/templates":
             self.send_json(200, {
                 "templates": self.service.catalog,
-                "default_template": "native-bold",
+                "default_template": "full-overlay-bold",
                 "fonts": self.service.public_fonts(),
                 "default_font": "",
             })

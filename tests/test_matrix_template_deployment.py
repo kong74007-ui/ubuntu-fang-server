@@ -13,7 +13,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_installer_pins_skill_and_uses_atomic_release_contract(self):
         installer = (ROOT / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn('UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"', installer)
-        self.assertIn('LAYOUT_PATCH_SHA256="3b1e68d990f00a578fcbb9c0078ce5ca6fe87c7a7cc8190735323740e6666377"', installer)
+        self.assertIn('LAYOUT_PATCH_SHA256="c5566c1f0e237cf62bfd8a89c06a558d40650619c9800d1f89cc00bfc78013a3"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -23,13 +23,15 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             installer,
         )
         self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"', installer)
+        self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"', installer)
+        self.assertIn('python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"', installer)
         self.assertIn('PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"', installer)
         self.assertIn('MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}', installer)
         self.assertIn('git -C "${RELEASE}/upstream" rev-parse HEAD', installer)
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
-        self.assertIn('d.get("templates")==15', installer)
+        self.assertIn('d.get("templates")==2', installer)
         self.assertNotIn("MATRIX_TEMPLATE_API_TOKEN=sk-", installer)
         self.assertIn("MATRIX_TEMPLATE_RETENTION_SECONDS=259200", installer)
         self.assertIn("MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600", installer)
