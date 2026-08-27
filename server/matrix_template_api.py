@@ -564,6 +564,8 @@ class MatrixTemplateService:
         self.active_jobs: set[str] = set()
         self.stop_event = threading.Event()
         self.worker_degraded = threading.Event()
+        self.degraded_lock = threading.Lock()
+        self.degraded_jobs: set[str] = set()
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
         self.active_downloads: set[str] = set()
@@ -728,7 +730,9 @@ class MatrixTemplateService:
         live_workers = sum(worker.is_alive() for worker in worker_threads)
         worker_alive = live_workers == self.concurrency
         cleanup_alive = self.cleanup_worker is not None and self.cleanup_worker.is_alive()
-        worker_degraded = self.worker_degraded.is_set()
+        with self.degraded_lock:
+            degraded_job_count = len(self.degraded_jobs)
+        worker_degraded = degraded_job_count > 0
         ready = not self.workers_expected or (
             worker_alive and cleanup_alive and not worker_degraded
         )
@@ -738,6 +742,7 @@ class MatrixTemplateService:
             "worker_count": live_workers,
             "cleanup_worker_alive": cleanup_alive,
             "worker_degraded": worker_degraded,
+            "degraded_jobs": degraded_job_count,
             "concurrency": self.concurrency,
             "private_fonts": len(self.private_fonts),
             "private_font_bundle_sha256": self.private_font_fingerprint,
@@ -1177,11 +1182,22 @@ class MatrixTemplateService:
                     self.active_jobs.discard(job_id)
                 self.jobs.task_done()
             if finished:
-                self.worker_degraded.clear()
+                self._clear_job_degraded(job_id)
             else:
-                self.worker_degraded.set()
+                self._mark_job_degraded(job_id)
                 if not self.stop_event.wait(JOB_REQUEUE_SECONDS):
                     self._enqueue(job_id)
+
+    def _mark_job_degraded(self, job_id: str) -> None:
+        with self.degraded_lock:
+            self.degraded_jobs.add(job_id)
+            self.worker_degraded.set()
+
+    def _clear_job_degraded(self, job_id: str) -> None:
+        with self.degraded_lock:
+            self.degraded_jobs.discard(job_id)
+            if not self.degraded_jobs:
+                self.worker_degraded.clear()
 
     def shutdown(self) -> None:
         self.stop_event.set()
