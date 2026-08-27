@@ -48,77 +48,54 @@ CONTENT_SUFFIXES = {
     "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
     "audio/mp4": ".m4a",
 }
+BASE_FONT_FAMILIES = {
+    "Noto Sans SC", "ZCOOL XiaoWei", "Ma Shan Zheng", "ZCOOL KuaiLe",
+}
+PRIVATE_FONT_FAMILIES = {
+    "zihunbiantaoti", "Smiley Sans Oblique", "DaigoMinteuA",
+    "Gen Jyuu Gothic Heavy", "GenSenRounded TW H", "HouZunSongTi",
+    "AaHouDiHei", "Pangmenzhengdaoqingsongti", "Kingnam Bobo",
+    "YS HelloFont BangBangTi",
+}
 FONT_VARIANTS = {
-    "native-bold": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-    ),
-    "video-diary": (
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-    ),
-    "minimal-headline": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
-    "airy-blush": (
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-    ),
-    "yellow-blue-pop": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-    ),
-    "business-black": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
-    "black-gold-premium": (
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("heritage", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("clean", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
-    "data-compare": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
-    "chinese-title": (
-        ("brush", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("friendly", "ZCOOL KuaiLe", "ZCOOL XiaoWei"),
-    ),
-    "torn-magazine": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-    ),
-    "vlog-journal": (
-        ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-    ),
-    "bilingual-split": (
-        ("clean", "Noto Sans SC", "Noto Sans SC"),
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("contrast", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
-    "portrait-quote": (
-        ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"),
-        ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"),
-        ("clean", "Noto Sans SC", "ZCOOL XiaoWei"),
-    ),
+    "native-bold": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
+    "video-diary": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
+    "minimal-headline": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "airy-blush": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
+    "yellow-blue-pop": (("clean", "Noto Sans SC", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC")),
+    "business-black": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "black-gold-premium": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("heritage", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("clean", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "data-compare": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "chinese-title": (("brush", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "ZCOOL XiaoWei")),
+    "torn-magazine": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
+    "vlog-journal": (("friendly", "ZCOOL KuaiLe", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei")),
+    "bilingual-split": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("contrast", "Noto Sans SC", "ZCOOL XiaoWei")),
+    "portrait-quote": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("clean", "Noto Sans SC", "ZCOOL XiaoWei")),
+}
+PRIVATE_FONT_VARIANTS = {
+    "native-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
+    "video-diary": (("private-relaxed", "Pangmenzhengdaoqingsongti", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC"), ("private-playful", "YS HelloFont BangBangTi", "Noto Sans SC")),
+    "minimal-headline": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-serif", "HouZunSongTi", "Noto Sans SC")),
+    "airy-blush": (("private-modern", "Smiley Sans Oblique", "Noto Sans SC"), ("private-relaxed", "Pangmenzhengdaoqingsongti", "Noto Sans SC")),
+    "yellow-blue-pop": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
+    "business-black": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
+    "black-gold-premium": (("private-serif", "HouZunSongTi", "Noto Sans SC"), ("private-heritage", "DaigoMinteuA", "Noto Sans SC")),
+    "data-compare": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
+    "chinese-title": (("private-serif", "HouZunSongTi", "ZCOOL XiaoWei"), ("private-heritage", "DaigoMinteuA", "Noto Sans SC")),
+    "torn-magazine": (("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-heavy", "AaHouDiHei", "Noto Sans SC")),
+    "vlog-journal": (("private-playful", "YS HelloFont BangBangTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
+    "bilingual-split": (("private-geometric", "Gen Jyuu Gothic Heavy", "Noto Sans SC"), ("private-rounded", "GenSenRounded TW H", "Noto Sans SC")),
+    "portrait-quote": (("private-serif", "HouZunSongTi", "Noto Sans SC"), ("private-modern", "Smiley Sans Oblique", "Noto Sans SC")),
 }
 
 
-def _font_selection(template_id: str, job_id: str) -> dict:
-    options = FONT_VARIANTS.get(template_id) or FONT_VARIANTS["native-bold"]
+def _font_selection(template_id: str, job_id: str,
+                    private_families: set[str] | frozenset[str] = frozenset()) -> dict:
+    options = list(FONT_VARIANTS.get(template_id) or FONT_VARIANTS["native-bold"])
+    options.extend(
+        item for item in PRIVATE_FONT_VARIANTS.get(template_id, ())
+        if item[1] in private_families and item[2] in private_families | BASE_FONT_FAMILIES
+    )
     digest = hashlib.sha256(f"{template_id}:{job_id}".encode("utf-8")).digest()
     variant, top_font, bottom_font = options[int.from_bytes(digest[:4], "big") % len(options)]
     return {
@@ -126,6 +103,87 @@ def _font_selection(template_id: str, job_id: str) -> dict:
         "top_font": top_font,
         "bottom_font": bottom_font,
     }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_private_fonts(root: Path | None) -> dict[str, dict]:
+    if root is None:
+        return {}
+    if root.is_symlink():
+        raise MatrixTemplateError("private font directory must not be a symlink")
+    root = root.resolve()
+    manifest_path = root / "sources.json"
+    if not manifest_path.exists():
+        return {}
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise MatrixTemplateError("private font manifest is unsafe")
+    manifest = _read_json(manifest_path)
+    records = manifest.get("fonts")
+    if manifest.get("schema_version") != 1 or not isinstance(records, list):
+        raise MatrixTemplateError("private font manifest must use schema version 1")
+    result = {}
+    filenames = set()
+    for item in records:
+        if not isinstance(item, dict):
+            raise MatrixTemplateError("invalid private font record")
+        family = str(item.get("family") or "")
+        filename = str(item.get("file") or "")
+        expected = str(item.get("sha256") or "").lower()
+        if family not in PRIVATE_FONT_FAMILIES or family in result:
+            raise MatrixTemplateError("private font family is unknown or duplicated")
+        if (
+            Path(filename).name != filename
+            or Path(filename).suffix.lower() not in {".ttf", ".otf", ".ttc"}
+            or filename in filenames
+            or not SHA_RE.fullmatch(expected)
+            or item.get("authorized") is not True
+        ):
+            raise MatrixTemplateError("private font record is incomplete or unsafe")
+        path = root / filename
+        if path.is_symlink() or not path.is_file() or _file_sha256(path) != expected:
+            raise MatrixTemplateError("private font file is missing or has changed")
+        result[family] = {"family": family, "file": filename, "sha256": expected, "path": path}
+        filenames.add(filename)
+    return result
+
+
+def _font_bundle_fingerprint(fonts: dict[str, dict]) -> str:
+    records = [{key: item[key] for key in ("family", "file", "sha256")}
+               for _, item in sorted(fonts.items())]
+    return hashlib.sha256(_json_bytes({"fonts": records})).hexdigest()
+
+
+def _load_bundled_fonts(skill_root: Path) -> dict[str, dict]:
+    root = skill_root / "assets/fonts"
+    manifest = _read_json(root / "sources.json")
+    records = manifest.get("fonts")
+    if not isinstance(records, list):
+        raise MatrixTemplateError("stable Skill font manifest is invalid")
+    result = {}
+    for item in records:
+        family = str(item.get("family") or "") if isinstance(item, dict) else ""
+        if family not in BASE_FONT_FAMILIES:
+            continue
+        filename = str(item.get("file") or "")
+        expected = str(item.get("sha256") or "").lower()
+        path = root / filename
+        if (
+            family in result or Path(filename).name != filename
+            or path.is_symlink() or not path.is_file()
+            or not SHA_RE.fullmatch(expected) or _file_sha256(path) != expected
+        ):
+            raise MatrixTemplateError("stable Skill font bundle failed verification")
+        result[family] = {"family": family, "file": filename, "sha256": expected, "path": path}
+    if set(result) != BASE_FONT_FAMILIES:
+        raise MatrixTemplateError("stable Skill font bundle is incomplete")
+    return result
 
 
 class MatrixTemplateError(RuntimeError):
@@ -216,7 +274,8 @@ class JobStore:
         finally:
             db.close()
 
-    def create(self, request_id: str, payload: dict, admission_guard=None) -> tuple[dict, bool]:
+    def create(self, request_id: str, payload: dict, admission_guard=None,
+               freeze_payload=None) -> tuple[dict, bool]:
         now = _now()
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -224,7 +283,12 @@ class JobStore:
                 "SELECT * FROM jobs WHERE request_id=?", (request_id,)
             ).fetchone()
             if existing:
-                if json.loads(existing["payload"]) != payload:
+                existing_payload = json.loads(existing["payload"])
+                existing_request = {
+                    key: value for key, value in existing_payload.items()
+                    if not key.startswith("_")
+                }
+                if existing_request != payload:
                     raise ValueError("request_id already belongs to another payload")
                 return self.public(existing), False
             waiting = int(db.execute(
@@ -235,11 +299,12 @@ class JobStore:
             if admission_guard is not None:
                 admission_guard()
             job_id = uuid.uuid4().hex
+            stored_payload = freeze_payload(job_id, dict(payload)) if freeze_payload else payload
             db.execute(
                 """INSERT INTO jobs(
                     id,request_id,status,payload,result,error,created_at,updated_at
                 ) VALUES(?,?,?,?,?,?,?,?)""",
-                (job_id, request_id, "pending", json.dumps(payload, ensure_ascii=False),
+                (job_id, request_id, "pending", json.dumps(stored_payload, ensure_ascii=False),
                  None, None, now, now),
             )
             row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -311,6 +376,7 @@ class JobStore:
 class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str, python: str = sys.executable,
+                 private_font_root: Path | None = None,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
                  delivery_grace_seconds: int = DEFAULT_DELIVERY_GRACE_SECONDS,
@@ -333,6 +399,10 @@ class MatrixTemplateService:
         if not self.library_token:
             raise MatrixTemplateError("material library token is missing")
         self.python = python
+        self.private_font_root = private_font_root.resolve() if private_font_root else None
+        self.bundled_fonts = _load_bundled_fonts(self.skill_root)
+        self.private_fonts = _load_private_fonts(private_font_root)
+        self.private_font_fingerprint = _font_bundle_fingerprint(self.private_fonts)
         self.retention_seconds = max(60, int(retention_seconds))
         self.delivery_grace_seconds = max(60, int(delivery_grace_seconds))
         self.cleanup_interval_seconds = max(1, int(cleanup_interval_seconds))
@@ -419,11 +489,32 @@ class MatrixTemplateService:
             raise ValueError("invalid request id")
         payload = self.validate_payload(raw)
         job, created = self.store.create(
-            request_id, payload, admission_guard=self._ensure_disk_capacity
+            request_id, payload, admission_guard=self._ensure_disk_capacity,
+            freeze_payload=self._freeze_font_provenance,
         )
         if created:
             self._enqueue(job["job_id"])
         return job
+
+    def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
+        selection = _font_selection(
+            payload["template_id"], job_id, set(self.private_fonts)
+        )
+        selected = []
+        for family in dict.fromkeys((selection["top_font"], selection["bottom_font"])):
+            source = self.private_fonts.get(family) or self.bundled_fonts.get(family)
+            if source is None:
+                raise MatrixTemplateError("selected font is unavailable")
+            selected.append({
+                "family": family, "file": source["file"], "sha256": source["sha256"],
+                "source": "private" if family in self.private_fonts else "bundled",
+            })
+        payload["_font_provenance"] = {
+            "selection": selection,
+            "fonts": selected,
+            "private_bundle_sha256": self.private_font_fingerprint,
+        }
+        return payload
 
     def _enqueue(self, job_id: str) -> bool:
         with self.queue_lock:
@@ -445,6 +536,8 @@ class MatrixTemplateService:
             "worker_alive": worker_alive,
             "cleanup_worker_alive": cleanup_alive,
             "worker_degraded": worker_degraded,
+            "private_fonts": len(self.private_fonts),
+            "private_font_bundle_sha256": self.private_font_fingerprint,
         }
 
     def _ensure_disk_capacity(self) -> None:
@@ -616,9 +709,65 @@ class MatrixTemplateService:
         except urllib.error.HTTPError as exc:
             raise MatrixTemplateError("素材库文件读取失败") from exc
 
+    def _stage_project_fonts(self, root: Path, provenance: dict) -> str | None:
+        frozen_fonts = provenance.get("fonts") if isinstance(provenance, dict) else None
+        if not isinstance(frozen_fonts, list):
+            raise MatrixTemplateError("frozen font provenance is missing")
+        requested = [item for item in frozen_fonts
+                     if isinstance(item, dict) and item.get("source") == "private"]
+        if not requested:
+            return None
+        destination = root / "assets/fonts"
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True)
+        staged = []
+        filenames = set()
+        for family, item in sorted(self.bundled_fonts.items()):
+            filename, expected, source = item["file"], item["sha256"], item["path"]
+            if filename in filenames or _file_sha256(source) != expected:
+                raise MatrixTemplateError("stable Skill font bundle failed verification")
+            shutil.copy2(source, destination / filename)
+            staged.append({"family": family, "file": filename, "sha256": expected})
+            filenames.add(filename)
+        for frozen in sorted(requested, key=lambda item: str(item.get("family") or "")):
+            family = str(frozen.get("family") or "")
+            current = self.private_fonts.get(family)
+            if (
+                current is None
+                or current["file"] != frozen.get("file")
+                or current["sha256"] != frozen.get("sha256")
+                or _file_sha256(current["path"]) != frozen.get("sha256")
+            ):
+                raise MatrixTemplateError("frozen private font is unavailable or has changed")
+            filename = current["file"]
+            if filename in filenames:
+                raise MatrixTemplateError("private font filename conflicts with bundled font")
+            shutil.copy2(current["path"], destination / filename)
+            staged.append({key: current[key] for key in ("family", "file", "sha256")})
+            filenames.add(filename)
+        (destination / "sources.json").write_text(
+            json.dumps({"fonts": staged}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return "assets/fonts"
+
     def _project(self, payload: dict, job_id: str, materials: list[dict], paths: list[Path]) -> dict:
         count = _required_visuals(payload["duration"])
-        font_selection = _font_selection(payload["template_id"], job_id)
+        provenance = payload.get("_font_provenance")
+        if not isinstance(provenance, dict) or not isinstance(provenance.get("selection"), dict):
+            raise MatrixTemplateError("frozen font provenance is missing")
+        font_selection = provenance["selection"]
+        frozen_families = {
+            str(item.get("family") or "") for item in provenance.get("fonts", [])
+            if isinstance(item, dict)
+        }
+        if (
+            font_selection.get("top_font") not in frozen_families
+            or font_selection.get("bottom_font") not in frozen_families
+            or not SHA_RE.fullmatch(str(provenance.get("private_bundle_sha256") or ""))
+        ):
+            raise MatrixTemplateError("frozen font provenance is invalid")
         media = []
         for item, path in zip(materials[:count], paths[:count]):
             media.append({
@@ -742,6 +891,10 @@ class MatrixTemplateService:
         materials = self._select_materials(payload, job_id)
         paths = [self._download(item, assets) for item in materials]
         project = self._project(payload, job_id, materials, paths)
+        provenance = payload["_font_provenance"]
+        fonts_dir = self._stage_project_fonts(root, provenance)
+        if fonts_dir:
+            project["render"]["fonts_dir"] = fonts_dir
         project_path = root / "project.json"
         project_path.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
         self._render(project_path)
@@ -757,6 +910,8 @@ class MatrixTemplateService:
             "template_id": payload["template_id"],
             "file_url": f"/v1/files/{job_id}.mp4",
             "font_selection": project["font_selection"],
+            "font_files": provenance["fonts"],
+            "private_font_bundle_sha256": provenance["private_bundle_sha256"],
             "material_manifest": [{
                 "record_id": item.get("record_id"), "sha256": item.get("sha256"),
                 "media_type": item.get("media_type"), "match_level": item.get("match_level"),
@@ -958,6 +1113,10 @@ def main() -> None:
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
         python=os.environ.get("MATRIX_TEMPLATE_PYTHON", sys.executable),
+        private_font_root=Path(os.environ.get(
+            "MATRIX_TEMPLATE_PRIVATE_FONT_ROOT",
+            "/var/lib/huangque-matrix-template/private-fonts",
+        )),
         retention_seconds=int(os.environ.get(
             "MATRIX_TEMPLATE_RETENTION_SECONDS", DEFAULT_RETENTION_SECONDS
         )),

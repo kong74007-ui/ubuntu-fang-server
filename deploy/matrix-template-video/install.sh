@@ -8,6 +8,7 @@ RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
 RELEASES_DIR="${RUNTIME_ROOT}/releases"
 STATE_ROOT="/var/lib/huangque-matrix-template"
+PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"
 ENV_FILE="/etc/huangque/matrix-template.env"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-matrix-template.service"
 UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
@@ -86,6 +87,7 @@ trap cleanup EXIT
 if [[ -f "${UNIT_TARGET}" ]]; then cp -a "${UNIT_TARGET}" "${BACKUP}/unit"; UNIT_EXISTED=1; fi
 install -d -o root -g root -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}"
 install -d -o admin -g admin -m 0750 "${STATE_ROOT}"
+install -d -o root -g admin -m 0750 "${PRIVATE_FONT_ROOT}"
 RELEASE="$(mktemp -d "${RELEASES_DIR}/${UPSTREAM_COMMIT}.XXXXXX")"
 chmod 0755 "${RELEASE}"
 git clone --no-checkout "${UPSTREAM_URL}" "${RELEASE}/upstream"
@@ -115,6 +117,7 @@ MATRIX_TEMPLATE_API_TOKEN=${token}
 MATRIX_TEMPLATE_DATA_ROOT=${STATE_ROOT}
 MATRIX_TEMPLATE_SKILL_ROOT=${SOURCE_LINK}/upstream/script-to-matrix-video
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
+MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
 MATRIX_TEMPLATE_RETENTION_SECONDS=259200
 MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600
 MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS=900
