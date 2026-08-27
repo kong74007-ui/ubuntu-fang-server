@@ -88,6 +88,31 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "template_id": "native-bold",
             })
 
+    def test_balanced_title_is_frozen_without_changing_source_copy(self):
+        title = "想开店又怕养团队？1个人+AI员工也能运行一家门店"
+        expected = "想开店又怕养团队？\n1个人+AI员工\n也能运行一家门店"
+        self.assertEqual(expected, matrix._balanced_title(title, 12, 3))
+        self.assertEqual(
+            "想开店又怕养团队？\n1个人+AI员工也能运行一家门店",
+            matrix._balanced_title(title, 13, 2),
+        )
+        job = self.service.submit({
+            "top_text": title,
+            "bottom_text": "轻团队也能稳定运营",
+            "template_id": "native-bold",
+            "bgm": False,
+        }, "balanced-title")
+        payload = json.loads(self.service.store.get(job["job_id"])["payload"])
+        self.assertEqual(title, payload["top_text"])
+        self.assertEqual(expected, payload["_display_top_text"])
+        replay = self.service.submit({
+            "top_text": title,
+            "bottom_text": "轻团队也能稳定运营",
+            "template_id": "native-bold",
+            "bgm": False,
+        }, "balanced-title")
+        self.assertEqual(job["job_id"], replay["job_id"])
+
     def test_font_selection_uses_baseline_and_only_available_private_fonts(self):
         allowed = matrix.BASE_FONT_FAMILIES
         self.assertEqual(13, len(matrix.FONT_VARIANTS))
@@ -341,6 +366,8 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(project["font_selection"]["top_font"], project["layout"]["top_font"])
         self.assertEqual(project["font_selection"]["bottom_font"], project["layout"]["bottom_font"])
         self.assertEqual(project["font_selection"], result["font_selection"])
+        self.assertEqual(project["scenes"][0]["top_text"], result["display_top_text"])
+        self.assertEqual("AI 工作流\n评论区留下关键词", project["source_text"])
         frozen = json.loads(self.service.store.get(job["job_id"])["payload"])["_font_provenance"]
         self.assertEqual(frozen["fonts"], result["font_files"])
         self.assertEqual(
