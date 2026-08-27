@@ -245,9 +245,14 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     if not compact:
         return ""
     counters = "个家人位名款套种项台年月日天次岁"
-    tokens = []
+    tokens: list[tuple[str, str]] = []
     cursor = 0
+    pending_space = False
     while cursor < len(compact):
+        if compact[cursor].isspace():
+            pending_space = True
+            cursor += 1
+            continue
         match = re.match(r"[+&./_-]?[A-Za-z0-9]+(?:[+&./_-][A-Za-z0-9]+)*", compact[cursor:])
         if match:
             token = match.group(0)
@@ -255,28 +260,27 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
             if cursor < len(compact) and compact[cursor] in counters:
                 token += compact[cursor]
                 cursor += 1
-            tokens.append(token)
+            separator = " " if pending_space and tokens else ""
+            tokens.append((token, separator))
+            pending_space = False
             continue
         char = compact[cursor]
         cursor += 1
-        if char.isspace():
-            if (
-                tokens and tokens[-1][-1:].isascii() and tokens[-1][-1:].isalnum()
-                and cursor < len(compact) and compact[cursor].isascii()
-                and compact[cursor].isalnum()
-            ):
-                tokens.append(" ")
-            continue
-        tokens.append(char)
+        tokens.append((char, " " if pending_space and tokens else ""))
+        pending_space = False
 
     def visual_width(value: str) -> float:
         return sum(0.35 if char.isspace() else 0.62 if char.isascii() else 1.0 for char in value)
 
-    def boundary_penalty(left: str, right: str) -> float:
+    def boundary_penalty(left: str, right: str, separator: str) -> float:
         left_char, right_char = left[-1], right[0]
         if right_char in "，。！？；：、,.!?;:)]}）】》」』+%％":
             return 1000.0
-        if left_char in "([{（【《「『+" or (
+        if left_char in "([{（【《「『+":
+            return 1000.0
+        if separator:
+            return -1.0
+        if (
             left_char.isascii() and right_char.isascii()
             and (left_char.isalnum() or left_char in "+_&./-")
             and (right_char.isalnum() or right_char in "+_&./-")
@@ -296,13 +300,19 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
             return -3.0
         return 0.0
 
-    target_lines = min(max(1, max_lines), max(1, math.ceil(len(compact) / max(1, max_chars))))
-    total_width = sum(visual_width(token) for token in tokens)
+    total_width = sum(
+        visual_width(value) + (visual_width(separator) if index else 0.0)
+        for index, (value, separator) in enumerate(tokens)
+    )
+    comfortable_width = max(1.0, max_chars * 0.82)
+    target_lines = min(
+        max(1, max_lines), max(1, math.ceil(total_width / comfortable_width))
+    )
     ideal = total_width / target_lines
-    line_limit = max(float(max_chars), max(map(visual_width, tokens)), math.ceil(ideal) + 3)
-    prefix = [0.0]
-    for token in tokens:
-        prefix.append(prefix[-1] + visual_width(token))
+    line_limit = max(
+        float(max_chars), max(visual_width(value) for value, _ in tokens),
+        math.ceil(ideal) + 3,
+    )
     for _ in range(max(1, len(compact))):
         states = {(0, 0): (0.0, [])}
         for line_index in range(target_lines):
@@ -311,13 +321,19 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
                 if state is None:
                     continue
                 remaining = target_lines - line_index - 1
+                width = 0.0
                 for end in range(start + 1, len(tokens) + 1):
                     if len(tokens) - end < remaining:
                         break
-                    width = prefix[end] - prefix[start]
+                    value, separator = tokens[end - 1]
+                    if end - 1 > start:
+                        width += visual_width(separator)
+                    width += visual_width(value)
                     if width > line_limit + 0.001:
                         break
-                    penalty = boundary_penalty(tokens[end - 1], tokens[end]) if end < len(tokens) else 0.0
+                    penalty = boundary_penalty(
+                        tokens[end - 1][0], tokens[end][0], tokens[end][1]
+                    ) if end < len(tokens) else 0.0
                     if penalty >= 1000:
                         continue
                     score = state[0] + (width - ideal) ** 2 + penalty
@@ -330,7 +346,13 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
         if result:
             lines, start = [], 0
             for end in result[1]:
-                lines.append("".join(tokens[start:end]).strip())
+                parts = [tokens[start][0]]
+                for value, separator in tokens[start + 1:end]:
+                    parts.extend((separator, value))
+                line = "".join(parts).strip()
+                if not line:
+                    return compact
+                lines.append(line)
                 start = end
             return "\n".join(lines)
         line_limit += 1
