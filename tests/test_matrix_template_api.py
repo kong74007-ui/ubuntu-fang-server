@@ -454,6 +454,60 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(1, len({item["job_id"] for item in results}))
         self.assertEqual(1, self.service.jobs.qsize())
 
+    def test_five_workers_execute_five_jobs_concurrently(self):
+        service = matrix.MatrixTemplateService(
+            data_root=self.root / "concurrency-five-data",
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            concurrency=5,
+            start_worker=True,
+            cleanup_interval_seconds=3600,
+        )
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+        all_started = threading.Event()
+        release = threading.Event()
+
+        def execute(job_id):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 5:
+                    all_started.set()
+            release.wait(3)
+            with lock:
+                active -= 1
+            return {"file_url": f"/v1/files/{job_id}.mp4"}
+
+        try:
+            with mock.patch.object(service, "_execute", side_effect=execute):
+                jobs = [service.submit({
+                    "top_text": f"并发标题{index}",
+                    "bottom_text": "并发行动文案",
+                    "bgm": False,
+                }, f"concurrency-five-{index}") for index in range(5)]
+                self.assertTrue(all_started.wait(3))
+                self.assertEqual(5, peak)
+                health = service.health()
+                self.assertEqual(5, health["worker_count"])
+                self.assertEqual(5, health["concurrency"])
+                release.set()
+                deadline = time.time() + 3
+                while time.time() < deadline:
+                    if all(service.store.get(job["job_id"])["status"] == "completed" for job in jobs):
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(all(
+                    service.store.get(job["job_id"])["status"] == "completed"
+                    for job in jobs
+                ))
+        finally:
+            release.set()
+            service.shutdown()
+
     def test_admission_caps_waiting_but_restart_recovers_running_plus_full_queue(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",

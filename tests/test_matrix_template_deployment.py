@@ -25,6 +25,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"', installer)
         self.assertIn('PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"', installer)
         self.assertIn('MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}', installer)
+        self.assertIn('MATRIX_TEMPLATE_CONCURRENCY=5', installer)
+        self.assertIn('d.get("concurrency")==5', installer)
+        self.assertIn('d.get("worker_count")==5', installer)
+        self.assertIn('requires at least 4 vCPU and 7 GiB RAM', installer)
+        self.assertIn('install -o root -g admin -m 0640 "${BACKUP}/env" "${ENV_FILE}"', installer)
         self.assertIn('git -C "${RELEASE}/upstream" rev-parse HEAD', installer)
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
@@ -45,6 +50,8 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", unit)
         self.assertIn("ProtectSystem=strict", unit)
         self.assertIn("ReadWritePaths=/var/lib/huangque-matrix-template", unit)
+        self.assertIn("MemoryMax=6G", unit)
+        self.assertIn("CPUQuota=400%", unit)
 
     def test_nginx_bridge_is_private_to_production_content_host(self):
         for relative in (
