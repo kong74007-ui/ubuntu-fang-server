@@ -67,10 +67,17 @@ class MatrixTemplateApiTests(unittest.TestCase):
         })
         self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
+        self.assertNotIn("font_family", payload)
+        fonts = self.service.public_fonts()
+        self.assertEqual({""} | matrix.BASE_FONT_FAMILIES, {
+            item["value"] for item in fonts
+        })
+        self.assertEqual("自动搭配", fonts[0]["label"])
         for invalid in (
             {"top_text": "A", "bottom_text": "行动"},
             {"top_text": "有效标题", "bottom_text": "A"},
             {"top_text": "有效标题", "bottom_text": "有效行动", "template_id": "bad"},
+            {"top_text": "有效标题", "bottom_text": "有效行动", "font_family": "Missing Font"},
         ):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
@@ -217,6 +224,19 @@ class MatrixTemplateApiTests(unittest.TestCase):
             }],
         }), encoding="utf-8")
         self.service.private_fonts = matrix._load_private_fonts(private_root)
+        selected_payload = self.service.validate_payload({
+            "top_text": "指定字体标题", "bottom_text": "指定字体行动文案",
+            "font_family": "AaHouDiHei", "bgm": False,
+        })
+        frozen = self.service._freeze_font_provenance("b" * 32, selected_payload)
+        self.assertEqual({
+            "variant": "user-selected",
+            "top_font": "AaHouDiHei",
+            "bottom_font": "AaHouDiHei",
+        }, frozen["_font_provenance"]["selection"])
+        self.assertIn("AaHouDiHei", {
+            item["value"] for item in self.service.public_fonts()
+        })
         job_root = self.root / "data" / ("a" * 32)
         relative = self.service._stage_project_fonts(job_root, {"fonts": [{
             "family": "AaHouDiHei", "file": private_file.name,
@@ -291,6 +311,59 @@ class MatrixTemplateApiTests(unittest.TestCase):
         finally:
             restarted.shutdown()
 
+    def test_idempotent_private_font_replay_survives_bundle_removal(self):
+        private_root = self.root / "idempotent-private-fonts"
+        private_root.mkdir()
+        private_file = private_root / "AaHouDiHei.ttf"
+        private_file.write_bytes(b"private-font")
+        (private_root / "sources.json").write_text(json.dumps({
+            "schema_version": 1,
+            "fonts": [{
+                "family": "AaHouDiHei", "file": private_file.name,
+                "sha256": hashlib.sha256(private_file.read_bytes()).hexdigest(),
+                "authorized": True,
+            }],
+        }), encoding="utf-8")
+        data_root = self.root / "idempotent-data"
+        initial = matrix.MatrixTemplateService(
+            data_root=data_root, skill_root=self.skill,
+            library_url="http://127.0.0.1:8111", library_token="library-token",
+            private_font_root=private_root, start_worker=False,
+        )
+        body = {
+            "top_text": "指定字体标题", "bottom_text": "指定字体行动文案",
+            "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "bgm": False,
+        }
+        try:
+            accepted = initial.submit(body, "accepted-private-font")
+            initial.store.update(accepted["job_id"], "completed", result={
+                "font_selection": {"top_font": "AaHouDiHei"},
+            })
+            initial.store.mark_cleaned(accepted["job_id"])
+        finally:
+            initial.shutdown()
+        (private_root / "sources.json").unlink()
+        restarted = matrix.MatrixTemplateService(
+            data_root=data_root, skill_root=self.skill,
+            library_url="http://127.0.0.1:8111", library_token="library-token",
+            private_font_root=private_root, start_worker=False,
+        )
+        try:
+            replay = restarted.submit(body, "accepted-private-font")
+            self.assertEqual(accepted["job_id"], replay["job_id"])
+            self.assertEqual("completed", replay["status"])
+            self.assertIn("cleaned_at", replay)
+            with self.assertRaisesRegex(ValueError, "another payload"):
+                restarted.submit(
+                    dict(body, font_family="Noto Sans SC"),
+                    "accepted-private-font",
+                )
+            with self.assertRaisesRegex(ValueError, "当前可用字体"):
+                restarted.submit(body, "removed-private-font-new-key")
+        finally:
+            restarted.shutdown()
+
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
         first = self.service.submit(body, "request-1")
@@ -313,11 +386,16 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 errors.append(exc)
 
         threads = [threading.Thread(target=submit) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        barrier.wait()
-        for thread in threads:
-            thread.join(timeout=3)
+        with mock.patch.object(
+            self.service, "_freeze_font_provenance",
+            wraps=self.service._freeze_font_provenance,
+        ) as freeze:
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=3)
+            self.assertEqual(1, freeze.call_count)
         self.assertFalse(errors)
         self.assertEqual(2, len(results))
         self.assertEqual(1, len({item["job_id"] for item in results}))
@@ -737,7 +815,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
-                self.assertEqual(13, len(json.load(response)["templates"]))
+                catalog = json.load(response)
+                self.assertEqual(13, len(catalog["templates"]))
+                self.assertEqual("", catalog["default_font"])
+                self.assertEqual(5, len(catalog["fonts"]))
             with request(
                 "/v1/preflight", "POST",
                 {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},

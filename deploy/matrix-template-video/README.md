@@ -27,6 +27,7 @@ committed. Deploy only after the material-library tunnel is healthy.
 - `/health` reports `private_font_bundle_sha256`; completed job results retain the selected families, filenames, file hashes, and bundle fingerprint after staged files expire.
 - For a private-font render, the service copies the four baseline fonts and only the selected private font into the job directory. FFmpeg never reads the persistent private directory directly.
 - Top copy is balanced and frozen when the job is created. The service keeps English runs, number classifiers, and common Chinese modal pairs together, prefers punctuation boundaries, and preserves the untouched source copy for audit.
+- `GET /v1/templates` returns only fonts verified at service startup. `POST /v1/preflight` and `POST /v1/jobs` accept optional `font_family`; omitting it keeps automatic template-specific pairing, while a valid value applies that family to both title regions and freezes its file SHA in the job.
 
 ## Storage and delivery policy
 

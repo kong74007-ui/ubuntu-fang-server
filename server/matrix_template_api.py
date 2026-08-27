@@ -58,6 +58,22 @@ PRIVATE_FONT_FAMILIES = {
     "AaHouDiHei", "Pangmenzhengdaoqingsongti", "Kingnam Bobo",
     "YS HelloFont BangBangTi",
 }
+FONT_LABELS = {
+    "Noto Sans SC": "思源黑体",
+    "ZCOOL XiaoWei": "站酷小薇体",
+    "Ma Shan Zheng": "马善政毛笔楷书",
+    "ZCOOL KuaiLe": "站酷快乐体",
+    "zihunbiantaoti": "字魂扁桃体",
+    "Smiley Sans Oblique": "得意黑",
+    "DaigoMinteuA": "醍醐书体",
+    "Gen Jyuu Gothic Heavy": "源柔黑体 Heavy",
+    "GenSenRounded TW H": "源泉圆体 Heavy",
+    "HouZunSongTi": "猴尊宋体",
+    "AaHouDiHei": "Aa厚底黑",
+    "Pangmenzhengdaoqingsongti": "庞门正道轻松体",
+    "Kingnam Bobo": "荆南波波黑",
+    "YS HelloFont BangBangTi": "优设字由棒棒体",
+}
 FONT_VARIANTS = {
     "native-bold": (("clean", "Noto Sans SC", "Noto Sans SC"), ("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
     "video-diary": (("editorial", "ZCOOL XiaoWei", "Noto Sans SC"), ("handwritten", "Ma Shan Zheng", "ZCOOL XiaoWei"), ("friendly", "ZCOOL KuaiLe", "Noto Sans SC")),
@@ -591,7 +607,7 @@ class MatrixTemplateService:
         self.template_text_limits = text_limits
         return result
 
-    def validate_payload(self, raw: dict) -> dict:
+    def validate_payload(self, raw: dict, *, require_available_font: bool = True) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
         top = " ".join(str(raw.get("top_text") or "").split())
@@ -603,20 +619,44 @@ class MatrixTemplateService:
         template_id = str(raw.get("template_id") or "native-bold")
         if template_id not in self.templates:
             raise ValueError("请选择有效模板")
+        font_family = str(raw.get("font_family") or "").strip()
+        if font_family and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family):
+            raise ValueError("字体参数格式无效")
+        if (
+            require_available_font and font_family
+            and font_family not in self.available_font_families()
+        ):
+            raise ValueError("请选择当前可用字体")
         duration = _duration(top, bottom, raw.get("duration"))
         bgm = raw.get("bgm", True)
         if not isinstance(bgm, bool):
             raise ValueError("bgm must be boolean")
-        return {
+        result = {
             "top_text": top, "bottom_text": bottom,
             "template_id": template_id, "duration": duration,
             "bgm": bgm,
         }
+        if font_family:
+            result["font_family"] = font_family
+        return result
+
+    def available_font_families(self) -> set[str]:
+        return set(self.bundled_fonts) | set(self.private_fonts)
+
+    def public_fonts(self) -> list[dict]:
+        values = [{"value": "", "label": "自动搭配", "source": "automatic"}]
+        for family in sorted(self.available_font_families(), key=lambda item: (FONT_LABELS[item], item)):
+            values.append({
+                "value": family,
+                "label": FONT_LABELS[family],
+                "source": "private" if family in self.private_fonts else "bundled",
+            })
+        return values
 
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
-        payload = self.validate_payload(raw)
+        payload = self.validate_payload(raw, require_available_font=False)
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
             freeze_payload=self._freeze_font_provenance,
@@ -626,8 +666,13 @@ class MatrixTemplateService:
         return job
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
-        selection = _font_selection(
-            payload["template_id"], job_id, set(self.private_fonts)
+        requested_font = str(payload.get("font_family") or "")
+        if requested_font and requested_font not in self.available_font_families():
+            raise ValueError("请选择当前可用字体")
+        selection = (
+            {"variant": "user-selected", "top_font": requested_font, "bottom_font": requested_font}
+            if requested_font else
+            _font_selection(payload["template_id"], job_id, set(self.private_fonts))
         )
         selected = []
         for family in dict.fromkeys((selection["top_font"], selection["bottom_font"])):
@@ -1162,7 +1207,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(401, {"error": "unauthorized"})
             return
         if path == "/v1/templates":
-            self.send_json(200, {"templates": self.service.catalog, "default_template": "native-bold"})
+            self.send_json(200, {
+                "templates": self.service.catalog,
+                "default_template": "native-bold",
+                "fonts": self.service.public_fonts(),
+                "default_font": "",
+            })
             return
         if path.startswith("/v1/jobs/"):
             job_id = path.rsplit("/", 1)[-1]
