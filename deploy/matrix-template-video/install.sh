@@ -27,6 +27,8 @@ SOURCE_MUTATED=0
 UNIT_MUTATED=0
 SERVICE_MUTATED=0
 ENV_CREATED=0
+ENV_EXISTED=0
+ENV_MUTATED=0
 UNIT_EXISTED=0
 WAS_ACTIVE=0
 WAS_ENABLED=0
@@ -46,6 +48,9 @@ cleanup() {
       RELEASE=""
     elif [[ "${ENV_CREATED}" -eq 1 ]]; then
       rm -f "${ENV_FILE}"
+    fi
+    if [[ "${ENV_MUTATED}" -eq 1 && "${ENV_EXISTED}" -eq 1 && -f "${BACKUP}/env" ]]; then
+      install -o root -g admin -m 0640 "${BACKUP}/env" "${ENV_FILE}"
     fi
     [[ "${UNIT_MUTATED}" -eq 1 ]] && systemctl daemon-reload >/dev/null 2>&1 || true
     if [[ "${SERVICE_MUTATED}" -eq 1 ]]; then
@@ -87,6 +92,10 @@ fi
 BACKUP="$(mktemp -d /var/tmp/matrix-template-install.XXXXXX)"
 trap cleanup EXIT
 if [[ -f "${UNIT_TARGET}" ]]; then cp -a "${UNIT_TARGET}" "${BACKUP}/unit"; UNIT_EXISTED=1; fi
+if [[ -f "${ENV_FILE}" ]]; then cp -a "${ENV_FILE}" "${BACKUP}/env"; ENV_EXISTED=1; fi
+if [[ "$(nproc)" -lt 4 ]] || [[ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -lt 7340032 ]]; then
+  echo "matrix template concurrency 5 requires at least 4 vCPU and 7 GiB RAM" >&2; exit 1
+fi
 install -d -o root -g root -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}"
 install -d -o admin -g admin -m 0750 "${STATE_ROOT}"
 install -d -o root -g admin -m 0750 "${PRIVATE_FONT_ROOT}"
@@ -126,6 +135,7 @@ MATRIX_TEMPLATE_DATA_ROOT=${STATE_ROOT}
 MATRIX_TEMPLATE_SKILL_ROOT=${SOURCE_LINK}/upstream/script-to-matrix-video
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
 MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
+MATRIX_TEMPLATE_CONCURRENCY=5
 MATRIX_TEMPLATE_RETENTION_SECONDS=259200
 MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600
 MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS=900
@@ -135,6 +145,12 @@ EOF
   chown root:admin "${ENV_FILE}"
   chmod 0640 "${ENV_FILE}"
   ENV_CREATED=1
+else
+  env_next="$(mktemp "${BACKUP}/env.next.XXXXXX")"
+  awk 'BEGIN{done=0} /^MATRIX_TEMPLATE_CONCURRENCY=/{if(!done){print "MATRIX_TEMPLATE_CONCURRENCY=5"; done=1} next} {print} END{if(!done) print "MATRIX_TEMPLATE_CONCURRENCY=5"}' \
+    "${ENV_FILE}" > "${env_next}"
+  install -o root -g admin -m 0640 "${env_next}" "${ENV_FILE}"
+  ENV_MUTATED=1
 fi
 
 SERVICE_MUTATED=1
@@ -161,7 +177,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==15 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==15 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

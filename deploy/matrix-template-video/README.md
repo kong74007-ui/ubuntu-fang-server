@@ -2,7 +2,7 @@
 
 Internal generation-server API for the `text-media-text` mode from the pinned
 `kong74007-ui/script-to-matrix-video` Skill. It binds to `127.0.0.1:8112`, runs
-one render at a time, and uses the existing material-library tunnel at
+up to five renders at a time, and uses the existing material-library tunnel at
 `127.0.0.1:8111`. It never calls an AI image or video provider.
 
 The installer clones and verifies commit
@@ -20,6 +20,12 @@ sudo bash deploy/matrix-template-video/install.sh
 
 Secrets are created or loaded from root-owned environment files and are never
 committed. Deploy only after the material-library tunnel is healthy.
+
+The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
+least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
+memory. The upgraded 4-vCPU/8-GB host completed a five-render 1080x1920 smoke
+test in 119 seconds with 5/5 valid outputs. Lower-spec hosts fail installation
+instead of starting an unsafe five-worker service.
 
 ## Typography variants
 

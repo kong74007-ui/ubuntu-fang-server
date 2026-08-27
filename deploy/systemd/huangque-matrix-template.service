@@ -21,9 +21,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/huangque-matrix-template
-MemoryHigh=1400M
-MemoryMax=2200M
-CPUQuota=200%
+MemoryHigh=5G
+MemoryMax=6G
+CPUQuota=400%
 TasksMax=512
 
 [Install]

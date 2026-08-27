@@ -517,6 +517,7 @@ class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str, python: str = sys.executable,
                  private_font_root: Path | None = None,
+                 concurrency: int = 1,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
                  delivery_grace_seconds: int = DEFAULT_DELIVERY_GRACE_SECONDS,
@@ -543,6 +544,9 @@ class MatrixTemplateService:
         self.bundled_fonts = _load_bundled_fonts(self.skill_root)
         self.private_fonts = _load_private_fonts(private_font_root)
         self.private_font_fingerprint = _font_bundle_fingerprint(self.private_fonts)
+        self.concurrency = int(concurrency)
+        if not 1 <= self.concurrency <= 5:
+            raise MatrixTemplateError("concurrency must be between 1 and 5")
         self.retention_seconds = max(60, int(retention_seconds))
         self.delivery_grace_seconds = max(60, int(delivery_grace_seconds))
         self.cleanup_interval_seconds = max(1, int(cleanup_interval_seconds))
@@ -560,10 +564,14 @@ class MatrixTemplateService:
         self.active_jobs: set[str] = set()
         self.stop_event = threading.Event()
         self.worker_degraded = threading.Event()
+        self.degraded_lock = threading.Lock()
+        self.degraded_jobs: set[str] = set()
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
         self.active_downloads: set[str] = set()
+        self.active_processes: set[subprocess.Popen] = set()
         self.active_process = None
+        self.workers = []
         self.worker = None
         self.cleanup_worker = None
         self.workers_expected = start_worker
@@ -575,8 +583,16 @@ class MatrixTemplateService:
         for job_id in self.store.pending_ids():
             self._enqueue(job_id)
         if start_worker:
-            self.worker = threading.Thread(target=self._worker, daemon=True)
-            self.worker.start()
+            self.workers = [
+                threading.Thread(
+                    target=self._worker, name=f"matrix-template-worker-{index + 1}",
+                    daemon=True,
+                )
+                for index in range(self.concurrency)
+            ]
+            self.worker = self.workers[0]
+            for worker in self.workers:
+                worker.start()
             self.cleanup_worker = threading.Thread(target=self._cleanup_worker, daemon=True)
             self.cleanup_worker.start()
 
@@ -710,17 +726,24 @@ class MatrixTemplateService:
             return True
 
     def health(self) -> dict:
-        worker_alive = self.worker is not None and self.worker.is_alive()
+        worker_threads = self.workers or ([self.worker] if self.worker is not None else [])
+        live_workers = sum(worker.is_alive() for worker in worker_threads)
+        worker_alive = live_workers == self.concurrency
         cleanup_alive = self.cleanup_worker is not None and self.cleanup_worker.is_alive()
-        worker_degraded = self.worker_degraded.is_set()
+        with self.degraded_lock:
+            degraded_job_count = len(self.degraded_jobs)
+        worker_degraded = degraded_job_count > 0
         ready = not self.workers_expected or (
             worker_alive and cleanup_alive and not worker_degraded
         )
         return {
             "ok": ready,
             "worker_alive": worker_alive,
+            "worker_count": live_workers,
             "cleanup_worker_alive": cleanup_alive,
             "worker_degraded": worker_degraded,
+            "degraded_jobs": degraded_job_count,
+            "concurrency": self.concurrency,
             "private_fonts": len(self.private_fonts),
             "private_font_bundle_sha256": self.private_font_fingerprint,
         }
@@ -1032,6 +1055,7 @@ class MatrixTemplateService:
             options["start_new_session"] = True
         process = subprocess.Popen(command, **options)
         with self.process_lock:
+            self.active_processes.add(process)
             self.active_process = process
         try:
             try:
@@ -1046,8 +1070,8 @@ class MatrixTemplateService:
                 raise MatrixTemplateError("模板成片渲染失败" + (": " + detail if detail else ""))
         finally:
             with self.process_lock:
-                if self.active_process is process:
-                    self.active_process = None
+                self.active_processes.discard(process)
+                self.active_process = next(iter(self.active_processes), None)
 
     def _probe(self, output: Path) -> dict:
         result = subprocess.run([
@@ -1158,20 +1182,32 @@ class MatrixTemplateService:
                     self.active_jobs.discard(job_id)
                 self.jobs.task_done()
             if finished:
-                self.worker_degraded.clear()
+                self._clear_job_degraded(job_id)
             else:
-                self.worker_degraded.set()
+                self._mark_job_degraded(job_id)
                 if not self.stop_event.wait(JOB_REQUEUE_SECONDS):
                     self._enqueue(job_id)
+
+    def _mark_job_degraded(self, job_id: str) -> None:
+        with self.degraded_lock:
+            self.degraded_jobs.add(job_id)
+            self.worker_degraded.set()
+
+    def _clear_job_degraded(self, job_id: str) -> None:
+        with self.degraded_lock:
+            self.degraded_jobs.discard(job_id)
+            if not self.degraded_jobs:
+                self.worker_degraded.clear()
 
     def shutdown(self) -> None:
         self.stop_event.set()
         with self.process_lock:
-            process = self.active_process
-        if process is not None:
+            processes = list(self.active_processes)
+        for process in processes:
             self._terminate(process)
-        if self.worker is not None:
-            self.worker.join(timeout=3)
+        workers = self.workers or ([self.worker] if self.worker is not None else [])
+        for worker in workers:
+            worker.join(timeout=3)
         if self.cleanup_worker is not None:
             self.cleanup_worker.join(timeout=3)
 
@@ -1207,7 +1243,8 @@ class Handler(BaseHTTPRequestHandler):
             health = self.service.health()
             self.send_json(200 if health["ok"] else 503, {
                 **health, "build_id": runtime_build_id(),
-                "templates": len(self.service.catalog), "concurrency": 1,
+                "templates": len(self.service.catalog),
+                "concurrency": self.service.concurrency,
             })
             return
         if not self.authorized():
@@ -1308,6 +1345,7 @@ def main() -> None:
             "MATRIX_TEMPLATE_PRIVATE_FONT_ROOT",
             "/var/lib/huangque-matrix-template/private-fonts",
         )),
+        concurrency=int(os.environ.get("MATRIX_TEMPLATE_CONCURRENCY", "1")),
         retention_seconds=int(os.environ.get(
             "MATRIX_TEMPLATE_RETENTION_SECONDS", DEFAULT_RETENTION_SECONDS
         )),
