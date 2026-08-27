@@ -402,6 +402,13 @@ class MatrixTemplateService:
         self.private_font_root = private_font_root.resolve() if private_font_root else None
         self.bundled_fonts = _load_bundled_fonts(self.skill_root)
         self.private_fonts = _load_private_fonts(private_font_root)
+        overlap = ({item["file"] for item in self.private_fonts.values()}
+                   & {item["file"] for item in self.bundled_fonts.values()})
+        if overlap:
+            raise MatrixTemplateError(
+                "private font filename conflicts with bundled font: "
+                + ", ".join(sorted(overlap))
+            )
         self.private_font_fingerprint = _font_bundle_fingerprint(self.private_fonts)
         self.retention_seconds = max(60, int(retention_seconds))
         self.delivery_grace_seconds = max(60, int(delivery_grace_seconds))

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
+
+from server import matrix_template_api as matrix
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,11 +50,34 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             self.assertIn("deny all;", nginx)
             self.assertIn("proxy_pass http://127.0.0.1:8112/;", nginx)
 
+    def test_private_font_manifest_example_matches_service_allowlist(self):
+        manifest = json.loads((ROOT / "deploy/matrix-template-video/private-fonts.manifest.example.json").read_text(encoding="utf-8"))
+        self.assertEqual(1, manifest["schema_version"])
+        entries = manifest["fonts"]
+        self.assertIsInstance(entries, list)
+        self.assertEqual(matrix.PRIVATE_FONT_FAMILIES, {item["family"] for item in entries})
+        self.assertEqual(len(entries), len({item["family"] for item in entries}))
+        self.assertEqual(len(entries), len({item["file"] for item in entries}))
+        for item in entries:
+            self.assertIs(item["authorized"], True)
+            self.assertEqual(Path(item["file"]).name, item["file"])
+            self.assertIn(Path(item["file"]).suffix.lower(), {".ttf", ".otf", ".ttc"})
+            self.assertRegex(item["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_private_font_provisioning_script_contract(self):
+        script = (ROOT / "deploy/matrix-template-video/provision-private-fonts.sh").read_text(encoding="utf-8")
+        self.assertIn("private-fonts.manifest.example.json", script)
+        self.assertIn("/var/lib/huangque-matrix-template/private-fonts", script)
+        self.assertIn("sha256sum", script)
+        self.assertIn("sources.json", script)
+
     def test_installer_shell_syntax(self):
         bash = shutil.which("bash") or "D:/Git/bin/bash.exe"
-        subprocess.run([
-            bash, "-n", str(ROOT / "deploy/matrix-template-video/install.sh")
-        ], check=True)
+        for relative in (
+            "deploy/matrix-template-video/install.sh",
+            "deploy/matrix-template-video/provision-private-fonts.sh",
+        ):
+            subprocess.run([bash, "-n", str(ROOT / relative)], check=True)
 
 
 if __name__ == "__main__":

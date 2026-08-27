@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import threading
 import time
@@ -162,6 +163,170 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with self.assertRaisesRegex(matrix.MatrixTemplateError, "has changed"):
             matrix._load_private_fonts(private_root)
 
+    def test_private_font_loader_rejects_unsafe_records(self):
+        root = self.root / "strict-private-fonts"
+        root.mkdir()
+        valid_file = root / "AaHouDiHei.ttf"
+        valid_file.write_bytes(b"valid-font")
+        valid_hash = hashlib.sha256(valid_file.read_bytes()).hexdigest()
+        cases = {
+            "unknown family": ([{
+                "family": "Not In Allowlist", "file": "AaHouDiHei.ttf",
+                "sha256": valid_hash, "authorized": True,
+            }], True),
+            "nested filename": ([{
+                "family": "AaHouDiHei", "file": "sub/AaHouDiHei.ttf",
+                "sha256": valid_hash, "authorized": True,
+            }], True),
+            "unsupported suffix": ([{
+                "family": "AaHouDiHei", "file": "AaHouDiHei.txt",
+                "sha256": valid_hash, "authorized": True,
+            }], True),
+            "not authorized": ([{
+                "family": "AaHouDiHei", "file": "AaHouDiHei.ttf",
+                "sha256": valid_hash, "authorized": False,
+            }], True),
+            "invalid sha": ([{
+                "family": "AaHouDiHei", "file": "AaHouDiHei.ttf",
+                "sha256": "not-a-sha", "authorized": True,
+            }], True),
+            "duplicate family": ([
+                {"family": "AaHouDiHei", "file": "AaHouDiHei.ttf",
+                 "sha256": valid_hash, "authorized": True},
+                {"family": "AaHouDiHei", "file": "other.ttf",
+                 "sha256": valid_hash, "authorized": True},
+            ], True),
+            "duplicate filename": ([
+                {"family": "AaHouDiHei", "file": "AaHouDiHei.ttf",
+                 "sha256": valid_hash, "authorized": True},
+                {"family": "Kingnam Bobo", "file": "AaHouDiHei.ttf",
+                 "sha256": valid_hash, "authorized": True},
+            ], True),
+            "missing font file": ([{
+                "family": "AaHouDiHei", "file": "missing.ttf",
+                "sha256": valid_hash, "authorized": True,
+            }], True),
+            "single valid record": ([{
+                "family": "AaHouDiHei", "file": "AaHouDiHei.ttf",
+                "sha256": valid_hash, "authorized": True,
+            }], False),
+        }
+        for label, (fonts, should_fail) in cases.items():
+            with self.subTest(label=label):
+                case_root = root / label
+                case_root.mkdir()
+                if label != "missing font file":
+                    for item in fonts:
+                        path = case_root / str(item["file"])
+                        if Path(str(item["file"])).name == str(item["file"]):
+                            path.write_bytes(b"valid-font")
+                self._write_private_manifest(case_root, fonts)
+                if should_fail:
+                    with self.assertRaises(matrix.MatrixTemplateError):
+                        matrix._load_private_fonts(case_root)
+                else:
+                    loaded = matrix._load_private_fonts(case_root)
+                    self.assertEqual({"AaHouDiHei"}, set(loaded))
+
+        try:
+            linked_root = root / "linked-root"
+            os.symlink(root, linked_root, target_is_directory=True)
+            linked_file = root / "linked-file"
+            os.symlink(valid_file, linked_file)
+            linked_manifest = root / "linked-manifest"
+            os.symlink(root / "sources.json", linked_manifest)
+        except OSError:
+            return
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "must not be a symlink"):
+            matrix._load_private_fonts(linked_root)
+        self._write_private_manifest(root / "symlink-file-case", [{
+            "family": "AaHouDiHei", "file": "linked.ttf",
+            "sha256": valid_hash, "authorized": True,
+        }])
+        os.symlink(valid_file, root / "symlink-file-case" / "linked.ttf")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "missing or has changed"):
+            matrix._load_private_fonts(root / "symlink-file-case")
+        manifest_case = root / "symlink-manifest-case"
+        manifest_case.mkdir()
+        os.symlink(root / "sources.json", manifest_case / "sources.json")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "manifest is unsafe"):
+            matrix._load_private_fonts(manifest_case)
+
+    def _write_private_manifest(self, root, fonts):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "sources.json").write_text(json.dumps({
+            "schema_version": 1, "fonts": fonts,
+        }), encoding="utf-8")
+
+    def test_private_bundle_fingerprint_differs_per_manifest_with_same_build(self):
+        build_before = matrix.runtime_build_id()
+
+        def write_manifest(root, content):
+            root.mkdir(parents=True, exist_ok=True)
+            font_file = root / "AaHouDiHei.ttf"
+            font_file.write_bytes(content)
+            (root / "sources.json").write_text(json.dumps({
+                "schema_version": 1,
+                "fonts": [{
+                    "family": "AaHouDiHei", "file": font_file.name,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "authorized": True,
+                }],
+            }), encoding="utf-8")
+
+        root_a = self.root / "fingerprint-a"
+        root_b = self.root / "fingerprint-b"
+        write_manifest(root_a, b"font-binary-v1")
+        write_manifest(root_b, b"font-binary-v2")
+        service_a = matrix.MatrixTemplateService(
+            data_root=self.root / "fingerprint-data-a", skill_root=self.skill,
+            library_url="http://127.0.0.1:8111", library_token="library-token",
+            private_font_root=root_a, start_worker=False,
+        )
+        service_b = matrix.MatrixTemplateService(
+            data_root=self.root / "fingerprint-data-b", skill_root=self.skill,
+            library_url="http://127.0.0.1:8111", library_token="library-token",
+            private_font_root=root_b, start_worker=False,
+        )
+        try:
+            empty_fingerprint = matrix._font_bundle_fingerprint({})
+            fingerprint_a = service_a.health()["private_font_bundle_sha256"]
+            fingerprint_b = service_b.health()["private_font_bundle_sha256"]
+            self.assertEqual(1, service_a.health()["private_fonts"])
+            self.assertEqual(1, service_b.health()["private_fonts"])
+            self.assertNotEqual(empty_fingerprint, fingerprint_a)
+            self.assertNotEqual(fingerprint_a, fingerprint_b)
+            self.assertEqual(build_before, matrix.runtime_build_id())
+        finally:
+            service_a.shutdown()
+            service_b.shutdown()
+
+    def test_private_font_filename_collision_with_bundled_fonts_fails_startup(self):
+        private_root = self.root / "collision-fonts"
+        private_root.mkdir()
+        bundled_name = self.service.bundled_fonts[
+            sorted(self.service.bundled_fonts)[0]
+        ]["file"]
+        colliding = private_root / bundled_name
+        colliding.write_bytes(b"collision")
+        (private_root / "sources.json").write_text(json.dumps({
+            "schema_version": 1,
+            "fonts": [{
+                "family": "AaHouDiHei", "file": bundled_name,
+                "sha256": hashlib.sha256(colliding.read_bytes()).hexdigest(),
+                "authorized": True,
+            }],
+        }), encoding="utf-8")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "conflicts with bundled"):
+            matrix.MatrixTemplateService(
+                data_root=self.root / "collision-data",
+                skill_root=self.skill,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                private_font_root=private_root,
+                start_worker=False,
+            )
+
     def test_job_freezes_font_selection_sha_and_bundle_across_restart(self):
         body = {
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
@@ -195,6 +360,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
         try:
             recovered = json.loads(restarted.store.get(old_job["job_id"])["payload"])
             self.assertEqual(old_provenance, recovered["_font_provenance"])
+            project = restarted._project(
+                recovered, old_job["job_id"], [], []
+            )
+            self.assertEqual(
+                old_provenance["selection"], project["font_selection"]
+            )
             self.assertNotEqual(
                 empty_fingerprint,
                 restarted.health()["private_font_bundle_sha256"],
