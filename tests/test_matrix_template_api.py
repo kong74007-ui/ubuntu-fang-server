@@ -37,12 +37,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
         )
         (self.skill / "scripts").mkdir()
         templates = [{
-            "id": "native-bold" if index == 0 else f"template-{index:02d}",
+            "id": template_id,
             "name": f"模板 {index}", "description": "测试模板",
             "tags": ["测试"], "layout": {}, "render": {},
-        } for index in range(15)]
-        templates[-2]["id"] = "full-overlay-bold"
-        templates[-1]["id"] = "poster-split"
+        } for index, template_id in enumerate(("full-overlay-bold", "poster-split"))]
         (self.skill / "assets/templates/catalog.json").write_text(
             json.dumps({"version": 1, "templates": templates}, ensure_ascii=False),
             encoding="utf-8",
@@ -61,11 +59,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_catalog_and_payload_contract(self):
-        self.assertEqual(15, len(self.service.catalog))
+        self.assertEqual(2, len(self.service.catalog))
         payload = self.service.validate_payload({
             "top_text": "AI 工作流",
             "bottom_text": "评论区留下关键词",
-            "template_id": "native-bold",
+            "template_id": "full-overlay-bold",
         })
         self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
@@ -139,14 +137,14 @@ class MatrixTemplateApiTests(unittest.TestCase):
         accepted = self.service.validate_payload({
             "top_text": "中" * 60,
             "bottom_text": "A" * 7 + "，。！？",
-            "template_id": "native-bold",
+            "template_id": "full-overlay-bold",
         })
         self.assertEqual(14.9, accepted["duration"])
         with self.assertRaisesRegex(ValueError, "文案过长"):
             self.service.validate_payload({
                 "top_text": "中" * 60,
                 "bottom_text": "A" * 8,
-                "template_id": "native-bold",
+                "template_id": "full-overlay-bold",
             })
 
     def test_balanced_title_is_frozen_without_changing_source_copy(self):
@@ -160,7 +158,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         job = self.service.submit({
             "top_text": title,
             "bottom_text": "轻团队也能稳定运营",
-            "template_id": "native-bold",
+            "template_id": "full-overlay-bold",
             "bgm": False,
         }, "balanced-title")
         payload = json.loads(self.service.store.get(job["job_id"])["payload"])
@@ -169,7 +167,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         replay = self.service.submit({
             "top_text": title,
             "bottom_text": "轻团队也能稳定运营",
-            "template_id": "native-bold",
+            "template_id": "full-overlay-bold",
             "bgm": False,
         }, "balanced-title")
         self.assertEqual(job["job_id"], replay["job_id"])
@@ -221,7 +219,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
     def test_font_selection_uses_baseline_and_only_available_private_fonts(self):
         allowed = matrix.BASE_FONT_FAMILIES
-        self.assertEqual(15, len(matrix.FONT_VARIANTS))
+        self.assertEqual(2, len(matrix.FONT_VARIANTS))
         represented = set()
         for template_id in matrix.FONT_VARIANTS:
             with self.subTest(template_id=template_id):
@@ -241,7 +239,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 ))
                 for _, top_font, bottom_font in matrix.FONT_VARIANTS[template_id]:
                     represented.update((top_font, bottom_font))
-        self.assertEqual(allowed, represented)
+        self.assertEqual(
+            {"Noto Sans SC", "ZCOOL XiaoWei", "ZCOOL KuaiLe"}, represented
+        )
         fallback = matrix._font_selection("future-template", "f" * 32)
         self.assertIn(fallback["top_font"], allowed)
         self.assertIn(fallback["bottom_font"], allowed)
@@ -251,9 +251,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
             for font in (top_font, bottom_font)
             if font in matrix.PRIVATE_FONT_FAMILIES
         }
-        self.assertEqual(matrix.PRIVATE_FONT_FAMILIES, private_represented)
+        self.assertEqual(
+            {"AaHouDiHei", "Kingnam Bobo", "zihunbiantaoti"},
+            private_represented,
+        )
         selections = [
-            matrix._font_selection("native-bold", format(index, "032x"), {"AaHouDiHei"})
+            matrix._font_selection("full-overlay-bold", format(index, "032x"), {"AaHouDiHei"})
             for index in range(100)
         ]
         self.assertTrue(any(item["top_font"] == "AaHouDiHei" for item in selections))
@@ -309,7 +312,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
     def test_job_freezes_font_selection_sha_and_bundle_across_restart(self):
         body = {
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
-            "template_id": "native-bold", "bgm": False,
+            "template_id": "full-overlay-bold", "bgm": False,
         }
         old_job = self.service.submit(body, "font-before-private")
         old_payload = json.loads(self.service.store.get(old_job["job_id"])["payload"])
@@ -345,7 +348,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             )
             private_job_id = next(
                 format(index, "032x") for index in range(1, 1000)
-                if matrix._font_selection("native-bold", format(index, "032x"), {"AaHouDiHei"})["top_font"] == "AaHouDiHei"
+                if matrix._font_selection("full-overlay-bold", format(index, "032x"), {"AaHouDiHei"})["top_font"] == "AaHouDiHei"
             )
             with mock.patch.object(matrix.uuid, "uuid4", return_value=SimpleNamespace(hex=private_job_id)):
                 new_job = restarted.submit(body, "font-after-private")
@@ -385,7 +388,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         )
         body = {
             "top_text": "指定字体标题", "bottom_text": "指定字体行动文案",
-            "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "template_id": "full-overlay-bold", "font_family": "AaHouDiHei",
             "bgm": False,
         }
         try:
@@ -647,7 +650,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             result = self.service._execute(job["job_id"])
 
         project = json.loads((self.service.data_root / job["job_id"] / "project.json").read_text(encoding="utf-8"))
-        self.assertEqual("native-bold", project["layout"]["template_id"])
+        self.assertEqual("full-overlay-bold", project["layout"]["template_id"])
         self.assertEqual(project["font_selection"]["top_font"], project["layout"]["top_font"])
         self.assertEqual(project["font_selection"]["bottom_font"], project["layout"]["bottom_font"])
         self.assertEqual(project["font_selection"], result["font_selection"])
@@ -971,16 +974,16 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         try:
             with request("/health") as response:
-                self.assertEqual(15, json.load(response)["templates"])
+                self.assertEqual(2, json.load(response)["templates"])
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
             with request("/v1/templates", token="api-token") as response:
                 catalog = json.load(response)
-                self.assertEqual(15, len(catalog["templates"]))
-                self.assertTrue({"full-overlay-bold", "poster-split"}.issubset(
-                    {item["id"] for item in catalog["templates"]}
-                ))
+                self.assertEqual(
+                    {"full-overlay-bold", "poster-split"},
+                    {item["id"] for item in catalog["templates"]},
+                )
                 self.assertEqual("", catalog["default_font"])
                 self.assertEqual(5, len(catalog["fonts"]))
             with request(
