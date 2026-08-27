@@ -21,9 +21,10 @@ committed. Deploy only after the material-library tunnel is healthy.
 - The pinned public Skill remains unchanged and supplies its four baseline OFL families.
 - Up to ten project-authorized fonts may be provisioned privately under `/var/lib/huangque-matrix-template/private-fonts`; font binaries are never committed to Git.
 - Copy `private-fonts.manifest.example.json` to that directory as `sources.json` together with the matching font files. The service accepts only the ten named families, requires `authorized: true`, rejects symlinks and unsafe filenames, and verifies every SHA-256 at startup.
-- Selection is deterministic from `template_id + job_id`: a retry keeps the same typography while a new job receives a varied pair.
+- Selection, selected file SHA-256 values, and the complete private-bundle fingerprint are frozen in the SQLite job payload in the same transaction that creates the job. Recovery and retries consume only this frozen provenance and fail closed if a selected file changes.
 - Pairs are template-specific. Business and data templates stay restrained; handwritten fonts are limited to editorial, diary, portrait, and Chinese-title templates.
 - The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.
+- `/health` reports `private_font_bundle_sha256`; completed job results retain the selected families, filenames, file hashes, and bundle fingerprint after staged files expire.
 - For a private-font render, the service copies the four baseline fonts and only the selected private font into the job directory. FFmpeg never reads the persistent private directory directly.
 
 ## Storage and delivery policy

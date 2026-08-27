@@ -21,6 +21,19 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
         (self.skill / "assets/templates").mkdir(parents=True)
+        font_root = self.skill / "assets/fonts"
+        font_root.mkdir()
+        bundled = []
+        for index, family in enumerate(sorted(matrix.BASE_FONT_FAMILIES)):
+            path = font_root / f"base-{index}.ttf"
+            path.write_bytes(family.encode("utf-8"))
+            bundled.append({
+                "family": family, "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (font_root / "sources.json").write_text(
+            json.dumps({"fonts": bundled}), encoding="utf-8"
+        )
         (self.skill / "scripts").mkdir()
         templates = [{
             "id": "native-bold" if index == 0 else f"template-{index:02d}",
@@ -132,24 +145,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "sha256": private_hash, "authorized": True,
             }],
         }), encoding="utf-8")
-        font_root = self.skill / "assets/fonts"
-        font_root.mkdir()
-        bundled = []
-        for index, family in enumerate(sorted(matrix.BASE_FONT_FAMILIES)):
-            path = font_root / f"base-{index}.ttf"
-            path.write_bytes(family.encode("utf-8"))
-            bundled.append({
-                "family": family, "file": path.name,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            })
-        (font_root / "sources.json").write_text(
-            json.dumps({"fonts": bundled}), encoding="utf-8"
-        )
         self.service.private_fonts = matrix._load_private_fonts(private_root)
         job_root = self.root / "data" / ("a" * 32)
-        relative = self.service._stage_project_fonts(job_root, {
-            "top_font": "AaHouDiHei", "bottom_font": "Noto Sans SC",
-        })
+        relative = self.service._stage_project_fonts(job_root, {"fonts": [{
+            "family": "AaHouDiHei", "file": private_file.name,
+            "sha256": private_hash, "source": "private",
+        }]})
         self.assertEqual("assets/fonts", relative)
         staged_root = job_root / relative
         staged = json.loads((staged_root / "sources.json").read_text(encoding="utf-8"))
@@ -160,6 +161,64 @@ class MatrixTemplateApiTests(unittest.TestCase):
         private_file.write_bytes(b"changed")
         with self.assertRaisesRegex(matrix.MatrixTemplateError, "has changed"):
             matrix._load_private_fonts(private_root)
+
+    def test_job_freezes_font_selection_sha_and_bundle_across_restart(self):
+        body = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": False,
+        }
+        old_job = self.service.submit(body, "font-before-private")
+        old_payload = json.loads(self.service.store.get(old_job["job_id"])["payload"])
+        old_provenance = old_payload["_font_provenance"]
+        empty_fingerprint = self.service.health()["private_font_bundle_sha256"]
+
+        private_root = self.root / "restart-private-fonts"
+        private_root.mkdir()
+        private_file = private_root / "AaHouDiHei.ttf"
+        private_file.write_bytes(b"private-font-v1")
+        private_hash = hashlib.sha256(private_file.read_bytes()).hexdigest()
+        (private_root / "sources.json").write_text(json.dumps({
+            "schema_version": 1,
+            "fonts": [{
+                "family": "AaHouDiHei", "file": private_file.name,
+                "sha256": private_hash, "authorized": True,
+            }],
+        }), encoding="utf-8")
+        restarted = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            private_font_root=private_root,
+            start_worker=False,
+        )
+        try:
+            recovered = json.loads(restarted.store.get(old_job["job_id"])["payload"])
+            self.assertEqual(old_provenance, recovered["_font_provenance"])
+            self.assertNotEqual(
+                empty_fingerprint,
+                restarted.health()["private_font_bundle_sha256"],
+            )
+            private_job_id = next(
+                format(index, "032x") for index in range(1, 1000)
+                if matrix._font_selection("native-bold", format(index, "032x"), {"AaHouDiHei"})["top_font"] == "AaHouDiHei"
+            )
+            with mock.patch.object(matrix.uuid, "uuid4", return_value=SimpleNamespace(hex=private_job_id)):
+                new_job = restarted.submit(body, "font-after-private")
+            new_payload = json.loads(restarted.store.get(new_job["job_id"])["payload"])
+            provenance = new_payload["_font_provenance"]
+            self.assertEqual("AaHouDiHei", provenance["selection"]["top_font"])
+            self.assertEqual(private_hash, next(
+                item["sha256"] for item in provenance["fonts"]
+                if item["family"] == "AaHouDiHei"
+            ))
+            private_file.write_bytes(b"private-font-drift")
+            with self.assertRaisesRegex(matrix.MatrixTemplateError, "has changed"):
+                restarted._stage_project_fonts(
+                    self.root / "drift-job", provenance
+                )
+        finally:
+            restarted.shutdown()
 
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
@@ -249,7 +308,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
         })
-        job, _ = self.service.store.create("execute-1", payload)
+        job, _ = self.service.store.create(
+            "execute-1", payload, freeze_payload=self.service._freeze_font_provenance
+        )
         materials = [
             {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1", "match_level": "exact"},
             {"scene_id": "media_02", "sha256": "b" * 64, "media_type": "image", "record_id": "i1", "match_level": "loose"},
@@ -280,6 +341,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(project["font_selection"]["top_font"], project["layout"]["top_font"])
         self.assertEqual(project["font_selection"]["bottom_font"], project["layout"]["bottom_font"])
         self.assertEqual(project["font_selection"], result["font_selection"])
+        frozen = json.loads(self.service.store.get(job["job_id"])["payload"])["_font_provenance"]
+        self.assertEqual(frozen["fonts"], result["font_files"])
+        self.assertEqual(
+            frozen["private_bundle_sha256"], result["private_font_bundle_sha256"]
+        )
         self.assertFalse(project["voice"]["enabled"])
         self.assertEqual(2, len(project["scenes"][0]["media"]))
         self.assertEqual("huangque-internal-api", project["material_library"]["index_source"])
@@ -287,13 +353,24 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(["v1", "i1", "m1"], [item["record_id"] for item in result["material_manifest"]])
         self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
         self.assertFalse((self.service.data_root / job["job_id"] / "output/final.mp4").exists())
+        self.service.store.update(job["job_id"], "completed", result=result)
+        self.assertEqual(1, self.service.cleanup_once(
+            now=matrix._now() + self.service.retention_seconds + 1
+        ))
+        persisted = self.service.store.public(self.service.store.get(job["job_id"]))["result"]
+        self.assertEqual(result["font_files"], persisted["font_files"])
+        self.assertEqual(
+            result["private_font_bundle_sha256"], persisted["private_font_bundle_sha256"]
+        )
 
     def test_probe_failure_removes_unpublished_output(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
             "bgm": False,
         })
-        job, _ = self.service.store.create("probe-failure", payload)
+        job, _ = self.service.store.create(
+            "probe-failure", payload, freeze_payload=self.service._freeze_font_provenance
+        )
         root = self.service.data_root / job["job_id"]
 
         def render(_project_path):
