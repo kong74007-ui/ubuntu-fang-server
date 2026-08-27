@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import tempfile
 import threading
 import time
@@ -87,6 +88,76 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "bottom_text": "A" * 8,
                 "template_id": "native-bold",
             })
+
+    def test_balanced_title_is_frozen_without_changing_source_copy(self):
+        title = "想开店又怕养团队？1个人+AI员工也能运行一家门店"
+        expected = "想开店又怕养团队？\n1个人+AI员工\n也能运行一家门店"
+        self.assertEqual(expected, matrix._balanced_title(title, 12, 3))
+        self.assertEqual(
+            "想开店又怕养团队？\n1个人+AI员工也能运行一家门店",
+            matrix._balanced_title(title, 13, 2),
+        )
+        job = self.service.submit({
+            "top_text": title,
+            "bottom_text": "轻团队也能稳定运营",
+            "template_id": "native-bold",
+            "bgm": False,
+        }, "balanced-title")
+        payload = json.loads(self.service.store.get(job["job_id"])["payload"])
+        self.assertEqual(title, payload["top_text"])
+        self.assertEqual(expected, payload["_display_top_text"])
+        replay = self.service.submit({
+            "top_text": title,
+            "bottom_text": "轻团队也能稳定运营",
+            "template_id": "native-bold",
+            "bgm": False,
+        }, "balanced-title")
+        self.assertEqual(job["job_id"], replay["job_id"])
+
+    def test_balanced_title_preserves_content_and_never_emits_empty_lines(self):
+        english = matrix._balanced_title(
+            "ABCDEFGHIJKLM NOPQRSTUVWXYZ", 12, 3
+        )
+        self.assertEqual(
+            ["ABCDEFGHIJKLM", "NOPQRSTUVWXYZ"], english.splitlines()
+        )
+
+        samples = [
+            "品牌  Alpha   X200  已经支持  3个 门店",
+            "（新品）AI助手，不会拆开标点",
+            "想开店又怕养团队？1个人+AI员工也能运行一家门店",
+            "MODEL-X200 Pro 现在支持10家门店",
+            "数据增长40%，但是成本没有增加。",
+        ]
+        rng = random.Random(20260827)
+        atoms = ["AI", "X200", "品牌", "门店", "3个", "已经", "不会", "增长40%", "（新品）"]
+        for _ in range(40):
+            samples.append(" ".join(rng.choice(atoms) for _ in range(rng.randint(2, 8))))
+
+        closing = set("，。！？；：、,.!?;:)]}）】》」』+%％")
+        opening = set("([{（【《「『+")
+        for source in samples:
+            with self.subTest(source=source):
+                first = matrix._balanced_title(source, 12, 4)
+                second = matrix._balanced_title(source, 12, 4)
+                self.assertEqual(first, second)
+                lines = first.splitlines()
+                self.assertTrue(lines)
+                self.assertLessEqual(len(lines), 4)
+                self.assertTrue(all(line.strip() for line in lines))
+                self.assertTrue(all(line[0] not in closing for line in lines))
+                self.assertTrue(all(line[-1] not in opening for line in lines))
+                normalized = " ".join(source.split())
+                candidates = {""}
+                for index, line in enumerate(lines):
+                    if index == 0:
+                        candidates = {line}
+                    else:
+                        candidates = {
+                            prefix + separator + line
+                            for prefix in candidates for separator in ("", " ")
+                        }
+                self.assertIn(normalized, candidates)
 
     def test_font_selection_uses_baseline_and_only_available_private_fonts(self):
         allowed = matrix.BASE_FONT_FAMILIES
@@ -341,6 +412,8 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(project["font_selection"]["top_font"], project["layout"]["top_font"])
         self.assertEqual(project["font_selection"]["bottom_font"], project["layout"]["bottom_font"])
         self.assertEqual(project["font_selection"], result["font_selection"])
+        self.assertEqual(project["scenes"][0]["top_text"], result["display_top_text"])
+        self.assertEqual("AI 工作流\n评论区留下关键词", project["source_text"])
         frozen = json.loads(self.service.store.get(job["job_id"])["payload"])["_font_provenance"]
         self.assertEqual(frozen["fonts"], result["font_files"])
         self.assertEqual(

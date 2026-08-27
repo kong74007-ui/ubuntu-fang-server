@@ -26,6 +26,7 @@ committed. Deploy only after the material-library tunnel is healthy.
 - The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.
 - `/health` reports `private_font_bundle_sha256`; completed job results retain the selected families, filenames, file hashes, and bundle fingerprint after staged files expire.
 - For a private-font render, the service copies the four baseline fonts and only the selected private font into the job directory. FFmpeg never reads the persistent private directory directly.
+- Top copy is balanced and frozen when the job is created. The service keeps English runs, number classifiers, and common Chinese modal pairs together, prefers punctuation boundaries, and preserves the untouched source copy for audit.
 
 ## Storage and delivery policy
 

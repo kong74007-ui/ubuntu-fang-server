@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import math
 import os
 import queue
 import re
@@ -239,6 +240,125 @@ def _required_visuals(duration: float) -> int:
     return 2 if duration <= 10 else 3
 
 
+def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    counters = "个家人位名款套种项台年月日天次岁"
+    tokens: list[tuple[str, str]] = []
+    cursor = 0
+    pending_space = False
+    while cursor < len(compact):
+        if compact[cursor].isspace():
+            pending_space = True
+            cursor += 1
+            continue
+        match = re.match(r"[+&./_-]?[A-Za-z0-9]+(?:[+&./_-][A-Za-z0-9]+)*", compact[cursor:])
+        if match:
+            token = match.group(0)
+            cursor += len(token)
+            if cursor < len(compact) and compact[cursor] in counters:
+                token += compact[cursor]
+                cursor += 1
+            separator = " " if pending_space and tokens else ""
+            tokens.append((token, separator))
+            pending_space = False
+            continue
+        char = compact[cursor]
+        cursor += 1
+        tokens.append((char, " " if pending_space and tokens else ""))
+        pending_space = False
+
+    def visual_width(value: str) -> float:
+        return sum(0.35 if char.isspace() else 0.62 if char.isascii() else 1.0 for char in value)
+
+    def boundary_penalty(left: str, right: str, separator: str) -> float:
+        left_char, right_char = left[-1], right[0]
+        if right_char in "，。！？；：、,.!?;:)]}）】》」』+%％":
+            return 1000.0
+        if left_char in "([{（【《「『+":
+            return 1000.0
+        if separator:
+            return -1.0
+        if (
+            left_char.isascii() and right_char.isascii()
+            and (left_char.isalnum() or left_char in "+_&./-")
+            and (right_char.isalnum() or right_char in "+_&./-")
+        ):
+            return 1000.0
+        if (
+            left_char in "0123456789一二三四五六七八九十几两" and right_char in counters
+        ) or left_char + right_char in {
+            "也能", "都能", "可以", "不会", "不能", "需要", "想要",
+            "已经", "正在", "还是", "就是", "如果", "所以", "但是",
+            "而且", "以及",
+        }:
+            return 1000.0
+        if left_char in "。！？!?；;":
+            return -20.0
+        if left_char in "，,：:":
+            return -3.0
+        return 0.0
+
+    total_width = sum(
+        visual_width(value) + (visual_width(separator) if index else 0.0)
+        for index, (value, separator) in enumerate(tokens)
+    )
+    comfortable_width = max(1.0, max_chars * 0.82)
+    target_lines = min(
+        max(1, max_lines), max(1, math.ceil(total_width / comfortable_width))
+    )
+    ideal = total_width / target_lines
+    line_limit = max(
+        float(max_chars), max(visual_width(value) for value, _ in tokens),
+        math.ceil(ideal) + 3,
+    )
+    for _ in range(max(1, len(compact))):
+        states = {(0, 0): (0.0, [])}
+        for line_index in range(target_lines):
+            for start in range(len(tokens)):
+                state = states.get((line_index, start))
+                if state is None:
+                    continue
+                remaining = target_lines - line_index - 1
+                width = 0.0
+                for end in range(start + 1, len(tokens) + 1):
+                    if len(tokens) - end < remaining:
+                        break
+                    value, separator = tokens[end - 1]
+                    if end - 1 > start:
+                        width += visual_width(separator)
+                    width += visual_width(value)
+                    if width > line_limit + 0.001:
+                        break
+                    penalty = boundary_penalty(
+                        tokens[end - 1][0], tokens[end][0], tokens[end][1]
+                    ) if end < len(tokens) else 0.0
+                    if penalty >= 1000:
+                        continue
+                    score = state[0] + (width - ideal) ** 2 + penalty
+                    if line_index == target_lines - 1 and width < ideal * 0.58:
+                        score += (ideal - width) ** 2 * 4
+                    key = (line_index + 1, end)
+                    if key not in states or score < states[key][0]:
+                        states[key] = (score, state[1] + [end])
+        result = states.get((target_lines, len(tokens)))
+        if result:
+            lines, start = [], 0
+            for end in result[1]:
+                parts = [tokens[start][0]]
+                for value, separator in tokens[start + 1:end]:
+                    parts.extend((separator, value))
+                line = "".join(parts).strip()
+                if not line:
+                    return compact
+                lines.append(line)
+                start = end
+            return "\n".join(lines)
+        line_limit += 1
+    return compact
+
+
 class JobStore:
     def __init__(self, path: Path):
         self.path = path
@@ -446,12 +566,20 @@ class MatrixTemplateService:
         if catalog.get("version") != 1 or not isinstance(catalog.get("templates"), list):
             raise MatrixTemplateError("invalid template catalog")
         result = []
+        text_limits = {}
         for item in catalog["templates"]:
             if not isinstance(item, dict):
                 raise MatrixTemplateError("invalid template record")
             template_id = str(item.get("id") or "")
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
                 raise MatrixTemplateError("invalid template id")
+            layout = item.get("layout") or {}
+            if not isinstance(layout, dict):
+                raise MatrixTemplateError("invalid template layout")
+            text_limits[template_id] = (
+                max(6, int(layout.get("top_max_chars", 12))),
+                min(4, max(1, int(layout.get("top_max_lines", 3)))),
+            )
             result.append({
                 "id": template_id,
                 "name": str(item.get("name") or template_id)[:40],
@@ -460,6 +588,7 @@ class MatrixTemplateService:
             })
         if len(result) != 13 or len({item["id"] for item in result}) != 13:
             raise MatrixTemplateError("expected exactly 13 unique templates")
+        self.template_text_limits = text_limits
         return result
 
     def validate_payload(self, raw: dict) -> dict:
@@ -514,6 +643,10 @@ class MatrixTemplateService:
             "fonts": selected,
             "private_bundle_sha256": self.private_font_fingerprint,
         }
+        max_chars, max_lines = self.template_text_limits[payload["template_id"]]
+        payload["_display_top_text"] = _balanced_title(
+            payload["top_text"], max_chars, max_lines
+        )
         return payload
 
     def _enqueue(self, job_id: str) -> bool:
@@ -795,7 +928,7 @@ class MatrixTemplateService:
             "voice": {"enabled": False},
             "scenes": [{
                 "id": "s01", "role": "hook", "text": "",
-                "top_text": payload["top_text"],
+                "top_text": str(payload.get("_display_top_text") or payload["top_text"]),
                 "bottom_text": payload["bottom_text"],
                 "duration": payload["duration"], "media": media,
                 "motion": "zoom-in", "transition": "cut",
@@ -910,6 +1043,7 @@ class MatrixTemplateService:
             "template_id": payload["template_id"],
             "file_url": f"/v1/files/{job_id}.mp4",
             "font_selection": project["font_selection"],
+            "display_top_text": str(payload.get("_display_top_text") or payload["top_text"]),
             "font_files": provenance["fonts"],
             "private_font_bundle_sha256": provenance["private_bundle_sha256"],
             "material_manifest": [{
