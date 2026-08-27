@@ -75,12 +75,8 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "template_id": "native-bold",
             })
 
-    def test_font_selection_is_stable_varied_and_uses_full_bundled_font_library(self):
-        allowed = {
-            "Noto Sans SC", "ZCOOL XiaoWei", "Ma Shan Zheng", "ZCOOL KuaiLe",
-            "Smiley Sans Oblique", "Gen Jyuu Gothic Heavy",
-            "GenSenRounded TW H", "HouZunSongTi",
-        }
+    def test_font_selection_uses_baseline_and_only_available_private_fonts(self):
+        allowed = matrix.BASE_FONT_FAMILIES
         self.assertEqual(13, len(matrix.FONT_VARIANTS))
         represented = set()
         for template_id in matrix.FONT_VARIANTS:
@@ -105,6 +101,65 @@ class MatrixTemplateApiTests(unittest.TestCase):
         fallback = matrix._font_selection("future-template", "f" * 32)
         self.assertIn(fallback["top_font"], allowed)
         self.assertIn(fallback["bottom_font"], allowed)
+        private_represented = {
+            font for options in matrix.PRIVATE_FONT_VARIANTS.values()
+            for _, top_font, bottom_font in options
+            for font in (top_font, bottom_font)
+            if font in matrix.PRIVATE_FONT_FAMILIES
+        }
+        self.assertEqual(matrix.PRIVATE_FONT_FAMILIES, private_represented)
+        selections = [
+            matrix._font_selection("native-bold", format(index, "032x"), {"AaHouDiHei"})
+            for index in range(100)
+        ]
+        self.assertTrue(any(item["top_font"] == "AaHouDiHei" for item in selections))
+        self.assertTrue(all(
+            item["top_font"] in allowed | {"AaHouDiHei"}
+            and item["bottom_font"] in allowed | {"AaHouDiHei"}
+            for item in selections
+        ))
+
+    def test_private_font_manifest_is_verified_and_staged_inside_job(self):
+        private_root = self.root / "private-fonts"
+        private_root.mkdir()
+        private_file = private_root / "AaHouDiHei.ttf"
+        private_file.write_bytes(b"private-font")
+        private_hash = hashlib.sha256(private_file.read_bytes()).hexdigest()
+        (private_root / "sources.json").write_text(json.dumps({
+            "schema_version": 1,
+            "fonts": [{
+                "family": "AaHouDiHei", "file": private_file.name,
+                "sha256": private_hash, "authorized": True,
+            }],
+        }), encoding="utf-8")
+        font_root = self.skill / "assets/fonts"
+        font_root.mkdir()
+        bundled = []
+        for index, family in enumerate(sorted(matrix.BASE_FONT_FAMILIES)):
+            path = font_root / f"base-{index}.ttf"
+            path.write_bytes(family.encode("utf-8"))
+            bundled.append({
+                "family": family, "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (font_root / "sources.json").write_text(
+            json.dumps({"fonts": bundled}), encoding="utf-8"
+        )
+        self.service.private_fonts = matrix._load_private_fonts(private_root)
+        job_root = self.root / "data" / ("a" * 32)
+        relative = self.service._stage_project_fonts(job_root, {
+            "top_font": "AaHouDiHei", "bottom_font": "Noto Sans SC",
+        })
+        self.assertEqual("assets/fonts", relative)
+        staged_root = job_root / relative
+        staged = json.loads((staged_root / "sources.json").read_text(encoding="utf-8"))
+        self.assertEqual(5, len(staged["fonts"]))
+        self.assertEqual(private_hash, hashlib.sha256(
+            (staged_root / private_file.name).read_bytes()
+        ).hexdigest())
+        private_file.write_bytes(b"changed")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "has changed"):
+            matrix._load_private_fonts(private_root)
 
     def test_request_id_is_idempotent_and_payload_bound(self):
         body = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
