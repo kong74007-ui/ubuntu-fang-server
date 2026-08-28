@@ -53,3 +53,13 @@ instead of starting an unsafe five-worker service.
 The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 `MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS`, `MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS`,
 `MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE`, and `MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT`.
+
+## Batch material diversity
+
+Requests may include one shared 32-character `batch_id` plus `batch_index` and
+`batch_size` (1-5). Material selection is serialized briefly while rendering
+remains five-way concurrent. Every selected image/video SHA is reserved in
+SQLite before the next batch member selects, then supplied to the material
+library as `used_sha256`. This prevents visual reuse across one batch while
+allowing BGM reuse. A retry or service restart reuses the frozen per-job
+selection instead of choosing new assets.
