@@ -704,6 +704,13 @@ class MatrixTemplateApiTests(unittest.TestCase):
             )
             self.assertEqual(results[1], frozen)
             self.assertEqual(before, len(requests))
+            with self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "同批次视觉素材重复"
+            ) as duplicate:
+                self.service.store.reserve_batch_materials(
+                    batch_id, "f" * 32, results[1]
+                )
+            self.assertNotIn("UNIQUE", str(duplicate.exception))
         restarted = matrix.MatrixTemplateService(
             data_root=self.service.data_root,
             skill_root=self.skill,

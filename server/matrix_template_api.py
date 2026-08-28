@@ -479,25 +479,28 @@ class JobStore:
         if not visual_shas or any(not SHA_RE.fullmatch(value) for value in visual_shas):
             raise MatrixTemplateError("batch visual material reservation is invalid")
         now = _now()
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            existing = db.execute(
-                "SELECT materials,batch_id FROM batch_material_selections WHERE job_id=?",
-                (job_id,),
-            ).fetchone()
-            if existing:
-                if existing["batch_id"] != batch_id or json.loads(existing["materials"]) != materials:
-                    raise MatrixTemplateError("batch material selection conflict")
-                return
-            for sha256 in visual_shas:
+        try:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                existing = db.execute(
+                    "SELECT materials,batch_id FROM batch_material_selections WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+                if existing:
+                    if existing["batch_id"] != batch_id or json.loads(existing["materials"]) != materials:
+                        raise MatrixTemplateError("batch material selection conflict")
+                    return
+                for sha256 in visual_shas:
+                    db.execute(
+                        "INSERT INTO batch_material_reservations(batch_id,sha256,job_id,created_at) VALUES(?,?,?,?)",
+                        (batch_id, sha256, job_id, now),
+                    )
                 db.execute(
-                    "INSERT INTO batch_material_reservations(batch_id,sha256,job_id,created_at) VALUES(?,?,?,?)",
-                    (batch_id, sha256, job_id, now),
+                    "INSERT INTO batch_material_selections(job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
+                    (job_id, batch_id, json.dumps(materials, ensure_ascii=False), now),
                 )
-            db.execute(
-                "INSERT INTO batch_material_selections(job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
-                (job_id, batch_id, json.dumps(materials, ensure_ascii=False), now),
-            )
+        except sqlite3.IntegrityError as exc:
+            raise MatrixTemplateError("同批次视觉素材重复，请重新生成") from exc
 
     def cleanup_candidates(self, *, now: int, retention_seconds: int,
                            delivery_grace_seconds: int, limit: int) -> list[sqlite3.Row]:
