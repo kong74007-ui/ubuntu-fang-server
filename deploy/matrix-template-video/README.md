@@ -2,14 +2,30 @@
 
 Internal generation-server API for the `text-media-text` mode from the pinned
 `kong74007-ui/script-to-matrix-video` Skill. It binds to `127.0.0.1:8112`, runs
-up to five renders at a time, and uses the existing material-library tunnel at
-`127.0.0.1:8111`. It never calls an AI image or video provider.
+up to five FFmpeg renders at a time, and uses the existing material-library
+tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
+
+The runtime exposes 19 templates: two generation-server-owned FFmpeg layouts
+and the 17-template `reference-typography-17` HyperFrames pack. HyperFrames
+templates require exactly three distinct approved video assets, render with
+HyperFrames `0.8.16`, and are limited to one concurrent render on the 8 GB host.
+Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
+template. Any request `font_family` is ignored for these 17 templates; the two
+FFmpeg layouts continue to support automatic or explicit font selection.
+The first release accepts only one output per HyperFrames request. A persisted
+900-second deadline starts at database admission; render-slot waiting is capped
+at 120 seconds and consumes the same deadline. Expired jobs terminate and enter
+the normal failure/refund path before the production site's 1200-second poll
+deadline, so accepted work cannot continue after the caller reports a timeout.
 
 The installer clones and verifies commit
 `243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the
 generation-server-owned private-domain layout patch, restricts the runtime catalog
 to the two private-domain templates, atomically switches releases, and checks the
 exact runtime build id.
+It separately sparse-checks out reference template commit
+`9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
+four fixed OFL fonts, and installs pinned GSAP `3.14.2` inside the release.
 The patch adds `full-overlay-bold` and `poster-split`; its SHA-256 is locked in
 `install.sh`, so a missing or changed patch fails before the active release is
 switched. The public Skill repository remains unchanged until the generation
