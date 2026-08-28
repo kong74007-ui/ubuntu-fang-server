@@ -3,6 +3,12 @@ set -euo pipefail
 
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
 UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"
+REFERENCE_UPSTREAM_COMMIT="9040a24139372f14346816cf42a97271767a0777"
+HYPERFRAMES_VERSION="0.8.16"
+GSAP_VERSION="3.14.2"
+HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
+HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
+NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
@@ -96,6 +102,14 @@ if [[ -f "${ENV_FILE}" ]]; then cp -a "${ENV_FILE}" "${BACKUP}/env"; ENV_EXISTED
 if [[ "$(nproc)" -lt 4 ]] || [[ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -lt 7340032 ]]; then
   echo "matrix template concurrency 5 requires at least 4 vCPU and 7 GiB RAM" >&2; exit 1
 fi
+if [[ ! -x "${HYPERFRAMES_CLI}" ]] || [[ "$("${HYPERFRAMES_CLI}" --version)" != "${HYPERFRAMES_VERSION}" ]]; then
+  echo "HyperFrames ${HYPERFRAMES_VERSION} is required" >&2; exit 1
+fi
+for binary in "${HYPERFRAMES_BROWSER}" "${NODE_NPM}"; do
+  if [[ ! -x "${binary}" ]]; then
+    echo "missing or unsafe HyperFrames runtime binary: ${binary}" >&2; exit 1
+  fi
+done
 install -d -o root -g root -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}"
 install -d -o admin -g admin -m 0750 "${STATE_ROOT}"
 install -d -o root -g admin -m 0750 "${PRIVATE_FONT_ROOT}"
@@ -122,7 +136,58 @@ python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
 python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"
 python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"
 python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
-BUILD_ID="$(printf '%s\n' "${UPSTREAM_COMMIT}" "${LAYOUT_PATCH_SHA256}" "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" | sha256sum | awk '{print $1}')"
+
+REFERENCE_UPSTREAM="${RELEASE}/reference-upstream"
+git clone --filter=blob:none --no-checkout "${UPSTREAM_URL}" "${REFERENCE_UPSTREAM}"
+git -C "${REFERENCE_UPSTREAM}" sparse-checkout init --cone
+git -C "${REFERENCE_UPSTREAM}" sparse-checkout set \
+  script-to-matrix-video/assets/templates/reference-typography-17 \
+  script-to-matrix-video/assets/fonts
+git -C "${REFERENCE_UPSTREAM}" checkout --detach "${REFERENCE_UPSTREAM_COMMIT}"
+git -C "${REFERENCE_UPSTREAM}" reset --hard "${REFERENCE_UPSTREAM_COMMIT}"
+git -C "${REFERENCE_UPSTREAM}" clean -fdx
+if [[ "$(git -C "${REFERENCE_UPSTREAM}" rev-parse HEAD)" != "${REFERENCE_UPSTREAM_COMMIT}" ]]; then
+  echo "reference template upstream commit mismatch" >&2; exit 1
+fi
+REFERENCE_SKILL_ROOT="${REFERENCE_UPSTREAM}/script-to-matrix-video"
+REFERENCE_PACK_ROOT="${REFERENCE_SKILL_ROOT}/assets/templates/reference-typography-17"
+REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["REFERENCE_SKILL_ROOT"])
+manifest = json.loads((root / "assets/templates/reference-typography-17/manifest.json").read_text(encoding="utf-8"))
+templates = manifest.get("templates") or []
+assert manifest.get("pack_id") == "reference-typography-17"
+assert manifest.get("engine") == "hyperframes"
+assert manifest.get("hyperframes_version") == os.environ["HYPERFRAMES_VERSION"]
+assert len(templates) == 17
+assert len({item.get("id") for item in templates}) == 17
+for name in (
+    "NotoSansSC-Variable.ttf", "MaShanZheng-Regular.ttf",
+    "ZCOOLKuaiLe-Regular.ttf", "ZCOOLXiaoWei-Regular.ttf",
+):
+    assert (root / "assets/fonts" / name).is_file()
+PY
+REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
+install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"
+env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" install \
+  --prefix "${REFERENCE_RUNTIME}" --no-save --ignore-scripts --no-audit --no-fund \
+  "gsap@${GSAP_VERSION}"
+GSAP_SOURCE="${REFERENCE_RUNTIME}/node_modules/gsap/dist/gsap.min.js"
+if [[ ! -f "${GSAP_SOURCE}" ]] || [[ -L "${GSAP_SOURCE}" ]]; then
+  echo "pinned GSAP runtime is missing" >&2; exit 1
+fi
+if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "${REFERENCE_RUNTIME}/node_modules/gsap/package.json")" != "${GSAP_VERSION}" ]]; then
+  echo "pinned GSAP runtime version mismatch" >&2; exit 1
+fi
+BUILD_ID="$(printf '%s\n' \
+  "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" \
+  "${LAYOUT_PATCH_SHA256}" "${HYPERFRAMES_VERSION}" \
+  "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
+  "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" \
+  | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
 
 if [[ ! -e "${ENV_FILE}" ]]; then
@@ -136,8 +201,13 @@ PY
 MATRIX_TEMPLATE_API_TOKEN=${token}
 MATRIX_TEMPLATE_DATA_ROOT=${STATE_ROOT}
 MATRIX_TEMPLATE_SKILL_ROOT=${SOURCE_LINK}/upstream/script-to-matrix-video
+MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT=${SOURCE_LINK}/reference-upstream/script-to-matrix-video
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
 MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
+MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
+MATRIX_TEMPLATE_HYPERFRAMES_GSAP=${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js
+MATRIX_TEMPLATE_HYPERFRAMES_BROWSER=${HYPERFRAMES_BROWSER}
+MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=1
 MATRIX_TEMPLATE_CONCURRENCY=5
 MATRIX_TEMPLATE_RETENTION_SECONDS=259200
 MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600
@@ -150,8 +220,39 @@ EOF
   ENV_CREATED=1
 else
   env_next="$(mktemp "${BACKUP}/env.next.XXXXXX")"
-  awk 'BEGIN{done=0} /^MATRIX_TEMPLATE_CONCURRENCY=/{if(!done){print "MATRIX_TEMPLATE_CONCURRENCY=5"; done=1} next} {print} END{if(!done) print "MATRIX_TEMPLATE_CONCURRENCY=5"}' \
-    "${ENV_FILE}" > "${env_next}"
+  ENV_INPUT="${ENV_FILE}" ENV_OUTPUT="${env_next}" \
+  REFERENCE_ROOT="${SOURCE_LINK}/reference-upstream/script-to-matrix-video" \
+  HYPERFRAMES_CLI_VALUE="${HYPERFRAMES_CLI}" \
+  HYPERFRAMES_GSAP_VALUE="${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js" \
+  HYPERFRAMES_BROWSER_VALUE="${HYPERFRAMES_BROWSER}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+source = Path(os.environ["ENV_INPUT"])
+target = Path(os.environ["ENV_OUTPUT"])
+settings = {
+    "MATRIX_TEMPLATE_CONCURRENCY": "5",
+    "MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT": os.environ["REFERENCE_ROOT"],
+    "MATRIX_TEMPLATE_HYPERFRAMES_CLI": os.environ["HYPERFRAMES_CLI_VALUE"],
+    "MATRIX_TEMPLATE_HYPERFRAMES_GSAP": os.environ["HYPERFRAMES_GSAP_VALUE"],
+    "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER": os.environ["HYPERFRAMES_BROWSER_VALUE"],
+    "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY": "1",
+}
+seen = set()
+output = []
+for line in source.read_text(encoding="utf-8").splitlines():
+    key = line.split("=", 1)[0]
+    if key in settings:
+        if key not in seen:
+            output.append(f"{key}={settings[key]}")
+            seen.add(key)
+    else:
+        output.append(line)
+for key in settings:
+    if key not in seen:
+        output.append(f"{key}={settings[key]}")
+target.write_text("\n".join(output) + "\n", encoding="utf-8")
+PY
   install -o root -g admin -m 0640 "${env_next}" "${ENV_FILE}"
   ENV_MUTATED=1
 fi
@@ -180,7 +281,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==2 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

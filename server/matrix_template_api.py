@@ -83,6 +83,30 @@ PRIVATE_FONT_VARIANTS = {
     "full-overlay-bold": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
     "poster-split": (("private-heavy", "AaHouDiHei", "Noto Sans SC"), ("private-poster", "Kingnam Bobo", "Noto Sans SC"), ("private-display", "zihunbiantaoti", "Noto Sans SC")),
 }
+REFERENCE_PACK_ID = "reference-typography-17"
+REFERENCE_HYPERFRAMES_VERSION = "0.8.16"
+REFERENCE_TEMPLATE_COUNT = 17
+REFERENCE_FONT_FILES = (
+    "NotoSansSC-Variable.ttf",
+    "MaShanZheng-Regular.ttf",
+    "ZCOOLKuaiLe-Regular.ttf",
+    "ZCOOLXiaoWei-Regular.ttf",
+)
+REFERENCE_FONT_FAMILY_FILES = {
+    "Noto Sans SC": "NotoSansSC-Variable.ttf",
+    "Ma Shan Zheng": "MaShanZheng-Regular.ttf",
+    "ZCOOL KuaiLe": "ZCOOLKuaiLe-Regular.ttf",
+    "ZCOOL XiaoWei": "ZCOOLXiaoWei-Regular.ttf",
+}
+REFERENCE_GSAP_CDN = (
+    '<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>'
+)
+REFERENCE_GSAP_LOCAL = '<script src="./gsap.min.js"></script>'
+REFERENCE_EMPTY_LAYER_STYLE = (
+    '<style id="matrix-template-empty-layers">'
+    '[data-var-text]:empty{display:none!important}'
+    '</style>'
+)
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -354,6 +378,27 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     return compact
 
 
+def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
+    top_lines = _balanced_title(top, 12, 3).splitlines()[:3]
+    bottom_lines = _balanced_title(bottom, 15, 2).splitlines()[:2]
+    if len(bottom_lines) == 1:
+        bottom_lines.insert(0, "")
+    top_lines.extend([""] * (3 - len(top_lines)))
+    bottom_lines.extend([""] * (2 - len(bottom_lines)))
+    return {
+        "top1": top_lines[0],
+        "top2": top_lines[1],
+        "top3": top_lines[2],
+        "bottom1": bottom_lines[0],
+        "bottom2": bottom_lines[1],
+    }
+
+
+def _reference_duration(job_id: str, template_id: str) -> int:
+    digest = hashlib.sha256(f"{job_id}:{template_id}".encode("utf-8")).digest()
+    return 8 + int.from_bytes(digest[:8], "big") % 8
+
+
 class JobStore:
     def __init__(self, path: Path):
         self.path = path
@@ -559,6 +604,11 @@ class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str, python: str = sys.executable,
                  private_font_root: Path | None = None,
+                 reference_skill_root: Path | None = None,
+                 hyperframes_cli: Path | None = None,
+                 hyperframes_gsap: Path | None = None,
+                 hyperframes_browser: Path | None = None,
+                 hyperframes_concurrency: int = 1,
                  concurrency: int = 1,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
@@ -586,6 +636,22 @@ class MatrixTemplateService:
         self.bundled_fonts = _load_bundled_fonts(self.skill_root)
         self.private_fonts = _load_private_fonts(private_font_root)
         self.private_font_fingerprint = _font_bundle_fingerprint(self.private_fonts)
+        self.reference_skill_root = (
+            reference_skill_root.resolve() if reference_skill_root else None
+        )
+        self.reference_pack_root = None
+        self.reference_templates: dict[str, dict] = {}
+        self.reference_fonts: dict[str, dict] = {}
+        self.reference_font_fingerprint = _font_bundle_fingerprint({})
+        self.hyperframes_cli = hyperframes_cli.resolve() if hyperframes_cli else None
+        self.hyperframes_gsap = hyperframes_gsap.resolve() if hyperframes_gsap else None
+        self.hyperframes_browser = (
+            hyperframes_browser.resolve() if hyperframes_browser else None
+        )
+        self.hyperframes_concurrency = int(hyperframes_concurrency)
+        if not 1 <= self.hyperframes_concurrency <= 2:
+            raise MatrixTemplateError("HyperFrames concurrency must be between 1 and 2")
+        self.hyperframes_slots = threading.BoundedSemaphore(self.hyperframes_concurrency)
         self.concurrency = int(concurrency)
         if not 1 <= self.concurrency <= 5:
             raise MatrixTemplateError("concurrency must be between 1 and 5")
@@ -619,6 +685,8 @@ class MatrixTemplateService:
         self.cleanup_worker = None
         self.workers_expected = start_worker
         self.catalog = self._load_catalog()
+        if self.reference_skill_root is not None:
+            self.catalog.extend(self._load_reference_catalog())
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()
@@ -664,6 +732,9 @@ class MatrixTemplateService:
                 "name": str(item.get("name") or template_id)[:40],
                 "description": str(item.get("description") or "")[:160],
                 "tags": [str(tag)[:20] for tag in (item.get("tags") or [])[:8]],
+                "engine": "ffmpeg",
+                "font_mode": "selectable",
+                "font_selectable": True,
             })
         if len(result) != 2 or len({item["id"] for item in result}) != 2:
             raise MatrixTemplateError("expected exactly 2 unique templates")
@@ -671,6 +742,96 @@ class MatrixTemplateService:
         if {item["id"] for item in result} != required:
             raise MatrixTemplateError("required private-domain templates are missing")
         self.template_text_limits = text_limits
+        return result
+
+    def _load_reference_catalog(self) -> list[dict]:
+        pack_root = (
+            self.reference_skill_root
+            / "assets/templates"
+            / REFERENCE_PACK_ID
+        )
+        manifest_path = pack_root / "manifest.json"
+        manifest = _read_json(manifest_path)
+        if (
+            manifest.get("version") != 2
+            or manifest.get("pack_id") != REFERENCE_PACK_ID
+            or manifest.get("engine") != "hyperframes"
+            or manifest.get("hyperframes_version") != REFERENCE_HYPERFRAMES_VERSION
+            or manifest.get("resolution") != "1080x1920"
+            or manifest.get("fps") != 30
+        ):
+            raise MatrixTemplateError("invalid HyperFrames reference template manifest")
+        records = manifest.get("templates")
+        if not isinstance(records, list) or len(records) != REFERENCE_TEMPLATE_COUNT:
+            raise MatrixTemplateError("expected exactly 17 HyperFrames reference templates")
+        for required in (
+            "index.html", "hyperframes.json", "preview-data.js",
+            "assets/bgm/silence.m4a",
+        ):
+            path = pack_root.joinpath(*required.split("/"))
+            if path.is_symlink() or not path.is_file():
+                raise MatrixTemplateError("HyperFrames reference template pack is incomplete")
+
+        result = []
+        variants = set()
+        expected_ids = set()
+        for index, item in enumerate(records, 1):
+            if not isinstance(item, dict):
+                raise MatrixTemplateError("invalid HyperFrames reference template record")
+            template_id = str(item.get("id") or "")
+            variant = str(item.get("variant") or "")
+            expected_variant = f"v{index:02d}"
+            if (
+                not re.fullmatch(r"ref-[0-9]{2}-[a-z0-9-]{1,48}", template_id)
+                or variant != expected_variant
+                or template_id in expected_ids
+                or variant in variants
+            ):
+                raise MatrixTemplateError("invalid HyperFrames reference template identity")
+            expected_ids.add(template_id)
+            variants.add(variant)
+            record = {
+                "id": template_id,
+                "name": str(item.get("name") or template_id)[:40],
+                "description": str(item.get("description") or "")[:160],
+                "tags": ["HyperFrames", "固定排版", "内置字体"],
+                "engine": "hyperframes",
+                "font_mode": "template_locked",
+                "font_selectable": False,
+                "text_layers": {"top": 3, "bottom": 2},
+                "duration_mode": "random_integer_8_15",
+                "required_visuals": 3,
+                "variant": variant,
+            }
+            result.append(record)
+            self.reference_templates[template_id] = record
+
+        reference_fonts = _load_bundled_fonts(self.reference_skill_root)
+        missing_files = [
+            filename for filename in REFERENCE_FONT_FILES
+            if not (self.reference_skill_root / "assets/fonts" / filename).is_file()
+        ]
+        if missing_files:
+            raise MatrixTemplateError("HyperFrames reference template fonts are incomplete")
+        if {
+            family: item["file"] for family, item in reference_fonts.items()
+        } != REFERENCE_FONT_FAMILY_FILES:
+            raise MatrixTemplateError("HyperFrames reference template font mapping changed")
+        if self.hyperframes_cli is None or not self.hyperframes_cli.is_file():
+            raise MatrixTemplateError("HyperFrames 0.8.16 CLI is unavailable")
+        if self.hyperframes_gsap is None or not self.hyperframes_gsap.is_file():
+            raise MatrixTemplateError("HyperFrames GSAP runtime is unavailable")
+        if self.hyperframes_browser is None or not self.hyperframes_browser.is_file():
+            raise MatrixTemplateError("HyperFrames browser is unavailable")
+        version = subprocess.run(
+            [str(self.hyperframes_cli), "--version"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        if version.returncode or version.stdout.strip() != REFERENCE_HYPERFRAMES_VERSION:
+            raise MatrixTemplateError("HyperFrames CLI version mismatch")
+        self.reference_pack_root = pack_root
+        self.reference_fonts = reference_fonts
+        self.reference_font_fingerprint = _font_bundle_fingerprint(reference_fonts)
         return result
 
     def validate_payload(self, raw: dict, *, require_available_font: bool = True,
@@ -691,15 +852,21 @@ class MatrixTemplateService:
         )
         if template_id not in allowed_templates:
             raise ValueError("请选择有效模板")
+        reference_template = template_id in self.reference_templates
         font_family = str(raw.get("font_family") or "").strip()
-        if font_family and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family):
+        if (
+            not reference_template and font_family
+            and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family)
+        ):
             raise ValueError("字体参数格式无效")
         if (
-            require_available_font and font_family
+            not reference_template and require_available_font and font_family
             and font_family not in self.available_font_families()
         ):
             raise ValueError("请选择当前可用字体")
-        duration = _duration(top, bottom, raw.get("duration"))
+        duration = _duration(
+            top, bottom, None if reference_template else raw.get("duration")
+        )
         bgm = raw.get("bgm", True)
         if not isinstance(bgm, bool):
             raise ValueError("bgm must be boolean")
@@ -708,7 +875,7 @@ class MatrixTemplateService:
             "template_id": template_id, "duration": duration,
             "bgm": bgm,
         }
-        if font_family:
+        if font_family and not reference_template:
             result["font_family"] = font_family
         batch_id = str(raw.get("batch_id") or "").strip().lower()
         batch_index = raw.get("batch_index")
@@ -741,6 +908,11 @@ class MatrixTemplateService:
             })
         return values
 
+    def required_visuals(self, payload: dict) -> int:
+        if payload.get("template_id") in self.reference_templates:
+            return 3
+        return _required_visuals(payload["duration"])
+
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
@@ -765,6 +937,41 @@ class MatrixTemplateService:
         return job
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
+        template_id = payload["template_id"]
+        if template_id in self.reference_templates:
+            payload.pop("font_family", None)
+            payload["_reference_template"] = {
+                "pack_id": REFERENCE_PACK_ID,
+                "engine": "hyperframes",
+                "hyperframes_version": REFERENCE_HYPERFRAMES_VERSION,
+                "variant": self.reference_templates[template_id]["variant"],
+                "duration": _reference_duration(job_id, template_id),
+                "text": _reference_text_layers(
+                    payload["top_text"], payload["bottom_text"]
+                ),
+            }
+            payload["_font_provenance"] = {
+                "selection": {
+                    "variant": "template-locked",
+                    "top_font": "template-defined",
+                    "bottom_font": "template-defined",
+                },
+                "fonts": [
+                    {
+                        "family": family,
+                        "file": item["file"],
+                        "sha256": item["sha256"],
+                        "source": "reference-template",
+                    }
+                    for family, item in sorted(self.reference_fonts.items())
+                ],
+                "private_bundle_sha256": self.reference_font_fingerprint,
+            }
+            payload["_display_top_text"] = "\n".join(
+                value for key, value in payload["_reference_template"]["text"].items()
+                if key.startswith("top") and value
+            )
+            return payload
         requested_font = str(payload.get("font_family") or "")
         if requested_font and requested_font not in self.available_font_families():
             raise ValueError("请选择当前可用字体")
@@ -822,6 +1029,10 @@ class MatrixTemplateService:
             "concurrency": self.concurrency,
             "private_fonts": len(self.private_fonts),
             "private_font_bundle_sha256": self.private_font_fingerprint,
+            "hyperframes_templates": len(self.reference_templates),
+            "hyperframes_version": (
+                REFERENCE_HYPERFRAMES_VERSION if self.reference_templates else ""
+            ),
         }
 
     def _ensure_disk_capacity(self) -> None:
@@ -925,7 +1136,8 @@ class MatrixTemplateService:
 
     def _select_materials_once(self, payload: dict, job_id: str,
                                used_sha256=()) -> list[dict]:
-        count = _required_visuals(payload["duration"])
+        count = self.required_visuals(payload)
+        reference_template = payload.get("template_id") in self.reference_templates
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
             "scene_id": "media_01", "query": query,
@@ -933,7 +1145,8 @@ class MatrixTemplateService:
         }]
         scenes.extend({
             "scene_id": f"media_{index:02d}", "query": query,
-            "purpose": "模板成片补充素材", "media_type": "visual",
+            "purpose": "模板成片补充视频",
+            "media_type": "video" if reference_template else "visual",
         } for index in range(2, count + 1))
         if payload["bgm"]:
             scenes.append({
@@ -955,9 +1168,13 @@ class MatrixTemplateService:
             raise MatrixTemplateError("素材库返回了无效或重复素材")
         if ordered[0].get("media_type") != "video":
             raise MatrixTemplateError("模板成片至少需要一个视频素材")
-        for item in ordered[1:count]:
-            if item.get("media_type") not in {"image", "video"}:
-                raise MatrixTemplateError("素材库返回了无效画面素材")
+        if reference_template:
+            if any(item.get("media_type") != "video" for item in ordered[:count]):
+                raise MatrixTemplateError("HyperFrames 模板需要三个不同的视频素材")
+        else:
+            for item in ordered[1:count]:
+                if item.get("media_type") not in {"image", "video"}:
+                    raise MatrixTemplateError("素材库返回了无效画面素材")
         if payload["bgm"] and ordered[-1].get("media_type") != "bgm":
             raise MatrixTemplateError("素材库返回了无效背景音乐")
         return ordered
@@ -1166,6 +1383,148 @@ class MatrixTemplateService:
                 self.active_processes.discard(process)
                 self.active_process = next(iter(self.active_processes), None)
 
+    @staticmethod
+    def _copy_reference_asset(source: Path, destination: Path) -> str:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return destination.as_posix()
+
+    def _render_reference(self, payload: dict, job_id: str,
+                          materials: list[dict], paths: list[Path]) -> dict:
+        reference = payload.get("_reference_template")
+        if (
+            not isinstance(reference, dict)
+            or reference.get("pack_id") != REFERENCE_PACK_ID
+            or reference.get("hyperframes_version") != REFERENCE_HYPERFRAMES_VERSION
+            or not isinstance(reference.get("text"), dict)
+            or self.reference_pack_root is None
+        ):
+            raise MatrixTemplateError("frozen HyperFrames template metadata is invalid")
+        if len(paths) < 3 or any(
+            item.get("media_type") != "video" for item in materials[:3]
+        ):
+            raise MatrixTemplateError("HyperFrames 模板需要三个不同的视频素材")
+
+        root = self.data_root / job_id
+        workdir = root / "hyperframes"
+        if workdir.exists():
+            shutil.rmtree(workdir)
+        shutil.copytree(self.reference_pack_root, workdir)
+        fonts_dir = workdir / "assets/fonts"
+        fonts_dir.mkdir(parents=True, exist_ok=True)
+        for filename in REFERENCE_FONT_FILES:
+            source = self.reference_skill_root / "assets/fonts" / filename
+            if source.is_symlink() or not source.is_file():
+                raise MatrixTemplateError("HyperFrames reference template fonts changed")
+            shutil.copy2(source, fonts_dir / filename)
+
+        index_path = workdir / "index.html"
+        index = index_path.read_text(encoding="utf-8")
+        if index.count(REFERENCE_GSAP_CDN) != 1:
+            raise MatrixTemplateError("HyperFrames template GSAP declaration changed")
+        index = index.replace(REFERENCE_GSAP_CDN, REFERENCE_GSAP_LOCAL)
+        if REFERENCE_GSAP_CDN in index:
+            raise MatrixTemplateError("HyperFrames template GSAP localization failed")
+        if index.count("</head>") != 1:
+            raise MatrixTemplateError("HyperFrames template head declaration changed")
+        index = index.replace(
+            "</head>", REFERENCE_EMPTY_LAYER_STYLE + "\n</head>"
+        )
+        index_path.write_text(index, encoding="utf-8")
+        shutil.copy2(self.hyperframes_gsap, workdir / "gsap.min.js")
+
+        input_dir = workdir / "assets/input"
+        video_values = []
+        for index, source in enumerate(paths[:3], 1):
+            target = input_dir / f"video-{index}{source.suffix.lower()}"
+            self._copy_reference_asset(source, target)
+            video_values.append(target.relative_to(workdir).as_posix())
+        if payload["bgm"]:
+            if len(paths) < 4 or materials[3].get("media_type") != "bgm":
+                raise MatrixTemplateError("HyperFrames template BGM binding is invalid")
+            bgm_target = input_dir / f"bgm{paths[3].suffix.lower()}"
+            self._copy_reference_asset(paths[3], bgm_target)
+            bgm = bgm_target.relative_to(workdir).as_posix()
+        else:
+            bgm = "assets/bgm/silence.m4a"
+
+        variables = {
+            "name": job_id,
+            "variant": reference["variant"],
+            **reference["text"],
+            "duration": reference["duration"],
+            "videoA": video_values[0],
+            "videoB": video_values[1],
+            "videoC": video_values[2],
+            "bgm": bgm,
+        }
+        variables_path = workdir / "variables.json"
+        variables_path.write_text(
+            json.dumps(variables, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        output = root / "output/final.mp4"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        runtime_home = self.data_root / ".hyperframes-runtime"
+        cache_home = runtime_home / "cache"
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        cache_home.mkdir(parents=True, exist_ok=True)
+        command = [
+            str(self.hyperframes_cli), "render", str(workdir),
+            "--output", str(output),
+            "--quality", "high",
+            "--workers", "1",
+            "--fps", "30",
+            "--sdr",
+            "--no-browser-gpu",
+            "--strict-variables",
+            "--variables-file", str(variables_path),
+        ]
+        env = os.environ.copy()
+        env.update({
+            "HOME": str(runtime_home),
+            "XDG_CACHE_HOME": str(cache_home),
+            "HYPERFRAMES_BROWSER_PATH": str(self.hyperframes_browser),
+            "ONNXRUNTIME_NODE_INSTALL_CUDA": "skip",
+            "PRODUCER_LOW_MEMORY_MODE": "true",
+        })
+        options = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "env": env,
+        }
+        if os.name == "nt":
+            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            options["start_new_session"] = True
+        with self.hyperframes_slots:
+            if self.stop_event.is_set():
+                raise MatrixTemplateError("模板成片服务正在停止")
+            process = subprocess.Popen(command, **options)
+            with self.process_lock:
+                self.active_processes.add(process)
+                self.active_process = process
+            try:
+                try:
+                    stdout, stderr = process.communicate(timeout=RENDER_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as exc:
+                    self._terminate(process)
+                    output.unlink(missing_ok=True)
+                    raise MatrixTemplateError("HyperFrames 模板成片渲染超时") from exc
+                if process.returncode:
+                    output.unlink(missing_ok=True)
+                    detail = b"\n".join((stdout or b"", stderr or b"")).decode(
+                        "utf-8", "replace"
+                    ).strip()[-800:]
+                    raise MatrixTemplateError(
+                        "HyperFrames 模板成片渲染失败"
+                        + (": " + detail if detail else "")
+                    )
+            finally:
+                with self.process_lock:
+                    self.active_processes.discard(process)
+                    self.active_process = next(iter(self.active_processes), None)
+        return variables
+
     def _probe(self, output: Path) -> dict:
         result = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries",
@@ -1192,14 +1551,29 @@ class MatrixTemplateService:
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
         paths = [self._download(item, assets) for item in materials]
-        project = self._project(payload, job_id, materials, paths)
         provenance = payload["_font_provenance"]
-        fonts_dir = self._stage_project_fonts(root, provenance)
-        if fonts_dir:
-            project["render"]["fonts_dir"] = fonts_dir
-        project_path = root / "project.json"
-        project_path.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._render(project_path)
+        reference_template = payload["template_id"] in self.reference_templates
+        if reference_template:
+            variables = self._render_reference(payload, job_id, materials, paths)
+            font_selection = provenance["selection"]
+            display_top_text = "\n".join(
+                value for key, value in variables.items()
+                if key.startswith("top") and value
+            )
+            engine = "hyperframes"
+        else:
+            project = self._project(payload, job_id, materials, paths)
+            fonts_dir = self._stage_project_fonts(root, provenance)
+            if fonts_dir:
+                project["render"]["fonts_dir"] = fonts_dir
+            project_path = root / "project.json"
+            project_path.write_text(
+                json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            self._render(project_path)
+            font_selection = project["font_selection"]
+            display_top_text = project["scenes"][0]["top_text"]
+            engine = "ffmpeg"
         output = root / "output/final.mp4"
         try:
             probe = self._probe(output)
@@ -1214,8 +1588,10 @@ class MatrixTemplateService:
             "batch_index": payload.get("batch_index"),
             "batch_size": payload.get("batch_size"),
             "file_url": f"/v1/files/{job_id}.mp4",
-            "font_selection": project["font_selection"],
-            "display_top_text": str(payload.get("_display_top_text") or payload["top_text"]),
+            "engine": engine,
+            "font_mode": "template_locked" if reference_template else "selectable",
+            "font_selection": font_selection,
+            "display_top_text": display_top_text,
             "font_files": provenance["fonts"],
             "private_font_bundle_sha256": provenance["private_bundle_sha256"],
             "material_manifest": [{
@@ -1405,7 +1781,12 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "payload": payload,
                     "duration": payload["duration"],
-                    "required_visuals": _required_visuals(payload["duration"]),
+                    "required_visuals": self.service.required_visuals(payload),
+                    "duration_mode": (
+                        "random_integer_8_15"
+                        if payload["template_id"] in self.service.reference_templates
+                        else "copy_length"
+                    ),
                 })
                 return
             request_id = str(self.headers.get("X-Request-Id") or "")
@@ -1431,6 +1812,9 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8112)
     args = parser.parse_args()
+    reference_root_value = os.environ.get(
+        "MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT", ""
+    ).strip()
     service = MatrixTemplateService(
         data_root=Path(os.environ.get("MATRIX_TEMPLATE_DATA_ROOT", "/var/lib/huangque-matrix-template")),
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
@@ -1440,6 +1824,20 @@ def main() -> None:
         private_font_root=Path(os.environ.get(
             "MATRIX_TEMPLATE_PRIVATE_FONT_ROOT",
             "/var/lib/huangque-matrix-template/private-fonts",
+        )),
+        reference_skill_root=Path(reference_root_value) if reference_root_value else None,
+        hyperframes_cli=Path(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_CLI", "/usr/local/bin/hyperframes"
+        )),
+        hyperframes_gsap=Path(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_GSAP",
+            "/opt/huangque/matrix-template-video/source/reference-runtime/node_modules/gsap/dist/gsap.min.js",
+        )),
+        hyperframes_browser=Path(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER", "/usr/bin/google-chrome-stable"
+        )),
+        hyperframes_concurrency=int(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY", "1"
         )),
         concurrency=int(os.environ.get("MATRIX_TEMPLATE_CONCURRENCY", "1")),
         retention_seconds=int(os.environ.get(

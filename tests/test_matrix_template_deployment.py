@@ -13,6 +13,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_installer_pins_skill_and_uses_atomic_release_contract(self):
         installer = (ROOT / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn('UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"', installer)
+        self.assertIn('REFERENCE_UPSTREAM_COMMIT="9040a24139372f14346816cf42a97271767a0777"', installer)
+        self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
+        self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
@@ -27,6 +30,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"', installer)
         self.assertIn('PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"', installer)
         self.assertIn('MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}', installer)
+        self.assertIn('MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT=${SOURCE_LINK}/reference-upstream/script-to-matrix-video', installer)
+        self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}', installer)
+        self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=1', installer)
         self.assertIn('MATRIX_TEMPLATE_CONCURRENCY=5', installer)
         self.assertIn('d.get("concurrency")==5', installer)
         self.assertIn('d.get("worker_count")==5', installer)
@@ -36,7 +42,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
-        self.assertIn('d.get("templates")==2', installer)
+        self.assertIn('d.get("templates")==19', installer)
+        self.assertIn('d.get("hyperframes_templates")==17', installer)
+        self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertNotIn("MATRIX_TEMPLATE_API_TOKEN=sk-", installer)
         self.assertIn("MATRIX_TEMPLATE_RETENTION_SECONDS=259200", installer)
         self.assertIn("MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600", installer)

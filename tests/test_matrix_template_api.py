@@ -1183,5 +1183,252 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertFalse((project_root / "output/final.mp4").exists())
 
 
+class HyperFramesReferenceTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        self.reference_skill = self.root / "reference-skill"
+        self._write_skill_fixture(self.skill, reference=False)
+        self._write_skill_fixture(self.reference_skill, reference=True)
+        self.cli = self.root / "hyperframes"
+        self.cli.write_bytes(b"cli")
+        self.gsap = self.root / "gsap.min.js"
+        self.gsap.write_text("window.gsap={};", encoding="utf-8")
+        self.browser = self.root / "chrome"
+        self.browser.write_bytes(b"browser")
+        version = SimpleNamespace(returncode=0, stdout="0.8.16\n", stderr="")
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            self.service = matrix.MatrixTemplateService(
+                data_root=self.root / "data",
+                skill_root=self.skill,
+                reference_skill_root=self.reference_skill,
+                hyperframes_cli=self.cli,
+                hyperframes_gsap=self.gsap,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                start_worker=False,
+            )
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.temp.cleanup()
+
+    @staticmethod
+    def _write_skill_fixture(root: Path, *, reference: bool) -> None:
+        template_root = root / "assets/templates"
+        font_root = root / "assets/fonts"
+        scripts = root / "scripts"
+        template_root.mkdir(parents=True)
+        font_root.mkdir(parents=True)
+        scripts.mkdir()
+        family_files = {
+            "Noto Sans SC": "NotoSansSC-Variable.ttf",
+            "Ma Shan Zheng": "MaShanZheng-Regular.ttf",
+            "ZCOOL KuaiLe": "ZCOOLKuaiLe-Regular.ttf",
+            "ZCOOL XiaoWei": "ZCOOLXiaoWei-Regular.ttf",
+        }
+        bundled = []
+        for family, filename in family_files.items():
+            path = font_root / filename
+            path.write_bytes(family.encode("utf-8"))
+            bundled.append({
+                "family": family,
+                "file": filename,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (font_root / "sources.json").write_text(
+            json.dumps({"fonts": bundled}), encoding="utf-8"
+        )
+        if not reference:
+            templates = [{
+                "id": template_id,
+                "name": template_id,
+                "description": "fixture",
+                "tags": [],
+                "layout": {},
+                "render": {},
+            } for template_id in ("full-overlay-bold", "poster-split")]
+            (template_root / "catalog.json").write_text(
+                json.dumps({"version": 1, "templates": templates}), encoding="utf-8"
+            )
+            (scripts / "render_video.py").write_text("# fixture\n", encoding="utf-8")
+            return
+
+        pack = template_root / matrix.REFERENCE_PACK_ID
+        (pack / "assets/bgm").mkdir(parents=True)
+        (pack / "assets/bgm/silence.m4a").write_bytes(b"silence")
+        (pack / "index.html").write_text(
+            "<html><head>\n" + matrix.REFERENCE_GSAP_CDN
+            + "\n</head><body><div>fixture</div></body></html>\n",
+            encoding="utf-8",
+        )
+        (pack / "hyperframes.json").write_text("{}\n", encoding="utf-8")
+        (pack / "preview-data.js").write_text("// fixture\n", encoding="utf-8")
+        templates = [{
+            "id": f"ref-{index:02d}-fixture-{index:02d}",
+            "variant": f"v{index:02d}",
+            "name": f"参考模板 {index}",
+            "description": "固定字体参考模板",
+        } for index in range(1, 18)]
+        (pack / "manifest.json").write_text(json.dumps({
+            "version": 2,
+            "pack_id": matrix.REFERENCE_PACK_ID,
+            "engine": "hyperframes",
+            "hyperframes_version": matrix.REFERENCE_HYPERFRAMES_VERSION,
+            "resolution": "1080x1920",
+            "fps": 30,
+            "templates": templates,
+        }), encoding="utf-8")
+
+    def test_reference_catalog_is_19_and_ignores_font_selection(self):
+        self.assertEqual(19, len(self.service.catalog))
+        template_id = "ref-01-fixture-01"
+        template = self.service.templates[template_id]
+        self.assertEqual("hyperframes", template["engine"])
+        self.assertFalse(template["font_selectable"])
+        self.assertEqual("template_locked", template["font_mode"])
+        payload = self.service.validate_payload({
+            "top_text": "AI创业活动",
+            "bottom_text": "评论区回复关键词",
+            "template_id": template_id,
+            "font_family": "not/a/valid/font/value",
+            "duration": 15,
+            "bgm": False,
+        })
+        self.assertNotIn("font_family", payload)
+        self.assertEqual(3, self.service.required_visuals(payload))
+        frozen = self.service._freeze_font_provenance("1" * 32, payload)
+        self.assertEqual(
+            "template-locked",
+            frozen["_font_provenance"]["selection"]["variant"],
+        )
+        self.assertEqual(4, len(frozen["_font_provenance"]["fonts"]))
+        self.assertTrue(8 <= frozen["_reference_template"]["duration"] <= 15)
+        self.assertEqual("", frozen["_reference_template"]["text"]["bottom1"])
+        self.assertEqual(
+            "评论区回复关键词",
+            frozen["_reference_template"]["text"]["bottom2"],
+        )
+
+    def test_reference_material_selection_requires_three_videos(self):
+        payload = self.service.validate_payload({
+            "top_text": "活动标题",
+            "bottom_text": "报名获取资料",
+            "template_id": "ref-02-fixture-02",
+            "bgm": False,
+        })
+        captured = {}
+
+        def selection(_method, _path, body):
+            captured.update(body)
+            return {"materials": [{
+                "scene_id": f"media_{index:02d}",
+                "sha256": format(index, "064x"),
+                "media_type": "video",
+                "record_id": f"video-{index}",
+            } for index in range(1, 4)]}
+
+        with mock.patch.object(self.service, "_library_request", side_effect=selection):
+            materials = self.service._select_materials(payload, "2" * 32)
+        self.assertEqual(3, len(materials))
+        self.assertEqual(
+            ["video", "video", "video"],
+            [scene["media_type"] for scene in captured["scenes"]],
+        )
+
+    def test_reference_render_uses_locked_variables_and_local_gsap(self):
+        payload = self.service.validate_payload({
+            "top_text": "深圳AI创业者活动",
+            "bottom_text": "评论区回复OPC报名",
+            "template_id": "ref-03-fixture-03",
+            "font_family": "Noto Sans SC",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("3" * 32, payload)
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"source-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({"media_type": "video", "record_id": f"v{index}"})
+        process = mock.Mock()
+        process.returncode = 0
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        with mock.patch.object(matrix.subprocess, "Popen", return_value=process) as popen:
+            variables = self.service._render_reference(
+                payload, "3" * 32, materials, paths
+            )
+        command = popen.call_args.args[0]
+        self.assertEqual(str(self.cli), command[0])
+        self.assertIn("--strict-variables", command)
+        self.assertEqual("v03", variables["variant"])
+        self.assertNotIn("font_family", variables)
+        workdir = self.service.data_root / ("3" * 32) / "hyperframes"
+        index = (workdir / "index.html").read_text(encoding="utf-8")
+        self.assertIn(matrix.REFERENCE_GSAP_LOCAL, index)
+        self.assertNotIn(matrix.REFERENCE_GSAP_CDN, index)
+        self.assertIn(matrix.REFERENCE_EMPTY_LAYER_STYLE, index)
+        self.assertEqual(
+            set(matrix.REFERENCE_FONT_FILES),
+            {path.name for path in (workdir / "assets/fonts").iterdir()},
+        )
+
+    def test_execute_routes_reference_template_to_hyperframes(self):
+        payload = self.service.validate_payload({
+            "top_text": "女性创业活动",
+            "bottom_text": "评论区回复关键词",
+            "template_id": "ref-04-fixture-04",
+            "font_family": "AaHouDiHei",
+            "bgm": False,
+        })
+        job, _ = self.service.store.create(
+            "reference-execute",
+            payload,
+            freeze_payload=self.service._freeze_font_provenance,
+        )
+        materials = [{
+            "scene_id": f"media_{index:02d}",
+            "sha256": format(index, "064x"),
+            "media_type": "video",
+            "record_id": f"v{index}",
+            "match_level": "exact",
+        } for index in range(1, 4)]
+        counter = iter(range(1, 4))
+
+        def download(_item, target):
+            path = target / f"{next(counter)}.mp4"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"video")
+            return path
+
+        def render_reference(frozen, job_id, _materials, _paths):
+            output = self.service.data_root / job_id / "output/final.mp4"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"video")
+            return {
+                **frozen["_reference_template"]["text"],
+                "duration": frozen["_reference_template"]["duration"],
+            }
+
+        with mock.patch.object(self.service, "_select_materials", return_value=materials), \
+             mock.patch.object(self.service, "_download", side_effect=download), \
+             mock.patch.object(self.service, "_render_reference", side_effect=render_reference), \
+             mock.patch.object(self.service, "_render", side_effect=AssertionError("FFmpeg renderer must not run")), \
+             mock.patch.object(self.service, "_probe", return_value={"duration": 11.0, "width": 1080, "height": 1920}):
+            result = self.service._execute(job["job_id"])
+
+        self.assertEqual("hyperframes", result["engine"])
+        self.assertEqual("template_locked", result["font_mode"])
+        self.assertEqual("template-locked", result["font_selection"]["variant"])
+        self.assertEqual(3, len(result["material_manifest"]))
+        self.assertTrue(
+            (self.service.data_root / job["job_id"] / "output/published.mp4").is_file()
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
