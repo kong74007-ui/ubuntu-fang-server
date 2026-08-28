@@ -208,6 +208,8 @@ MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
 MATRIX_TEMPLATE_HYPERFRAMES_GSAP=${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js
 MATRIX_TEMPLATE_HYPERFRAMES_BROWSER=${HYPERFRAMES_BROWSER}
 MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=1
+MATRIX_TEMPLATE_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS=900
+MATRIX_TEMPLATE_HYPERFRAMES_SLOT_TIMEOUT_SECONDS=120
 MATRIX_TEMPLATE_CONCURRENCY=5
 MATRIX_TEMPLATE_RETENTION_SECONDS=259200
 MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600
@@ -237,6 +239,8 @@ settings = {
     "MATRIX_TEMPLATE_HYPERFRAMES_GSAP": os.environ["HYPERFRAMES_GSAP_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER": os.environ["HYPERFRAMES_BROWSER_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY": "1",
+    "MATRIX_TEMPLATE_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS": "900",
+    "MATRIX_TEMPLATE_HYPERFRAMES_SLOT_TIMEOUT_SECONDS": "120",
 }
 seen = set()
 output = []
@@ -281,7 +285,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("hyperframes_concurrency")==1 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==120 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

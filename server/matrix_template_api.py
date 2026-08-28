@@ -32,6 +32,8 @@ MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 RENDER_TIMEOUT_SECONDS = 900
+DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
+DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 120
 DEFAULT_RETENTION_SECONDS = 72 * 60 * 60
 DEFAULT_DELIVERY_GRACE_SECONDS = 60 * 60
 DEFAULT_CLEANUP_INTERVAL_SECONDS = 15 * 60
@@ -609,6 +611,8 @@ class MatrixTemplateService:
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
                  hyperframes_concurrency: int = 1,
+                 hyperframes_total_timeout_seconds: int = DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS,
+                 hyperframes_slot_timeout_seconds: int = DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS,
                  concurrency: int = 1,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
@@ -651,6 +655,12 @@ class MatrixTemplateService:
         self.hyperframes_concurrency = int(hyperframes_concurrency)
         if not 1 <= self.hyperframes_concurrency <= 2:
             raise MatrixTemplateError("HyperFrames concurrency must be between 1 and 2")
+        self.hyperframes_total_timeout_seconds = int(hyperframes_total_timeout_seconds)
+        self.hyperframes_slot_timeout_seconds = int(hyperframes_slot_timeout_seconds)
+        if not 120 <= self.hyperframes_total_timeout_seconds <= 1100:
+            raise MatrixTemplateError("HyperFrames total timeout must be between 120 and 1100 seconds")
+        if not 1 <= self.hyperframes_slot_timeout_seconds < self.hyperframes_total_timeout_seconds:
+            raise MatrixTemplateError("HyperFrames slot timeout is invalid")
         self.hyperframes_slots = threading.BoundedSemaphore(self.hyperframes_concurrency)
         self.concurrency = int(concurrency)
         if not 1 <= self.concurrency <= 5:
@@ -893,6 +903,8 @@ class MatrixTemplateService:
                 "batch_index": batch_index,
                 "batch_size": batch_size,
             })
+            if reference_template and batch_size > 1:
+                raise ValueError("HyperFrames 模板暂仅支持单条生成")
         return result
 
     def available_font_families(self) -> set[str]:
@@ -1033,6 +1045,9 @@ class MatrixTemplateService:
             "hyperframes_version": (
                 REFERENCE_HYPERFRAMES_VERSION if self.reference_templates else ""
             ),
+            "hyperframes_concurrency": self.hyperframes_concurrency,
+            "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
+            "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,
         }
 
     def _ensure_disk_capacity(self) -> None:
@@ -1389,8 +1404,25 @@ class MatrixTemplateService:
         shutil.copy2(source, destination)
         return destination.as_posix()
 
+    def _acquire_hyperframes_slot(self, deadline_at: float) -> None:
+        slot_deadline = min(
+            float(deadline_at), time.time() + self.hyperframes_slot_timeout_seconds
+        )
+        while True:
+            if self.stop_event.is_set():
+                raise MatrixTemplateError("模板成片服务正在停止")
+            remaining = slot_deadline - time.time()
+            if remaining <= 0:
+                raise MatrixTemplateError("HyperFrames 模板任务排队超时")
+            if self.hyperframes_slots.acquire(timeout=min(1.0, remaining)):
+                if time.time() >= deadline_at:
+                    self.hyperframes_slots.release()
+                    raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
+                return
+
     def _render_reference(self, payload: dict, job_id: str,
-                          materials: list[dict], paths: list[Path]) -> dict:
+                          materials: list[dict], paths: list[Path],
+                          *, deadline_at: float | None = None) -> dict:
         reference = payload.get("_reference_template")
         if (
             not isinstance(reference, dict)
@@ -1404,6 +1436,10 @@ class MatrixTemplateService:
             item.get("media_type") != "video" for item in materials[:3]
         ):
             raise MatrixTemplateError("HyperFrames 模板需要三个不同的视频素材")
+        if deadline_at is None:
+            deadline_at = time.time() + self.hyperframes_total_timeout_seconds
+        if time.time() >= deadline_at:
+            raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
 
         root = self.data_root / job_id
         workdir = root / "hyperframes"
@@ -1496,20 +1532,26 @@ class MatrixTemplateService:
             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             options["start_new_session"] = True
-        with self.hyperframes_slots:
+        self._acquire_hyperframes_slot(deadline_at)
+        try:
             if self.stop_event.is_set():
                 raise MatrixTemplateError("模板成片服务正在停止")
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
             process = subprocess.Popen(command, **options)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
             try:
                 try:
-                    stdout, stderr = process.communicate(timeout=RENDER_TIMEOUT_SECONDS)
+                    stdout, stderr = process.communicate(
+                        timeout=min(RENDER_TIMEOUT_SECONDS, remaining)
+                    )
                 except subprocess.TimeoutExpired as exc:
                     self._terminate(process)
                     output.unlink(missing_ok=True)
-                    raise MatrixTemplateError("HyperFrames 模板成片渲染超时") from exc
+                    raise MatrixTemplateError("HyperFrames 模板任务超过总时限") from exc
                 if process.returncode:
                     output.unlink(missing_ok=True)
                     detail = b"\n".join((stdout or b"", stderr or b"")).decode(
@@ -1523,6 +1565,8 @@ class MatrixTemplateService:
                 with self.process_lock:
                     self.active_processes.discard(process)
                     self.active_process = next(iter(self.active_processes), None)
+        finally:
+            self.hyperframes_slots.release()
         return variables
 
     def _probe(self, output: Path) -> dict:
@@ -1554,7 +1598,12 @@ class MatrixTemplateService:
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         if reference_template:
-            variables = self._render_reference(payload, job_id, materials, paths)
+            deadline_at = (
+                float(row["created_at"]) + self.hyperframes_total_timeout_seconds
+            )
+            variables = self._render_reference(
+                payload, job_id, materials, paths, deadline_at=deadline_at
+            )
             font_selection = provenance["selection"]
             display_top_text = "\n".join(
                 value for key, value in variables.items()
@@ -1838,6 +1887,14 @@ def main() -> None:
         )),
         hyperframes_concurrency=int(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY", "1"
+        )),
+        hyperframes_total_timeout_seconds=int(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS",
+            str(DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS),
+        )),
+        hyperframes_slot_timeout_seconds=int(os.environ.get(
+            "MATRIX_TEMPLATE_HYPERFRAMES_SLOT_TIMEOUT_SECONDS",
+            str(DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS),
         )),
         concurrency=int(os.environ.get("MATRIX_TEMPLATE_CONCURRENCY", "1")),
         retention_seconds=int(os.environ.get(

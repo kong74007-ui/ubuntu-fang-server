@@ -12,6 +12,11 @@ HyperFrames `0.8.16`, and are limited to one concurrent render on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these 17 templates; the two
 FFmpeg layouts continue to support automatic or explicit font selection.
+The first release accepts only one output per HyperFrames request. A persisted
+900-second deadline starts at database admission; render-slot waiting is capped
+at 120 seconds and consumes the same deadline. Expired jobs terminate and enter
+the normal failure/refund path before the production site's 1200-second poll
+deadline, so accepted work cannot continue after the caller reports a timeout.
 
 The installer clones and verifies commit
 `243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the

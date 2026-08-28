@@ -1311,6 +1311,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "评论区回复关键词",
             frozen["_reference_template"]["text"]["bottom2"],
         )
+        with self.assertRaisesRegex(ValueError, "暂仅支持单条"):
+            self.service.validate_payload({
+                "top_text": "批量活动标题",
+                "bottom_text": "评论区回复关键词",
+                "template_id": template_id,
+                "batch_id": "a" * 32,
+                "batch_index": 1,
+                "batch_size": 2,
+            })
 
     def test_reference_material_selection_requires_three_videos(self):
         payload = self.service.validate_payload({
@@ -1337,6 +1346,43 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             ["video", "video", "video"],
             [scene["media_type"] for scene in captured["scenes"]],
         )
+
+    def test_five_reference_waiters_timeout_without_starting_render(self):
+        self.service.hyperframes_slot_timeout_seconds = 0.05
+        self.assertTrue(self.service.hyperframes_slots.acquire(timeout=0.1))
+        barrier = threading.Barrier(6)
+        errors = []
+        lock = threading.Lock()
+
+        def wait_for_slot():
+            barrier.wait()
+            try:
+                self.service._acquire_hyperframes_slot(time.time() + 1)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+            else:
+                self.service.hyperframes_slots.release()
+
+        threads = [threading.Thread(target=wait_for_slot) for _ in range(5)]
+        started = time.monotonic()
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=1)
+        elapsed = time.monotonic() - started
+        self.service.hyperframes_slots.release()
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(5, len(errors))
+        self.assertTrue(all(
+            isinstance(exc, matrix.MatrixTemplateError)
+            and "排队超时" in str(exc)
+            for exc in errors
+        ))
+        self.assertLess(elapsed, 0.8)
+        self.assertEqual(set(), self.service.active_processes)
 
     def test_reference_render_uses_locked_variables_and_local_gsap(self):
         payload = self.service.validate_payload({
@@ -1405,7 +1451,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             path.write_bytes(b"video")
             return path
 
-        def render_reference(frozen, job_id, _materials, _paths):
+        captured_deadline = {}
+
+        def render_reference(frozen, job_id, _materials, _paths, *, deadline_at):
+            captured_deadline["value"] = deadline_at
             output = self.service.data_root / job_id / "output/final.mp4"
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"video")
@@ -1427,6 +1476,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(3, len(result["material_manifest"]))
         self.assertTrue(
             (self.service.data_root / job["job_id"] / "output/published.mp4").is_file()
+        )
+        row = self.service.store.get(job["job_id"])
+        self.assertEqual(
+            row["created_at"] + self.service.hyperframes_total_timeout_seconds,
+            captured_deadline["value"],
         )
 
 
