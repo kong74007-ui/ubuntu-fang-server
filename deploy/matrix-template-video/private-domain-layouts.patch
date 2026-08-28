@@ -1,5 +1,5 @@
 diff --git a/assets/templates/catalog.json b/assets/templates/catalog.json
-index 2deba43..f7a8449 100644
+index 2deba43..d1a870f 100644
 --- a/assets/templates/catalog.json
 +++ b/assets/templates/catalog.json
 @@ -13,7 +13,9 @@
@@ -37,7 +37,7 @@ index 2deba43..f7a8449 100644
    ]
  }
 diff --git a/scripts/render_video.py b/scripts/render_video.py
-index a1cb814..acd4d51 100644
+index a1cb814..67e04d1 100644
 --- a/scripts/render_video.py
 +++ b/scripts/render_video.py
 @@ -1056,72 +1056,87 @@ def resolve_layout(
@@ -238,9 +238,99 @@ index a1cb814..acd4d51 100644
                  lines.append(
                      f"Dialogue: 0,{ass_time(entry['start'])},{ass_time(entry['start'] + entry['duration'])},BottomText,,0,0,0,,{bottom_tags}{bottom_rendered}"
                  )
+diff --git a/scripts/restrict_private_domain_catalog.py b/scripts/restrict_private_domain_catalog.py
+new file mode 100644
+index 0000000..7bb8e14
+--- /dev/null
++++ b/scripts/restrict_private_domain_catalog.py
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python3
++"""Restrict an installed runtime catalog to the two approved layouts."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++import sys
++
++
++ROOT = Path(__file__).resolve().parents[1]
++APPROVED_IDS = ("full-overlay-bold", "poster-split")
++
++
++def restrict_catalog(path: Path) -> None:
++    payload = json.loads(path.read_text(encoding="utf-8"))
++    templates = {
++        item.get("id"): item
++        for item in payload.get("templates", [])
++        if isinstance(item, dict)
++    }
++    profiles = payload.get("emphasis_profiles") or {}
++    missing = [
++        template_id for template_id in APPROVED_IDS
++        if template_id not in templates or template_id not in profiles
++    ]
++    if missing:
++        raise SystemExit("approved templates are missing: " + ", ".join(missing))
++    restricted = {
++        "version": 1,
++        "emphasis_profiles": {
++            template_id: profiles[template_id] for template_id in APPROVED_IDS
++        },
++        "templates": [templates[template_id] for template_id in APPROVED_IDS],
++    }
++    temporary = path.with_name(path.name + ".next")
++    temporary.write_text(
++        json.dumps(restricted, ensure_ascii=False, indent=2) + "\n",
++        encoding="utf-8",
++    )
++    temporary.replace(path)
++
++
++if __name__ == "__main__":
++    target = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else ROOT / "assets/templates/catalog.json"
++    restrict_catalog(target)
+diff --git a/scripts/test_private_domain_catalog.py b/scripts/test_private_domain_catalog.py
+new file mode 100644
+index 0000000..33a5e97
+--- /dev/null
++++ b/scripts/test_private_domain_catalog.py
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""Regression check for the two-template runtime catalog restriction."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++import shutil
++import tempfile
++
++from restrict_private_domain_catalog import APPROVED_IDS, restrict_catalog
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main() -> None:
++    source = ROOT / "assets/templates/catalog.json"
++    with tempfile.TemporaryDirectory() as temp:
++        target = Path(temp) / "catalog.json"
++        shutil.copy2(source, target)
++        restrict_catalog(target)
++        restrict_catalog(target)
++        payload = json.loads(target.read_text(encoding="utf-8"))
++    ids = [item["id"] for item in payload["templates"]]
++    assert ids == list(APPROVED_IDS)
++    assert list(payload["emphasis_profiles"]) == list(APPROVED_IDS)
++    print("private-domain runtime catalog: 2 passed")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/scripts/test_private_domain_layouts.py b/scripts/test_private_domain_layouts.py
 new file mode 100644
-index 0000000..ca1d9e4
+index 0000000..4fa9bec
 --- /dev/null
 +++ b/scripts/test_private_domain_layouts.py
 @@ -0,0 +1,54 @@
@@ -299,7 +389,7 @@ index 0000000..ca1d9e4
 +if __name__ == "__main__":
 +    main()
 diff --git a/scripts/test_template_catalog.py b/scripts/test_template_catalog.py
-index 16a8102..a7d8faa 100644
+index 16a8102..f348bdc 100644
 --- a/scripts/test_template_catalog.py
 +++ b/scripts/test_template_catalog.py
 @@ -32,7 +32,7 @@ def check_real_catalog() -> None:

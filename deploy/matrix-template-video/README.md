@@ -7,8 +7,9 @@ up to five renders at a time, and uses the existing material-library tunnel at
 
 The installer clones and verifies commit
 `243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the
-generation-server-owned private-domain layout patch, validates the 15-template
-catalog, atomically switches releases, and checks the exact runtime build id.
+generation-server-owned private-domain layout patch, restricts the runtime catalog
+to the two private-domain templates, atomically switches releases, and checks the
+exact runtime build id.
 The patch adds `full-overlay-bold` and `poster-split`; its SHA-256 is locked in
 `install.sh`, so a missing or changed patch fails before the active release is
 switched. The public Skill repository remains unchanged until the generation
