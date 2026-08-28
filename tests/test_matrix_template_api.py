@@ -1321,6 +1321,171 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 "batch_size": 2,
             })
 
+    def test_reference_layers_preserve_copy_and_enforce_width_budget(self):
+        top = "一家店不雇人，AI 当店员。以前组团队，现在也能开。"
+        bottom = "评论区回复关键词，我把资料发你。"
+        layers = matrix._reference_text_layers(top, bottom)
+        top_layers = [layers["top1"], layers["top2"], layers["top3"]]
+        bottom_layers = [layers["bottom1"], layers["bottom2"]]
+        self.assertEqual(top, "".join(layers[key] for key in ("top1", "top2", "top3")))
+        self.assertEqual(bottom, "".join(layers[key] for key in ("bottom1", "bottom2")))
+        self.assertTrue(all(matrix._visual_width(item) <= 12 for item in top_layers))
+        self.assertTrue(all(matrix._visual_width(item) <= 15 for item in bottom_layers))
+        self.assertNotIn("组\n团队", "\n".join(top_layers))
+        self.assertNotIn("AI \n当店员", "\n".join(top_layers))
+        self.assertNotIn("关键\n词", "\n".join(bottom_layers))
+
+        display = matrix._reference_display_layers(layers)
+        edge_punctuation = set(matrix._REFERENCE_EDGE_PUNCTUATION)
+        for value in display.values():
+            if value:
+                self.assertNotIn(value[0], edge_punctuation)
+                self.assertNotIn(value[-1], edge_punctuation)
+        self.assertIn("，", display["top3"])
+        self.assertEqual("一家店不雇人，", layers["top1"])
+        self.assertEqual("一家店不雇人", display["top1"])
+
+        compact = matrix._reference_text_layers(
+            "AI创业者活动", "评论区回复关键词获取活动资料"
+        )
+        self.assertEqual("AI创业者活动", compact["top1"])
+        self.assertFalse(compact["top2"] or compact["top3"])
+        self.assertEqual("评论区回复关键词", compact["bottom1"])
+        self.assertEqual("获取活动资料", compact["bottom2"])
+        self.assertNotIn("关键\n词", matrix._balanced_title(
+            "评论区回复关键词获取活动资料", 15, 2
+        ))
+        self.assertNotIn("组团\n队", matrix._balanced_title(
+            "以前开店要组团队盯店熬到凌晨", 12, 3
+        ))
+
+    def test_semantic_layers_preserve_english_and_mixed_spacing(self):
+        samples = [
+            "OpenAI, Codex, Agent workflow.",
+            "AI team: sales, service, delivery.",
+            "品牌 Alpha X200，支持 3 个门店。",
+        ]
+        for source in samples:
+            with self.subTest(source=source):
+                normalized = " ".join(source.split())
+                layers = matrix._semantic_layers(source, 12, 3)
+                self.assertEqual(normalized, "".join(layers))
+                self.assertTrue(all(matrix._visual_width(item) <= 12 for item in layers))
+        self.assertTrue(any(
+            item.endswith(" ")
+            for item in matrix._semantic_layers(samples[0], 12, 3)[:-1]
+        ))
+        self.assertTrue(any(
+            item.endswith(" ")
+            for item in matrix._semantic_layers(samples[1], 12, 3)[:-1]
+        ))
+
+    def test_semantic_layers_split_long_clause_and_fail_closed_when_unsafe(self):
+        source = "一个人也能稳定开店持续接单，报名，领取。"
+        layers = matrix._semantic_layers(source, 8, 3)
+        self.assertEqual(source, "".join(layers))
+        self.assertEqual(3, len(layers))
+        self.assertTrue(all(matrix._visual_width(item) <= 8 for item in layers))
+
+        no_punctuation = "AI创业者组团队开店接单资源共享"
+        layers = matrix._semantic_layers(no_punctuation, 8, 3)
+        self.assertEqual(no_punctuation, "".join(layers))
+        self.assertTrue(all(matrix._visual_width(item) <= 8 for item in layers))
+        joined = "\n".join(layers)
+        for protected in ("创业者", "组团队", "资源共享"):
+            for index in range(1, len(protected)):
+                self.assertNotIn(protected[:index] + "\n" + protected[index:], joined)
+
+        with self.assertRaisesRegex(ValueError, "宽度预算"):
+            matrix._semantic_layers("中" * 25, 8, 3)
+        with self.assertRaisesRegex(ValueError, "安全断句"):
+            matrix._semantic_layers("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234", 12, 2)
+
+    def test_reference_template_rejects_copy_that_cannot_fit_layers(self):
+        with self.assertRaisesRegex(ValueError, "顶部文案过长"):
+            self.service.validate_payload({
+                "top_text": "中" * 37,
+                "bottom_text": "报名获取资料",
+                "template_id": "ref-01-fixture-01",
+            })
+        with self.assertRaisesRegex(ValueError, "底部文案过长"):
+            self.service.validate_payload({
+                "top_text": "活动标题",
+                "bottom_text": "A" * 49,
+                "template_id": "ref-01-fixture-01",
+            })
+
+    def test_legacy_oversized_reference_request_remains_idempotent_after_restart(self):
+        request_id = "legacy-reference-layout"
+        top = "中" * 37
+        bottom = "报名获取资料"
+        template_id = "ref-01-fixture-01"
+        stored_payload = {
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": template_id,
+            "duration": matrix._duration(top, bottom, None),
+            "bgm": False,
+            "_reference_template": {
+                "pack_id": matrix.REFERENCE_PACK_ID,
+                "engine": "hyperframes",
+                "hyperframes_version": matrix.REFERENCE_HYPERFRAMES_VERSION,
+                "variant": "v01",
+                "duration": 8,
+                "text": {
+                    "top1": top,
+                    "top2": "",
+                    "top3": "",
+                    "bottom1": "",
+                    "bottom2": bottom,
+                },
+            },
+        }
+        existing, created = self.service.store.create(request_id, stored_payload)
+        self.assertTrue(created)
+        self.assertNotIn(
+            "display_text",
+            json.loads(self.service.store.get(existing["job_id"])["payload"])[
+                "_reference_template"
+            ],
+        )
+        raw = {
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": template_id,
+            "bgm": False,
+        }
+
+        replay = self.service.submit(raw, request_id)
+        self.assertEqual(existing["job_id"], replay["job_id"])
+        with self.assertRaisesRegex(ValueError, "another payload"):
+            self.service.submit({**raw, "top_text": "改" + top[1:]}, request_id)
+        with self.assertRaisesRegex(ValueError, "顶部文案过长"):
+            self.service.submit(raw, "legacy-reference-layout-new")
+
+        version = SimpleNamespace(returncode=0, stdout="0.8.16\n", stderr="")
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            restarted = matrix.MatrixTemplateService(
+                data_root=self.service.data_root,
+                skill_root=self.skill,
+                reference_skill_root=self.reference_skill,
+                hyperframes_cli=self.cli,
+                hyperframes_gsap=self.gsap,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                start_worker=False,
+            )
+        try:
+            replay_after_restart = restarted.submit(raw, request_id)
+            self.assertEqual(existing["job_id"], replay_after_restart["job_id"])
+            with self.assertRaisesRegex(ValueError, "another payload"):
+                restarted.submit({**raw, "bottom_text": "修改行动文案"}, request_id)
+            with self.assertRaisesRegex(ValueError, "顶部文案过长"):
+                restarted.submit(raw, "legacy-reference-layout-new-after-restart")
+        finally:
+            restarted.shutdown()
+
     def test_reference_material_selection_requires_three_videos(self):
         payload = self.service.validate_payload({
             "top_text": "活动标题",
@@ -1422,6 +1587,43 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             set(matrix.REFERENCE_FONT_FILES),
             {path.name for path in (workdir / "assets/fonts").iterdir()},
         )
+
+    def test_reference_render_hides_only_edge_punctuation(self):
+        payload = self.service.validate_payload({
+            "top_text": "开店，AI接单。团队持续增长！",
+            "bottom_text": "评论区回复关键词，领取资料。",
+            "template_id": "ref-03-fixture-03",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("9" * 32, payload)
+        reference = payload["_reference_template"]
+        self.assertEqual(
+            payload["top_text"],
+            "".join(reference["text"][key] for key in ("top1", "top2", "top3")),
+        )
+        for value in reference["display_text"].values():
+            if value:
+                self.assertNotIn(value[0], set(matrix._REFERENCE_EDGE_PUNCTUATION))
+                self.assertNotIn(value[-1], set(matrix._REFERENCE_EDGE_PUNCTUATION))
+        self.assertIn("，", "".join(reference["display_text"].values()))
+
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"edge-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({"media_type": "video", "record_id": f"edge-{index}"})
+        process = mock.Mock()
+        process.returncode = 0
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        with mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            variables = self.service._render_reference(
+                payload, "9" * 32, materials, paths
+            )
+        self.assertEqual(reference["display_text"]["top1"], variables["top1"])
+        self.assertEqual(reference["display_text"]["bottom2"], variables["bottom2"])
 
     def test_execute_routes_reference_template_to_hyperframes(self):
         payload = self.service.validate_payload({

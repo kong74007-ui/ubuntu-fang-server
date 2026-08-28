@@ -261,6 +261,26 @@ def _required_visuals(duration: float) -> int:
     return 2 if duration <= 10 else 3
 
 
+def _visual_width(value: str) -> float:
+    return sum(
+        0.35 if char.isspace() else 0.62 if char.isascii() else 1.0
+        for char in value
+    )
+
+
+_PROTECTED_TERMS = {
+    "团队", "组团队", "关键词", "创业者", "评论区", "店员", "小时", "接单",
+    "老板", "开店", "凌晨", "个人", "资料", "活动", "人工智能",
+    "智能体", "资源共享", "AI 当店员", "AI员工", "24 小时", "1个人",
+}
+_PROTECTED_BREAK_PAIRS = {
+    term[index:index + 2]
+    for term in _PROTECTED_TERMS
+    for index in range(len(term) - 1)
+}
+_PROTECTED_RIGHT_SUFFIXES = frozenset("者们队词员家区店圈群会局型式端率量性化力感")
+
+
 def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     compact = " ".join(str(text or "").split())
     if not compact:
@@ -290,14 +310,16 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
         tokens.append((char, " " if pending_space and tokens else ""))
         pending_space = False
 
-    def visual_width(value: str) -> float:
-        return sum(0.35 if char.isspace() else 0.62 if char.isascii() else 1.0 for char in value)
-
     def boundary_penalty(left: str, right: str, separator: str) -> float:
         left_char, right_char = left[-1], right[0]
         if right_char in "，。！？；：、,.!?;:)]}）】》」』+%％":
             return 1000.0
         if left_char in "([{（【《「『+":
+            return 1000.0
+        if (
+            right_char in _PROTECTED_RIGHT_SUFFIXES
+            or left_char + right_char in _PROTECTED_BREAK_PAIRS
+        ):
             return 1000.0
         if separator:
             return -1.0
@@ -322,7 +344,7 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
         return 0.0
 
     total_width = sum(
-        visual_width(value) + (visual_width(separator) if index else 0.0)
+        _visual_width(value) + (_visual_width(separator) if index else 0.0)
         for index, (value, separator) in enumerate(tokens)
     )
     comfortable_width = max(1.0, max_chars * 0.82)
@@ -331,7 +353,7 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     )
     ideal = total_width / target_lines
     line_limit = max(
-        float(max_chars), max(visual_width(value) for value, _ in tokens),
+        float(max_chars), max(_visual_width(value) for value, _ in tokens),
         math.ceil(ideal) + 3,
     )
     for _ in range(max(1, len(compact))):
@@ -348,8 +370,8 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
                         break
                     value, separator = tokens[end - 1]
                     if end - 1 > start:
-                        width += visual_width(separator)
-                    width += visual_width(value)
+                        width += _visual_width(separator)
+                    width += _visual_width(value)
                     if width > line_limit + 0.001:
                         break
                     penalty = boundary_penalty(
@@ -380,9 +402,122 @@ def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     return compact
 
 
+def _semantic_break_penalty(value: str, index: int) -> float | None:
+    if index >= len(value):
+        return 0.0
+    left, right = value[index - 1], value[index]
+    if right.isspace():
+        return None
+    if right in "，。！？；：、,.!?;:)]}）】》」』+%％":
+        return None
+    if left in "([{（【《「『+":
+        return None
+    if (
+        right in _PROTECTED_RIGHT_SUFFIXES
+        or left + right in _PROTECTED_BREAK_PAIRS
+    ):
+        return None
+    if (
+        left.isascii() and right.isascii()
+        and (left.isalnum() or left in "+_&./-")
+        and (right.isalnum() or right in "+_&./-")
+    ):
+        return None
+    if (
+        left in "0123456789一二三四五六七八九十几两"
+        and right in "个家人位名款套种项台年月日天次岁"
+    ):
+        return None
+
+    boundary = left
+    if left.isspace():
+        cursor = index - 1
+        while cursor > 0 and value[cursor - 1].isspace():
+            cursor -= 1
+        boundary = value[cursor - 1] if cursor else ""
+    if boundary in "。！？!?；;":
+        return -30.0
+    if boundary in "，,：:":
+        return -12.0
+    if boundary == "、":
+        return -5.0
+    if left.isspace():
+        return -3.0
+    return 0.0
+
+
+def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return []
+    width_limit = max(1.0, float(max_chars))
+    layer_limit = max(1, int(max_layers))
+    total_width = _visual_width(compact)
+    if total_width > width_limit * layer_limit + 0.001:
+        raise ValueError("文案超过模板文字层宽度预算")
+
+    preferred_layers = min(
+        layer_limit,
+        max(1, math.ceil(total_width / max(1.0, width_limit * 0.9))),
+    )
+    for target_layers in range(preferred_layers, layer_limit + 1):
+        ideal = total_width / target_layers
+        states: dict[tuple[int, int], tuple[float, list[int]]] = {
+            (0, 0): (0.0, [])
+        }
+        for layer_index in range(target_layers):
+            for start in range(len(compact)):
+                state = states.get((layer_index, start))
+                if state is None:
+                    continue
+                for end in range(start + 1, len(compact) + 1):
+                    segment = compact[start:end]
+                    width = _visual_width(segment)
+                    if width > width_limit + 0.001:
+                        break
+                    if not segment.strip():
+                        continue
+                    penalty = _semantic_break_penalty(compact, end)
+                    if penalty is None:
+                        continue
+                    remaining_layers = target_layers - layer_index - 1
+                    remaining_width = _visual_width(compact[end:])
+                    if remaining_width > remaining_layers * width_limit + 0.001:
+                        continue
+                    if remaining_layers and not compact[end:].strip():
+                        continue
+                    if not remaining_layers and end != len(compact):
+                        continue
+                    score = state[0] + (width - ideal) ** 2 + penalty
+                    if layer_index == target_layers - 1 and width < ideal * 0.55:
+                        score += (ideal - width) ** 2 * 1.5
+                    key = (layer_index + 1, end)
+                    if key not in states or score < states[key][0]:
+                        states[key] = (score, state[1] + [end])
+        selected = states.get((target_layers, len(compact)))
+        if selected is None:
+            continue
+        result, start = [], 0
+        for end in selected[1]:
+            result.append(compact[start:end])
+            start = end
+        if (
+            "".join(result) == compact
+            and all(_visual_width(item) <= width_limit + 0.001 for item in result)
+        ):
+            return result
+    raise ValueError("文案无法在模板文字层内安全断句")
+
+
 def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
-    top_lines = _balanced_title(top, 12, 3).splitlines()[:3]
-    bottom_lines = _balanced_title(bottom, 15, 2).splitlines()[:2]
+    try:
+        top_lines = _semantic_layers(top, 12, 3)
+    except ValueError as exc:
+        raise ValueError("HyperFrames 模板顶部文案过长，请缩短后重试") from exc
+    try:
+        bottom_lines = _semantic_layers(bottom, 15, 2)
+    except ValueError as exc:
+        raise ValueError("HyperFrames 模板底部文案过长，请缩短后重试") from exc
     if len(bottom_lines) == 1:
         bottom_lines.insert(0, "")
     top_lines.extend([""] * (3 - len(top_lines)))
@@ -393,6 +528,20 @@ def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
         "top3": top_lines[2],
         "bottom1": bottom_lines[0],
         "bottom2": bottom_lines[1],
+    }
+
+
+_REFERENCE_EDGE_PUNCTUATION = "，。！？；：、,.!?;:"
+
+
+def _reference_display_layers(layers: dict[str, str]) -> dict[str, str]:
+    edge_pattern = re.compile(
+        rf"^[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+"
+        rf"|[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+$"
+    )
+    return {
+        key: edge_pattern.sub("", str(layers.get(key) or "").strip()).strip()
+        for key in ("top1", "top2", "top3", "bottom1", "bottom2")
     }
 
 
@@ -846,7 +995,8 @@ class MatrixTemplateService:
 
     def validate_payload(self, raw: dict, *, require_available_font: bool = True,
                          allowed_template_ids=None,
-                         default_template_id: str = "full-overlay-bold") -> dict:
+                         default_template_id: str = "full-overlay-bold",
+                         enforce_reference_layout: bool = True) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
         top = " ".join(str(raw.get("top_text") or "").split())
@@ -863,6 +1013,8 @@ class MatrixTemplateService:
         if template_id not in allowed_templates:
             raise ValueError("请选择有效模板")
         reference_template = template_id in self.reference_templates
+        if reference_template and enforce_reference_layout:
+            _reference_text_layers(top, bottom)
         font_family = str(raw.get("font_family") or "").strip()
         if (
             not reference_template and font_family
@@ -937,6 +1089,7 @@ class MatrixTemplateService:
                 require_available_font=False,
                 allowed_template_ids={stored_template_id},
                 default_template_id=stored_template_id,
+                enforce_reference_layout=False,
             )
         else:
             payload = self.validate_payload(raw, require_available_font=False)
@@ -952,15 +1105,17 @@ class MatrixTemplateService:
         template_id = payload["template_id"]
         if template_id in self.reference_templates:
             payload.pop("font_family", None)
+            source_text = _reference_text_layers(
+                payload["top_text"], payload["bottom_text"]
+            )
             payload["_reference_template"] = {
                 "pack_id": REFERENCE_PACK_ID,
                 "engine": "hyperframes",
                 "hyperframes_version": REFERENCE_HYPERFRAMES_VERSION,
                 "variant": self.reference_templates[template_id]["variant"],
                 "duration": _reference_duration(job_id, template_id),
-                "text": _reference_text_layers(
-                    payload["top_text"], payload["bottom_text"]
-                ),
+                "text": source_text,
+                "display_text": _reference_display_layers(source_text),
             }
             payload["_font_provenance"] = {
                 "selection": {
@@ -980,7 +1135,8 @@ class MatrixTemplateService:
                 "private_bundle_sha256": self.reference_font_fingerprint,
             }
             payload["_display_top_text"] = "\n".join(
-                value for key, value in payload["_reference_template"]["text"].items()
+                value
+                for key, value in payload["_reference_template"]["display_text"].items()
                 if key.startswith("top") and value
             )
             return payload
@@ -1424,11 +1580,13 @@ class MatrixTemplateService:
                           materials: list[dict], paths: list[Path],
                           *, deadline_at: float | None = None) -> dict:
         reference = payload.get("_reference_template")
+        display_text = reference.get("display_text") if isinstance(reference, dict) else None
         if (
             not isinstance(reference, dict)
             or reference.get("pack_id") != REFERENCE_PACK_ID
             or reference.get("hyperframes_version") != REFERENCE_HYPERFRAMES_VERSION
             or not isinstance(reference.get("text"), dict)
+            or (display_text is not None and not isinstance(display_text, dict))
             or self.reference_pack_root is None
         ):
             raise MatrixTemplateError("frozen HyperFrames template metadata is invalid")
@@ -1487,7 +1645,7 @@ class MatrixTemplateService:
         variables = {
             "name": job_id,
             "variant": reference["variant"],
-            **reference["text"],
+            **(display_text if isinstance(display_text, dict) else reference["text"]),
             "duration": reference["duration"],
             "videoA": video_values[0],
             "videoB": video_values[1],
