@@ -1335,7 +1335,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertNotIn("AI \n当店员", "\n".join(top_layers))
         self.assertNotIn("关键\n词", "\n".join(bottom_layers))
 
-        display = matrix._reference_display_layers(layers)
+        _source, display = matrix._reference_text_layout(top, bottom)
         edge_punctuation = set(matrix._REFERENCE_EDGE_PUNCTUATION)
         for value in display.values():
             if value:
@@ -1404,20 +1404,73 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
     def test_reference_template_rejects_copy_that_cannot_fit_layers(self):
         with self.assertRaisesRegex(ValueError, "顶部文案过长"):
             self.service.validate_payload({
-                "top_text": "中" * 37,
+                "top_text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234",
                 "bottom_text": "报名获取资料",
                 "template_id": "ref-01-fixture-01",
             })
         with self.assertRaisesRegex(ValueError, "底部文案过长"):
             self.service.validate_payload({
                 "top_text": "活动标题",
-                "bottom_text": "A" * 49,
+                "bottom_text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234",
                 "template_id": "ref-01-fixture-01",
             })
 
+    def test_reference_template_accepts_real_long_copy_as_six_visual_lines(self):
+        top = (
+            "一家店，不雇人，AI 当店员，24 小时接单，老板该干嘛干嘛。"
+            "以前开店要组团队、盯店、熬到凌晨，现在一个人就能开。"
+        )
+        bottom = "想了解的评论区扣「111」，我把资料发你。"
+        payload = self.service.validate_payload({
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": "ref-17-fixture-17",
+            "bgm": False,
+        })
+        frozen = self.service._freeze_font_provenance("8" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(
+            top,
+            "".join(reference["text"][key] for key in ("top1", "top2", "top3")),
+        )
+        self.assertEqual(
+            bottom,
+            "".join(reference["text"][key] for key in ("bottom1", "bottom2")),
+        )
+        top_lines = "\n".join(
+            reference["display_text"][key] for key in ("top1", "top2", "top3")
+        ).splitlines()
+        bottom_lines = "\n".join(
+            reference["display_text"][key] for key in ("bottom1", "bottom2")
+        ).splitlines()
+        self.assertEqual(
+            [2, 2, 2],
+            [
+                len(reference["display_text"][key].splitlines())
+                for key in ("top1", "top2", "top3")
+            ],
+        )
+        self.assertEqual(6, len(top_lines))
+        self.assertEqual(2, len(bottom_lines))
+        self.assertTrue(all(matrix._visual_width(line) <= 12 for line in top_lines))
+        self.assertTrue(all(matrix._visual_width(line) <= 15 for line in bottom_lines))
+        edge_punctuation = set(matrix._REFERENCE_EDGE_PUNCTUATION)
+        all_lines = top_lines + bottom_lines
+        self.assertTrue(all(line[0] not in edge_punctuation for line in all_lines))
+        self.assertTrue(all(line[-1] not in edge_punctuation for line in all_lines))
+        self.assertIn("，", top_lines[0])
+        self.assertIn("，", top_lines[1])
+        self.assertEqual("\n".join(top_lines), frozen["_display_top_text"])
+        self.assertEqual(
+            "开店\n持续增长",
+            matrix._reference_display_layers({
+                "top1": "，开店。\n！持续增长？",
+            })["top1"],
+        )
+
     def test_legacy_oversized_reference_request_remains_idempotent_after_restart(self):
         request_id = "legacy-reference-layout"
-        top = "中" * 37
+        top = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
         bottom = "报名获取资料"
         template_id = "ref-01-fixture-01"
         stored_payload = {

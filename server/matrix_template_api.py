@@ -509,38 +509,80 @@ def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
     raise ValueError("文案无法在模板文字层内安全断句")
 
 
-def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
+_REFERENCE_TOP_GROUP_SIZES = {
+    1: (1, 0, 0),
+    2: (1, 1, 0),
+    3: (1, 1, 1),
+    4: (1, 2, 1),
+    5: (2, 2, 1),
+    6: (2, 2, 2),
+}
+_REFERENCE_BOTTOM_GROUP_SIZES = {
+    1: (0, 1),
+    2: (1, 1),
+    3: (1, 2),
+}
+
+
+def _pack_reference_lines(
+    lines: list[str], group_sizes: dict[int, tuple[int, ...]]
+) -> list[list[str]]:
+    sizes = group_sizes[len(lines)]
+    groups, cursor = [], 0
+    for size in sizes:
+        groups.append(lines[cursor:cursor + size])
+        cursor += size
+    return groups
+
+
+def _reference_text_layout(
+    top: str, bottom: str
+) -> tuple[dict[str, str], dict[str, str]]:
     try:
-        top_lines = _semantic_layers(top, 12, 3)
+        top_lines = _semantic_layers(top, 12, 6)
     except ValueError as exc:
         raise ValueError("HyperFrames 模板顶部文案过长，请缩短后重试") from exc
     try:
-        bottom_lines = _semantic_layers(bottom, 15, 2)
+        bottom_lines = _semantic_layers(bottom, 15, 3)
     except ValueError as exc:
         raise ValueError("HyperFrames 模板底部文案过长，请缩短后重试") from exc
-    if len(bottom_lines) == 1:
-        bottom_lines.insert(0, "")
-    top_lines.extend([""] * (3 - len(top_lines)))
-    bottom_lines.extend([""] * (2 - len(bottom_lines)))
-    return {
-        "top1": top_lines[0],
-        "top2": top_lines[1],
-        "top3": top_lines[2],
-        "bottom1": bottom_lines[0],
-        "bottom2": bottom_lines[1],
+    top_groups = _pack_reference_lines(top_lines, _REFERENCE_TOP_GROUP_SIZES)
+    bottom_groups = _pack_reference_lines(
+        bottom_lines, _REFERENCE_BOTTOM_GROUP_SIZES
+    )
+    keys = ("top1", "top2", "top3", "bottom1", "bottom2")
+    groups = top_groups + bottom_groups
+    source_text = {
+        key: "".join(group) for key, group in zip(keys, groups)
     }
+    display_text = {
+        key: "\n".join(_hide_reference_edge_punctuation(line) for line in group)
+        for key, group in zip(keys, groups)
+    }
+    return source_text, display_text
+
+
+def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
+    return _reference_text_layout(top, bottom)[0]
 
 
 _REFERENCE_EDGE_PUNCTUATION = "，。！？；：、,.!?;:"
+_REFERENCE_EDGE_PATTERN = re.compile(
+    rf"^[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+"
+    rf"|[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+$"
+)
+
+
+def _hide_reference_edge_punctuation(value: str) -> str:
+    return _REFERENCE_EDGE_PATTERN.sub("", str(value or "").strip()).strip()
 
 
 def _reference_display_layers(layers: dict[str, str]) -> dict[str, str]:
-    edge_pattern = re.compile(
-        rf"^[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+"
-        rf"|[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+$"
-    )
     return {
-        key: edge_pattern.sub("", str(layers.get(key) or "").strip()).strip()
+        key: "\n".join(
+            _hide_reference_edge_punctuation(line)
+            for line in str(layers.get(key) or "").splitlines()
+        )
         for key in ("top1", "top2", "top3", "bottom1", "bottom2")
     }
 
@@ -1014,7 +1056,7 @@ class MatrixTemplateService:
             raise ValueError("请选择有效模板")
         reference_template = template_id in self.reference_templates
         if reference_template and enforce_reference_layout:
-            _reference_text_layers(top, bottom)
+            _reference_text_layout(top, bottom)
         font_family = str(raw.get("font_family") or "").strip()
         if (
             not reference_template and font_family
@@ -1105,7 +1147,7 @@ class MatrixTemplateService:
         template_id = payload["template_id"]
         if template_id in self.reference_templates:
             payload.pop("font_family", None)
-            source_text = _reference_text_layers(
+            source_text, display_text = _reference_text_layout(
                 payload["top_text"], payload["bottom_text"]
             )
             payload["_reference_template"] = {
@@ -1115,7 +1157,7 @@ class MatrixTemplateService:
                 "variant": self.reference_templates[template_id]["variant"],
                 "duration": _reference_duration(job_id, template_id),
                 "text": source_text,
-                "display_text": _reference_display_layers(source_text),
+                "display_text": display_text,
             }
             payload["_font_provenance"] = {
                 "selection": {
