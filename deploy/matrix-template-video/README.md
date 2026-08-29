@@ -84,3 +84,5 @@ selection instead of choosing new assets.
 The five service workers may prepare five jobs concurrently, but HyperFrames
 rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait
 up to 600 seconds and retain the original 900-second admission deadline.
+`/health` and `/v1/templates` expose `engine_concurrency` so callers can show
+five-way FFmpeg capacity separately from the two HyperFrames render slots.

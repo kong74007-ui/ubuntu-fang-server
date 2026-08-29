@@ -1967,6 +1967,10 @@ class Handler(BaseHTTPRequestHandler):
                 "templates": len(self.service.catalog),
                 "concurrency": self.service.concurrency,
                 "max_batch_size": MAX_BATCH_SIZE,
+                "engine_concurrency": {
+                    "ffmpeg": self.service.concurrency,
+                    "hyperframes": self.service.hyperframes_concurrency,
+                },
             })
             return
         if not self.authorized():
@@ -1980,6 +1984,10 @@ class Handler(BaseHTTPRequestHandler):
                 "default_font": "",
                 "max_batch_size": MAX_BATCH_SIZE,
                 "hyperframes_concurrency": self.service.hyperframes_concurrency,
+                "engine_concurrency": {
+                    "ffmpeg": self.service.concurrency,
+                    "hyperframes": self.service.hyperframes_concurrency,
+                },
             })
             return
         if path.startswith("/v1/jobs/"):

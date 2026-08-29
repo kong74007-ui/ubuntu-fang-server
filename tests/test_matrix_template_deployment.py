@@ -48,6 +48,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("hyperframes_templates")==17', installer)
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("max_batch_size")==5', installer)
+        self.assertIn('d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2}', installer)
         self.assertIn('d.get("hyperframes_concurrency")==2', installer)
         self.assertIn('d.get("hyperframes_total_timeout_seconds")==900', installer)
         self.assertIn('d.get("hyperframes_slot_timeout_seconds")==600', installer)

@@ -1093,6 +1093,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 health = json.load(response)
                 self.assertEqual(2, health["templates"])
                 self.assertEqual(5, health["max_batch_size"])
+                self.assertEqual({
+                    "ffmpeg": 1,
+                    "hyperframes": 2,
+                }, health["engine_concurrency"])
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
@@ -1106,6 +1110,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 self.assertEqual(5, len(catalog["fonts"]))
                 self.assertEqual(5, catalog["max_batch_size"])
                 self.assertEqual(2, catalog["hyperframes_concurrency"])
+                self.assertEqual({
+                    "ffmpeg": 1,
+                    "hyperframes": 2,
+                }, catalog["engine_concurrency"])
             with request(
                 "/v1/preflight", "POST",
                 {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},
