@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch Huangque material-library index replacements
+After=local-fs.target
+
+[Path]
+PathChanged=/home/ubuntu/material-libraries/huangque-media/index.jsonl
+PathChanged=/home/ubuntu/material-libraries/huangque-media/index.csv
+PathChanged=/home/ubuntu/material-libraries/huangque-media/stats.json
+Unit=huangque-material-library-index-permissions.service
+
+[Install]
+WantedBy=multi-user.target
