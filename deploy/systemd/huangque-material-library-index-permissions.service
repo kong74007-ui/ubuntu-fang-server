@@ -1,0 +1,33 @@
+[Unit]
+Description=Normalize Huangque material-library index permissions
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/huangque/material-library.env
+Environment=MATERIAL_LIBRARY_OWNER=ubuntu
+Environment=MATERIAL_LIBRARY_GROUP=ubuntu
+ExecStart=/usr/bin/python3 /usr/local/libexec/huangque-material-library-index-permissions
+UMask=0022
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/material-libraries/huangque-media
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_FOWNER
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+MemoryMax=64M
+TasksMax=16

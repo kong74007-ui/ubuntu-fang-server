@@ -1,6 +1,15 @@
 # Huangque material library service
 
 This deploys a read-only, loopback-only API over an approved `index.jsonl` library.
+
+Root-run material synchronization must not leave atomically replaced metadata
+private to root. Install the permission guard once on the material host; it
+normalizes only `index.jsonl`, `index.csv`, and `stats.json` to
+`ubuntu:ubuntu 0644` after each replacement without changing their contents:
+
+```bash
+sudo bash deploy/material-library/install-index-permission-guard.sh
+```
 It never generates AI media and never returns absolute server paths.
 
 The index accepts the canonical `sha256` and `主体` fields as well as the
