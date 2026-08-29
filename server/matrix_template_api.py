@@ -31,9 +31,11 @@ from urllib.parse import urlsplit
 MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
+MAX_BATCH_SIZE = 5
 RENDER_TIMEOUT_SECONDS = 900
+DEFAULT_HYPERFRAMES_CONCURRENCY = 2
 DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
-DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 120
+DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 600
 DEFAULT_RETENTION_SECONDS = 72 * 60 * 60
 DEFAULT_DELIVERY_GRACE_SECONDS = 60 * 60
 DEFAULT_CLEANUP_INTERVAL_SECONDS = 15 * 60
@@ -801,7 +803,7 @@ class MatrixTemplateService:
                  hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
-                 hyperframes_concurrency: int = 1,
+                 hyperframes_concurrency: int = DEFAULT_HYPERFRAMES_CONCURRENCY,
                  hyperframes_total_timeout_seconds: int = DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS,
                  hyperframes_slot_timeout_seconds: int = DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS,
                  concurrency: int = 1,
@@ -1089,7 +1091,7 @@ class MatrixTemplateService:
                 not BATCH_RE.fullmatch(batch_id)
                 or isinstance(batch_index, bool) or not isinstance(batch_index, int)
                 or isinstance(batch_size, bool) or not isinstance(batch_size, int)
-                or not 1 <= batch_index <= batch_size <= 5
+                or not 1 <= batch_index <= batch_size <= MAX_BATCH_SIZE
             ):
                 raise ValueError("批量任务参数无效")
             result.update({
@@ -1097,8 +1099,6 @@ class MatrixTemplateService:
                 "batch_index": batch_index,
                 "batch_size": batch_size,
             })
-            if reference_template and batch_size > 1:
-                raise ValueError("HyperFrames 模板暂仅支持单条生成")
         return result
 
     def available_font_families(self) -> set[str]:
@@ -1966,6 +1966,7 @@ class Handler(BaseHTTPRequestHandler):
                 **health, "build_id": runtime_build_id(),
                 "templates": len(self.service.catalog),
                 "concurrency": self.service.concurrency,
+                "max_batch_size": MAX_BATCH_SIZE,
             })
             return
         if not self.authorized():
@@ -1977,6 +1978,8 @@ class Handler(BaseHTTPRequestHandler):
                 "default_template": "full-overlay-bold",
                 "fonts": self.service.public_fonts(),
                 "default_font": "",
+                "max_batch_size": MAX_BATCH_SIZE,
+                "hyperframes_concurrency": self.service.hyperframes_concurrency,
             })
             return
         if path.startswith("/v1/jobs/"):
@@ -2086,7 +2089,8 @@ def main() -> None:
             "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER", "/usr/bin/google-chrome-stable"
         )),
         hyperframes_concurrency=int(os.environ.get(
-            "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY", "1"
+            "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY",
+            str(DEFAULT_HYPERFRAMES_CONCURRENCY),
         )),
         hyperframes_total_timeout_seconds=int(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS",
