@@ -1284,10 +1284,23 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             ))
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
+        timeline_fixture = """
+<div id="root">
+  <video id="videoA" class="clip media-video" data-start="0" data-duration="2.666667"></video>
+  <video id="videoB" class="clip media-video" data-start="2.666667" data-duration="2.666666"></video>
+  <video id="videoC" class="clip media-video" data-start="5.333333" data-duration="2.666667"></video>
+  <audio id="bgm" data-start="0" data-duration="8"></audio>
+  <section id="typography" class="clip text-layer" data-start="0" data-duration="8"></section>
+</div>
+<script>
+      const duration = 8;
+""" + matrix.REFERENCE_DYNAMIC_TIMING_JS + """
+</script>
+"""
         (pack / "index.html").write_text(
             "<html><head><style>\n" + "\n".join(styles) + "\n</style>\n"
             + matrix.REFERENCE_GSAP_CDN
-            + "\n</head><body><div>fixture</div></body></html>\n",
+            + "\n</head><body>" + timeline_fixture + "</body></html>\n",
             encoding="utf-8",
         )
         (pack / "hyperframes.json").write_text("{}\n", encoding="utf-8")
@@ -1809,6 +1822,68 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(2, peak)
         self.assertGreaterEqual(elapsed, 0.1)
 
+    def test_reference_segment_timing_caps_short_media_without_gaps(self):
+        starts, durations = matrix._reference_segment_timing(
+            14, [94.3, 3.9, 9.897]
+        )
+        for actual, expected in zip(starts, [0.0, 5.1, 8.9]):
+            self.assertAlmostEqual(expected, actual)
+        for actual, expected in zip(durations, [5.1, 3.8, 5.1]):
+            self.assertAlmostEqual(expected, actual)
+        self.assertAlmostEqual(14.0, sum(durations))
+        self.assertTrue(all(
+            duration <= source - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+            for duration, source in zip(durations, [94.3, 3.9, 9.897])
+        ))
+
+        starts, durations = matrix._reference_segment_timing(
+            12, [30.0, 30.0, 30.0]
+        )
+        self.assertEqual([0.0, 4.0, 8.0], starts)
+        self.assertEqual([4.0, 4.0, 4.0], durations)
+
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "素材总时长不足"
+        ):
+            matrix._reference_segment_timing(14, [3.0, 3.0, 3.0])
+
+    def test_reference_visual_coverage_rejects_sustained_black(self):
+        clean = mock.Mock(returncode=0)
+        clean.communicate.return_value = (
+            b"", b"black_start:2 black_end:2.49 black_duration:0.49\n"
+        )
+        clean.poll.return_value = 0
+        blocked = mock.Mock(returncode=0)
+        blocked.communicate.return_value = (
+            b"", b"black_start:8.03 black_end:13.97 black_duration:5.94\n"
+        )
+        blocked.poll.return_value = 0
+        with mock.patch.object(matrix.subprocess, "Popen", return_value=clean):
+            self.service._validate_reference_visual_coverage(
+                self.root / "clean.mp4"
+            )
+        with mock.patch.object(matrix.subprocess, "Popen", return_value=blocked), \
+             self.assertRaisesRegex(
+                 matrix.MatrixTemplateError, "存在持续黑屏"
+             ):
+            self.service._validate_reference_visual_coverage(
+                self.root / "blocked.mp4"
+            )
+
+    def test_reference_video_duration_falls_back_to_container(self):
+        probe = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "streams": [{"codec_type": "video", "duration": "N/A"}],
+                "format": {"duration": "3.900000"},
+            }),
+        )
+        with mock.patch.object(matrix.subprocess, "run", return_value=probe):
+            self.assertEqual(
+                3.9,
+                self.service._reference_video_duration(self.root / "video.mp4"),
+            )
+
     def test_reference_render_uses_locked_variables_and_local_gsap(self):
         payload = self.service.validate_payload({
             "top_text": "深圳AI创业者活动",
@@ -1818,6 +1893,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "bgm": False,
         })
         payload = self.service._freeze_font_provenance("3" * 32, payload)
+        payload["_reference_template"]["duration"] = 14
         materials = []
         paths = []
         for index in range(1, 4):
@@ -1829,11 +1905,16 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.returncode = 0
         process.communicate.return_value = (b"", b"")
         process.poll.return_value = 0
-        with mock.patch.object(matrix.subprocess, "Popen", return_value=process) as popen:
+        with mock.patch.object(
+            self.service, "_reference_video_duration",
+            side_effect=[94.3, 3.9, 9.897],
+        ), mock.patch.object(
+            matrix.subprocess, "Popen", return_value=process
+        ) as popen:
             variables = self.service._render_reference(
                 payload, "3" * 32, materials, paths
             )
-        command = popen.call_args.args[0]
+        command = popen.call_args_list[0].args[0]
         self.assertEqual(str(self.cli), command[0])
         self.assertIn("--strict-variables", command)
         self.assertEqual("v03", variables["variant"])
@@ -1843,6 +1924,23 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn(matrix.REFERENCE_GSAP_LOCAL, index)
         self.assertNotIn(matrix.REFERENCE_GSAP_CDN, index)
         self.assertIn(matrix.REFERENCE_EMPTY_LAYER_STYLE, index)
+        self.assertIn(
+            'id="videoA" class="clip media-video" data-start="0" data-duration="5.1"',
+            index,
+        )
+        self.assertIn(
+            'id="videoB" class="clip media-video" data-start="5.1" data-duration="3.8"',
+            index,
+        )
+        self.assertIn(
+            'id="videoC" class="clip media-video" data-start="8.9" data-duration="5.1"',
+            index,
+        )
+        self.assertIn('id="bgm" data-start="0" data-duration="14"', index)
+        self.assertIn('id="typography" class="clip text-layer" data-start="0" data-duration="14"', index)
+        self.assertIn("const segmentStarts = [0, 5.1, 8.9];", index)
+        self.assertIn("const segmentDurations = [5.1, 3.8, 5.1];", index)
+        self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
         self.assertEqual(
             set(matrix.REFERENCE_FONT_FILES),
             {path.name for path in (workdir / "assets/fonts").iterdir()},
@@ -1878,7 +1976,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.returncode = 0
         process.communicate.return_value = (b"", b"")
         process.poll.return_value = 0
-        with mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
             variables = self.service._render_reference(
                 payload, "9" * 32, materials, paths
             )

@@ -96,3 +96,12 @@ explicit `top1` and `top2` styles for every variant, and `/health` reports the
 detected two-layer/three-layer counts for deployment drift checks.
 Already-admitted jobs keep their frozen layer text unchanged, so an upgrade
 does not rewrite or resubmit in-flight work.
+
+Before HyperFrames starts, the service probes all three selected video files,
+allocates a gap-free timeline within their real durations, and writes the final
+clip, typography, audio, and GSAP timings directly into the copied HTML. This
+avoids the pack's static eight-second media timeline and prevents a short clip
+from leaving an uncovered interval. If the three videos cannot cover the frozen
+8-15 second output, the job fails instead of publishing black frames. Completed
+reference renders also run a sustained-black check over the central media area;
+0.5 seconds or more fails before publication.
