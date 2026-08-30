@@ -8,13 +8,14 @@ tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 The runtime exposes 19 templates: two generation-server-owned FFmpeg layouts
 and the 17-template `reference-typography-17` HyperFrames pack. HyperFrames
 templates require exactly three distinct approved video assets, render with
-HyperFrames `0.8.16`, and are limited to one concurrent render on the 8 GB host.
+HyperFrames `0.8.16`, and run at most two concurrent renders on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these 17 templates; the two
 FFmpeg layouts continue to support automatic or explicit font selection.
-The first release accepts only one output per HyperFrames request. A persisted
+HyperFrames templates accept batches of up to five outputs. Two renders occupy
+slots concurrently and additional accepted jobs wait for a slot. A persisted
 900-second deadline starts at database admission; render-slot waiting is capped
-at 120 seconds and consumes the same deadline. Expired jobs terminate and enter
+at 600 seconds and consumes the same deadline. Expired jobs terminate and enter
 the normal failure/refund path before the production site's 1200-second poll
 deadline, so accepted work cannot continue after the caller reports a timeout.
 
@@ -73,9 +74,15 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 ## Batch material diversity
 
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
-`batch_size` (1-5). Material selection is serialized briefly while rendering
-remains five-way concurrent. Every selected image/video SHA is reserved in
-SQLite before the next batch member selects, then supplied to the material
-library as `used_sha256`. This prevents visual reuse across one batch while
-allowing BGM reuse. A retry or service restart reuses the frozen per-job
+`batch_size` (1-5). Material selection is serialized briefly while job
+preparation remains five-way concurrent. Every selected image/video SHA is
+reserved in SQLite before the next batch member selects, then supplied to the
+material library as `used_sha256`. This prevents visual reuse across one batch
+while allowing BGM reuse. A retry or service restart reuses the frozen per-job
 selection instead of choosing new assets.
+
+The five service workers may prepare five jobs concurrently, but HyperFrames
+rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait
+up to 600 seconds and retain the original 900-second admission deadline.
+`/health` and `/v1/templates` expose `engine_concurrency` so callers can show
+five-way FFmpeg capacity separately from the two HyperFrames render slots.

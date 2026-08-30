@@ -1090,7 +1090,13 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         try:
             with request("/health") as response:
-                self.assertEqual(2, json.load(response)["templates"])
+                health = json.load(response)
+                self.assertEqual(2, health["templates"])
+                self.assertEqual(5, health["max_batch_size"])
+                self.assertEqual({
+                    "ffmpeg": 1,
+                    "hyperframes": 2,
+                }, health["engine_concurrency"])
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 request("/v1/templates")
             self.assertEqual(401, denied.exception.code)
@@ -1102,6 +1108,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 )
                 self.assertEqual("", catalog["default_font"])
                 self.assertEqual(5, len(catalog["fonts"]))
+                self.assertEqual(5, catalog["max_batch_size"])
+                self.assertEqual(2, catalog["hyperframes_concurrency"])
+                self.assertEqual({
+                    "ffmpeg": 1,
+                    "hyperframes": 2,
+                }, catalog["engine_concurrency"])
             with request(
                 "/v1/preflight", "POST",
                 {"top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？"},
@@ -1311,15 +1323,17 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "评论区回复关键词",
             frozen["_reference_template"]["text"]["bottom2"],
         )
-        with self.assertRaisesRegex(ValueError, "暂仅支持单条"):
-            self.service.validate_payload({
-                "top_text": "批量活动标题",
-                "bottom_text": "评论区回复关键词",
-                "template_id": template_id,
-                "batch_id": "a" * 32,
-                "batch_index": 1,
-                "batch_size": 2,
-            })
+        batch = self.service.validate_payload({
+            "top_text": "批量活动标题",
+            "bottom_text": "评论区回复关键词",
+            "template_id": template_id,
+            "batch_id": "a" * 32,
+            "batch_index": 3,
+            "batch_size": 5,
+        })
+        self.assertEqual(("a" * 32, 3, 5), (
+            batch["batch_id"], batch["batch_index"], batch["batch_size"],
+        ))
 
     def test_reference_layers_preserve_copy_and_enforce_width_budget(self):
         top = "一家店不雇人，AI 当店员。以前组团队，现在也能开。"
@@ -1565,9 +1579,77 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             [scene["media_type"] for scene in captured["scenes"]],
         )
 
+    def test_five_reference_batch_jobs_reserve_fifteen_distinct_videos(self):
+        batch_id = "c" * 32
+        visual_pool = [format(index, "064x") for index in range(1, 21)]
+        requests = []
+        results = {}
+        errors = []
+        request_lock = threading.Lock()
+        barrier = threading.Barrier(6)
+
+        def selection(_method, _path, body):
+            with request_lock:
+                requests.append(dict(body))
+            used = set(body.get("used_sha256") or [])
+            available = [value for value in visual_pool if value not in used]
+            return {"materials": [{
+                "scene_id": f"media_{index:02d}",
+                "sha256": available[index - 1],
+                "media_type": "video",
+                "record_id": "video-" + available[index - 1][:4],
+            } for index in range(1, 4)]}
+
+        def select_for(index):
+            payload = self.service.validate_payload({
+                "top_text": "批量活动标题",
+                "bottom_text": "评论区回复关键词",
+                "template_id": "ref-02-fixture-02",
+                "batch_id": batch_id,
+                "batch_index": index,
+                "batch_size": 5,
+                "bgm": False,
+            })
+            barrier.wait()
+            try:
+                results[index] = self.service._select_materials(
+                    payload, format(index + 100, "032x")
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        with mock.patch.object(
+            self.service, "_library_request", side_effect=selection
+        ):
+            threads = [
+                threading.Thread(target=select_for, args=(index,))
+                for index in range(1, 6)
+            ]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=3)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertFalse(errors)
+        self.assertEqual(5, len(results))
+        self.assertEqual(15, len({
+            item["sha256"]
+            for materials in results.values()
+            for item in materials
+        }))
+        self.assertEqual([0, 3, 6, 9, 12], sorted(
+            len(item["used_sha256"]) for item in requests
+        ))
+
     def test_five_reference_waiters_timeout_without_starting_render(self):
         self.service.hyperframes_slot_timeout_seconds = 0.05
-        self.assertTrue(self.service.hyperframes_slots.acquire(timeout=0.1))
+        held_slots = [
+            self.service.hyperframes_slots.acquire(timeout=0.1)
+            for _ in range(self.service.hyperframes_concurrency)
+        ]
+        self.assertTrue(all(held_slots))
         barrier = threading.Barrier(6)
         errors = []
         lock = threading.Lock()
@@ -1590,7 +1672,8 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         for thread in threads:
             thread.join(timeout=1)
         elapsed = time.monotonic() - started
-        self.service.hyperframes_slots.release()
+        for _ in held_slots:
+            self.service.hyperframes_slots.release()
 
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(5, len(errors))
@@ -1601,6 +1684,50 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         ))
         self.assertLess(elapsed, 0.8)
         self.assertEqual(set(), self.service.active_processes)
+
+    def test_five_reference_jobs_queue_behind_two_render_slots(self):
+        self.service.hyperframes_slot_timeout_seconds = 1
+        barrier = threading.Barrier(6)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+        completed = []
+        errors = []
+
+        def use_slot(index):
+            nonlocal active, peak
+            barrier.wait()
+            try:
+                self.service._acquire_hyperframes_slot(time.time() + 2)
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.05)
+                with lock:
+                    active -= 1
+                    completed.append(index)
+                self.service.hyperframes_slots.release()
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=use_slot, args=(index,))
+            for index in range(5)
+        ]
+        started = time.monotonic()
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+        elapsed = time.monotonic() - started
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertFalse(errors)
+        self.assertEqual(5, len(completed))
+        self.assertEqual(2, peak)
+        self.assertGreaterEqual(elapsed, 0.1)
 
     def test_reference_render_uses_locked_variables_and_local_gsap(self):
         payload = self.service.validate_payload({
