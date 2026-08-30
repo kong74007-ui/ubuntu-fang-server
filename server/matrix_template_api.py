@@ -111,6 +111,16 @@ REFERENCE_EMPTY_LAYER_STYLE = (
     '[data-var-text]:empty{display:none!important}'
     '</style>'
 )
+REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
+REFERENCE_MIN_SEGMENT_SECONDS = 0.5
+REFERENCE_DYNAMIC_TIMING_JS = """      const segment = duration / 3;
+      const segmentStarts = [0, segment, segment * 2];
+      const segmentDurations = [segment, segment, duration - segment * 2];"""
+REFERENCE_BLACK_SCREEN_SECONDS = 0.5
+REFERENCE_BLACK_SCREEN_FILTER = (
+    "crop=1080:700:0:700,"
+    "blackdetect=d=0.5:pix_th=0.10:pic_th=0.98"
+)
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -608,6 +618,101 @@ def _reference_display_layers(layers: dict[str, str]) -> dict[str, str]:
 def _reference_duration(job_id: str, template_id: str) -> int:
     digest = hashlib.sha256(f"{job_id}:{template_id}".encode("utf-8")).digest()
     return 8 + int.from_bytes(digest[:8], "big") % 8
+
+
+def _format_reference_seconds(value: float) -> str:
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _reference_segment_timing(
+    total_duration: float, media_durations: list[float]
+) -> tuple[list[float], list[float]]:
+    total = float(total_duration)
+    if not 8 <= total <= 15 or len(media_durations) != 3:
+        raise MatrixTemplateError("HyperFrames 模板素材时间轴参数无效")
+    capacities = [
+        max(0.0, float(value) - REFERENCE_MEDIA_SAFETY_SECONDS)
+        for value in media_durations
+    ]
+    if (
+        any(value < REFERENCE_MIN_SEGMENT_SECONDS for value in capacities)
+        or sum(capacities) + 0.001 < total
+    ):
+        raise MatrixTemplateError("HyperFrames 模板素材总时长不足")
+
+    durations = [0.0, 0.0, 0.0]
+    remaining = total
+    active = {0, 1, 2}
+    while active:
+        share = remaining / len(active)
+        capped = [index for index in active if capacities[index] < share - 1e-9]
+        if not capped:
+            for index in active:
+                durations[index] = share
+            remaining = 0.0
+            break
+        for index in capped:
+            durations[index] = capacities[index]
+            remaining -= capacities[index]
+            active.remove(index)
+
+    durations[-1] += total - sum(durations)
+    if any(
+        value < REFERENCE_MIN_SEGMENT_SECONDS
+        or value > capacities[index] + 0.001
+        for index, value in enumerate(durations)
+    ):
+        raise MatrixTemplateError("HyperFrames 模板素材时长分配失败")
+    starts = [0.0, durations[0], durations[0] + durations[1]]
+    return starts, durations
+
+
+def _rewrite_reference_timeline(
+    html: str, total_duration: float,
+    starts: list[float], durations: list[float],
+) -> str:
+    if len(starts) != 3 or len(durations) != 3:
+        raise MatrixTemplateError("HyperFrames 模板素材时间轴参数无效")
+
+    def rewrite_element(source: str, element_id: str,
+                        start: float, duration: float) -> str:
+        pattern = re.compile(
+            rf'<(?:video|audio|section)\b[^>]*\bid="{re.escape(element_id)}"[^>]*>'
+        )
+        matches = list(pattern.finditer(source))
+        if len(matches) != 1:
+            raise MatrixTemplateError("HyperFrames 模板时间轴元素发生变化")
+        tag = matches[0].group(0)
+        for attribute, value in (
+            ("data-start", start), ("data-duration", duration),
+        ):
+            replacement = rf'\g<1>{_format_reference_seconds(value)}\g<2>'
+            tag, count = re.subn(
+                rf'(\s{attribute}=")[^"]*(")', replacement, tag, count=1
+            )
+            if count != 1:
+                raise MatrixTemplateError("HyperFrames 模板时间轴属性发生变化")
+        return source[:matches[0].start()] + tag + source[matches[0].end():]
+
+    result = html
+    for index, element_id in enumerate(("videoA", "videoB", "videoC")):
+        result = rewrite_element(
+            result, element_id, starts[index], durations[index]
+        )
+    result = rewrite_element(result, "bgm", 0.0, total_duration)
+    result = rewrite_element(result, "typography", 0.0, total_duration)
+
+    timing_js = (
+        "      const segmentStarts = ["
+        + ", ".join(_format_reference_seconds(value) for value in starts)
+        + "];\n      const segmentDurations = ["
+        + ", ".join(_format_reference_seconds(value) for value in durations)
+        + "];"
+    )
+    if result.count(REFERENCE_DYNAMIC_TIMING_JS) != 1:
+        raise MatrixTemplateError("HyperFrames 模板动态时间轴声明发生变化")
+    return result.replace(REFERENCE_DYNAMIC_TIMING_JS, timing_js)
 
 
 class JobStore:
@@ -1647,6 +1752,86 @@ class MatrixTemplateService:
         shutil.copy2(source, destination)
         return destination.as_posix()
 
+    @staticmethod
+    def _reference_video_duration(path: Path) -> float:
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=codec_type,duration:format=duration",
+            "-of", "json", str(path),
+        ], check=False, capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise MatrixTemplateError("HyperFrames 模板素材时长探测失败")
+        try:
+            data = json.loads(result.stdout)
+            video = next(
+                item for item in (data.get("streams") or [])
+                if item.get("codec_type") == "video"
+            )
+        except (KeyError, StopIteration, TypeError, ValueError) as exc:
+            raise MatrixTemplateError("HyperFrames 模板素材时长无效") from exc
+        values = []
+        for raw_value in (
+            video.get("duration"),
+            (data.get("format") or {}).get("duration"),
+        ):
+            try:
+                value = float(raw_value or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values.append(value)
+        if not values:
+            raise MatrixTemplateError("HyperFrames 模板素材时长无效")
+        duration = min(values)
+        if duration < REFERENCE_MIN_SEGMENT_SECONDS:
+            raise MatrixTemplateError("HyperFrames 模板素材时长不足")
+        return duration
+
+    def _validate_reference_visual_coverage(
+        self, output: Path, timeout_seconds: float = 120
+    ) -> None:
+        command = [
+            "ffmpeg", "-hide_banner", "-nostats", "-i", str(output),
+            "-vf", REFERENCE_BLACK_SCREEN_FILTER,
+            "-an", "-f", "null", "-",
+        ]
+        options = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE}
+        if os.name == "nt":
+            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            options["start_new_session"] = True
+        process = subprocess.Popen(command, **options)
+        with self.process_lock:
+            self.active_processes.add(process)
+            self.active_process = process
+        try:
+            try:
+                _stdout, stderr = process.communicate(
+                    timeout=max(1.0, float(timeout_seconds))
+                )
+            except subprocess.TimeoutExpired as exc:
+                self._terminate(process)
+                raise MatrixTemplateError(
+                    "HyperFrames 模板成片黑屏检测超时"
+                ) from exc
+            if process.returncode:
+                raise MatrixTemplateError("HyperFrames 模板成片黑屏检测失败")
+        finally:
+            with self.process_lock:
+                self.active_processes.discard(process)
+                self.active_process = next(iter(self.active_processes), None)
+        detail = (stderr or b"").decode("utf-8", "replace")
+        black_durations = [
+            float(value) for value in re.findall(
+                r"black_duration:([0-9]+(?:\.[0-9]+)?)", detail
+            )
+        ]
+        if any(
+            value + 0.001 >= REFERENCE_BLACK_SCREEN_SECONDS
+            for value in black_durations
+        ):
+            raise MatrixTemplateError("HyperFrames 模板成片存在持续黑屏")
+
     def _acquire_hyperframes_slot(self, deadline_at: float) -> None:
         slot_deadline = min(
             float(deadline_at), time.time() + self.hyperframes_slot_timeout_seconds
@@ -1711,13 +1896,12 @@ class MatrixTemplateService:
         index = index.replace(
             "</head>", REFERENCE_EMPTY_LAYER_STYLE + "\n</head>"
         )
-        index_path.write_text(index, encoding="utf-8")
         shutil.copy2(self.hyperframes_gsap, workdir / "gsap.min.js")
 
         input_dir = workdir / "assets/input"
         video_values = []
-        for index, source in enumerate(paths[:3], 1):
-            target = input_dir / f"video-{index}{source.suffix.lower()}"
+        for asset_index, source in enumerate(paths[:3], 1):
+            target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
             self._copy_reference_asset(source, target)
             video_values.append(target.relative_to(workdir).as_posix())
         if payload["bgm"]:
@@ -1739,6 +1923,17 @@ class MatrixTemplateService:
             "videoC": video_values[2],
             "bgm": bgm,
         }
+        media_durations = [
+            self._reference_video_duration(path) for path in paths[:3]
+        ]
+        segment_starts, segment_durations = _reference_segment_timing(
+            float(reference["duration"]), media_durations
+        )
+        index = _rewrite_reference_timeline(
+            index, float(reference["duration"]),
+            segment_starts, segment_durations,
+        )
+        index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
             json.dumps(variables, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1810,6 +2005,12 @@ class MatrixTemplateService:
                 with self.process_lock:
                     self.active_processes.discard(process)
                     self.active_process = next(iter(self.active_processes), None)
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
+            self._validate_reference_visual_coverage(
+                output, timeout_seconds=min(120.0, remaining)
+            )
         finally:
             self.hyperframes_slots.release()
         return variables
