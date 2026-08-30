@@ -86,3 +86,13 @@ rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait
 up to 600 seconds and retain the original 900-second admission deadline.
 `/health` and `/v1/templates` expose `engine_concurrency` so callers can show
 five-way FFmpeg capacity separately from the two HyperFrames render slots.
+
+Reference-template top text is packed from the actual variant CSS contract.
+Variants with an explicit `.vXX .top3` rule use three top regions; variants
+without that rule use only `top1` and `top2`, with `top3` frozen empty. The
+service still supports up to six semantic lines by packing them `2+4` for a
+two-region template or `2+2+2` for a three-region template. Startup requires
+explicit `top1` and `top2` styles for every variant, and `/health` reports the
+detected two-layer/three-layer counts for deployment drift checks.
+Already-admitted jobs keep their frozen layer text unchanged, so an upgrade
+does not rewrite or resubmit in-flight work.
