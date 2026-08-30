@@ -512,12 +512,22 @@ def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
 
 
 _REFERENCE_TOP_GROUP_SIZES = {
-    1: (1, 0, 0),
-    2: (1, 1, 0),
-    3: (1, 1, 1),
-    4: (1, 2, 1),
-    5: (2, 2, 1),
-    6: (2, 2, 2),
+    2: {
+        1: (1, 0, 0),
+        2: (1, 1, 0),
+        3: (1, 2, 0),
+        4: (2, 2, 0),
+        5: (2, 3, 0),
+        6: (2, 4, 0),
+    },
+    3: {
+        1: (1, 0, 0),
+        2: (1, 1, 0),
+        3: (1, 1, 1),
+        4: (1, 2, 1),
+        5: (2, 2, 1),
+        6: (2, 2, 2),
+    },
 }
 _REFERENCE_BOTTOM_GROUP_SIZES = {
     1: (0, 1),
@@ -538,8 +548,10 @@ def _pack_reference_lines(
 
 
 def _reference_text_layout(
-    top: str, bottom: str
+    top: str, bottom: str, top_layer_count: int = 3
 ) -> tuple[dict[str, str], dict[str, str]]:
+    if top_layer_count not in _REFERENCE_TOP_GROUP_SIZES:
+        raise ValueError("HyperFrames 模板顶部文字层配置无效")
     try:
         top_lines = _semantic_layers(top, 12, 6)
     except ValueError as exc:
@@ -548,7 +560,9 @@ def _reference_text_layout(
         bottom_lines = _semantic_layers(bottom, 15, 3)
     except ValueError as exc:
         raise ValueError("HyperFrames 模板底部文案过长，请缩短后重试") from exc
-    top_groups = _pack_reference_lines(top_lines, _REFERENCE_TOP_GROUP_SIZES)
+    top_groups = _pack_reference_lines(
+        top_lines, _REFERENCE_TOP_GROUP_SIZES[top_layer_count]
+    )
     bottom_groups = _pack_reference_lines(
         bottom_lines, _REFERENCE_BOTTOM_GROUP_SIZES
     )
@@ -564,8 +578,10 @@ def _reference_text_layout(
     return source_text, display_text
 
 
-def _reference_text_layers(top: str, bottom: str) -> dict[str, str]:
-    return _reference_text_layout(top, bottom)[0]
+def _reference_text_layers(
+    top: str, bottom: str, top_layer_count: int = 3
+) -> dict[str, str]:
+    return _reference_text_layout(top, bottom, top_layer_count)[0]
 
 
 _REFERENCE_EDGE_PUNCTUATION = "，。！？；：、,.!?;:"
@@ -974,6 +990,13 @@ class MatrixTemplateService:
             path = pack_root.joinpath(*required.split("/"))
             if path.is_symlink() or not path.is_file():
                 raise MatrixTemplateError("HyperFrames reference template pack is incomplete")
+        index_html = (pack_root / "index.html").read_text(encoding="utf-8")
+
+        def has_variant_layer(variant: str, layer: str) -> bool:
+            return bool(re.search(
+                rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
+                index_html,
+            ))
 
         result = []
         variants = set()
@@ -993,6 +1016,14 @@ class MatrixTemplateService:
                 raise MatrixTemplateError("invalid HyperFrames reference template identity")
             expected_ids.add(template_id)
             variants.add(variant)
+            if not all(
+                has_variant_layer(variant, layer)
+                for layer in ("top1", "top2")
+            ):
+                raise MatrixTemplateError(
+                    "HyperFrames reference template top layer styles are incomplete"
+                )
+            top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
             record = {
                 "id": template_id,
                 "name": str(item.get("name") or template_id)[:40],
@@ -1001,7 +1032,7 @@ class MatrixTemplateService:
                 "engine": "hyperframes",
                 "font_mode": "template_locked",
                 "font_selectable": False,
-                "text_layers": {"top": 3, "bottom": 2},
+                "text_layers": {"top": top_layer_count, "bottom": 2},
                 "duration_mode": "random_integer_8_15",
                 "required_visuals": 3,
                 "variant": variant,
@@ -1058,7 +1089,11 @@ class MatrixTemplateService:
             raise ValueError("请选择有效模板")
         reference_template = template_id in self.reference_templates
         if reference_template and enforce_reference_layout:
-            _reference_text_layout(top, bottom)
+            _reference_text_layout(
+                top,
+                bottom,
+                self.reference_templates[template_id]["text_layers"]["top"],
+            )
         font_family = str(raw.get("font_family") or "").strip()
         if (
             not reference_template and font_family
@@ -1147,14 +1182,17 @@ class MatrixTemplateService:
         template_id = payload["template_id"]
         if template_id in self.reference_templates:
             payload.pop("font_family", None)
+            template = self.reference_templates[template_id]
+            top_layer_count = int(template["text_layers"]["top"])
             source_text, display_text = _reference_text_layout(
-                payload["top_text"], payload["bottom_text"]
+                payload["top_text"], payload["bottom_text"], top_layer_count
             )
             payload["_reference_template"] = {
                 "pack_id": REFERENCE_PACK_ID,
                 "engine": "hyperframes",
                 "hyperframes_version": REFERENCE_HYPERFRAMES_VERSION,
-                "variant": self.reference_templates[template_id]["variant"],
+                "variant": template["variant"],
+                "top_layer_count": top_layer_count,
                 "duration": _reference_duration(job_id, template_id),
                 "text": source_text,
                 "display_text": display_text,
@@ -1243,6 +1281,13 @@ class MatrixTemplateService:
             "hyperframes_version": (
                 REFERENCE_HYPERFRAMES_VERSION if self.reference_templates else ""
             ),
+            "reference_top_layer_counts": {
+                str(layer_count): sum(
+                    1 for item in self.reference_templates.values()
+                    if item["text_layers"]["top"] == layer_count
+                )
+                for layer_count in (2, 3)
+            },
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,

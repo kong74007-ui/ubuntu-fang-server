@@ -1093,6 +1093,9 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 health = json.load(response)
                 self.assertEqual(2, health["templates"])
                 self.assertEqual(5, health["max_batch_size"])
+                self.assertEqual(
+                    {"2": 0, "3": 0}, health["reference_top_layer_counts"]
+                )
                 self.assertEqual({
                     "ffmpeg": 1,
                     "hyperframes": 2,
@@ -1271,8 +1274,19 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         pack = template_root / matrix.REFERENCE_PACK_ID
         (pack / "assets/bgm").mkdir(parents=True)
         (pack / "assets/bgm/silence.m4a").write_bytes(b"silence")
+        top3_variants = {1, 4, 5, 6, 7, 8, 10, 11, 12, 16, 17}
+        styles = []
+        for index in range(1, 18):
+            variant = f"v{index:02d}"
+            styles.extend((
+                f".{variant} .top1 {{ font-size: 80px; }}",
+                f".{variant} .top2 {{ font-size: 60px; }}",
+            ))
+            if index in top3_variants:
+                styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
         (pack / "index.html").write_text(
-            "<html><head>\n" + matrix.REFERENCE_GSAP_CDN
+            "<html><head><style>\n" + "\n".join(styles) + "\n</style>\n"
+            + matrix.REFERENCE_GSAP_CDN
             + "\n</head><body><div>fixture</div></body></html>\n",
             encoding="utf-8",
         )
@@ -1301,6 +1315,21 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual("hyperframes", template["engine"])
         self.assertFalse(template["font_selectable"])
         self.assertEqual("template_locked", template["font_mode"])
+        self.assertEqual({"top": 3, "bottom": 2}, template["text_layers"])
+        self.assertEqual(
+            {"top": 2, "bottom": 2},
+            self.service.templates["ref-02-fixture-02"]["text_layers"],
+        )
+        self.assertEqual(
+            {
+                "v01", "v04", "v05", "v06", "v07", "v08",
+                "v10", "v11", "v12", "v16", "v17",
+            },
+            {
+                item["variant"] for item in self.service.reference_templates.values()
+                if item["text_layers"]["top"] == 3
+            },
+        )
         payload = self.service.validate_payload({
             "top_text": "AI创业活动",
             "bottom_text": "评论区回复关键词",
@@ -1334,6 +1363,22 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(("a" * 32, 3, 5), (
             batch["batch_id"], batch["batch_index"], batch["batch_size"],
         ))
+
+    def test_reference_catalog_rejects_missing_required_top_style(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        self.assertIn(".v02 .top2 {", source)
+        index_path.write_text(
+            source.replace(".v02 .top2 {", ".v02 .missing {", 1),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "top layer styles are incomplete"
+        ):
+            self.service._load_reference_catalog()
 
     def test_reference_layers_preserve_copy_and_enforce_width_budget(self):
         top = "一家店不雇人，AI 当店员。以前组团队，现在也能开。"
@@ -1443,6 +1488,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         frozen = self.service._freeze_font_provenance("8" * 32, payload)
         reference = frozen["_reference_template"]
+        self.assertEqual(3, reference["top_layer_count"])
         self.assertEqual(
             top,
             "".join(reference["text"][key] for key in ("top1", "top2", "top3")),
@@ -1480,6 +1526,40 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             matrix._reference_display_layers({
                 "top1": "，开店。\n！持续增长？",
             })["top1"],
+        )
+
+    def test_two_layer_reference_template_moves_all_copy_out_of_top3(self):
+        top = (
+            "一家店，不雇人，AI 当店员，24 小时接单，老板该干嘛干嘛。"
+            "以前开店要组团队、盯店、熬到凌晨，现在一个人就能开。"
+        )
+        bottom = "想了解的评论区扣「111」，我把资料发你。"
+        payload = self.service.validate_payload({
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": "ref-02-fixture-02",
+            "bgm": False,
+        })
+        frozen = self.service._freeze_font_provenance("2" * 32, payload)
+        reference = frozen["_reference_template"]
+
+        self.assertEqual(2, reference["top_layer_count"])
+        self.assertEqual("", reference["text"]["top3"])
+        self.assertEqual("", reference["display_text"]["top3"])
+        self.assertEqual(
+            top,
+            reference["text"]["top1"] + reference["text"]["top2"],
+        )
+        self.assertEqual([2, 4], [
+            len(reference["display_text"][key].splitlines())
+            for key in ("top1", "top2")
+        ])
+        self.assertEqual(
+            "\n".join(
+                reference["display_text"][key]
+                for key in ("top1", "top2")
+            ),
+            frozen["_display_top_text"],
         )
 
     def test_legacy_oversized_reference_request_remains_idempotent_after_restart(self):
