@@ -126,7 +126,7 @@ REFERENCE_FIXED_PRIVATE_FONTS = {
         "top2": {
             "family": "Smiley Sans Oblique",
             "alias": "HQSmileySansOblique",
-            "font_size_px": 58,
+            "font_size_px": 62,
         },
     },
 }

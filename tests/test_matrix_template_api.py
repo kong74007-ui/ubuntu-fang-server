@@ -1935,7 +1935,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual("Smiley Sans Oblique", fixed["family"])
         self.assertEqual("HQSmileySansOblique", fixed["alias"])
         self.assertEqual("SmileySans-Oblique.ttf", fixed["file"])
-        self.assertEqual(58, fixed["font_size_px"])
+        self.assertEqual(62, fixed["font_size_px"])
         self.assertTrue(any(
             item["family"] == "Smiley Sans Oblique"
             and item["source"] == "private"
@@ -1976,7 +1976,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         self.assertIn(
             '.v03 .top2{font-family:"HQSmileySansOblique"!important;'
-            'font-size:58px!important}', index
+            'font-size:62px!important}', index
         )
         self.assertIn(
             'id="videoA" class="clip media-video" data-start="0" data-duration="5.1"',
