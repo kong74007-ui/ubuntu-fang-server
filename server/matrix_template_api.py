@@ -121,6 +121,18 @@ REFERENCE_BLACK_SCREEN_FILTER = (
     "crop=1080:700:0:700,"
     "blackdetect=d=0.5:pix_th=0.10:pic_th=0.98"
 )
+REFERENCE_FIXED_PRIVATE_FONTS = {
+    "v03": {
+        "top2": {
+            "family": "Smiley Sans Oblique",
+            "alias": "HQSmileySansOblique",
+        },
+    },
+}
+REFERENCE_TEXT_LAYER_IDS = frozenset({
+    "top1", "top2", "top3", "bottom1", "bottom2",
+})
+REFERENCE_PRIVATE_FONT_STYLE_ID = "matrix-reference-private-fonts"
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -715,6 +727,47 @@ def _rewrite_reference_timeline(
     return result.replace(REFERENCE_DYNAMIC_TIMING_JS, timing_js)
 
 
+def _reference_private_font_style(
+    variant: str, fixed_fonts: dict[str, dict]
+) -> str:
+    if not fixed_fonts:
+        return ""
+    if not re.fullmatch(r"v(?:0[1-9]|1[0-7])", str(variant or "")):
+        raise MatrixTemplateError("HyperFrames 固定私有字体模板标识无效")
+    declarations = []
+    overrides = []
+    seen_aliases = set()
+    for layer, item in sorted(fixed_fonts.items()):
+        if layer not in REFERENCE_TEXT_LAYER_IDS or not isinstance(item, dict):
+            raise MatrixTemplateError("HyperFrames 固定私有字体配置无效")
+        alias = str(item.get("alias") or "")
+        filename = str(item.get("file") or "")
+        if (
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", alias)
+            or Path(filename).name != filename
+            or Path(filename).suffix.lower() not in {".ttf", ".otf", ".ttc"}
+        ):
+            raise MatrixTemplateError("HyperFrames 固定私有字体元数据无效")
+        if alias not in seen_aliases:
+            font_format = {
+                ".ttf": "truetype", ".otf": "opentype", ".ttc": "collection",
+            }[Path(filename).suffix.lower()]
+            declarations.append(
+                f'@font-face{{font-family:"{alias}";'
+                f'src:url("assets/fonts/{filename}") format("{font_format}");'
+                'font-display:block}'
+            )
+            seen_aliases.add(alias)
+        overrides.append(
+            f'.{variant} .{layer}{{font-family:"{alias}"!important}}'
+        )
+    return (
+        f'<style id="{REFERENCE_PRIVATE_FONT_STYLE_ID}">'
+        + "".join(declarations + overrides)
+        + "</style>"
+    )
+
+
 class JobStore:
     def __init__(self, path: Path):
         self.path = path
@@ -1129,6 +1182,16 @@ class MatrixTemplateService:
                     "HyperFrames reference template top layer styles are incomplete"
                 )
             top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
+            fixed_private_fonts = REFERENCE_FIXED_PRIVATE_FONTS.get(variant, {})
+            for layer, font in fixed_private_fonts.items():
+                if (
+                    layer not in REFERENCE_TEXT_LAYER_IDS
+                    or not isinstance(font, dict)
+                    or font.get("family") not in self.private_fonts
+                ):
+                    raise MatrixTemplateError(
+                        "HyperFrames fixed private font is unavailable"
+                    )
             record = {
                 "id": template_id,
                 "name": str(item.get("name") or template_id)[:40],
@@ -1141,6 +1204,10 @@ class MatrixTemplateService:
                 "duration_mode": "random_integer_8_15",
                 "required_visuals": 3,
                 "variant": variant,
+                "fixed_fonts": {
+                    layer: font["family"]
+                    for layer, font in fixed_private_fonts.items()
+                },
             }
             result.append(record)
             self.reference_templates[template_id] = record
@@ -1289,6 +1356,29 @@ class MatrixTemplateService:
             payload.pop("font_family", None)
             template = self.reference_templates[template_id]
             top_layer_count = int(template["text_layers"]["top"])
+            fixed_fonts = {}
+            private_font_records = {}
+            for layer, font in REFERENCE_FIXED_PRIVATE_FONTS.get(
+                template["variant"], {}
+            ).items():
+                family = str(font["family"])
+                current = self.private_fonts.get(family)
+                if current is None:
+                    raise MatrixTemplateError(
+                        "HyperFrames fixed private font is unavailable"
+                    )
+                fixed_fonts[layer] = {
+                    "family": family,
+                    "alias": str(font["alias"]),
+                    "file": current["file"],
+                    "sha256": current["sha256"],
+                }
+                private_font_records[family] = {
+                    "family": family,
+                    "file": current["file"],
+                    "sha256": current["sha256"],
+                    "source": "private",
+                }
             source_text, display_text = _reference_text_layout(
                 payload["top_text"], payload["bottom_text"], top_layer_count
             )
@@ -1301,6 +1391,23 @@ class MatrixTemplateService:
                 "duration": _reference_duration(job_id, template_id),
                 "text": source_text,
                 "display_text": display_text,
+                "fixed_fonts": fixed_fonts,
+            }
+            reference_records = [
+                {
+                    "family": family,
+                    "file": item["file"],
+                    "sha256": item["sha256"],
+                    "source": "reference-template",
+                }
+                for family, item in sorted(self.reference_fonts.items())
+            ]
+            combined_fonts = {
+                **self.reference_fonts,
+                **{
+                    family: self.private_fonts[family]
+                    for family in private_font_records
+                },
             }
             payload["_font_provenance"] = {
                 "selection": {
@@ -1308,16 +1415,14 @@ class MatrixTemplateService:
                     "top_font": "template-defined",
                     "bottom_font": "template-defined",
                 },
-                "fonts": [
-                    {
-                        "family": family,
-                        "file": item["file"],
-                        "sha256": item["sha256"],
-                        "source": "reference-template",
-                    }
-                    for family, item in sorted(self.reference_fonts.items())
+                "fonts": reference_records + [
+                    private_font_records[family]
+                    for family in sorted(private_font_records)
                 ],
                 "private_bundle_sha256": self.reference_font_fingerprint,
+                "template_font_bundle_sha256": _font_bundle_fingerprint(
+                    combined_fonts
+                ),
             }
             payload["_display_top_text"] = "\n".join(
                 value
@@ -1393,6 +1498,11 @@ class MatrixTemplateService:
                 )
                 for layer_count in (2, 3)
             },
+            "reference_fixed_private_fonts": sorted({
+                family
+                for item in self.reference_templates.values()
+                for family in item.get("fixed_fonts", {}).values()
+            }),
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,
@@ -1853,12 +1963,14 @@ class MatrixTemplateService:
                           *, deadline_at: float | None = None) -> dict:
         reference = payload.get("_reference_template")
         display_text = reference.get("display_text") if isinstance(reference, dict) else None
+        fixed_fonts = reference.get("fixed_fonts") if isinstance(reference, dict) else None
         if (
             not isinstance(reference, dict)
             or reference.get("pack_id") != REFERENCE_PACK_ID
             or reference.get("hyperframes_version") != REFERENCE_HYPERFRAMES_VERSION
             or not isinstance(reference.get("text"), dict)
             or (display_text is not None and not isinstance(display_text, dict))
+            or (fixed_fonts is not None and not isinstance(fixed_fonts, dict))
             or self.reference_pack_root is None
         ):
             raise MatrixTemplateError("frozen HyperFrames template metadata is invalid")
@@ -1883,6 +1995,25 @@ class MatrixTemplateService:
             if source.is_symlink() or not source.is_file():
                 raise MatrixTemplateError("HyperFrames reference template fonts changed")
             shutil.copy2(source, fonts_dir / filename)
+        fixed_fonts = fixed_fonts or {}
+        staged_filenames = set(REFERENCE_FONT_FILES)
+        for layer, frozen in sorted(fixed_fonts.items()):
+            if layer not in REFERENCE_TEXT_LAYER_IDS or not isinstance(frozen, dict):
+                raise MatrixTemplateError("HyperFrames fixed private font metadata is invalid")
+            family = str(frozen.get("family") or "")
+            current = self.private_fonts.get(family)
+            if (
+                current is None
+                or current["file"] != frozen.get("file")
+                or current["sha256"] != frozen.get("sha256")
+                or _file_sha256(current["path"]) != frozen.get("sha256")
+                or current["file"] in staged_filenames
+            ):
+                raise MatrixTemplateError(
+                    "HyperFrames frozen private font is unavailable or changed"
+                )
+            shutil.copy2(current["path"], fonts_dir / current["file"])
+            staged_filenames.add(current["file"])
 
         index_path = workdir / "index.html"
         index = index_path.read_text(encoding="utf-8")
@@ -1893,8 +2024,19 @@ class MatrixTemplateService:
             raise MatrixTemplateError("HyperFrames template GSAP localization failed")
         if index.count("</head>") != 1:
             raise MatrixTemplateError("HyperFrames template head declaration changed")
+        fixed_font_style = _reference_private_font_style(
+            str(reference.get("variant") or ""), fixed_fonts
+        )
+        if (
+            fixed_font_style
+            and REFERENCE_PRIVATE_FONT_STYLE_ID in index
+        ):
+            raise MatrixTemplateError("HyperFrames fixed private font style conflicts")
         index = index.replace(
-            "</head>", REFERENCE_EMPTY_LAYER_STYLE + "\n</head>"
+            "</head>",
+            REFERENCE_EMPTY_LAYER_STYLE
+            + ("\n" + fixed_font_style if fixed_font_style else "")
+            + "\n</head>",
         )
         shutil.copy2(self.hyperframes_gsap, workdir / "gsap.min.js")
 

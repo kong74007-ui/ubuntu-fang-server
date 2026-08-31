@@ -55,6 +55,8 @@ instead of starting an unsafe five-worker service.
 - The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.
 - `/health` reports `private_font_bundle_sha256`; completed job results retain the selected families, filenames, file hashes, and bundle fingerprint after staged files expire.
 - For a private-font render, the service copies the four baseline fonts and only the selected private font into the job directory. FFmpeg never reads the persistent private directory directly.
+- HyperFrames fixed-font overrides are server-owned template settings, not user-selectable inputs. `v03` keeps its existing size, color, stroke, and line height while replacing only `top2` with the authorized `Smiley Sans Oblique` private font. New jobs freeze the family/file/SHA mapping, stage only that extra font, and inject a task-local `@font-face`; already-admitted jobs without the frozen override keep the original template font.
+- `/health` reports `reference_fixed_private_fonts` and deployment requires the expected fixed private font set, so a missing or changed private file fails before release activation.
 - Top copy is balanced and frozen when the job is created. The service keeps English runs, number classifiers, and common Chinese modal pairs together, prefers punctuation boundaries, and preserves the untouched source copy for audit.
 - `GET /v1/templates` returns only fonts verified at service startup. `POST /v1/preflight` and `POST /v1/jobs` accept optional `font_family`; omitting it keeps automatic template-specific pairing, while a valid value applies that family to both title regions and freezes its file SHA in the job.
 
