@@ -122,6 +122,13 @@ REFERENCE_BLACK_SCREEN_FILTER = (
     "blackdetect=d=0.5:pix_th=0.10:pic_th=0.98"
 )
 REFERENCE_FIXED_PRIVATE_FONTS = {
+    "v02": {
+        "top2": {
+            "family": "Smiley Sans Oblique",
+            "alias": "HQSmileySansOblique",
+            "font_size_px": 62,
+        },
+    },
     "v03": {
         "top2": {
             "family": "Smiley Sans Oblique",

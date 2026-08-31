@@ -1353,6 +1353,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         self.assertEqual(
             {"top2": "Smiley Sans Oblique"},
+            self.service.templates["ref-02-fixture-02"]["fixed_fonts"],
+        )
+        self.assertEqual(
+            {"top2": "Smiley Sans Oblique"},
             self.service.templates["ref-03-fixture-03"]["fixed_fonts"],
         )
         self.assertEqual(
@@ -1998,6 +2002,25 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(
             set(matrix.REFERENCE_FONT_FILES) | {"SmileySans-Oblique.ttf"},
             {path.name for path in (workdir / "assets/fonts").iterdir()},
+        )
+
+    def test_v02_top2_matches_v03_fixed_font_and_size(self):
+        payload = self.service.validate_payload({
+            "top_text": "深圳AI沙龙\n高质量AI获客圈子",
+            "bottom_text": "评论区回复666",
+            "template_id": "ref-02-fixture-02",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("2" * 32, payload)
+        fixed = payload["_reference_template"]["fixed_fonts"]["top2"]
+        self.assertEqual(
+            ("Smiley Sans Oblique", "HQSmileySansOblique", 62),
+            (fixed["family"], fixed["alias"], fixed["font_size_px"]),
+        )
+        self.assertIn(
+            '.v02 .top2{font-family:"HQSmileySansOblique"!important;'
+            'font-size:62px!important}',
+            matrix._reference_private_font_style("v02", {"top2": fixed}),
         )
 
     def test_reference_render_hides_only_edge_punctuation(self):
