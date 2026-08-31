@@ -93,6 +93,36 @@ REFERENCE_PACK_ID = "reference-typography-17"
 REFERENCE_HYPERFRAMES_VERSION = "0.8.16"
 REFERENCE_TEMPLATE_COUNT = 17
 REFERENCE_FEATURED_VARIANT = "v05"
+REFERENCE_V01_VARIANT = "v01"
+REFERENCE_V01_STYLE_CONTRACT = {
+    "top1": (
+        'font:40070px/1.08"mashan"',
+        "color:#f7f5ec",
+        "-webkit-text-stroke:11px#789822",
+    ),
+    "top2": (
+        'font:40064px/1.15"mashan"',
+        "color:#f8f7ef",
+        "-webkit-text-stroke:9px#789822",
+    ),
+    "top3": (
+        "font-size:52px",
+        "font-weight:900",
+        "color:#fff",
+        "-webkit-text-stroke:7px#111",
+    ),
+    "bottom1": (
+        'font:40056px/1.05"mashan"',
+        "color:#fff",
+        "-webkit-text-stroke:7px#111",
+    ),
+    "bottom2": (
+        'font:40074px/1.15"mashan"',
+        "background:#f5f4ee",
+        "color:#426d24",
+        "border-radius:22px",
+    ),
+}
 REFERENCE_FEATURED_STYLE_CONTRACT = {
     "top1": (
         'font:900102px/1.02"notosc"',
@@ -1371,6 +1401,13 @@ class MatrixTemplateService:
             ):
                 raise MatrixTemplateError(
                     "featured HyperFrames template style contract changed"
+                )
+            if variant == REFERENCE_V01_VARIANT and not all(
+                variant_layer_matches_contract(variant, layer, required)
+                for layer, required in REFERENCE_V01_STYLE_CONTRACT.items()
+            ):
+                raise MatrixTemplateError(
+                    "v01 HyperFrames template style contract changed"
                 )
             record = {
                 "id": template_id,

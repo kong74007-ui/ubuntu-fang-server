@@ -1,4 +1,29 @@
-# HyperFrames v05 before/after evidence
+# HyperFrames reference typography evidence
+
+## v01 green handwritten size adjustment
+
+This frame-0 comparison uses the same copy and browser-rendered composition on
+both sides. Only the five locked font sizes change; color, typeface, stroke,
+positioning, motion, template order, and every other template remain unchanged.
+
+| Layer | Before | After |
+| --- | ---: | ---: |
+| top1 | 68px | 70px |
+| top2 | 62px | 64px |
+| top3 | 50px | 52px |
+| bottom1 | 54px | 56px |
+| bottom2 | 72px | 74px |
+
+The comparison intentionally contains only v01's fixed black typography zones;
+the random material band is omitted and no preview material is committed.
+
+![v01 before and after with identical copy](v01-before-after.jpg)
+
+HyperFrames check result for the after state: 0 lint errors, 0 runtime errors,
+0 layout issues across 9 samples, 0 motion errors, and 25/25 WCAG AA text
+contrast checks passed.
+
+## v05 featured style
 
 This comparison documents the v05 typography change at frame 0 on a 1080 x
 1920 canvas. Both sides use the exact same frozen browser frame, background,

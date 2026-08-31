@@ -26,12 +26,15 @@ to the two private-domain templates, atomically switches releases, and checks th
 exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
-four fixed OFL fonts, applies a hash-locked generation-server patch that changes
-only featured variant `v05`, and installs pinned GSAP `3.14.2` inside the release.
-The featured variant remains the third catalog item and uses the approved
-Noto Sans SC 900 block style, blue-black outlines and yellow CTA treatment.
+four fixed OFL fonts, applies a hash-locked generation-server patch limited to
+variants `v01` and `v05`, and installs pinned GSAP `3.14.2` inside the release.
+Variant `v01` keeps its green-outlined handwritten treatment while its five
+locked text layers increase from `68/62/50/54/72px` to
+`70/64/52/56/74px`. Variant `v05` keeps the approved Noto Sans SC 900 block
+style, blue-black outlines and yellow CTA treatment. Catalog order is unchanged,
+including `v05` as the third item.
 The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
-patch and the separate featured-reference patch have SHA-256 locks in
+patch and the separate reference-typography patch have SHA-256 locks in
 `install.sh`, so a missing or changed patch fails before the active release is
 switched. The public Skill repository remains unchanged until the generation
 server contract is accepted and the same change is deliberately upstreamed.
