@@ -163,6 +163,7 @@ REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAME
 import json
 import os
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 root = Path(os.environ["REFERENCE_SKILL_ROOT"])
 manifest = json.loads((root / "assets/templates/reference-typography-17/manifest.json").read_text(encoding="utf-8"))
@@ -177,6 +178,37 @@ for name in (
     "ZCOOLKuaiLe-Regular.ttf", "ZCOOLXiaoWei-Regular.ttf",
 ):
     assert (root / "assets/fonts" / name).is_file()
+
+font_path = root / "assets/fonts/NotoSansSC-Variable.ttf"
+sample = "AI视频获客增长100条"
+draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+widths = {}
+for weight in (400, 900):
+    font = ImageFont.truetype(str(font_path), 104)
+    axes = font.get_variation_axes()
+    weight_axis = next(
+        index for index, axis in enumerate(axes)
+        if axis["name"].decode("ascii", "ignore").lower() == "weight"
+    )
+    values = [int(axis["default"]) for axis in axes]
+    values[weight_axis] = weight
+    font.set_variation_by_axes(values)
+    box = draw.textbbox((0, 0), sample, font=font, stroke_width=13)
+    widths[weight] = box[2] - box[0] + (len(sample) - 1) * 104 * -0.045
+assert widths[400] <= 996 < widths[900], widths
+
+xiaowei_sample = "MMMMMMMMMMMMMM"
+xiaowei = ImageFont.truetype(
+    str(root / "assets/fonts/ZCOOLXiaoWei-Regular.ttf"), 80
+)
+xiaowei_box = draw.textbbox(
+    (0, 0), xiaowei_sample, font=xiaowei, stroke_width=9
+)
+xiaowei_width = (
+    xiaowei_box[2] - xiaowei_box[0]
+    + (len(xiaowei_sample) - 1) * 80 * 0.01
+)
+assert 970 < xiaowei_width <= 996, xiaowei_width
 PY
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
 install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"

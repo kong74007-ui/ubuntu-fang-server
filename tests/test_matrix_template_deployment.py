@@ -64,6 +64,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             installer,
         )
         self.assertIn("from PIL import Image, ImageDraw, ImageFont", installer)
+        self.assertIn('sample = "AI视频获客增长100条"', installer)
+        self.assertIn("font.set_variation_by_axes(values)", installer)
+        self.assertIn("widths[400] <= 996 < widths[900]", installer)
+        self.assertIn('xiaowei_sample = "MMMMMMMMMMMMMM"', installer)
+        self.assertIn("970 < xiaowei_width <= 996", installer)
         self.assertIn('d.get("max_batch_size")==5', installer)
         self.assertIn('d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2}', installer)
         self.assertIn('d.get("hyperframes_concurrency")==2', installer)

@@ -1293,7 +1293,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         (pack / "assets/bgm").mkdir(parents=True)
         (pack / "assets/bgm/silence.m4a").write_bytes(b"silence")
         top3_variants = {1, 4, 5, 6, 7, 8, 10, 11, 12, 16, 17}
-        styles = []
+        styles = [
+            "* { box-sizing: border-box; }",
+            ".top, .bottom { width: 100%; padding-left: 42px; padding-right: 42px; }",
+            (
+                ".top1, .top2, .top3, .bottom1, .bottom2 "
+                "{ max-width: 996px; letter-spacing: .01em; }"
+            ),
+        ]
         for index in range(1, 18):
             variant = f"v{index:02d}"
             if variant == matrix.REFERENCE_V01_VARIANT:
@@ -1302,7 +1309,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v01 .top2 { font: 400 64px/1.15 "MaShan"; color: #f8f7ef; -webkit-text-stroke: 9px #789822; }',
                     '.v01 .top3 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 7px #111; }',
                     '.v01 .bottom1 { font: 400 56px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 7px #111; }',
-                    '.v01 .bottom2 { font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
+                    '.v01 .bottom2 { max-width: 900px; padding: 14px 26px; font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
                 ))
                 continue
             if variant == matrix.REFERENCE_FEATURED_VARIANT:
@@ -1311,7 +1318,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v05 .top2 { font: 900 104px/1.01 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 13px #203449; text-shadow: 9px 11px 0 #07111e; }',
                     '.v05 .top3 { font: 900 68px/1.04 "NotoSC"; color: #fff8d9; -webkit-text-stroke: 9px #26394a; text-shadow: 7px 8px 0 #07111e; }',
                     '.v05 .bottom1 { font: 900 68px/1.05 "NotoSC"; color: #ffe000; -webkit-text-stroke: 9px #263e32; }',
-                    '.v05 .bottom2 { font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
+                    '.v05 .bottom2 { max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
                 ))
                 continue
             styles.extend((
@@ -1319,8 +1326,18 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 f".{variant} .top2 {{ font-size: 60px; }}",
                 f".{variant} .bottom2 {{ font-size: 70px; }}",
             ))
+            if index == 10:
+                styles.append(
+                    ".v10 .bottom { padding-left: 68px; }"
+                )
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
+            if index == 4:
+                styles.append(".v04 .top3 { padding: 14px 24px; }")
+            if index == 6:
+                styles.append(".v06 .bottom2 { padding: 20px 36px; }")
+            if index == 8:
+                styles.append(".v08 .bottom2 { padding: 10px 24px; }")
         timeline_fixture = """
 <div id="root">
   <video id="videoA" class="clip media-video" data-start="0" data-duration="2.666667"></video>
@@ -1408,18 +1425,60 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.health()["reference_semantic_layout_templates"],
         )
         self.assertEqual(
-            ("Ma Shan Zheng", 70, 11, 2),
+            ("Ma Shan Zheng", 70, 400, 11, 2),
             tuple(
                 self.service.reference_semantic_layouts["v01"]["top1"][key]
-                for key in ("family", "font_size_px", "stroke_px", "max_lines")
+                for key in (
+                    "family", "font_size_px", "font_weight",
+                    "stroke_px", "max_lines",
+                )
             ),
         )
         self.assertEqual(
-            ("Smiley Sans Oblique", 62, 4),
+            ("Smiley Sans Oblique", 62, 400, 4),
             tuple(
                 self.service.reference_semantic_layouts["v02"]["top2"][key]
-                for key in ("family", "font_size_px", "max_lines")
+                for key in (
+                    "family", "font_size_px", "font_weight", "max_lines",
+                )
             ),
+        )
+        self.assertEqual(
+            (900, 900, 900, 900),
+            tuple(
+                self.service.reference_semantic_layouts["v05"][layer]["font_weight"]
+                for layer in ("top1", "top2", "top3", "bottom2")
+            ),
+        )
+        self.assertEqual(
+            970,
+            self.service.reference_semantic_layouts["v10"]["bottom2"][
+                "max_width_px"
+            ],
+        )
+        self.assertEqual(
+            970,
+            next(
+                item for item in self.service.catalog
+                if item.get("variant") == "v10"
+            )["semantic_layout"]["layers"]["bottom2"]["max_width_px"],
+        )
+        expected_widths = {
+            ("v01", "bottom2"): 848,
+            ("v04", "top3"): 948,
+            ("v05", "bottom2"): 862,
+            ("v06", "bottom2"): 924,
+            ("v08", "bottom2"): 948,
+            ("v10", "bottom2"): 970,
+        }
+        self.assertEqual(
+            expected_widths,
+            {
+                key: self.service.reference_semantic_layouts[key[0]][key[1]][
+                    "max_width_px"
+                ]
+                for key in expected_widths
+            },
         )
         self.assertEqual(
             (102, 104, 68, 70),
@@ -1510,6 +1569,119 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             matrix.MatrixTemplateError, "font size is missing",
+        ):
+            self.service._load_reference_catalog()
+
+    def test_reference_measure_font_applies_weight_axis_and_separates_cache(self):
+        created = []
+
+        class VariableFont:
+            def __init__(self):
+                self.weight = None
+
+            def get_variation_axes(self):
+                return [{
+                    "minimum": 100, "default": 100,
+                    "maximum": 900, "name": b"Weight",
+                }]
+
+            def set_variation_by_axes(self, values):
+                self.weight = values[0]
+
+        def truetype(_path, _size):
+            font = VariableFont()
+            created.append(font)
+            return font
+
+        self.service.reference_measure_fonts.clear()
+        with mock.patch.object(matrix.ImageFont, "truetype", side_effect=truetype):
+            regular = self.service._reference_measure_font(
+                "Noto Sans SC", 104, 400,
+            )
+            bold = self.service._reference_measure_font(
+                "Noto Sans SC", 104, 900,
+            )
+            self.assertIs(
+                bold,
+                self.service._reference_measure_font(
+                    "Noto Sans SC", 104, 900,
+                ),
+            )
+        self.assertEqual((400, 900), (regular.weight, bold.weight))
+        self.assertEqual(2, len(created))
+
+    def test_reference_measure_font_rejects_synthetic_static_weight(self):
+        class StaticFont:
+            def get_variation_axes(self):
+                raise OSError("not variable")
+
+        self.service.reference_measure_fonts.clear()
+        with mock.patch.object(
+            matrix.ImageFont, "truetype", return_value=StaticFont(),
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "synthetic weight",
+        ):
+            self.service._reference_measure_font(
+                "Ma Shan Zheng", 70, 900,
+            )
+
+    def test_reference_css_font_weight_drift_is_exposed_in_contract(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        expected = ".v09 .top1 { font-size: 80px; }"
+        self.assertIn(expected, source)
+        index_path.write_text(
+            source.replace(
+                expected,
+                ".v09 .top1 { font-size: 80px; font-weight: 900; }",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        version = SimpleNamespace(
+            returncode=0,
+            stdout=matrix.REFERENCE_HYPERFRAMES_VERSION + "\n",
+            stderr="",
+        )
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            self.service._load_reference_catalog()
+        self.assertEqual(
+            900,
+            self.service.reference_semantic_layouts["v09"]["top1"][
+                "font_weight"
+            ],
+        )
+
+    def test_reference_parent_width_rejects_v10_two_line_browser_overflow(self):
+        metrics = self.service.reference_semantic_layouts["v10"]["bottom2"]
+        bottom = "MMMMMMMMMMMMMM，MMMMMMMMMMMMMM"
+        self.assertEqual(970, metrics["max_width_px"])
+        with mock.patch.object(
+            self.service, "_reference_text_width", return_value=980.4,
+        ), self.assertRaisesRegex(ValueError, "无法在完整语义边界内排入"):
+            self.service._pack_reference_semantic_span(
+                bottom, 0, len(bottom), [14], metrics,
+            )
+
+    def test_reference_parent_padding_unit_drift_fails_closed(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        expected = ".v10 .bottom { padding-left: 68px; }"
+        self.assertIn(expected, source)
+        index_path.write_text(
+            source.replace(
+                expected, ".v10 .bottom { padding-left: 6vw; }", 1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "padding is unsupported",
         ):
             self.service._load_reference_catalog()
 

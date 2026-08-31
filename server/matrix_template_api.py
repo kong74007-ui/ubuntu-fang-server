@@ -206,6 +206,7 @@ REFERENCE_TEXT_LAYER_IDS = frozenset({
 })
 REFERENCE_PRIVATE_FONT_STYLE_ID = "matrix-reference-private-fonts"
 REFERENCE_SEMANTIC_LAYOUT_VERSION = 1
+REFERENCE_CANVAS_WIDTH_PX = 1080.0
 REFERENCE_TEXT_MAX_WIDTH_PX = 996.0
 REFERENCE_LETTER_SPACING_EM = 0.01
 REFERENCE_CSS_FONT_FAMILIES = {
@@ -240,19 +241,50 @@ def _css_font_family(value: str) -> str:
     return REFERENCE_CSS_FONT_FAMILIES.get(alias, alias)
 
 
+def _css_pixel_length(value: str, *, property_name: str) -> float:
+    raw = str(value or "").strip().lower()
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)px", raw)
+    if match:
+        return float(match.group(1))
+    if raw in {"0", "+0", "-0"}:
+        return 0.0
+    raise MatrixTemplateError(
+        f"HyperFrames reference template {property_name} is unsupported"
+    )
+
+
 def _css_padding_horizontal(value: str) -> tuple[float, float]:
-    parts = [
-        float(match.group(1))
-        for item in str(value or "").split()
-        if (match := re.fullmatch(r"(-?[0-9]+(?:\.[0-9]+)?)px", item))
-    ]
-    if not parts:
+    raw_parts = str(value or "").split()
+    if not raw_parts:
         return 0.0, 0.0
+    if len(raw_parts) > 4:
+        raise MatrixTemplateError(
+            "HyperFrames reference template padding is unsupported"
+        )
+    parts = [
+        _css_pixel_length(item, property_name="padding")
+        for item in raw_parts
+    ]
     if len(parts) == 1:
         return parts[0], parts[0]
     if len(parts) in {2, 3}:
         return parts[1], parts[1]
     return parts[3], parts[1]
+
+
+def _css_horizontal_padding(declarations: dict[str, str]) -> tuple[float, float]:
+    padding_left, padding_right = _css_padding_horizontal(
+        declarations.get("padding", "")
+    )
+    if declarations.get("padding-left"):
+        padding_left = _css_pixel_length(
+            declarations["padding-left"], property_name="padding",
+        )
+    if declarations.get("padding-right"):
+        padding_right = _css_pixel_length(
+            declarations["padding-right"], property_name="padding",
+        )
+    return padding_left, padding_right
 
 
 def _reference_css_layer_metrics(
@@ -264,19 +296,61 @@ def _reference_css_layer_metrics(
     ))
     styles = re.sub(r"/\*.*?\*/", "", styles, flags=re.DOTALL)
     declarations = {}
+    parent_declarations = {}
+    universal_declarations = {}
+    parent = "top" if layer.startswith("top") else "bottom"
     target_selectors = {f".{layer}", f".{variant} .{layer}"}
+    parent_selectors = {f".{parent}", f".{variant} .{parent}"}
     for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", styles, re.DOTALL):
         selectors = {
             re.sub(r"\s+", " ", item.strip())
             for item in rule.group(1).split(",")
         }
+        if "*" in selectors:
+            universal_declarations.update(_css_declarations(rule.group(2)))
+        if selectors & parent_selectors:
+            parent_declarations.update(_css_declarations(rule.group(2)))
         if selectors & target_selectors:
             declarations.update(_css_declarations(rule.group(2)))
 
+    if universal_declarations.get("box-sizing") != "border-box":
+        raise MatrixTemplateError(
+            "HyperFrames reference template box sizing is unsupported"
+        )
+    parent_width = parent_declarations.get("width")
+    if parent_width == "100%":
+        parent_width_px = REFERENCE_CANVAS_WIDTH_PX
+    elif parent_width:
+        parent_width_px = _css_pixel_length(
+            parent_width, property_name="parent width",
+        )
+    else:
+        raise MatrixTemplateError(
+            "HyperFrames reference template parent width is missing"
+        )
+    parent_padding_left, parent_padding_right = _css_horizontal_padding(
+        parent_declarations
+    )
+    parent_content_width = (
+        parent_width_px - parent_padding_left - parent_padding_right
+    )
+
     family = "Noto Sans SC"
     font_size = None
+    font_weight = 400
     shorthand = declarations.get("font")
     if shorthand:
+        weight_match = re.match(
+            r"\s*(normal|bold|[1-9]00)\s+", shorthand,
+            flags=re.IGNORECASE,
+        )
+        if weight_match:
+            raw_weight = weight_match.group(1).lower()
+            font_weight = (
+                400 if raw_weight == "normal"
+                else 700 if raw_weight == "bold"
+                else int(raw_weight)
+            )
         match = re.search(
             r"(?:^|\s)([0-9]+(?:\.[0-9]+)?)px"
             r"(?:/[^\s]+)?\s+(.+)$",
@@ -299,6 +373,16 @@ def _reference_css_layer_metrics(
         font_size = float(match.group(1))
     if declarations.get("font-family"):
         family = _css_font_family(declarations["font-family"])
+    if declarations.get("font-weight"):
+        raw_weight = declarations["font-weight"].strip().lower()
+        if raw_weight in {"normal", "bold"}:
+            font_weight = {"normal": 400, "bold": 700}[raw_weight]
+        elif re.fullmatch(r"[1-9]00", raw_weight):
+            font_weight = int(raw_weight)
+        else:
+            raise MatrixTemplateError(
+                "HyperFrames reference template font weight is unsupported"
+            )
     if font_size is None:
         raise MatrixTemplateError(
             "HyperFrames reference template font size is missing"
@@ -327,43 +411,36 @@ def _reference_css_layer_metrics(
             )
         stroke = float(match.group(1))
 
-    max_width = REFERENCE_TEXT_MAX_WIDTH_PX
+    layer_max_width = REFERENCE_TEXT_MAX_WIDTH_PX
     if declarations.get("max-width"):
         match = re.fullmatch(
             r"([0-9]+(?:\.[0-9]+)?)px", declarations["max-width"]
         )
         if match:
-            max_width = float(match.group(1))
-        elif declarations["max-width"] != "none":
+            layer_max_width = float(match.group(1))
+        elif declarations["max-width"] == "none":
+            layer_max_width = parent_content_width
+        else:
             raise MatrixTemplateError(
                 "HyperFrames reference template max width is unsupported"
             )
-    padding_left, padding_right = _css_padding_horizontal(
-        declarations.get("padding", "")
+    padding_left, padding_right = _css_horizontal_padding(declarations)
+    max_width = (
+        min(layer_max_width, parent_content_width)
+        - padding_left - padding_right
     )
-    for property_name, target in (
-        ("padding-left", "left"), ("padding-right", "right"),
+    if (
+        not 8 <= font_size <= 240
+        or not 100 <= font_weight <= 900
+        or not 100 <= max_width <= 996
     ):
-        if declarations.get(property_name):
-            match = re.fullmatch(
-                r"([0-9]+(?:\.[0-9]+)?)px", declarations[property_name]
-            )
-            if not match:
-                raise MatrixTemplateError(
-                    "HyperFrames reference template padding is unsupported"
-                )
-            if target == "left":
-                padding_left = float(match.group(1))
-            else:
-                padding_right = float(match.group(1))
-    max_width -= padding_left + padding_right
-    if not 8 <= font_size <= 240 or not 100 <= max_width <= 996:
         raise MatrixTemplateError(
             "HyperFrames reference template text metrics are unsafe"
         )
     return {
         "family": family,
         "font_size_px": int(font_size),
+        "font_weight": int(font_weight),
         "stroke_px": int(stroke),
         "letter_spacing_em": letter_spacing,
         "max_width_px": int(max_width),
@@ -1319,7 +1396,9 @@ class MatrixTemplateService:
         self.reference_semantic_layouts: dict[str, dict] = {}
         self.reference_fonts: dict[str, dict] = {}
         self.reference_font_fingerprint = _font_bundle_fingerprint({})
-        self.reference_measure_fonts: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+        self.reference_measure_fonts: dict[
+            tuple[str, int, int], ImageFont.FreeTypeFont
+        ] = {}
         self.hyperframes_cli = hyperframes_cli.resolve() if hyperframes_cli else None
         self.hyperframes_gsap = hyperframes_gsap.resolve() if hyperframes_gsap else None
         self.hyperframes_browser = (
@@ -1586,6 +1665,8 @@ class MatrixTemplateService:
                 "layers": {
                     layer: {
                         "font_size_px": int(metrics["font_size_px"]),
+                        "font_weight": int(metrics["font_weight"]),
+                        "max_width_px": int(metrics["max_width_px"]),
                         "max_lines": int(metrics["max_lines"]),
                     }
                     for layer, metrics in semantic_contract.items()
@@ -1613,6 +1694,7 @@ class MatrixTemplateService:
             family: item["file"] for family, item in reference_fonts.items()
         } != REFERENCE_FONT_FAMILY_FILES:
             raise MatrixTemplateError("HyperFrames reference template font mapping changed")
+        self.reference_fonts = reference_fonts
         for contract in self.reference_semantic_layouts.values():
             for metrics in contract.values():
                 if (
@@ -1621,6 +1703,13 @@ class MatrixTemplateService:
                 ):
                     raise MatrixTemplateError(
                         "HyperFrames semantic layout font mapping changed"
+                    )
+                if (
+                    metrics["family"] != "Noto Sans SC"
+                    and int(metrics["font_weight"]) != 400
+                ):
+                    raise MatrixTemplateError(
+                        "HyperFrames static font requires synthetic weight"
                     )
         if self.hyperframes_cli is None or not self.hyperframes_cli.is_file():
             raise MatrixTemplateError("HyperFrames 0.8.16 CLI is unavailable")
@@ -1635,12 +1724,11 @@ class MatrixTemplateService:
         if version.returncode or version.stdout.strip() != REFERENCE_HYPERFRAMES_VERSION:
             raise MatrixTemplateError("HyperFrames CLI version mismatch")
         self.reference_pack_root = pack_root
-        self.reference_fonts = reference_fonts
         self.reference_font_fingerprint = _font_bundle_fingerprint(reference_fonts)
         return result
 
-    def _reference_measure_font(self, family: str, size: int):
-        key = (str(family), int(size))
+    def _reference_measure_font(self, family: str, size: int, weight: int):
+        key = (str(family), int(size), int(weight))
         cached = self.reference_measure_fonts.get(key)
         if cached is not None:
             return cached
@@ -1651,6 +1739,37 @@ class MatrixTemplateService:
             font = ImageFont.truetype(str(record["path"]), int(size))
         except Exception as exc:
             raise MatrixTemplateError("HyperFrames 语义排版字体无法测量") from exc
+        try:
+            axes = font.get_variation_axes()
+        except OSError:
+            axes = []
+        weight_axis = None
+        for index, axis in enumerate(axes):
+            name = axis.get("name", b"")
+            if isinstance(name, bytes):
+                name = name.decode("ascii", "ignore")
+            if str(name).strip().lower() == "weight":
+                weight_axis = index
+                break
+        if weight_axis is None:
+            if int(weight) != 400:
+                raise MatrixTemplateError(
+                    "HyperFrames static font requires synthetic weight"
+                )
+        else:
+            axis = axes[weight_axis]
+            if not int(axis["minimum"]) <= int(weight) <= int(axis["maximum"]):
+                raise MatrixTemplateError(
+                    "HyperFrames variable font weight is unavailable"
+                )
+            values = [int(item["default"]) for item in axes]
+            values[weight_axis] = int(weight)
+            try:
+                font.set_variation_by_axes(values)
+            except Exception as exc:
+                raise MatrixTemplateError(
+                    "HyperFrames variable font weight cannot be applied"
+                ) from exc
         self.reference_measure_fonts[key] = font
         return font
 
@@ -1659,7 +1778,9 @@ class MatrixTemplateService:
         if not text:
             return 0.0
         size = int(metrics["font_size_px"])
-        font = self._reference_measure_font(str(metrics["family"]), size)
+        font = self._reference_measure_font(
+            str(metrics["family"]), size, int(metrics["font_weight"]),
+        )
         draw = ImageDraw.Draw(Image.new("L", (1, 1)))
         box = draw.textbbox(
             (0, 0), text, font=font,
