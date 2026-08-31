@@ -221,6 +221,28 @@ REFERENCE_SEMANTIC_LAYOUTS = {
             "stroke_px": 10, "max_lines": 2,
         },
     },
+    "v05": {
+        "top1": {
+            "family": "Noto Sans SC", "font_size_px": 102,
+            "stroke_px": 12, "max_lines": 2,
+            "letter_spacing_em": -0.045,
+        },
+        "top2": {
+            "family": "Noto Sans SC", "font_size_px": 104,
+            "stroke_px": 13, "max_lines": 2,
+            "letter_spacing_em": -0.045,
+        },
+        "top3": {
+            "family": "Noto Sans SC", "font_size_px": 68,
+            "stroke_px": 9, "max_lines": 3,
+            "letter_spacing_em": -0.045,
+        },
+        "bottom2": {
+            "family": "Noto Sans SC", "font_size_px": 70,
+            "stroke_px": 0, "max_lines": 2,
+            "letter_spacing_em": -0.035, "max_width_px": 862,
+        },
+    },
 }
 REFERENCE_TEXT_MAX_WIDTH_PX = 996.0
 REFERENCE_LETTER_SPACING_EM = 0.01
@@ -1499,7 +1521,10 @@ class MatrixTemplateService:
             (0, 0), text, font=font,
             stroke_width=int(metrics.get("stroke_px") or 0),
         )
-        letter_spacing = max(0, len(text) - 1) * size * REFERENCE_LETTER_SPACING_EM
+        letter_spacing = (
+            max(0, len(text) - 1) * size
+            * float(metrics.get("letter_spacing_em", REFERENCE_LETTER_SPACING_EM))
+        )
         return float(box[2] - box[0]) + letter_spacing
 
     def _pack_reference_semantic_span(
@@ -1513,6 +1538,9 @@ class MatrixTemplateService:
         })
         boundaries = [start] + internal + [end]
         max_lines = int(metrics["max_lines"])
+        max_width = float(
+            metrics.get("max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX)
+        )
         width_cache = {}
 
         def measured(left_index: int, right_index: int):
@@ -1528,7 +1556,7 @@ class MatrixTemplateService:
 
         total_width = self._reference_text_width(text[start:end], metrics)
         for line_count in range(1, min(max_lines, len(boundaries) - 1) + 1):
-            ideal = min(REFERENCE_TEXT_MAX_WIDTH_PX, total_width / line_count)
+            ideal = min(max_width, total_width / line_count)
             states = {0: (0.0, [])}
             for _line_index in range(line_count):
                 next_states = {}
@@ -1537,7 +1565,7 @@ class MatrixTemplateService:
                         value, display, width = measured(left_index, right_index)
                         if not display:
                             continue
-                        if width > REFERENCE_TEXT_MAX_WIDTH_PX + 0.001:
+                        if width > max_width + 0.001:
                             break
                         remaining_lines = line_count - len(path) - 1
                         remaining_boundaries = len(boundaries) - right_index - 1
@@ -1570,21 +1598,79 @@ class MatrixTemplateService:
         top1_lines = self._pack_reference_semantic_span(
             top, 0, top1_end, layout["top_break_after"], contract["top1"],
         )
-        top2_lines = self._pack_reference_semantic_span(
-            top, top1_end, len(top), layout["top_break_after"], contract["top2"],
-        )
+        top3_metrics = contract.get("top3")
+        top3_start = len(top)
+        top3_lines = []
+        if top3_metrics is None or top1_end >= len(top):
+            top2_lines = self._pack_reference_semantic_span(
+                top, top1_end, len(top),
+                layout["top_break_after"], contract["top2"],
+            )
+        else:
+            split_candidates = [
+                item + 1 for item in layout["top_break_after"]
+                if top1_end <= item < len(top) - 1
+            ] + [len(top)]
+            candidates = []
+            for split in split_candidates:
+                try:
+                    top2_candidate = self._pack_reference_semantic_span(
+                        top, top1_end, split,
+                        layout["top_break_after"], contract["top2"],
+                    )
+                    top3_candidate = self._pack_reference_semantic_span(
+                        top, split, len(top),
+                        layout["top_break_after"], top3_metrics,
+                    )
+                except ValueError:
+                    continue
+                total_lines = len(top2_candidate) + len(top3_candidate)
+                top3_empty = not top3_candidate and len(split_candidates) > 1
+                widths = [
+                    self._reference_text_width(line, contract["top2"])
+                    / float(contract["top2"].get(
+                        "max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX,
+                    ))
+                    for line in top2_candidate
+                ] + [
+                    self._reference_text_width(line, top3_metrics)
+                    / float(top3_metrics.get(
+                        "max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX,
+                    ))
+                    for line in top3_candidate
+                ]
+                ideal = sum(widths) / max(1, len(widths))
+                raggedness = sum((width - ideal) ** 2 for width in widths)
+                semantic_penalty = (
+                    0 if top[split - 1] in "，。！？；,.!?;" else 1
+                )
+                candidates.append((
+                    total_lines, top3_empty, semantic_penalty, raggedness,
+                    split, top2_candidate, top3_candidate,
+                ))
+            if not candidates:
+                raise ValueError(
+                    "HyperFrames 文案无法在完整语义边界内排入模板"
+                )
+            (
+                _total_lines, _top3_empty, _semantic_penalty, _raggedness,
+                top3_start, top2_lines, top3_lines,
+            ) = min(candidates, key=lambda item: item[:4])
         bottom2_lines = self._pack_reference_semantic_span(
             bottom, 0, len(bottom), layout["bottom_break_after"],
             contract["bottom2"],
         )
         source_text = {
-            "top1": top[:top1_end], "top2": top[top1_end:], "top3": "",
+            "top1": top[:top1_end],
+            "top2": top[top1_end:top3_start],
+            "top3": top[top3_start:],
             "bottom1": "", "bottom2": bottom,
         }
         display_text = {
             "top1": "\n".join(map(_hide_reference_edge_punctuation, top1_lines)),
             "top2": "\n".join(map(_hide_reference_edge_punctuation, top2_lines)),
-            "top3": "", "bottom1": "",
+            "top3": "\n".join(map(_hide_reference_edge_punctuation, top3_lines)),
+            "bottom1": "",
             "bottom2": "\n".join(map(_hide_reference_edge_punctuation, bottom2_lines)),
         }
         return source_text, display_text

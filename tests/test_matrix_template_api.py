@@ -1399,7 +1399,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.health()["reference_fixed_private_fonts"],
         )
         self.assertEqual(
-            ["v02"],
+            ["v02", "v05"],
             self.service.health()["reference_semantic_layout_templates"],
         )
         self.assertEqual(
@@ -2180,6 +2180,76 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     "bottom_break_after": [],
                 },
             })
+
+    def test_v05_semantic_layout_preserves_chinese_verb_and_uses_top3(self):
+        top = "团队8个人，每天产出100条短视频，覆盖全部短视频平台，"
+        bottom = "有想进军健康赛道的，勾兑勾兑"
+        commas = [index for index, char in enumerate(top) if char == "，"]
+        verb_end = top.index("100") - 1
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": commas[0],
+            "top_break_after": [commas[0], verb_end, commas[1]],
+            "bottom_break_after": [bottom.index("，")],
+        }
+
+        def measured(value, metrics):
+            display = matrix._hide_reference_edge_punctuation(value)
+            size = int(metrics["font_size_px"])
+            if size == 102:
+                return 500.0
+            if size == 104:
+                return {
+                    "每天产出100条短视频，覆盖全部短视频平台": 1800.0,
+                    "100条短视频，覆盖全部短视频平台": 1300.0,
+                    "每天产出100条短视频": 1200.0,
+                    "每天产出": 430.0,
+                    "100条短视频": 560.0,
+                }[display]
+            if size == 68:
+                return {
+                    "100条短视频，覆盖全部短视频平台": 1100.0,
+                    "100条短视频": 500.0,
+                    "覆盖全部短视频平台": 450.0,
+                }[display]
+            if size == 70:
+                return {
+                    "有想进军健康赛道的，勾兑勾兑": 1000.0,
+                    "有想进军健康赛道的": 700.0,
+                    "勾兑勾兑": 300.0,
+                }[display]
+            raise AssertionError((display, metrics))
+
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=measured,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-05-fixture-05",
+                "bgm": False,
+                "semantic_layout": layout,
+            })
+            frozen = self.service._freeze_font_provenance("a" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(
+            top,
+            reference["text"]["top1"]
+            + reference["text"]["top2"]
+            + reference["text"]["top3"],
+        )
+        self.assertEqual(bottom, reference["text"]["bottom2"])
+        self.assertNotIn("产\n出", "\n".join(reference["display_text"].values()))
+        self.assertIn("每天产出", reference["display_text"]["top2"])
+        self.assertEqual(
+            "覆盖全部短视频平台", reference["display_text"]["top3"]
+        )
+        self.assertEqual(
+            "有想进军健康赛道的\n勾兑勾兑",
+            reference["display_text"]["bottom2"],
+        )
 
     def test_semantic_number_tokens_match_all_supported_forms(self):
         for value, phrase in (

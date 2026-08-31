@@ -59,7 +59,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":11}', installer)
         self.assertIn('d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"]', installer)
-        self.assertIn('d.get("reference_semantic_layout_templates")==["v02"]', installer)
+        self.assertIn('d.get("reference_semantic_layout_templates")==["v02","v05"]', installer)
         self.assertIn("from PIL import Image, ImageDraw, ImageFont", installer)
         self.assertIn('d.get("max_batch_size")==5', installer)
         self.assertIn('d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2}', installer)
