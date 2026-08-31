@@ -41,7 +41,9 @@ sudo bash deploy/matrix-template-video/install.sh
 ```
 
 Secrets are created or loaded from root-owned environment files and are never
-committed. Deploy only after the material-library tunnel is healthy.
+committed. Deploy only after the material-library tunnel is healthy. The system
+Python must provide Pillow (`Image`, `ImageDraw`, and `ImageFont`); the installer
+verifies it before switching releases.
 
 The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
 least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
@@ -62,6 +64,7 @@ instead of starting an unsafe five-worker service.
 - HyperFrames fixed-font overrides are server-owned template settings, not user-selectable inputs. `v02` and `v03` use the authorized `Smiley Sans Oblique` private font at `62px` for `top2`; each template keeps its original color, stroke, and line height. New jobs freeze the family/file/SHA/size mapping, stage only that extra font, and inject a task-local `@font-face`; already-admitted jobs without the frozen override keep their original template style.
 - `/health` reports `reference_fixed_private_fonts` and deployment requires the expected fixed private font set, so a missing or changed private file fails before release activation.
 - Top copy is balanced and frozen when the job is created. The service keeps English runs, number classifiers, and common Chinese modal pairs together, prefers punctuation boundaries, and preserves the untouched source copy for audit.
+- `v02` additionally accepts versioned AI semantic-boundary indices. The service verifies the indices against the untouched source hash, rejects protected-word splits, measures candidate lines with the actual Ma Shan Zheng and Smiley Sans font files, and freezes the shortest balanced layout that stays within the 996px text box. Requests without this optional contract retain the legacy layout path for rolling-deployment compatibility.
 - `GET /v1/templates` returns only fonts verified at service startup. `POST /v1/preflight` and `POST /v1/jobs` accept optional `font_family`; omitting it keeps automatic template-specific pairing, while a valid value applies that family to both title regions and freezes its file SHA in the job.
 
 ## Storage and delivery policy

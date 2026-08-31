@@ -27,6 +27,8 @@ from pathlib import Path
 from shutil import copyfileobj
 from urllib.parse import urlsplit
 
+from PIL import Image, ImageDraw, ImageFont
+
 
 MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
@@ -173,6 +175,25 @@ REFERENCE_TEXT_LAYER_IDS = frozenset({
     "top1", "top2", "top3", "bottom1", "bottom2",
 })
 REFERENCE_PRIVATE_FONT_STYLE_ID = "matrix-reference-private-fonts"
+REFERENCE_SEMANTIC_LAYOUT_VERSION = 1
+REFERENCE_SEMANTIC_LAYOUTS = {
+    "v02": {
+        "top1": {
+            "family": "Ma Shan Zheng", "font_size_px": 86,
+            "stroke_px": 13, "max_lines": 2,
+        },
+        "top2": {
+            "family": "Smiley Sans Oblique", "font_size_px": 62,
+            "stroke_px": 9, "max_lines": 4,
+        },
+        "bottom2": {
+            "family": "Ma Shan Zheng", "font_size_px": 78,
+            "stroke_px": 10, "max_lines": 2,
+        },
+    },
+}
+REFERENCE_TEXT_MAX_WIDTH_PX = 996.0
+REFERENCE_LETTER_SPACING_EM = 0.01
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -492,6 +513,12 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
         and right in "个家人位名款套种项台年月日天次岁"
     ):
         return None
+    if right.isdigit():
+        cursor = index
+        while cursor < len(value) and value[cursor].isdigit():
+            cursor += 1
+        if cursor < len(value) and value[cursor] in "个家人位名款套种项台年月日天次岁":
+            return None
 
     boundary = left
     if left.isspace():
@@ -646,7 +673,7 @@ def _reference_text_layers(
     return _reference_text_layout(top, bottom, top_layer_count)[0]
 
 
-_REFERENCE_EDGE_PUNCTUATION = "，。！？；：、,.!?;:"
+_REFERENCE_EDGE_PUNCTUATION = "，。！？；：、,.!?;:|｜"
 _REFERENCE_EDGE_PATTERN = re.compile(
     rf"^[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+"
     rf"|[{re.escape(_REFERENCE_EDGE_PUNCTUATION)}]+$"
@@ -664,6 +691,65 @@ def _reference_display_layers(layers: dict[str, str]) -> dict[str, str]:
             for line in str(layers.get(key) or "").splitlines()
         )
         for key in ("top1", "top2", "top3", "bottom1", "bottom2")
+    }
+
+
+def _reference_semantic_source_sha256(top: str, bottom: str) -> str:
+    return hashlib.sha256(
+        (str(top) + "\0" + str(bottom)).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_reference_breaks(value, text: str, label: str) -> list[int]:
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValueError(f"HyperFrames {label}语义断点无效")
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        raise ValueError(f"HyperFrames {label}语义断点无效")
+    breaks = sorted(set(value))
+    if breaks != value or any(item < 0 or item >= len(text) - 1 for item in breaks):
+        raise ValueError(f"HyperFrames {label}语义断点无效")
+    return [
+        item for item in breaks
+        if _semantic_break_penalty(text, item + 1) is not None
+    ]
+
+
+def _normalize_reference_semantic_layout(value, top: str, bottom: str) -> dict:
+    if not isinstance(value, dict) or set(value) != {
+        "version", "model", "source_sha256", "top1_end",
+        "top_break_after", "bottom_break_after",
+    }:
+        raise ValueError("HyperFrames 语义排版参数无效")
+    if value.get("version") != REFERENCE_SEMANTIC_LAYOUT_VERSION:
+        raise ValueError("HyperFrames 语义排版版本无效")
+    model = str(value.get("model") or "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", model):
+        raise ValueError("HyperFrames 语义排版模型无效")
+    if not hmac.compare_digest(
+        str(value.get("source_sha256") or ""),
+        _reference_semantic_source_sha256(top, bottom),
+    ):
+        raise ValueError("HyperFrames 语义排版与原文不匹配")
+    top_breaks = _normalize_reference_breaks(
+        value.get("top_break_after"), top, "顶部",
+    )
+    bottom_breaks = _normalize_reference_breaks(
+        value.get("bottom_break_after"), bottom, "底部",
+    )
+    top1_end = value.get("top1_end")
+    if (
+        isinstance(top1_end, bool) or not isinstance(top1_end, int)
+        or not 0 <= top1_end < len(top)
+        or (top1_end != len(top) - 1 and top1_end not in top_breaks)
+    ):
+        raise ValueError("HyperFrames top1 语义边界无效")
+    return {
+        "version": REFERENCE_SEMANTIC_LAYOUT_VERSION,
+        "model": model,
+        "source_sha256": _reference_semantic_source_sha256(top, bottom),
+        "top1_end": top1_end,
+        "top_break_after": top_breaks,
+        "bottom_break_after": bottom_breaks,
     }
 
 
@@ -1064,6 +1150,7 @@ class MatrixTemplateService:
         self.reference_templates: dict[str, dict] = {}
         self.reference_fonts: dict[str, dict] = {}
         self.reference_font_fingerprint = _font_bundle_fingerprint({})
+        self.reference_measure_fonts: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
         self.hyperframes_cli = hyperframes_cli.resolve() if hyperframes_cli else None
         self.hyperframes_gsap = hyperframes_gsap.resolve() if hyperframes_gsap else None
         self.hyperframes_browser = (
@@ -1297,6 +1384,19 @@ class MatrixTemplateService:
                     for layer, font in fixed_private_fonts.items()
                 },
             }
+            semantic_contract = REFERENCE_SEMANTIC_LAYOUTS.get(variant)
+            if semantic_contract is not None:
+                record["semantic_layout"] = {
+                    "version": REFERENCE_SEMANTIC_LAYOUT_VERSION,
+                    "max_width_px": int(REFERENCE_TEXT_MAX_WIDTH_PX),
+                    "layers": {
+                        layer: {
+                            "font_size_px": int(metrics["font_size_px"]),
+                            "max_lines": int(metrics["max_lines"]),
+                        }
+                        for layer, metrics in semantic_contract.items()
+                    },
+                }
             result.append(record)
             self.reference_templates[template_id] = record
 
@@ -1336,6 +1436,122 @@ class MatrixTemplateService:
         self.reference_font_fingerprint = _font_bundle_fingerprint(reference_fonts)
         return result
 
+    def _reference_measure_font(self, family: str, size: int):
+        key = (str(family), int(size))
+        cached = self.reference_measure_fonts.get(key)
+        if cached is not None:
+            return cached
+        record = self.private_fonts.get(family) or self.reference_fonts.get(family)
+        if record is None or not Path(record["path"]).is_file():
+            raise MatrixTemplateError("HyperFrames 语义排版字体不可用")
+        try:
+            font = ImageFont.truetype(str(record["path"]), int(size))
+        except Exception as exc:
+            raise MatrixTemplateError("HyperFrames 语义排版字体无法测量") from exc
+        self.reference_measure_fonts[key] = font
+        return font
+
+    def _reference_text_width(self, value: str, metrics: dict) -> float:
+        text = _hide_reference_edge_punctuation(value)
+        if not text:
+            return 0.0
+        size = int(metrics["font_size_px"])
+        font = self._reference_measure_font(str(metrics["family"]), size)
+        draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+        box = draw.textbbox(
+            (0, 0), text, font=font,
+            stroke_width=int(metrics.get("stroke_px") or 0),
+        )
+        letter_spacing = max(0, len(text) - 1) * size * REFERENCE_LETTER_SPACING_EM
+        return float(box[2] - box[0]) + letter_spacing
+
+    def _pack_reference_semantic_span(
+        self, text: str, start: int, end: int,
+        break_after: list[int], metrics: dict,
+    ) -> list[str]:
+        if start >= end:
+            return []
+        internal = sorted({
+            item + 1 for item in break_after if start <= item < end - 1
+        })
+        boundaries = [start] + internal + [end]
+        max_lines = int(metrics["max_lines"])
+        width_cache = {}
+
+        def measured(left_index: int, right_index: int):
+            key = (left_index, right_index)
+            if key not in width_cache:
+                value = text[boundaries[left_index]:boundaries[right_index]]
+                display = _hide_reference_edge_punctuation(value)
+                width_cache[key] = (
+                    value, display,
+                    self._reference_text_width(value, metrics) if display else 0.0,
+                )
+            return width_cache[key]
+
+        total_width = self._reference_text_width(text[start:end], metrics)
+        for line_count in range(1, min(max_lines, len(boundaries) - 1) + 1):
+            ideal = min(REFERENCE_TEXT_MAX_WIDTH_PX, total_width / line_count)
+            states = {0: (0.0, [])}
+            for _line_index in range(line_count):
+                next_states = {}
+                for left_index, (score, path) in states.items():
+                    for right_index in range(left_index + 1, len(boundaries)):
+                        value, display, width = measured(left_index, right_index)
+                        if not display:
+                            continue
+                        if width > REFERENCE_TEXT_MAX_WIDTH_PX + 0.001:
+                            break
+                        remaining_lines = line_count - len(path) - 1
+                        remaining_boundaries = len(boundaries) - right_index - 1
+                        if remaining_boundaries < remaining_lines:
+                            continue
+                        candidate = score + (width - ideal) ** 2
+                        current = next_states.get(right_index)
+                        if current is None or candidate < current[0]:
+                            next_states[right_index] = (
+                                candidate, path + [value],
+                            )
+                states = next_states
+            selected = states.get(len(boundaries) - 1)
+            if selected is not None:
+                return selected[1]
+        raise ValueError(
+            "HyperFrames 文案无法在完整语义边界内排入模板"
+        )
+
+    def _reference_semantic_text_layout(
+        self, top: str, bottom: str, variant: str, semantic_layout: dict,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        contract = REFERENCE_SEMANTIC_LAYOUTS.get(variant)
+        if contract is None:
+            raise ValueError("HyperFrames 模板不支持语义排版")
+        layout = _normalize_reference_semantic_layout(
+            semantic_layout, top, bottom,
+        )
+        top1_end = int(layout["top1_end"]) + 1
+        top1_lines = self._pack_reference_semantic_span(
+            top, 0, top1_end, layout["top_break_after"], contract["top1"],
+        )
+        top2_lines = self._pack_reference_semantic_span(
+            top, top1_end, len(top), layout["top_break_after"], contract["top2"],
+        )
+        bottom2_lines = self._pack_reference_semantic_span(
+            bottom, 0, len(bottom), layout["bottom_break_after"],
+            contract["bottom2"],
+        )
+        source_text = {
+            "top1": top[:top1_end], "top2": top[top1_end:], "top3": "",
+            "bottom1": "", "bottom2": bottom,
+        }
+        display_text = {
+            "top1": "\n".join(map(_hide_reference_edge_punctuation, top1_lines)),
+            "top2": "\n".join(map(_hide_reference_edge_punctuation, top2_lines)),
+            "top3": "", "bottom1": "",
+            "bottom2": "\n".join(map(_hide_reference_edge_punctuation, bottom2_lines)),
+        }
+        return source_text, display_text
+
     def validate_payload(self, raw: dict, *, require_available_font: bool = True,
                          allowed_template_ids=None,
                          default_template_id: str = "full-overlay-bold",
@@ -1356,12 +1572,28 @@ class MatrixTemplateService:
         if template_id not in allowed_templates:
             raise ValueError("请选择有效模板")
         reference_template = template_id in self.reference_templates
-        if reference_template and enforce_reference_layout:
-            _reference_text_layout(
-                top,
-                bottom,
-                self.reference_templates[template_id]["text_layers"]["top"],
-            )
+        semantic_layout = raw.get("semantic_layout")
+        normalized_semantic_layout = None
+        if reference_template:
+            variant = self.reference_templates[template_id]["variant"]
+            if semantic_layout is not None:
+                if variant not in REFERENCE_SEMANTIC_LAYOUTS:
+                    raise ValueError("HyperFrames 当前模板不支持语义排版")
+                normalized_semantic_layout = _normalize_reference_semantic_layout(
+                    semantic_layout, top, bottom,
+                )
+                if enforce_reference_layout:
+                    self._reference_semantic_text_layout(
+                        top, bottom, variant, normalized_semantic_layout,
+                    )
+            elif enforce_reference_layout:
+                _reference_text_layout(
+                    top,
+                    bottom,
+                    self.reference_templates[template_id]["text_layers"]["top"],
+                )
+        elif semantic_layout is not None:
+            raise ValueError("semantic_layout 仅支持指定 HyperFrames 模板")
         font_family = str(raw.get("font_family") or "").strip()
         if (
             not reference_template and font_family
@@ -1386,6 +1618,8 @@ class MatrixTemplateService:
         }
         if font_family and not reference_template:
             result["font_family"] = font_family
+        if normalized_semantic_layout is not None:
+            result["semantic_layout"] = normalized_semantic_layout
         batch_id = str(raw.get("batch_id") or "").strip().lower()
         batch_index = raw.get("batch_index")
         batch_size = raw.get("batch_size")
@@ -1478,9 +1712,15 @@ class MatrixTemplateService:
                     "sha256": current["sha256"],
                     "source": "private",
                 }
-            source_text, display_text = _reference_text_layout(
-                payload["top_text"], payload["bottom_text"], top_layer_count
-            )
+            if payload.get("semantic_layout") is not None:
+                source_text, display_text = self._reference_semantic_text_layout(
+                    payload["top_text"], payload["bottom_text"],
+                    template["variant"], payload["semantic_layout"],
+                )
+            else:
+                source_text, display_text = _reference_text_layout(
+                    payload["top_text"], payload["bottom_text"], top_layer_count
+                )
             payload["_reference_template"] = {
                 "pack_id": REFERENCE_PACK_ID,
                 "engine": "hyperframes",
@@ -1602,6 +1842,10 @@ class MatrixTemplateService:
                 for item in self.reference_templates.values()
                 for family in item.get("fixed_fonts", {}).values()
             }),
+            "reference_semantic_layout_templates": sorted(
+                item["variant"] for item in self.reference_templates.values()
+                if item.get("semantic_layout")
+            ),
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,

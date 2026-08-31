@@ -1365,6 +1365,16 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.templates["ref-02-fixture-02"]["text_layers"],
         )
         self.assertEqual(
+            (1, 996, 2, 4, 2),
+            (
+                self.service.templates["ref-02-fixture-02"]["semantic_layout"]["version"],
+                self.service.templates["ref-02-fixture-02"]["semantic_layout"]["max_width_px"],
+                self.service.templates["ref-02-fixture-02"]["semantic_layout"]["layers"]["top1"]["max_lines"],
+                self.service.templates["ref-02-fixture-02"]["semantic_layout"]["layers"]["top2"]["max_lines"],
+                self.service.templates["ref-02-fixture-02"]["semantic_layout"]["layers"]["bottom2"]["max_lines"],
+            ),
+        )
+        self.assertEqual(
             {"top2": "Smiley Sans Oblique"},
             self.service.templates["ref-02-fixture-02"]["fixed_fonts"],
         )
@@ -1378,6 +1388,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(
             ["Smiley Sans Oblique"],
             self.service.health()["reference_fixed_private_fonts"],
+        )
+        self.assertEqual(
+            ["v02"],
+            self.service.health()["reference_semantic_layout_templates"],
         )
         self.assertEqual(
             {
@@ -2063,6 +2077,80 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}',
             matrix._reference_private_font_style("v02", {"top2": fixed}),
         )
+
+    def test_v02_semantic_layout_uses_frozen_source_indices_and_font_widths(self):
+        top = "团队8个人，每天产出100条短视频，覆盖全部短视频平台，"
+        bottom = "有想进军健康赛道的，勾兑勾兑"
+        top_commas = [index for index, char in enumerate(top) if char == "，"]
+        bottom_comma = bottom.index("，")
+        semantic_layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": top_commas[1],
+            "top_break_after": top_commas[:2],
+            "bottom_break_after": [bottom_comma],
+        }
+        widths = {
+            "团队8个人，每天产出100条短视频": 1362.6,
+            "团队8个人": 492.3,
+            "每天产出100条短视频": 896.5,
+            "覆盖全部短视频平台": 519.6,
+            "有想进军健康赛道的，勾兑勾兑": 1120.0,
+            "有想进军健康赛道的": 807.0,
+            "勾兑勾兑": 334.3,
+        }
+
+        def measured(value, _metrics):
+            return widths[matrix._hide_reference_edge_punctuation(value)]
+
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=measured,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-02-fixture-02",
+                "bgm": False,
+                "semantic_layout": semantic_layout,
+            })
+            frozen = self.service._freeze_font_provenance("6" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(
+            "团队8个人\n每天产出100条短视频",
+            reference["display_text"]["top1"],
+        )
+        self.assertEqual(
+            "覆盖全部短视频平台", reference["display_text"]["top2"],
+        )
+        self.assertEqual(
+            "有想进军健康赛道的\n勾兑勾兑",
+            reference["display_text"]["bottom2"],
+        )
+        self.assertEqual(
+            top,
+            reference["text"]["top1"] + reference["text"]["top2"],
+        )
+        self.assertEqual(bottom, reference["text"]["bottom2"])
+
+    def test_v02_semantic_layout_rejects_break_inside_number_phrase(self):
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        with self.assertRaisesRegex(ValueError, "top1 语义边界无效"):
+            self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-02-fixture-02",
+                "bgm": False,
+                "semantic_layout": {
+                    "version": 1,
+                    "model": "gpt-4.1-mini",
+                    "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+                    "top1_end": 1,
+                    "top_break_after": [1, top.index("，")],
+                    "bottom_break_after": [],
+                },
+            })
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({

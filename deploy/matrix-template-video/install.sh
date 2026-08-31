@@ -132,6 +132,7 @@ git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video "${LAYOUT_
 install -o root -g root -m 0644 "${API_SOURCE}" "${RELEASE}/api.py"
 SKILL_ROOT="${RELEASE}/upstream/script-to-matrix-video"
 python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py"
+python3 -c 'from PIL import Image, ImageDraw, ImageFont'
 python3 "${SKILL_ROOT}/scripts/check_environment.py"
 python3 "${SKILL_ROOT}/scripts/test_template_catalog.py"
 python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
@@ -292,7 +293,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("reference_top_layer_counts")=={"2":6,"3":11} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("reference_top_layer_counts")=={"2":6,"3":11} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v02"] and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"
