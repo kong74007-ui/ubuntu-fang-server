@@ -2152,31 +2152,46 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 },
             })
 
-    def test_semantic_number_classifier_breaks_match_tight_and_spaced_forms(self):
-        for value in (
-            "团队8个人", "团队8 个人",
-            "产出100条短视频", "产出100 条短视频",
+    def test_semantic_number_tokens_match_all_supported_forms(self):
+        for value, phrase in (
+            ("团队8个人", "8个人"),
+            ("团队8 个人", "8 个人"),
+            ("产出100条短视频", "100条"),
+            ("产出100 条短视频", "100 条"),
+            ("团队十二个人", "十二个人"),
+            ("团队一百个人", "一百个人"),
+            ("覆盖3.5万人", "3.5万人"),
+            ("产出1,000条视频", "1,000条"),
         ):
             with self.subTest(value=value):
-                digit_start = next(
-                    index for index, char in enumerate(value) if char.isdigit()
-                )
-                digit_end = digit_start
-                while digit_end + 1 < len(value) and value[digit_end + 1].isdigit():
-                    digit_end += 1
-                classifier = digit_end + 1
-                while value[classifier].isspace():
-                    classifier += 1
+                start = value.index(phrase)
+                end = start + len(phrase)
                 breaks = matrix._normalize_reference_breaks(
                     list(range(len(value) - 1)), value, "顶部",
                 )
-                self.assertIn(digit_start - 1, breaks)
-                for protected in range(digit_end, classifier):
+                if start:
+                    self.assertIn(start - 1, breaks)
+                for protected in range(start, end - 1):
                     self.assertNotIn(protected, breaks)
 
-    def test_semantic_layout_preserves_spaced_number_phrases_in_final_lines(self):
-        top = "团队8 个人，产出100 条短视频"
-        bottom = "评论区扣8 个人"
+    def test_semantic_numeric_lists_keep_comma_boundaries(self):
+        for value in (
+            "2025，2026",
+            "1，2，3个方案",
+        ):
+            with self.subTest(value=value):
+                commas = [
+                    index for index, char in enumerate(value) if char == "，"
+                ]
+                breaks = matrix._normalize_reference_breaks(
+                    list(range(len(value) - 1)), value, "顶部",
+                )
+                self.assertTrue(commas)
+                self.assertTrue(all(index in breaks for index in commas))
+
+    def test_semantic_layout_preserves_number_phrases_in_final_lines(self):
+        top = "团队8个人和8 个人，十二个人和一百个人，覆盖3.5万人"
+        bottom = "产出100条和100 条，领取1,000条案例"
         layout = {
             "version": 1,
             "model": "gpt-4.1-mini",
@@ -2200,11 +2215,51 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         reference = frozen["_reference_template"]
         self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
         self.assertEqual(bottom, reference["text"]["bottom2"])
-        self.assertIn("团队8 个人", reference["display_text"]["top1"])
-        self.assertIn("产出100 条短视频", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["top1"])
-        self.assertNotIn("100 \n条", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["bottom2"])
+        display = "\n".join(reference["display_text"].values())
+        for phrase in (
+            "8个人", "8 个人", "十二个人", "一百个人",
+            "3.5万人", "100条", "100 条", "1,000条",
+        ):
+            self.assertIn(phrase, display)
+        for forbidden in (
+            "8\n个人", "8 \n个人",
+            "100\n条", "100 \n条",
+            "十\n二个人", "一\n百个人",
+            "3.\n5万人", "1,\n000条",
+        ):
+            self.assertNotIn(forbidden, display)
+
+    def test_semantic_year_list_reaches_final_layout_with_comma_breaks(self):
+        top = "2025，2026，2027，2028年连续增长"
+        bottom = "评论区扣111"
+        commas = [index for index, char in enumerate(top) if char == "，"]
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": commas[1],
+            "top_break_after": commas,
+            "bottom_break_after": [],
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=lambda value, _metrics: len(value) * 80,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-02-fixture-02",
+                "bgm": False,
+                "semantic_layout": layout,
+            })
+            frozen = self.service._freeze_font_provenance("5" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
+        self.assertEqual(bottom, reference["text"]["bottom2"])
+        self.assertEqual("2025，2026", reference["display_text"]["top1"])
+        self.assertIn("\n", reference["display_text"]["top2"])
+        self.assertIn("2027", reference["display_text"]["top2"])
+        self.assertIn("2028年连续增长", reference["display_text"]["top2"])
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({
