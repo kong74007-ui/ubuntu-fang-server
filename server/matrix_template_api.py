@@ -206,46 +206,14 @@ REFERENCE_TEXT_LAYER_IDS = frozenset({
 })
 REFERENCE_PRIVATE_FONT_STYLE_ID = "matrix-reference-private-fonts"
 REFERENCE_SEMANTIC_LAYOUT_VERSION = 1
-REFERENCE_SEMANTIC_LAYOUTS = {
-    "v02": {
-        "top1": {
-            "family": "Ma Shan Zheng", "font_size_px": 86,
-            "stroke_px": 13, "max_lines": 2,
-        },
-        "top2": {
-            "family": "Smiley Sans Oblique", "font_size_px": 62,
-            "stroke_px": 9, "max_lines": 4,
-        },
-        "bottom2": {
-            "family": "Ma Shan Zheng", "font_size_px": 78,
-            "stroke_px": 10, "max_lines": 2,
-        },
-    },
-    "v05": {
-        "top1": {
-            "family": "Noto Sans SC", "font_size_px": 102,
-            "stroke_px": 12, "max_lines": 2,
-            "letter_spacing_em": -0.045,
-        },
-        "top2": {
-            "family": "Noto Sans SC", "font_size_px": 104,
-            "stroke_px": 13, "max_lines": 2,
-            "letter_spacing_em": -0.045,
-        },
-        "top3": {
-            "family": "Noto Sans SC", "font_size_px": 68,
-            "stroke_px": 9, "max_lines": 3,
-            "letter_spacing_em": -0.045,
-        },
-        "bottom2": {
-            "family": "Noto Sans SC", "font_size_px": 70,
-            "stroke_px": 0, "max_lines": 2,
-            "letter_spacing_em": -0.035, "max_width_px": 862,
-        },
-    },
-}
 REFERENCE_TEXT_MAX_WIDTH_PX = 996.0
 REFERENCE_LETTER_SPACING_EM = 0.01
+REFERENCE_CSS_FONT_FAMILIES = {
+    "NotoSC": "Noto Sans SC",
+    "MaShan": "Ma Shan Zheng",
+    "KuaiLe": "ZCOOL KuaiLe",
+    "XiaoWei": "ZCOOL XiaoWei",
+}
 _NUMERIC_PHRASE_RE = re.compile(
     r"(?:(?<![0-9])(?:"
     r"[0-9]{1,3}(?:[,，][0-9]{3})+(?:[.．][0-9]+)?"
@@ -253,6 +221,154 @@ _NUMERIC_PHRASE_RE = re.compile(
     r")(?![0-9])|[零〇一二三四五六七八九十百千万亿两几]+)"
     r"\s*[十百千万亿个家人位名条款套种项台年月日天次岁]{0,2}"
 )
+
+
+def _css_declarations(value: str) -> dict[str, str]:
+    result = {}
+    for declaration in str(value or "").split(";"):
+        if ":" not in declaration:
+            continue
+        name, raw = declaration.split(":", 1)
+        name, raw = name.strip().lower(), raw.strip()
+        if name and raw:
+            result[name] = raw
+    return result
+
+
+def _css_font_family(value: str) -> str:
+    alias = str(value or "").split(",", 1)[0].strip().strip('"\'')
+    return REFERENCE_CSS_FONT_FAMILIES.get(alias, alias)
+
+
+def _css_padding_horizontal(value: str) -> tuple[float, float]:
+    parts = [
+        float(match.group(1))
+        for item in str(value or "").split()
+        if (match := re.fullmatch(r"(-?[0-9]+(?:\.[0-9]+)?)px", item))
+    ]
+    if not parts:
+        return 0.0, 0.0
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    if len(parts) in {2, 3}:
+        return parts[1], parts[1]
+    return parts[3], parts[1]
+
+
+def _reference_css_layer_metrics(
+    index_html: str, variant: str, layer: str, max_lines: int,
+) -> dict:
+    styles = "\n".join(re.findall(
+        r"<style\b[^>]*>(.*?)</style>", index_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    styles = re.sub(r"/\*.*?\*/", "", styles, flags=re.DOTALL)
+    declarations = {}
+    target_selectors = {f".{layer}", f".{variant} .{layer}"}
+    for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", styles, re.DOTALL):
+        selectors = {
+            re.sub(r"\s+", " ", item.strip())
+            for item in rule.group(1).split(",")
+        }
+        if selectors & target_selectors:
+            declarations.update(_css_declarations(rule.group(2)))
+
+    family = "Noto Sans SC"
+    font_size = None
+    shorthand = declarations.get("font")
+    if shorthand:
+        match = re.search(
+            r"(?:^|\s)([0-9]+(?:\.[0-9]+)?)px"
+            r"(?:/[^\s]+)?\s+(.+)$",
+            shorthand,
+        )
+        if not match:
+            raise MatrixTemplateError(
+                "HyperFrames reference template font shorthand is unsupported"
+            )
+        font_size = float(match.group(1))
+        family = _css_font_family(match.group(2))
+    if declarations.get("font-size"):
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)px", declarations["font-size"]
+        )
+        if not match:
+            raise MatrixTemplateError(
+                "HyperFrames reference template font size is unsupported"
+            )
+        font_size = float(match.group(1))
+    if declarations.get("font-family"):
+        family = _css_font_family(declarations["font-family"])
+    if font_size is None:
+        raise MatrixTemplateError(
+            "HyperFrames reference template font size is missing"
+        )
+
+    letter_spacing = REFERENCE_LETTER_SPACING_EM
+    if declarations.get("letter-spacing"):
+        match = re.fullmatch(
+            r"(-?[0-9]*\.?[0-9]+)em", declarations["letter-spacing"]
+        )
+        if not match:
+            raise MatrixTemplateError(
+                "HyperFrames reference template letter spacing is unsupported"
+            )
+        letter_spacing = float(match.group(1))
+
+    stroke = 0.0
+    if declarations.get("-webkit-text-stroke"):
+        match = re.search(
+            r"([0-9]+(?:\.[0-9]+)?)px",
+            declarations["-webkit-text-stroke"],
+        )
+        if not match:
+            raise MatrixTemplateError(
+                "HyperFrames reference template text stroke is unsupported"
+            )
+        stroke = float(match.group(1))
+
+    max_width = REFERENCE_TEXT_MAX_WIDTH_PX
+    if declarations.get("max-width"):
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)px", declarations["max-width"]
+        )
+        if match:
+            max_width = float(match.group(1))
+        elif declarations["max-width"] != "none":
+            raise MatrixTemplateError(
+                "HyperFrames reference template max width is unsupported"
+            )
+    padding_left, padding_right = _css_padding_horizontal(
+        declarations.get("padding", "")
+    )
+    for property_name, target in (
+        ("padding-left", "left"), ("padding-right", "right"),
+    ):
+        if declarations.get(property_name):
+            match = re.fullmatch(
+                r"([0-9]+(?:\.[0-9]+)?)px", declarations[property_name]
+            )
+            if not match:
+                raise MatrixTemplateError(
+                    "HyperFrames reference template padding is unsupported"
+                )
+            if target == "left":
+                padding_left = float(match.group(1))
+            else:
+                padding_right = float(match.group(1))
+    max_width -= padding_left + padding_right
+    if not 8 <= font_size <= 240 or not 100 <= max_width <= 996:
+        raise MatrixTemplateError(
+            "HyperFrames reference template text metrics are unsafe"
+        )
+    return {
+        "family": family,
+        "font_size_px": int(font_size),
+        "stroke_px": int(stroke),
+        "letter_spacing_em": letter_spacing,
+        "max_width_px": int(max_width),
+        "max_lines": int(max_lines),
+    }
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -1200,6 +1316,7 @@ class MatrixTemplateService:
         )
         self.reference_pack_root = None
         self.reference_templates: dict[str, dict] = {}
+        self.reference_semantic_layouts: dict[str, dict] = {}
         self.reference_fonts: dict[str, dict] = {}
         self.reference_font_fingerprint = _font_bundle_fingerprint({})
         self.reference_measure_fonts: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
@@ -1443,19 +1560,37 @@ class MatrixTemplateService:
                     for layer, font in fixed_private_fonts.items()
                 },
             }
-            semantic_contract = REFERENCE_SEMANTIC_LAYOUTS.get(variant)
-            if semantic_contract is not None:
-                record["semantic_layout"] = {
-                    "version": REFERENCE_SEMANTIC_LAYOUT_VERSION,
-                    "max_width_px": int(REFERENCE_TEXT_MAX_WIDTH_PX),
-                    "layers": {
-                        layer: {
-                            "font_size_px": int(metrics["font_size_px"]),
-                            "max_lines": int(metrics["max_lines"]),
-                        }
-                        for layer, metrics in semantic_contract.items()
-                    },
-                }
+            top_layers = ["top1", "top2"] + (
+                ["top3"] if top_layer_count == 3 else []
+            )
+            semantic_contract = {}
+            for layer in top_layers + ["bottom2"]:
+                max_lines = (
+                    2 if top_layer_count == 3 or layer != "top2" else 4
+                )
+                semantic_contract[layer] = _reference_css_layer_metrics(
+                    index_html, variant, layer,
+                    2 if layer == "bottom2" else max_lines,
+                )
+                fixed = fixed_private_fonts.get(layer)
+                if fixed:
+                    semantic_contract[layer]["family"] = str(fixed["family"])
+                    if fixed.get("font_size_px") is not None:
+                        semantic_contract[layer]["font_size_px"] = int(
+                            fixed["font_size_px"]
+                        )
+            self.reference_semantic_layouts[variant] = semantic_contract
+            record["semantic_layout"] = {
+                "version": REFERENCE_SEMANTIC_LAYOUT_VERSION,
+                "max_width_px": int(REFERENCE_TEXT_MAX_WIDTH_PX),
+                "layers": {
+                    layer: {
+                        "font_size_px": int(metrics["font_size_px"]),
+                        "max_lines": int(metrics["max_lines"]),
+                    }
+                    for layer, metrics in semantic_contract.items()
+                },
+            }
             result.append(record)
             self.reference_templates[template_id] = record
 
@@ -1478,6 +1613,15 @@ class MatrixTemplateService:
             family: item["file"] for family, item in reference_fonts.items()
         } != REFERENCE_FONT_FAMILY_FILES:
             raise MatrixTemplateError("HyperFrames reference template font mapping changed")
+        for contract in self.reference_semantic_layouts.values():
+            for metrics in contract.values():
+                if (
+                    metrics["family"] not in reference_fonts
+                    and metrics["family"] not in self.private_fonts
+                ):
+                    raise MatrixTemplateError(
+                        "HyperFrames semantic layout font mapping changed"
+                    )
         if self.hyperframes_cli is None or not self.hyperframes_cli.is_file():
             raise MatrixTemplateError("HyperFrames 0.8.16 CLI is unavailable")
         if self.hyperframes_gsap is None or not self.hyperframes_gsap.is_file():
@@ -1588,7 +1732,7 @@ class MatrixTemplateService:
     def _reference_semantic_text_layout(
         self, top: str, bottom: str, variant: str, semantic_layout: dict,
     ) -> tuple[dict[str, str], dict[str, str]]:
-        contract = REFERENCE_SEMANTIC_LAYOUTS.get(variant)
+        contract = self.reference_semantic_layouts.get(variant)
         if contract is None:
             raise ValueError("HyperFrames 模板不支持语义排版")
         layout = _normalize_reference_semantic_layout(
@@ -1700,7 +1844,7 @@ class MatrixTemplateService:
         if reference_template:
             variant = self.reference_templates[template_id]["variant"]
             if semantic_layout is not None:
-                if variant not in REFERENCE_SEMANTIC_LAYOUTS:
+                if variant not in self.reference_semantic_layouts:
                     raise ValueError("HyperFrames 当前模板不支持语义排版")
                 normalized_semantic_layout = _normalize_reference_semantic_layout(
                     semantic_layout, top, bottom,

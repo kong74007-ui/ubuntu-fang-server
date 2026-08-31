@@ -1317,6 +1317,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             styles.extend((
                 f".{variant} .top1 {{ font-size: 80px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
+                f".{variant} .bottom2 {{ font-size: 70px; }}",
             ))
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
@@ -1399,9 +1400,42 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.health()["reference_fixed_private_fonts"],
         )
         self.assertEqual(
-            ["v02", "v05"],
+            [
+                "v01", "v02", "v03", "v04", "v05", "v06",
+                "v07", "v08", "v09", "v10", "v11", "v12",
+                "v13", "v14", "v15", "v16", "v17",
+            ],
             self.service.health()["reference_semantic_layout_templates"],
         )
+        self.assertEqual(
+            ("Ma Shan Zheng", 70, 11, 2),
+            tuple(
+                self.service.reference_semantic_layouts["v01"]["top1"][key]
+                for key in ("family", "font_size_px", "stroke_px", "max_lines")
+            ),
+        )
+        self.assertEqual(
+            ("Smiley Sans Oblique", 62, 4),
+            tuple(
+                self.service.reference_semantic_layouts["v02"]["top2"][key]
+                for key in ("family", "font_size_px", "max_lines")
+            ),
+        )
+        self.assertEqual(
+            (102, 104, 68, 70),
+            tuple(
+                self.service.reference_semantic_layouts["v05"][layer]["font_size_px"]
+                for layer in ("top1", "top2", "top3", "bottom2")
+            ),
+        )
+        for item in self.service.reference_templates.values():
+            expected_layers = {"top1", "top2", "bottom2"}
+            if item["text_layers"]["top"] == 3:
+                expected_layers.add("top3")
+            self.assertEqual(
+                expected_layers,
+                set(self.service.reference_semantic_layouts[item["variant"]]),
+            )
         self.assertEqual(
             {
                 "v01", "v04", "v05", "v06", "v07", "v08",
@@ -1459,6 +1493,23 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             matrix.MatrixTemplateError, "top layer styles are incomplete"
+        ):
+            self.service._load_reference_catalog()
+
+    def test_reference_catalog_rejects_unmeasurable_bottom_style(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        expected = ".v09 .bottom2 { font-size: 70px; }"
+        self.assertIn(expected, source)
+        index_path.write_text(
+            source.replace(expected, ".v09 .bottom2 { color: #fff; }", 1),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "font size is missing",
         ):
             self.service._load_reference_catalog()
 
@@ -2250,6 +2301,45 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "有想进军健康赛道的\n勾兑勾兑",
             reference["display_text"]["bottom2"],
         )
+
+    def test_all_reference_variants_accept_semantic_layout_without_rewriting(self):
+        top = "开场标题，完整说明，补充信息。"
+        bottom = "评论区回复111"
+        commas = [index for index, char in enumerate(top) if char == "，"]
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": commas[0],
+            "top_break_after": commas,
+            "bottom_break_after": [],
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=lambda value, _metrics: len(value) * 30,
+        ):
+            for index, item in enumerate(
+                self.service.reference_templates.values(), 1,
+            ):
+                with self.subTest(variant=item["variant"]):
+                    payload = self.service.validate_payload({
+                        "top_text": top,
+                        "bottom_text": bottom,
+                        "template_id": item["id"],
+                        "bgm": False,
+                        "semantic_layout": layout,
+                    })
+                    frozen = self.service._freeze_font_provenance(
+                        f"{index:032x}", payload,
+                    )
+                    reference = frozen["_reference_template"]
+                    self.assertEqual(
+                        top,
+                        reference["text"]["top1"]
+                        + reference["text"]["top2"]
+                        + reference["text"]["top3"],
+                    )
+                    self.assertEqual(bottom, reference["text"]["bottom2"])
 
     def test_semantic_number_tokens_match_all_supported_forms(self):
         for value, phrase in (
