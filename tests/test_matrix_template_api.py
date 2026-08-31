@@ -2174,9 +2174,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 for protected in range(digit_end, classifier):
                     self.assertNotIn(protected, breaks)
 
-    def test_semantic_layout_preserves_spaced_number_phrases_in_final_lines(self):
-        top = "团队8 个人，产出100 条短视频"
-        bottom = "评论区扣8 个人"
+    def test_semantic_layout_preserves_number_phrases_in_final_lines(self):
+        top = "团队8个人和8 个人，产出100条和100 条短视频"
+        bottom = "评论区扣8个人和8 个人，领取100条和100 条案例"
         layout = {
             "version": 1,
             "model": "gpt-4.1-mini",
@@ -2200,11 +2200,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         reference = frozen["_reference_template"]
         self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
         self.assertEqual(bottom, reference["text"]["bottom2"])
-        self.assertIn("团队8 个人", reference["display_text"]["top1"])
-        self.assertIn("产出100 条短视频", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["top1"])
-        self.assertNotIn("100 \n条", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["bottom2"])
+        display = "\n".join(reference["display_text"].values())
+        for phrase in ("8个人", "8 个人", "100条", "100 条"):
+            self.assertIn(phrase, display)
+        for forbidden in (
+            "8\n个人", "8 \n个人",
+            "100\n条", "100 \n条",
+        ):
+            self.assertNotIn(forbidden, display)
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({
