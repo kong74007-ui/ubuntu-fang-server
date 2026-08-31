@@ -508,17 +508,22 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
         and (right.isalnum() or right in "+_&./-")
     ):
         return None
+    left_cursor, right_cursor = index - 1, index
+    while left_cursor >= 0 and value[left_cursor].isspace():
+        left_cursor -= 1
+    while right_cursor < len(value) and value[right_cursor].isspace():
+        right_cursor += 1
     if (
-        left in "0123456789一二三四五六七八九十几两"
-        and right in "个家人位名款套种项台年月日天次岁"
+        left_cursor >= 0 and right_cursor < len(value)
+        and (
+            value[left_cursor].isdigit() and value[right_cursor].isdigit()
+            or (
+                value[left_cursor] in "0123456789一二三四五六七八九十几两"
+                and value[right_cursor] in "个家人位名条款套种项台年月日天次岁"
+            )
+        )
     ):
         return None
-    if right.isdigit():
-        cursor = index
-        while cursor < len(value) and value[cursor].isdigit():
-            cursor += 1
-        if cursor < len(value) and value[cursor] in "个家人位名款套种项台年月日天次岁":
-            return None
 
     boundary = left
     if left.isspace():

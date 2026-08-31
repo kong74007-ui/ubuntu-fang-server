@@ -2146,11 +2146,65 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     "version": 1,
                     "model": "gpt-4.1-mini",
                     "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
-                    "top1_end": 1,
-                    "top_break_after": [1, top.index("，")],
+                    "top1_end": 2,
+                    "top_break_after": [2, top.index("，")],
                     "bottom_break_after": [],
                 },
             })
+
+    def test_semantic_number_classifier_breaks_match_tight_and_spaced_forms(self):
+        for value in (
+            "团队8个人", "团队8 个人",
+            "产出100条短视频", "产出100 条短视频",
+        ):
+            with self.subTest(value=value):
+                digit_start = next(
+                    index for index, char in enumerate(value) if char.isdigit()
+                )
+                digit_end = digit_start
+                while digit_end + 1 < len(value) and value[digit_end + 1].isdigit():
+                    digit_end += 1
+                classifier = digit_end + 1
+                while value[classifier].isspace():
+                    classifier += 1
+                breaks = matrix._normalize_reference_breaks(
+                    list(range(len(value) - 1)), value, "顶部",
+                )
+                self.assertIn(digit_start - 1, breaks)
+                for protected in range(digit_end, classifier):
+                    self.assertNotIn(protected, breaks)
+
+    def test_semantic_layout_preserves_spaced_number_phrases_in_final_lines(self):
+        top = "团队8 个人，产出100 条短视频"
+        bottom = "评论区扣8 个人"
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": top.index("，"),
+            "top_break_after": list(range(len(top) - 1)),
+            "bottom_break_after": list(range(len(bottom) - 1)),
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=lambda value, _metrics: len(value) * 20,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-02-fixture-02",
+                "bgm": False,
+                "semantic_layout": layout,
+            })
+            frozen = self.service._freeze_font_provenance("4" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
+        self.assertEqual(bottom, reference["text"]["bottom2"])
+        self.assertIn("团队8 个人", reference["display_text"]["top1"])
+        self.assertIn("产出100 条短视频", reference["display_text"]["top2"])
+        self.assertNotIn("8 \n个人", reference["display_text"]["top1"])
+        self.assertNotIn("100 \n条", reference["display_text"]["top2"])
+        self.assertNotIn("8 \n个人", reference["display_text"]["bottom2"])
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({
