@@ -18,7 +18,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="8846bf7187600295457fbe6a98b8121fe95399761c897905cfbf70cce4d052ce"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -73,13 +73,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_featured_reference_patch_is_hash_locked_and_scoped_to_v05(self):
+    def test_reference_patch_is_hash_locked_and_scoped_to_v01_and_v05(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "8846bf7187600295457fbe6a98b8121fe95399761c897905cfbf70cce4d052ce",
+            "9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -89,6 +89,12 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('font: 900 102px/1.02 "NotoSC";', patch)
         self.assertIn("-webkit-text-stroke: 12px #203449;", patch)
         self.assertIn("background: #f4c900;", patch)
+        self.assertIn('font: 400 70px/1.08 "MaShan";', patch)
+        self.assertIn('font: 400 64px/1.15 "MaShan";', patch)
+        self.assertIn("font-size: 52px;", patch)
+        self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
+        self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
+        self.assertNotIn(".v02 .top1 {\n+", patch)
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
 

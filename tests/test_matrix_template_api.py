@@ -1296,6 +1296,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         styles = []
         for index in range(1, 18):
             variant = f"v{index:02d}"
+            if variant == matrix.REFERENCE_V01_VARIANT:
+                styles.extend((
+                    '.v01 .top1 { font: 400 70px/1.08 "MaShan"; color: #f7f5ec; -webkit-text-stroke: 11px #789822; }',
+                    '.v01 .top2 { font: 400 64px/1.15 "MaShan"; color: #f8f7ef; -webkit-text-stroke: 9px #789822; }',
+                    '.v01 .top3 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 7px #111; }',
+                    '.v01 .bottom1 { font: 400 56px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 7px #111; }',
+                    '.v01 .bottom2 { font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
+                ))
+                continue
             if variant == matrix.REFERENCE_FEATURED_VARIANT:
                 styles.extend((
                     '.v05 .top1 { font: 900 102px/1.02 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 12px #203449; text-shadow: 8px 10px 0 #07111e; }',
@@ -1486,6 +1495,26 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             encoding="utf-8",
         )
         with self.assertRaisesRegex(matrix.MatrixTemplateError, "first frame"):
+            self.service._load_reference_catalog()
+
+    def test_v01_template_rejects_font_size_drift(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        index_path.write_text(
+            source.replace(
+                'font: 400 70px/1.08 "MaShan";',
+                'font: 400 68px/1.08 "MaShan";',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError,
+            "v01 HyperFrames template style contract changed",
+        ):
             self.service._load_reference_catalog()
 
     def test_reference_layers_preserve_copy_and_enforce_width_budget(self):
