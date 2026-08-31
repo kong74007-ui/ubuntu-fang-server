@@ -2174,6 +2174,21 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 for protected in range(start, end - 1):
                     self.assertNotIn(protected, breaks)
 
+    def test_semantic_numeric_lists_keep_comma_boundaries(self):
+        for value in (
+            "2025，2026",
+            "1，2，3个方案",
+        ):
+            with self.subTest(value=value):
+                commas = [
+                    index for index, char in enumerate(value) if char == "，"
+                ]
+                breaks = matrix._normalize_reference_breaks(
+                    list(range(len(value) - 1)), value, "顶部",
+                )
+                self.assertTrue(commas)
+                self.assertTrue(all(index in breaks for index in commas))
+
     def test_semantic_layout_preserves_number_phrases_in_final_lines(self):
         top = "团队8个人和8 个人，十二个人和一百个人，覆盖3.5万人"
         bottom = "产出100条和100 条，领取1,000条案例"
@@ -2213,6 +2228,38 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "3.\n5万人", "1,\n000条",
         ):
             self.assertNotIn(forbidden, display)
+
+    def test_semantic_year_list_reaches_final_layout_with_comma_breaks(self):
+        top = "2025，2026，2027，2028年连续增长"
+        bottom = "评论区扣111"
+        commas = [index for index, char in enumerate(top) if char == "，"]
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": commas[1],
+            "top_break_after": commas,
+            "bottom_break_after": [],
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=lambda value, _metrics: len(value) * 80,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-02-fixture-02",
+                "bgm": False,
+                "semantic_layout": layout,
+            })
+            frozen = self.service._freeze_font_provenance("5" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
+        self.assertEqual(bottom, reference["text"]["bottom2"])
+        self.assertEqual("2025，2026", reference["display_text"]["top1"])
+        self.assertIn("\n", reference["display_text"]["top2"])
+        self.assertIn("2027", reference["display_text"]["top2"])
+        self.assertIn("2028年连续增长", reference["display_text"]["top2"])
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({
