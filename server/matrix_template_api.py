@@ -90,6 +90,38 @@ PRIVATE_FONT_VARIANTS = {
 REFERENCE_PACK_ID = "reference-typography-17"
 REFERENCE_HYPERFRAMES_VERSION = "0.8.16"
 REFERENCE_TEMPLATE_COUNT = 17
+REFERENCE_FEATURED_VARIANT = "v05"
+REFERENCE_FEATURED_STYLE_CONTRACT = {
+    "top1": (
+        'font:900102px/1.02"notosc"',
+        "color:#f4f7f2",
+        "-webkit-text-stroke:12px#203449",
+        "text-shadow:8px10px0#07111e",
+    ),
+    "top2": (
+        'font:900104px/1.01"notosc"',
+        "color:#f4f7f2",
+        "-webkit-text-stroke:13px#203449",
+        "text-shadow:9px11px0#07111e",
+    ),
+    "top3": (
+        'font:90068px/1.04"notosc"',
+        "color:#fff8d9",
+        "-webkit-text-stroke:9px#26394a",
+        "text-shadow:7px8px0#07111e",
+    ),
+    "bottom1": (
+        'font:90068px/1.05"notosc"',
+        "color:#ffe000",
+        "-webkit-text-stroke:9px#263e32",
+    ),
+    "bottom2": (
+        'font:90070px/1.06"notosc"',
+        "background:#f4c900",
+        "color:#26362d",
+        "border-radius:28px",
+    ),
+}
 REFERENCE_FONT_FILES = (
     "NotoSansSC-Variable.ttf",
     "MaShanZheng-Regular.ttf",
@@ -1167,12 +1199,32 @@ class MatrixTemplateService:
             if path.is_symlink() or not path.is_file():
                 raise MatrixTemplateError("HyperFrames reference template pack is incomplete")
         index_html = (pack_root / "index.html").read_text(encoding="utf-8")
+        if not re.search(
+            r'<section\b[^>]*\bid="typography"[^>]*\bdata-start="0"',
+            index_html,
+        ):
+            raise MatrixTemplateError(
+                "HyperFrames typography must be visible from the first frame"
+            )
 
         def has_variant_layer(variant: str, layer: str) -> bool:
             return bool(re.search(
                 rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
                 index_html,
             ))
+
+        def variant_layer_matches_contract(
+            variant: str, layer: str, required: tuple[str, ...]
+        ) -> bool:
+            style = re.search(
+                rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*\{{(?P<body>[^}}]*)\}}",
+                index_html,
+                re.DOTALL,
+            )
+            if not style:
+                return False
+            normalized = re.sub(r"\s+", "", style.group("body")).lower()
+            return all(token in normalized for token in required)
 
         result = []
         variants = set()
@@ -1221,6 +1273,13 @@ class MatrixTemplateService:
                     raise MatrixTemplateError(
                         "HyperFrames fixed private font is unavailable"
                     )
+            if variant == REFERENCE_FEATURED_VARIANT and not all(
+                variant_layer_matches_contract(variant, layer, required)
+                for layer, required in REFERENCE_FEATURED_STYLE_CONTRACT.items()
+            ):
+                raise MatrixTemplateError(
+                    "featured HyperFrames template style contract changed"
+                )
             record = {
                 "id": template_id,
                 "name": str(item.get("name") or template_id)[:40],
@@ -1240,6 +1299,14 @@ class MatrixTemplateService:
             }
             result.append(record)
             self.reference_templates[template_id] = record
+
+        if sum(
+            item["variant"] == REFERENCE_FEATURED_VARIANT for item in result
+        ) != 1:
+            raise MatrixTemplateError("featured HyperFrames template is missing")
+        result.sort(
+            key=lambda item: item["variant"] != REFERENCE_FEATURED_VARIANT
+        )
 
         reference_fonts = _load_bundled_fonts(self.reference_skill_root)
         missing_files = [

@@ -10,6 +10,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
+REFERENCE_LAYOUT_PATCH_SHA256="8846bf7187600295457fbe6a98b8121fe95399761c897905cfbf70cce4d052ce"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -21,6 +22,7 @@ UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-matrix-template.service"
 UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
 API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
 LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
+REFERENCE_LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-featured-layout.patch"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -72,7 +74,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -149,6 +151,11 @@ git -C "${REFERENCE_UPSTREAM}" clean -fdx
 if [[ "$(git -C "${REFERENCE_UPSTREAM}" rev-parse HEAD)" != "${REFERENCE_UPSTREAM_COMMIT}" ]]; then
   echo "reference template upstream commit mismatch" >&2; exit 1
 fi
+if [[ "$(sha256sum "${REFERENCE_LAYOUT_PATCH_SOURCE}" | awk '{print $1}')" != "${REFERENCE_LAYOUT_PATCH_SHA256}" ]]; then
+  echo "reference featured layout patch hash mismatch" >&2; exit 1
+fi
+git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_LAYOUT_PATCH_SOURCE}"
+git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"
 REFERENCE_SKILL_ROOT="${REFERENCE_UPSTREAM}/script-to-matrix-video"
 REFERENCE_PACK_ROOT="${REFERENCE_SKILL_ROOT}/assets/templates/reference-typography-17"
 REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" python3 - <<'PY'
@@ -184,7 +191,7 @@ if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding
 fi
 BUILD_ID="$(printf '%s\n' \
   "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" \
-  "${LAYOUT_PATCH_SHA256}" "${HYPERFRAMES_VERSION}" \
+  "${LAYOUT_PATCH_SHA256}" "${REFERENCE_LAYOUT_PATCH_SHA256}" "${HYPERFRAMES_VERSION}" \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
   "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" \
   | sha256sum | awk '{print $1}')"
