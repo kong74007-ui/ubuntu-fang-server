@@ -194,6 +194,10 @@ REFERENCE_SEMANTIC_LAYOUTS = {
 }
 REFERENCE_TEXT_MAX_WIDTH_PX = 996.0
 REFERENCE_LETTER_SPACING_EM = 0.01
+_NUMERIC_PHRASE_RE = re.compile(
+    r"(?:[0-9]+(?:[,.，．][0-9]+)*|[零〇一二三四五六七八九十百千万亿两几]+)"
+    r"\s*[十百千万亿个家人位名条款套种项台年月日天次岁]{0,2}"
+)
 
 
 def _font_selection(template_id: str, job_id: str,
@@ -491,6 +495,11 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
     if index >= len(value):
         return 0.0
     left, right = value[index - 1], value[index]
+    if any(
+        match.start() < index < match.end()
+        for match in _NUMERIC_PHRASE_RE.finditer(value)
+    ):
+        return None
     if right.isspace():
         return None
     if right in "，。！？；：、,.!?;:)]}）】》」』+%％":
@@ -508,23 +517,6 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
         and (right.isalnum() or right in "+_&./-")
     ):
         return None
-    left_cursor, right_cursor = index - 1, index
-    while left_cursor >= 0 and value[left_cursor].isspace():
-        left_cursor -= 1
-    while right_cursor < len(value) and value[right_cursor].isspace():
-        right_cursor += 1
-    if (
-        left_cursor >= 0 and right_cursor < len(value)
-        and (
-            value[left_cursor].isdigit() and value[right_cursor].isdigit()
-            or (
-                value[left_cursor] in "0123456789一二三四五六七八九十几两"
-                and value[right_cursor] in "个家人位名条款套种项台年月日天次岁"
-            )
-        )
-    ):
-        return None
-
     boundary = left
     if left.isspace():
         cursor = index - 1

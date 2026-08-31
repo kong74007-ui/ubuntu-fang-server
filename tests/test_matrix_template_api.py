@@ -2152,31 +2152,31 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 },
             })
 
-    def test_semantic_number_classifier_breaks_match_tight_and_spaced_forms(self):
-        for value in (
-            "团队8个人", "团队8 个人",
-            "产出100条短视频", "产出100 条短视频",
+    def test_semantic_number_tokens_match_all_supported_forms(self):
+        for value, phrase in (
+            ("团队8个人", "8个人"),
+            ("团队8 个人", "8 个人"),
+            ("产出100条短视频", "100条"),
+            ("产出100 条短视频", "100 条"),
+            ("团队十二个人", "十二个人"),
+            ("团队一百个人", "一百个人"),
+            ("覆盖3.5万人", "3.5万人"),
+            ("产出1,000条视频", "1,000条"),
         ):
             with self.subTest(value=value):
-                digit_start = next(
-                    index for index, char in enumerate(value) if char.isdigit()
-                )
-                digit_end = digit_start
-                while digit_end + 1 < len(value) and value[digit_end + 1].isdigit():
-                    digit_end += 1
-                classifier = digit_end + 1
-                while value[classifier].isspace():
-                    classifier += 1
+                start = value.index(phrase)
+                end = start + len(phrase)
                 breaks = matrix._normalize_reference_breaks(
                     list(range(len(value) - 1)), value, "顶部",
                 )
-                self.assertIn(digit_start - 1, breaks)
-                for protected in range(digit_end, classifier):
+                if start:
+                    self.assertIn(start - 1, breaks)
+                for protected in range(start, end - 1):
                     self.assertNotIn(protected, breaks)
 
-    def test_semantic_layout_preserves_spaced_number_phrases_in_final_lines(self):
-        top = "团队8 个人，产出100 条短视频"
-        bottom = "评论区扣8 个人"
+    def test_semantic_layout_preserves_number_phrases_in_final_lines(self):
+        top = "团队8个人和8 个人，十二个人和一百个人，覆盖3.5万人"
+        bottom = "产出100条和100 条，领取1,000条案例"
         layout = {
             "version": 1,
             "model": "gpt-4.1-mini",
@@ -2200,11 +2200,19 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         reference = frozen["_reference_template"]
         self.assertEqual(top, reference["text"]["top1"] + reference["text"]["top2"])
         self.assertEqual(bottom, reference["text"]["bottom2"])
-        self.assertIn("团队8 个人", reference["display_text"]["top1"])
-        self.assertIn("产出100 条短视频", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["top1"])
-        self.assertNotIn("100 \n条", reference["display_text"]["top2"])
-        self.assertNotIn("8 \n个人", reference["display_text"]["bottom2"])
+        display = "\n".join(reference["display_text"].values())
+        for phrase in (
+            "8个人", "8 个人", "十二个人", "一百个人",
+            "3.5万人", "100条", "100 条", "1,000条",
+        ):
+            self.assertIn(phrase, display)
+        for forbidden in (
+            "8\n个人", "8 \n个人",
+            "100\n条", "100 \n条",
+            "十\n二个人", "一\n百个人",
+            "3.\n5万人", "1,\n000条",
+        ):
+            self.assertNotIn(forbidden, display)
 
     def test_reference_render_hides_only_edge_punctuation(self):
         payload = self.service.validate_payload({
