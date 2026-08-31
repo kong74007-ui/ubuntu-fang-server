@@ -1096,6 +1096,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 self.assertEqual(
                     {"2": 0, "3": 0}, health["reference_top_layer_counts"]
                 )
+                self.assertEqual([], health["reference_fixed_private_fonts"])
                 self.assertEqual({
                     "ffmpeg": 1,
                     "hyperframes": 2,
@@ -1206,6 +1207,22 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.reference_skill = self.root / "reference-skill"
         self._write_skill_fixture(self.skill, reference=False)
         self._write_skill_fixture(self.reference_skill, reference=True)
+        self.private_font_root = self.root / "private-fonts"
+        self.private_font_root.mkdir()
+        private_font = self.private_font_root / "SmileySans-Oblique.ttf"
+        private_font.write_bytes(b"smiley-sans-private-fixture")
+        (self.private_font_root / "sources.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "fonts": [{
+                    "family": "Smiley Sans Oblique",
+                    "file": private_font.name,
+                    "sha256": hashlib.sha256(private_font.read_bytes()).hexdigest(),
+                    "authorized": True,
+                }],
+            }),
+            encoding="utf-8",
+        )
         self.cli = self.root / "hyperframes"
         self.cli.write_bytes(b"cli")
         self.gsap = self.root / "gsap.min.js"
@@ -1217,6 +1234,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service = matrix.MatrixTemplateService(
                 data_root=self.root / "data",
                 skill_root=self.skill,
+                private_font_root=self.private_font_root,
                 reference_skill_root=self.reference_skill,
                 hyperframes_cli=self.cli,
                 hyperframes_gsap=self.gsap,
@@ -1334,6 +1352,17 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.templates["ref-02-fixture-02"]["text_layers"],
         )
         self.assertEqual(
+            {"top2": "Smiley Sans Oblique"},
+            self.service.templates["ref-03-fixture-03"]["fixed_fonts"],
+        )
+        self.assertEqual(
+            {}, self.service.templates["ref-04-fixture-04"]["fixed_fonts"]
+        )
+        self.assertEqual(
+            ["Smiley Sans Oblique"],
+            self.service.health()["reference_fixed_private_fonts"],
+        )
+        self.assertEqual(
             {
                 "v01", "v04", "v05", "v06", "v07", "v08",
                 "v10", "v11", "v12", "v16", "v17",
@@ -1390,6 +1419,13 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             matrix.MatrixTemplateError, "top layer styles are incomplete"
+        ):
+            self.service._load_reference_catalog()
+
+    def test_reference_catalog_rejects_missing_fixed_private_font(self):
+        self.service.private_fonts.pop("Smiley Sans Oblique")
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "fixed private font is unavailable"
         ):
             self.service._load_reference_catalog()
 
@@ -1628,6 +1664,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             restarted = matrix.MatrixTemplateService(
                 data_root=self.service.data_root,
                 skill_root=self.skill,
+                private_font_root=self.private_font_root,
                 reference_skill_root=self.reference_skill,
                 hyperframes_cli=self.cli,
                 hyperframes_gsap=self.gsap,
@@ -1894,6 +1931,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance("3" * 32, payload)
         payload["_reference_template"]["duration"] = 14
+        fixed = payload["_reference_template"]["fixed_fonts"]["top2"]
+        self.assertEqual("Smiley Sans Oblique", fixed["family"])
+        self.assertEqual("HQSmileySansOblique", fixed["alias"])
+        self.assertEqual("SmileySans-Oblique.ttf", fixed["file"])
+        self.assertTrue(any(
+            item["family"] == "Smiley Sans Oblique"
+            and item["source"] == "private"
+            for item in payload["_font_provenance"]["fonts"]
+        ))
         materials = []
         paths = []
         for index in range(1, 4):
@@ -1925,6 +1971,12 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertNotIn(matrix.REFERENCE_GSAP_CDN, index)
         self.assertIn(matrix.REFERENCE_EMPTY_LAYER_STYLE, index)
         self.assertIn(
+            '@font-face{font-family:"HQSmileySansOblique";', index
+        )
+        self.assertIn(
+            '.v03 .top2{font-family:"HQSmileySansOblique"!important}', index
+        )
+        self.assertIn(
             'id="videoA" class="clip media-video" data-start="0" data-duration="5.1"',
             index,
         )
@@ -1942,7 +1994,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn("const segmentDurations = [5.1, 3.8, 5.1];", index)
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
         self.assertEqual(
-            set(matrix.REFERENCE_FONT_FILES),
+            set(matrix.REFERENCE_FONT_FILES) | {"SmileySans-Oblique.ttf"},
             {path.name for path in (workdir / "assets/fonts").iterdir()},
         )
 
@@ -1984,6 +2036,42 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             )
         self.assertEqual(reference["display_text"]["top1"], variables["top1"])
         self.assertEqual(reference["display_text"]["bottom2"], variables["bottom2"])
+
+    def test_legacy_reference_job_without_fixed_font_keeps_original_style(self):
+        payload = self.service.validate_payload({
+            "top_text": "郑州AI创业活动",
+            "bottom_text": "评论区回复关键词",
+            "template_id": "ref-03-fixture-03",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("7" * 32, payload)
+        payload["_reference_template"].pop("fixed_fonts")
+        payload["_font_provenance"]["fonts"] = [
+            item for item in payload["_font_provenance"]["fonts"]
+            if item["source"] != "private"
+        ]
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"legacy-font-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({"media_type": "video", "record_id": f"v{index}"})
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            self.service._render_reference(
+                payload, "7" * 32, materials, paths
+            )
+        workdir = self.service.data_root / ("7" * 32) / "hyperframes"
+        index = (workdir / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn(matrix.REFERENCE_PRIVATE_FONT_STYLE_ID, index)
+        self.assertFalse(
+            (workdir / "assets/fonts/SmileySans-Oblique.ttf").exists()
+        )
 
     def test_execute_routes_reference_template_to_hyperframes(self):
         payload = self.service.validate_payload({
