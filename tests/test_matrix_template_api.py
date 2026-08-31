@@ -1935,6 +1935,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual("Smiley Sans Oblique", fixed["family"])
         self.assertEqual("HQSmileySansOblique", fixed["alias"])
         self.assertEqual("SmileySans-Oblique.ttf", fixed["file"])
+        self.assertEqual(58, fixed["font_size_px"])
         self.assertTrue(any(
             item["family"] == "Smiley Sans Oblique"
             and item["source"] == "private"
@@ -1974,7 +1975,8 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             '@font-face{font-family:"HQSmileySansOblique";', index
         )
         self.assertIn(
-            '.v03 .top2{font-family:"HQSmileySansOblique"!important}', index
+            '.v03 .top2{font-family:"HQSmileySansOblique"!important;'
+            'font-size:58px!important}', index
         )
         self.assertIn(
             'id="videoA" class="clip media-video" data-start="0" data-duration="5.1"',
@@ -2036,6 +2038,35 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             )
         self.assertEqual(reference["display_text"]["top1"], variables["top1"])
         self.assertEqual(reference["display_text"]["bottom2"], variables["bottom2"])
+
+    def test_legacy_fixed_font_job_without_size_keeps_original_size(self):
+        payload = self.service.validate_payload({
+            "top_text": "郑州AI创业活动",
+            "bottom_text": "评论区回复关键词",
+            "template_id": "ref-03-fixture-03",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("8" * 32, payload)
+        fixed_fonts = payload["_reference_template"]["fixed_fonts"]
+        fixed_fonts["top2"].pop("font_size_px")
+        style = matrix._reference_private_font_style("v03", fixed_fonts)
+        self.assertIn(
+            '.v03 .top2{font-family:"HQSmileySansOblique"!important}', style
+        )
+        self.assertNotIn("font-size:", style)
+
+    def test_fixed_font_size_rejects_untrusted_values(self):
+        base = {
+            "alias": "HQSmileySansOblique",
+            "file": "SmileySans-Oblique.ttf",
+        }
+        for value in (True, 7, 241, "58"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "元数据无效"
+            ):
+                matrix._reference_private_font_style(
+                    "v03", {"top2": {**base, "font_size_px": value}}
+                )
 
     def test_legacy_reference_job_without_fixed_font_keeps_original_style(self):
         payload = self.service.validate_payload({

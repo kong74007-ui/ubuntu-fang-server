@@ -126,6 +126,7 @@ REFERENCE_FIXED_PRIVATE_FONTS = {
         "top2": {
             "family": "Smiley Sans Oblique",
             "alias": "HQSmileySansOblique",
+            "font_size_px": 58,
         },
     },
 }
@@ -742,10 +743,19 @@ def _reference_private_font_style(
             raise MatrixTemplateError("HyperFrames 固定私有字体配置无效")
         alias = str(item.get("alias") or "")
         filename = str(item.get("file") or "")
+        font_size_px = item.get("font_size_px")
         if (
             not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", alias)
             or Path(filename).name != filename
             or Path(filename).suffix.lower() not in {".ttf", ".otf", ".ttc"}
+            or (
+                font_size_px is not None
+                and (
+                    isinstance(font_size_px, bool)
+                    or not isinstance(font_size_px, int)
+                    or not 8 <= font_size_px <= 240
+                )
+            )
         ):
             raise MatrixTemplateError("HyperFrames 固定私有字体元数据无效")
         if alias not in seen_aliases:
@@ -758,9 +768,10 @@ def _reference_private_font_style(
                 'font-display:block}'
             )
             seen_aliases.add(alias)
-        overrides.append(
-            f'.{variant} .{layer}{{font-family:"{alias}"!important}}'
-        )
+        properties = [f'font-family:"{alias}"!important']
+        if font_size_px is not None:
+            properties.append(f"font-size:{font_size_px}px!important")
+        overrides.append(f'.{variant} .{layer}{{{";".join(properties)}}}')
     return (
         f'<style id="{REFERENCE_PRIVATE_FONT_STYLE_ID}">'
         + "".join(declarations + overrides)
@@ -1184,10 +1195,21 @@ class MatrixTemplateService:
             top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
             fixed_private_fonts = REFERENCE_FIXED_PRIVATE_FONTS.get(variant, {})
             for layer, font in fixed_private_fonts.items():
+                font_size_px = (
+                    font.get("font_size_px") if isinstance(font, dict) else None
+                )
                 if (
                     layer not in REFERENCE_TEXT_LAYER_IDS
                     or not isinstance(font, dict)
                     or font.get("family") not in self.private_fonts
+                    or (
+                        font_size_px is not None
+                        and (
+                            isinstance(font_size_px, bool)
+                            or not isinstance(font_size_px, int)
+                            or not 8 <= font_size_px <= 240
+                        )
+                    )
                 ):
                     raise MatrixTemplateError(
                         "HyperFrames fixed private font is unavailable"
@@ -1367,12 +1389,15 @@ class MatrixTemplateService:
                     raise MatrixTemplateError(
                         "HyperFrames fixed private font is unavailable"
                     )
-                fixed_fonts[layer] = {
+                frozen_font = {
                     "family": family,
                     "alias": str(font["alias"]),
                     "file": current["file"],
                     "sha256": current["sha256"],
                 }
+                if font.get("font_size_px") is not None:
+                    frozen_font["font_size_px"] = int(font["font_size_px"])
+                fixed_fonts[layer] = frozen_font
                 private_font_records[family] = {
                     "family": family,
                     "file": current["file"],
