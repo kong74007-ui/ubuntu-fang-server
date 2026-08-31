@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import unittest
@@ -17,12 +18,21 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="8846bf7187600295457fbe6a98b8121fe95399761c897905cfbf70cce4d052ce"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
         )
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_LAYOUT_PATCH_SOURCE}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"',
             installer,
         )
         self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"', installer)
@@ -60,6 +70,25 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS=900", installer)
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
+
+    def test_featured_reference_patch_is_hash_locked_and_scoped_to_v05(self):
+        patch_path = (
+            ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            "8846bf7187600295457fbe6a98b8121fe95399761c897905cfbf70cce4d052ce",
+            hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+        )
+        self.assertIn(
+            "script-to-matrix-video/assets/templates/reference-typography-17/index.html",
+            patch,
+        )
+        self.assertIn('font: 900 102px/1.02 "NotoSC";', patch)
+        self.assertIn("-webkit-text-stroke: 12px #203449;", patch)
+        self.assertIn("background: #f4c900;", patch)
+        self.assertNotIn(".v04 .top1 {\n+", patch)
+        self.assertNotIn(".v06 .top1 {\n+", patch)
 
     def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")

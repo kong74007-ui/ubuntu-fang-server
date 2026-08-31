@@ -26,11 +26,15 @@ to the two private-domain templates, atomically switches releases, and checks th
 exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
-four fixed OFL fonts, and installs pinned GSAP `3.14.2` inside the release.
-The patch adds `full-overlay-bold` and `poster-split`; its SHA-256 is locked in
+four fixed OFL fonts, applies a hash-locked generation-server patch that changes
+only featured variant `v05`, and installs pinned GSAP `3.14.2` inside the release.
+The featured variant remains the third catalog item and uses the approved
+Noto Sans SC 900 block style, blue-black outlines and yellow CTA treatment.
+The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
+patch and the separate featured-reference patch have SHA-256 locks in
 `install.sh`, so a missing or changed patch fails before the active release is
 switched. The public Skill repository remains unchanged until the generation
-server contract is accepted and the same patch is deliberately upstreamed.
+server contract is accepted and the same change is deliberately upstreamed.
 
 ```bash
 sudo bash deploy/matrix-template-video/install.sh

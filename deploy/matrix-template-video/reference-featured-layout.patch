@@ -1,0 +1,72 @@
+diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/index.html b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
+--- a/script-to-matrix-video/assets/templates/reference-typography-17/index.html
++++ b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
+@@ -86,12 +86,60 @@
+       .v04 .bottom1 { font-size: 58px; font-weight: 900; color: #ffd923; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+       .v04 .bottom2 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+-
++
+-      /* 05：超粗白主标题，红色说明 */
+-      .v05 .top1 { font: 400 70px/1.06 "MaShan"; color: #fff; -webkit-text-stroke: 11px #111; paint-order: stroke fill; }
+-      .v05 .top2 { font: 400 98px/1.02 "MaShan"; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }
+-      .v05 .top3 { font: 400 62px/1.05 "MaShan"; color: #d51f2c; -webkit-text-stroke: 7px #fff; paint-order: stroke fill; }
+-      .v05 .bottom1 { font-size: 64px; font-weight: 900; color: #ffd825; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+-      .v05 .bottom2 { font: 400 82px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 11px #111; paint-order: stroke fill; }
++      /* 05：超粗方黑，蓝黑厚描边与黄色 CTA */
++      .v05 .text-layer::before {
++        background: linear-gradient(to bottom, rgba(8,15,24,.50) 0%, rgba(8,15,24,.08) 42%, rgba(8,15,24,.02) 58%, rgba(8,15,24,.48) 100%);
++      }
++      .v05 .top { top: 112px; }
++      .v05 .top1 {
++        font: 900 102px/1.02 "NotoSC";
++        letter-spacing: -.045em;
++        color: #f4f7f2;
++        -webkit-text-stroke: 12px #203449;
++        text-shadow: 8px 10px 0 #07111e;
++        paint-order: stroke fill;
++      }
++      .v05 .top2 {
++        margin-top: 12px;
++        font: 900 104px/1.01 "NotoSC";
++        letter-spacing: -.045em;
++        color: #f4f7f2;
++        -webkit-text-stroke: 13px #203449;
++        text-shadow: 9px 11px 0 #07111e;
++        paint-order: stroke fill;
++      }
++      .v05 .top3 {
++        margin-top: 24px;
++        font: 900 68px/1.04 "NotoSC";
++        letter-spacing: -.045em;
++        color: #fff8d9;
++        -webkit-text-stroke: 9px #26394a;
++        text-shadow: 7px 8px 0 #07111e;
++        paint-order: stroke fill;
++      }
++      .v05 .bottom { bottom: 128px; }
++      .v05 .bottom1 {
++        font: 900 68px/1.05 "NotoSC";
++        letter-spacing: -.045em;
++        color: #ffe000;
++        -webkit-text-stroke: 9px #263e32;
++        text-shadow: 6px 7px 0 rgba(3,12,8,.9);
++        paint-order: stroke fill;
++      }
++      .v05 .bottom2 {
++        display: inline-block;
++        width: auto;
++        max-width: 930px;
++        margin-top: 28px;
++        padding: 18px 34px 24px;
++        border-radius: 28px;
++        background: #f4c900;
++        color: #26362d;
++        font: 900 70px/1.06 "NotoSC";
++        letter-spacing: -.035em;
++        box-shadow: 0 10px 0 rgba(17,36,29,.85), 0 15px 24px rgba(0,0,0,.35);
++        paint-order: stroke fill;
++      }
+-
++
+       /* 06：白色超大标题，黄色按钮 */
+       .v06 .top1 { font-size: 104px; font-weight: 900; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }

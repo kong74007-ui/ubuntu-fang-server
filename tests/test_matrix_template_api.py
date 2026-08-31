@@ -1296,6 +1296,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         styles = []
         for index in range(1, 18):
             variant = f"v{index:02d}"
+            if variant == matrix.REFERENCE_FEATURED_VARIANT:
+                styles.extend((
+                    '.v05 .top1 { font: 900 102px/1.02 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 12px #203449; text-shadow: 8px 10px 0 #07111e; }',
+                    '.v05 .top2 { font: 900 104px/1.01 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 13px #203449; text-shadow: 9px 11px 0 #07111e; }',
+                    '.v05 .top3 { font: 900 68px/1.04 "NotoSC"; color: #fff8d9; -webkit-text-stroke: 9px #26394a; text-shadow: 7px 8px 0 #07111e; }',
+                    '.v05 .bottom1 { font: 900 68px/1.05 "NotoSC"; color: #ffe000; -webkit-text-stroke: 9px #263e32; }',
+                    '.v05 .bottom2 { font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
+                ))
+                continue
             styles.extend((
                 f".{variant} .top1 {{ font-size: 80px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
@@ -1341,6 +1350,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
     def test_reference_catalog_is_19_and_ignores_font_selection(self):
         self.assertEqual(19, len(self.service.catalog))
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split", "ref-05-fixture-05"],
+            [item["id"] for item in self.service.catalog[:3]],
+        )
         template_id = "ref-01-fixture-01"
         template = self.service.templates[template_id]
         self.assertEqual("hyperframes", template["engine"])
@@ -1431,6 +1444,34 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with self.assertRaisesRegex(
             matrix.MatrixTemplateError, "fixed private font is unavailable"
         ):
+            self.service._load_reference_catalog()
+
+    def test_featured_template_rejects_style_or_first_frame_drift(self):
+        index_path = (
+            self.reference_skill / "assets/templates"
+            / matrix.REFERENCE_PACK_ID / "index.html"
+        )
+        source = index_path.read_text(encoding="utf-8")
+        index_path.write_text(
+            source.replace(
+                '-webkit-text-stroke: 13px #203449;',
+                '-webkit-text-stroke: 7px #111111;',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "style contract"):
+            self.service._load_reference_catalog()
+
+        index_path.write_text(
+            source.replace(
+                'id="typography" class="clip text-layer" data-start="0"',
+                'id="typography" class="clip text-layer" data-start="0.1"',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "first frame"):
             self.service._load_reference_catalog()
 
     def test_reference_layers_preserve_copy_and_enforce_width_budget(self):
