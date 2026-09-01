@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from server import material_library as material_library_module
 from server.material_library import MaterialLibrary, MaterialLibraryError, MaterialShortageError
 
 
@@ -147,6 +151,104 @@ class MaterialLibraryTests(unittest.TestCase):
         second = library.select(scene, seed="same")["materials"][0]["sha256"]
         self.assertEqual(first, second)
 
+    def test_random_mode_ignores_semantic_scores_and_is_deterministic(self):
+        exact = self.add("exact", 标签=["产品", "获客"])
+        other_a = self.add("other-a", 标签=["风景"])
+        other_b = self.add("other-b", 标签=["办公"])
+        shas = (exact, other_a, other_b)
+        seed = next(
+            str(index) for index in range(100)
+            if min(
+                shas,
+                key=lambda sha: hashlib.sha256(
+                    f"{index}:s1:0:{sha}".encode("utf-8")
+                ).hexdigest(),
+            ) != exact
+        )
+        library = self.library()
+        scene = [{
+            "scene_id": "s1", "query": "产品 获客",
+            "media_type": "image",
+        }]
+        first = library.select(
+            scene, seed=seed, selection_mode="random",
+        )
+        second = library.select(
+            scene, seed=seed, selection_mode="random",
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(exact, first["materials"][0]["sha256"])
+        self.assertEqual("random", first["materials"][0]["match_level"])
+        self.assertEqual(0, first["materials"][0]["match_score"])
+        self.assertEqual("random", first["selection_mode"])
+
+    def test_corrupted_exact_match_falls_back_to_healthy_material(self):
+        self.add("corrupted", 标签=["产品", "获客"])
+        healthy = self.add("healthy", 标签=["风景"])
+        (self.root / "files/corrupted.jpg").write_bytes(b"tampered")
+        result = self.library().select([{
+            "scene_id": "s1", "query": "产品 获客",
+            "media_type": "image",
+        }], seed="health-check")
+        self.assertEqual(healthy, result["materials"][0]["sha256"])
+        self.assertEqual("random", result["materials"][0]["match_level"])
+
+    def test_atomic_replacement_during_hash_never_caches_old_inode_as_healthy(self):
+        self.add("replaced", 标签=["产品", "获客"])
+        healthy = self.add("healthy-replacement", 标签=["风景"])
+        library = self.library()
+        target = self.root / "files/replaced.jpg"
+        original_sha256_file = material_library_module.sha256_file
+        replaced = False
+
+        def replace_after_hash(path):
+            nonlocal replaced
+            digest = original_sha256_file(path)
+            if not replaced and Path(path) == target:
+                replacement = self.root / "files/replacement.part"
+                replacement.write_bytes(b"tampered")
+                replacement.replace(target)
+                replaced = True
+            return digest
+
+        with mock.patch.object(
+            material_library_module, "sha256_file",
+            side_effect=replace_after_hash,
+        ):
+            result = library.select([{
+                "scene_id": "s1", "query": "产品 获客",
+                "media_type": "image",
+            }], seed="atomic-replacement")
+        self.assertTrue(replaced)
+        self.assertEqual(healthy, result["materials"][0]["sha256"])
+
+    def test_first_concurrent_selection_hashes_one_sha_only_once(self):
+        expected = self.add("single-flight", 标签=["随机"])
+        library = self.library()
+        original_sha256_file = material_library_module.sha256_file
+        calls = 0
+
+        def slow_hash(path):
+            nonlocal calls
+            calls += 1
+            time.sleep(0.05)
+            return original_sha256_file(path)
+
+        scene = [{
+            "scene_id": "s1", "query": "随机", "media_type": "image",
+        }]
+        with mock.patch.object(
+            material_library_module, "sha256_file", side_effect=slow_hash,
+        ), concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            values = list(pool.map(
+                lambda _index: library.select(
+                    scene, seed="single-flight", selection_mode="random",
+                )["materials"][0]["sha256"],
+                range(16),
+            ))
+        self.assertEqual([expected] * 16, values)
+        self.assertEqual(1, calls)
+
     def test_scene_contract_rejects_non_objects_and_more_than_twenty_one(self):
         self.add("only", 标签=["库存"])
         library = self.library()
@@ -154,6 +256,8 @@ class MaterialLibraryTests(unittest.TestCase):
             library.select(["bad"])
         with self.assertRaisesRegex(ValueError, "21"):
             library.select([{"scene_id": str(index)} for index in range(22)])
+        with self.assertRaisesRegex(ValueError, "selection_mode"):
+            library.select([{"scene_id": "s1"}], selection_mode="weighted")
 
     def test_real_export_schema_accepts_uppercase_sha_and_subject_alias(self):
         payload = b"real-export"

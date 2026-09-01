@@ -60,6 +60,12 @@ Then run `sudo bash deploy/pixelle-video/install-material-library-tunnel.sh`.
 
 ## API
 
+`POST /v1/select` defaults to semantic ranking. Callers may send
+`"selection_mode":"random"` to ignore query scores and choose a stable random
+candidate from the requested media type/orientation. Random selection remains
+deterministic for one seed, excludes `used_sha256`, and skips files whose live
+checksum no longer matches the approved index.
+
 `POST /v1/select` selects one unique approved asset per scene using
 `exact -> loose -> random`. `GET /v1/assets/{sha256}` downloads a selected asset
 after verifying its checksum. Both endpoints require the bearer token.
