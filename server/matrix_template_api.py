@@ -35,6 +35,7 @@ MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
 RENDER_TIMEOUT_SECONDS = 900
+REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
 DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
 DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 600
@@ -181,6 +182,9 @@ REFERENCE_CTA_SAFE_AREA_STYLE = (
     f'<style id="{REFERENCE_CTA_SAFE_AREA_STYLE_ID}">'
     f'#root .bottom{{bottom:{REFERENCE_CTA_SAFE_AREA_PERCENT}%}}'
     '</style>'
+)
+REFERENCE_BGM_SOURCE_RE = re.compile(
+    r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
 REFERENCE_MIN_SEGMENT_SECONDS = 0.5
@@ -1103,6 +1107,27 @@ def _rewrite_reference_timeline(
     if result.count(REFERENCE_DYNAMIC_TIMING_JS) != 1:
         raise MatrixTemplateError("HyperFrames 模板动态时间轴声明发生变化")
     return result.replace(REFERENCE_DYNAMIC_TIMING_JS, timing_js)
+
+
+def _rewrite_reference_bgm_source(html: str, source: str) -> str:
+    if not REFERENCE_BGM_SOURCE_RE.fullmatch(str(source or "")):
+        raise MatrixTemplateError("HyperFrames 模板背景音乐路径无效")
+    pattern = re.compile(r'<audio\b[^>]*\bid="bgm"[^>]*>')
+    matches = list(pattern.finditer(html))
+    if len(matches) != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐元素发生变化")
+    tag = matches[0].group(0)
+    if tag.count(' data-var-src="bgm"') != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐变量声明发生变化")
+    tag, count = re.subn(
+        r'(\ssrc=")[^"]*(")',
+        lambda match: match.group(1) + source + match.group(2),
+        tag,
+        count=1,
+    )
+    if count != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐来源声明发生变化")
+    return html[:matches[0].start()] + tag + html[matches[0].end():]
 
 
 def _reference_private_font_style(
@@ -2602,6 +2627,40 @@ class MatrixTemplateService:
         return destination.as_posix()
 
     @staticmethod
+    def _prepare_reference_bgm(
+        source: Path, destination: Path, duration: float,
+    ) -> None:
+        if (
+            not source.is_file()
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            raise MatrixTemplateError("HyperFrames 模板背景音乐参数无效")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name("." + destination.name + ".part.m4a")
+        temporary.unlink(missing_ok=True)
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-stream_loop", "-1", "-i", str(source),
+            "-map", "0:a:0", "-t", _format_reference_seconds(duration),
+            "-vn", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", str(temporary),
+        ]
+        try:
+            result = subprocess.run(
+                command, check=False, capture_output=True,
+                timeout=REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS,
+            )
+            prepared = temporary.is_file() and temporary.stat().st_size > 0
+            if result.returncode or not prepared:
+                raise MatrixTemplateError("HyperFrames 模板背景音乐预处理失败")
+            os.replace(temporary, destination)
+        except subprocess.TimeoutExpired as exc:
+            raise MatrixTemplateError("HyperFrames 模板背景音乐预处理超时") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
     def _reference_video_duration(path: Path) -> float:
         result = subprocess.run([
             "ffprobe", "-v", "error",
@@ -2791,11 +2850,14 @@ class MatrixTemplateService:
         if payload["bgm"]:
             if len(paths) < 4 or materials[3].get("media_type") != "bgm":
                 raise MatrixTemplateError("HyperFrames template BGM binding is invalid")
-            bgm_target = input_dir / f"bgm{paths[3].suffix.lower()}"
-            self._copy_reference_asset(paths[3], bgm_target)
+            bgm_target = input_dir / "bgm.m4a"
+            self._prepare_reference_bgm(
+                paths[3], bgm_target, float(reference["duration"])
+            )
             bgm = bgm_target.relative_to(workdir).as_posix()
         else:
             bgm = "assets/bgm/silence.m4a"
+        index = _rewrite_reference_bgm_source(index, bgm)
 
         variables = {
             "name": job_id,

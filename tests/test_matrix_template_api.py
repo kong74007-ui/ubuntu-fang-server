@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -1344,7 +1346,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
   <video id="videoA" class="clip media-video" data-start="0" data-duration="2.666667"></video>
   <video id="videoB" class="clip media-video" data-start="2.666667" data-duration="2.666666"></video>
   <video id="videoC" class="clip media-video" data-start="5.333333" data-duration="2.666667"></video>
-  <audio id="bgm" data-start="0" data-duration="8"></audio>
+  <audio id="bgm" data-start="0" data-duration="8" data-var-src="bgm" src="assets/bgm/silence.m4a"></audio>
   <section id="typography" class="clip text-layer" data-start="0" data-duration="8"></section>
 </div>
 <script>
@@ -2337,6 +2339,113 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}',
             matrix._reference_private_font_style("v02", {"top2": fixed}),
         )
+
+    def test_reference_render_uses_selected_bgm_as_authored_audio_source(self):
+        payload = self.service.validate_payload({
+            "top_text": "团队8个人每天产出100条短视频",
+            "bottom_text": "想进健康赛道评论区留言",
+            "template_id": "ref-17-fixture-17",
+            "bgm": True,
+        })
+        payload = self.service._freeze_font_provenance("6" * 32, payload)
+        payload["_reference_template"]["duration"] = 14
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"bgm-video-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({"media_type": "video", "record_id": f"v{index}"})
+        bgm_path = self.root / "selected-bgm.mp3"
+        bgm_path.write_bytes(b"selected-bgm")
+        paths.append(bgm_path)
+        materials.append({"media_type": "bgm", "record_id": "bgm-1"})
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        prepared = {}
+
+        def prepare_bgm(source, destination, duration):
+            prepared.update({
+                "source": source, "destination": destination,
+                "duration": duration,
+            })
+            destination.write_bytes(source.read_bytes())
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_prepare_reference_bgm", side_effect=prepare_bgm,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            variables = self.service._render_reference(
+                payload, "6" * 32, materials, paths
+            )
+        workdir = self.service.data_root / ("6" * 32) / "hyperframes"
+        index = (workdir / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(14.0, prepared["duration"])
+        self.assertEqual(bgm_path, prepared["source"])
+        self.assertEqual(workdir / "assets/input/bgm.m4a", prepared["destination"])
+        self.assertEqual("assets/input/bgm.m4a", variables["bgm"])
+        self.assertRegex(
+            index,
+            r'<audio\b(?=[^>]*\bid="bgm")(?=[^>]*\bdata-var-src="bgm")'
+            r'[^>]*\ssrc="assets/input/bgm\.m4a"[^>]*>',
+        )
+        self.assertNotRegex(
+            index,
+            r'<audio\b(?=[^>]*\bid="bgm")[^>]*'
+            r'\ssrc="assets/bgm/silence\.m4a"[^>]*>',
+        )
+
+    def test_reference_bgm_is_looped_or_trimmed_to_video_duration(self):
+        source = self.root / "source-bgm.mp3"
+        source.write_bytes(b"source-bgm")
+        destination = self.root / "prepared/bgm.m4a"
+        captured = {}
+
+        def run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            Path(command[-1]).write_bytes(b"prepared-bgm")
+            return SimpleNamespace(returncode=0, stderr=b"")
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=run):
+            self.service._prepare_reference_bgm(source, destination, 14.0)
+
+        self.assertEqual(b"prepared-bgm", destination.read_bytes())
+        command = captured["command"]
+        self.assertEqual(
+            ["-stream_loop", "-1"],
+            command[command.index("-stream_loop"):command.index("-stream_loop") + 2],
+        )
+        self.assertEqual("14", command[command.index("-t") + 1])
+        self.assertEqual("aac", command[command.index("-c:a") + 1])
+        self.assertEqual("48000", command[command.index("-ar") + 1])
+        self.assertEqual(
+            matrix.REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS,
+            captured["kwargs"]["timeout"],
+        )
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg tools are unavailable",
+    )
+    def test_reference_bgm_preparation_has_exact_media_duration(self):
+        source = self.root / "short-bgm.wav"
+        destination = self.root / "exact-bgm.m4a"
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+            "-c:a", "pcm_s16le", str(source),
+        ], check=True)
+
+        self.service._prepare_reference_bgm(source, destination, 3.0)
+
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(destination),
+        ], check=True, capture_output=True, text=True)
+        self.assertAlmostEqual(3.0, float(probe.stdout.strip()), places=2)
 
     def test_v02_semantic_layout_uses_frozen_source_indices_and_font_widths(self):
         top = "团队8个人，每天产出100条短视频，覆盖全部短视频平台，"
