@@ -210,7 +210,10 @@ class MaterialLibrary:
         self._stamp: tuple[int, int] | None = None
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
-        self._verification_cache: dict[str, tuple[tuple[int, int], bool]] = {}
+        self._verification_cache: dict[
+            str, tuple[tuple[int, int, int, int], bool]
+        ] = {}
+        self._verification_locks: dict[str, threading.Lock] = {}
 
     def _reload_if_needed(self) -> None:
         stat = self.index_path.stat()
@@ -266,23 +269,43 @@ class MaterialLibrary:
         return material, path
 
     def _is_available(self, material: Material) -> bool:
-        try:
-            _record, path = self.resolve(material.sha256)
-            stat = path.stat()
-        except (KeyError, OSError, MaterialLibraryError):
-            return False
-        stamp = (stat.st_mtime_ns, stat.st_size)
-        cached = self._verification_cache.get(material.sha256)
-        if cached and cached[0] == stamp:
-            return cached[1]
-        try:
-            available = bool(stat.st_size) and hmac.compare_digest(
-                sha256_file(path), material.sha256,
+        with self._lock:
+            verification_lock = self._verification_locks.setdefault(
+                material.sha256, threading.Lock(),
             )
-        except OSError:
-            available = False
-        self._verification_cache[material.sha256] = (stamp, available)
-        return available
+        with verification_lock:
+            for _attempt in range(2):
+                try:
+                    _record, path = self.resolve(material.sha256)
+                    before = path.stat()
+                except (KeyError, OSError, MaterialLibraryError):
+                    return False
+                identity = (
+                    before.st_dev, before.st_ino,
+                    before.st_mtime_ns, before.st_size,
+                )
+                cached = self._verification_cache.get(material.sha256)
+                if cached and cached[0] == identity:
+                    return cached[1]
+                try:
+                    actual_sha256 = sha256_file(path)
+                    after = path.stat()
+                except OSError:
+                    continue
+                current_identity = (
+                    after.st_dev, after.st_ino,
+                    after.st_mtime_ns, after.st_size,
+                )
+                if current_identity != identity:
+                    continue
+                available = bool(after.st_size) and hmac.compare_digest(
+                    actual_sha256, material.sha256,
+                )
+                self._verification_cache[material.sha256] = (
+                    current_identity, available,
+                )
+                return available
+            return False
 
     def select(
         self,
