@@ -175,6 +175,13 @@ REFERENCE_EMPTY_LAYER_STYLE = (
     '[data-var-text]:empty{display:none!important}'
     '</style>'
 )
+REFERENCE_CTA_SAFE_AREA_PERCENT = 15
+REFERENCE_CTA_SAFE_AREA_STYLE_ID = "matrix-reference-cta-safe-area"
+REFERENCE_CTA_SAFE_AREA_STYLE = (
+    f'<style id="{REFERENCE_CTA_SAFE_AREA_STYLE_ID}">'
+    f'#root .bottom{{bottom:{REFERENCE_CTA_SAFE_AREA_PERCENT}%}}'
+    '</style>'
+)
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
 REFERENCE_MIN_SEGMENT_SECONDS = 0.5
 REFERENCE_DYNAMIC_TIMING_JS = """      const segment = duration / 3;
@@ -2764,9 +2771,12 @@ class MatrixTemplateService:
             and REFERENCE_PRIVATE_FONT_STYLE_ID in index
         ):
             raise MatrixTemplateError("HyperFrames fixed private font style conflicts")
+        if REFERENCE_CTA_SAFE_AREA_STYLE_ID in index:
+            raise MatrixTemplateError("HyperFrames CTA safe-area style conflicts")
         index = index.replace(
             "</head>",
             REFERENCE_EMPTY_LAYER_STYLE
+            + "\n" + REFERENCE_CTA_SAFE_AREA_STYLE
             + ("\n" + fixed_font_style if fixed_font_style else "")
             + "\n</head>",
         )

@@ -1378,6 +1378,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
     def test_reference_catalog_is_19_and_ignores_font_selection(self):
         self.assertEqual(19, len(self.service.catalog))
+        self.assertEqual(17, len(self.service.reference_templates))
         self.assertEqual(
             ["full-overlay-bold", "poster-split", "ref-05-fixture-05"],
             [item["id"] for item in self.service.catalog[:3]],
@@ -2283,6 +2284,12 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn(matrix.REFERENCE_GSAP_LOCAL, index)
         self.assertNotIn(matrix.REFERENCE_GSAP_CDN, index)
         self.assertIn(matrix.REFERENCE_EMPTY_LAYER_STYLE, index)
+        self.assertEqual(
+            1, index.count(matrix.REFERENCE_CTA_SAFE_AREA_STYLE_ID)
+        )
+        self.assertIn(
+            '#root .bottom{bottom:15%}', index
+        )
         self.assertIn(
             '@font-face{font-family:"HQSmileySansOblique";', index
         )
