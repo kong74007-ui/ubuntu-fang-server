@@ -163,6 +163,7 @@ REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAME
 import json
 import os
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 root = Path(os.environ["REFERENCE_SKILL_ROOT"])
 manifest = json.loads((root / "assets/templates/reference-typography-17/manifest.json").read_text(encoding="utf-8"))
@@ -177,6 +178,37 @@ for name in (
     "ZCOOLKuaiLe-Regular.ttf", "ZCOOLXiaoWei-Regular.ttf",
 ):
     assert (root / "assets/fonts" / name).is_file()
+
+font_path = root / "assets/fonts/NotoSansSC-Variable.ttf"
+sample = "AI视频获客增长100条"
+draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+widths = {}
+for weight in (400, 900):
+    font = ImageFont.truetype(str(font_path), 104)
+    axes = font.get_variation_axes()
+    weight_axis = next(
+        index for index, axis in enumerate(axes)
+        if axis["name"].decode("ascii", "ignore").lower() == "weight"
+    )
+    values = [int(axis["default"]) for axis in axes]
+    values[weight_axis] = weight
+    font.set_variation_by_axes(values)
+    box = draw.textbbox((0, 0), sample, font=font, stroke_width=13)
+    widths[weight] = box[2] - box[0] + (len(sample) - 1) * 104 * -0.045
+assert widths[400] <= 996 < widths[900], widths
+
+xiaowei_sample = "MMMMMMMMMMMMMM"
+xiaowei = ImageFont.truetype(
+    str(root / "assets/fonts/ZCOOLXiaoWei-Regular.ttf"), 80
+)
+xiaowei_box = draw.textbbox(
+    (0, 0), xiaowei_sample, font=xiaowei, stroke_width=9
+)
+xiaowei_width = (
+    xiaowei_box[2] - xiaowei_box[0]
+    + (len(xiaowei_sample) - 1) * 80 * 0.01
+)
+assert 970 < xiaowei_width <= 996, xiaowei_width
 PY
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
 install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"
@@ -293,7 +325,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("reference_top_layer_counts")=={"2":6,"3":11} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v02","v05"] and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==19 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("reference_top_layer_counts")=={"2":6,"3":11} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

@@ -59,8 +59,16 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":11}', installer)
         self.assertIn('d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"]', installer)
-        self.assertIn('d.get("reference_semantic_layout_templates")==["v02","v05"]', installer)
+        self.assertIn(
+            'd.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"]',
+            installer,
+        )
         self.assertIn("from PIL import Image, ImageDraw, ImageFont", installer)
+        self.assertIn('sample = "AI视频获客增长100条"', installer)
+        self.assertIn("font.set_variation_by_axes(values)", installer)
+        self.assertIn("widths[400] <= 996 < widths[900]", installer)
+        self.assertIn('xiaowei_sample = "MMMMMMMMMMMMMM"', installer)
+        self.assertIn("970 < xiaowei_width <= 996", installer)
         self.assertIn('d.get("max_batch_size")==5', installer)
         self.assertIn('d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2}', installer)
         self.assertIn('d.get("hyperframes_concurrency")==2', installer)
