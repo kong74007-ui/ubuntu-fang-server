@@ -158,6 +158,7 @@ class MaterialHandler(BaseHTTPRequestHandler):
                 orientation=payload.get("orientation") or "portrait",
                 seed=str(payload.get("seed") or ""),
                 used_sha256=payload.get("used_sha256") or [],
+                selection_mode=payload.get("selection_mode") or "semantic",
             )
             self._json(200, result)
         except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:

@@ -85,6 +85,12 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 
 ## Batch material diversity
 
+Matrix template jobs request `selection_mode=random` for every visual and BGM
+scene. Copy relevance no longer affects material ranking. The remote job id is
+the stable seed, so one admitted job is reproducible while each new job receives
+a new random draw. The material library verifies selected files against the
+approved checksum and skips unhealthy records before returning the selection.
+
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
 `batch_size` (1-5). Material selection is serialized briefly while job
 preparation remains five-way concurrent. Every selected image/video SHA is

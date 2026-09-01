@@ -2360,6 +2360,7 @@ class MatrixTemplateService:
         result = self._library_request("POST", "/v1/select", {
             "scenes": scenes, "orientation": "portrait", "seed": job_id,
             "used_sha256": list(used_sha256),
+            "selection_mode": "random",
         })
         values = result.get("materials") or []
         by_scene = {str(item.get("scene_id") or ""): item for item in values if isinstance(item, dict)}

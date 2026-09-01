@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import mimetypes
 import re
@@ -209,6 +210,7 @@ class MaterialLibrary:
         self._stamp: tuple[int, int] | None = None
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
+        self._verification_cache: dict[str, tuple[tuple[int, int], bool]] = {}
 
     def _reload_if_needed(self) -> None:
         stat = self.index_path.stat()
@@ -235,6 +237,7 @@ class MaterialLibrary:
                     materials.append(material)
         self._materials = tuple(materials)
         self._by_sha = {item.sha256: item for item in materials}
+        self._verification_cache.clear()
         self._stamp = stamp
 
     def refresh(self) -> None:
@@ -262,6 +265,25 @@ class MaterialLibrary:
             raise MaterialLibraryError("material file is unavailable")
         return material, path
 
+    def _is_available(self, material: Material) -> bool:
+        try:
+            _record, path = self.resolve(material.sha256)
+            stat = path.stat()
+        except (KeyError, OSError, MaterialLibraryError):
+            return False
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = self._verification_cache.get(material.sha256)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        try:
+            available = bool(stat.st_size) and hmac.compare_digest(
+                sha256_file(path), material.sha256,
+            )
+        except OSError:
+            available = False
+        self._verification_cache[material.sha256] = (stamp, available)
+        return available
+
     def select(
         self,
         scenes: list[dict[str, Any]],
@@ -269,6 +291,7 @@ class MaterialLibrary:
         orientation: str = "portrait",
         seed: str = "",
         used_sha256: Iterable[str] = (),
+        selection_mode: str = "semantic",
     ) -> dict[str, Any]:
         self.refresh()
         if not isinstance(scenes, list) or not scenes:
@@ -278,6 +301,9 @@ class MaterialLibrary:
         if any(not isinstance(scene, dict) for scene in scenes):
             raise ValueError("each scene must be an object")
         requested_orientation = _orientation(orientation)
+        mode = _text(selection_mode or "semantic")
+        if mode not in {"semantic", "random"}:
+            raise ValueError("selection_mode must be semantic or random")
         used = {str(value).lower() for value in used_sha256 if SHA256_RE.fullmatch(str(value).lower())}
         selected: list[dict[str, Any]] = []
 
@@ -325,21 +351,40 @@ class MaterialLibrary:
                 if same_orientation(item)
             ]
             tiers = (
-                (exact_same, "exact"),
-                (loose_same, "loose"),
-                (exact_any, "exact"),
-                (loose_any, "loose"),
-                (random_same, "random"),
-                ([(item, 0) for item, _score_value in scored], "random"),
-            )
-            pool, match_level = next(
-                (tier, level) for tier, level in tiers if tier
+                (
+                    (random_same, "random"),
+                    ([(item, 0) for item, _score_value in scored], "random"),
+                ) if mode == "random" else (
+                    (exact_same, "exact"),
+                    (loose_same, "loose"),
+                    (exact_any, "exact"),
+                    (loose_any, "loose"),
+                    (random_same, "random"),
+                    ([(item, 0) for item, _score_value in scored], "random"),
+                )
             )
             rank_seed = f"{seed}:{scene_id}:{position}"
-            material, score = sorted(
-                pool,
-                key=lambda pair: (-pair[1], _stable_rank(rank_seed, pair[0])),
-            )[0]
+            selected_pair = None
+            match_level = ""
+            for pool, level in tiers:
+                ranked = sorted(
+                    pool,
+                    key=lambda pair: (
+                        -pair[1], _stable_rank(rank_seed, pair[0])
+                    ),
+                )
+                selected_pair = next(
+                    (pair for pair in ranked if self._is_available(pair[0])),
+                    None,
+                )
+                if selected_pair is not None:
+                    match_level = level
+                    break
+            if selected_pair is None:
+                raise MaterialShortageError(
+                    f"no healthy approved material remains for {scene_id}"
+                )
+            material, score = selected_pair
             used.add(material.sha256)
             orientation_match = (
                 "not_applicable" if material.media_type == "bgm"
@@ -355,6 +400,7 @@ class MaterialLibrary:
         return {
             "materials": selected,
             "used_sha256": sorted(used),
+            "selection_mode": mode,
             "fallback_policy": [
                 "exact_same_orientation",
                 "loose_same_orientation",

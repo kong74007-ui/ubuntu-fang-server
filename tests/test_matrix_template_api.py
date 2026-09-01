@@ -642,6 +642,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(["video", "image", "bgm"], [item["media_type"] for item in materials])
         self.assertEqual("video", captured["scenes"][0]["media_type"])
         self.assertEqual("portrait", captured["orientation"])
+        self.assertEqual("random", captured["selection_mode"])
         self.assertEqual([], captured["used_sha256"])
         self.assertEqual(3, len(set(item["sha256"] for item in materials)))
 

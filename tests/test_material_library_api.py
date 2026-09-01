@@ -79,6 +79,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
         body = {
             "scenes": [{"scene_id": "s1", "query": "医美 抗衰", "media_type": "image"}],
             "orientation": "portrait",
+            "selection_mode": "random",
         }
         with self.assertRaises(urllib.error.HTTPError) as denied:
             self.request("/v1/select", method="POST", payload=body)
@@ -87,6 +88,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
         with self.request("/v1/select", method="POST", payload=body, token="test-token") as response:
             payload = json.load(response)
         self.assertEqual(self.sha, payload["materials"][0]["sha256"])
+        self.assertEqual("random", payload["selection_mode"])
         serialized = json.dumps(payload)
         self.assertNotIn("relative_path", serialized)
         self.assertNotIn(str(self.root), serialized)
@@ -96,6 +98,15 @@ class MaterialLibraryApiTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(urllib.error.HTTPError) as rejected:
                 self.request("/v1/select", method="POST", payload=payload, token="test-token")
             self.assertEqual(400, rejected.exception.code)
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(
+                "/v1/select", method="POST", token="test-token",
+                payload={
+                    "scenes": [{"scene_id": "s1"}],
+                    "selection_mode": "weighted",
+                },
+            )
+        self.assertEqual(400, rejected.exception.code)
 
     def test_asset_download_requires_token_and_valid_checksum(self):
         with self.assertRaises(urllib.error.HTTPError) as denied:

@@ -147,6 +147,48 @@ class MaterialLibraryTests(unittest.TestCase):
         second = library.select(scene, seed="same")["materials"][0]["sha256"]
         self.assertEqual(first, second)
 
+    def test_random_mode_ignores_semantic_scores_and_is_deterministic(self):
+        exact = self.add("exact", 标签=["产品", "获客"])
+        other_a = self.add("other-a", 标签=["风景"])
+        other_b = self.add("other-b", 标签=["办公"])
+        shas = (exact, other_a, other_b)
+        seed = next(
+            str(index) for index in range(100)
+            if min(
+                shas,
+                key=lambda sha: hashlib.sha256(
+                    f"{index}:s1:0:{sha}".encode("utf-8")
+                ).hexdigest(),
+            ) != exact
+        )
+        library = self.library()
+        scene = [{
+            "scene_id": "s1", "query": "产品 获客",
+            "media_type": "image",
+        }]
+        first = library.select(
+            scene, seed=seed, selection_mode="random",
+        )
+        second = library.select(
+            scene, seed=seed, selection_mode="random",
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(exact, first["materials"][0]["sha256"])
+        self.assertEqual("random", first["materials"][0]["match_level"])
+        self.assertEqual(0, first["materials"][0]["match_score"])
+        self.assertEqual("random", first["selection_mode"])
+
+    def test_corrupted_exact_match_falls_back_to_healthy_material(self):
+        self.add("corrupted", 标签=["产品", "获客"])
+        healthy = self.add("healthy", 标签=["风景"])
+        (self.root / "files/corrupted.jpg").write_bytes(b"tampered")
+        result = self.library().select([{
+            "scene_id": "s1", "query": "产品 获客",
+            "media_type": "image",
+        }], seed="health-check")
+        self.assertEqual(healthy, result["materials"][0]["sha256"])
+        self.assertEqual("random", result["materials"][0]["match_level"])
+
     def test_scene_contract_rejects_non_objects_and_more_than_twenty_one(self):
         self.add("only", 标签=["库存"])
         library = self.library()
@@ -154,6 +196,8 @@ class MaterialLibraryTests(unittest.TestCase):
             library.select(["bad"])
         with self.assertRaisesRegex(ValueError, "21"):
             library.select([{"scene_id": str(index)} for index in range(22)])
+        with self.assertRaisesRegex(ValueError, "selection_mode"):
+            library.select([{"scene_id": "s1"}], selection_mode="weighted")
 
     def test_real_export_schema_accepts_uppercase_sha_and_subject_alias(self):
         payload = b"real-export"
