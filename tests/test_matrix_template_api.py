@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -1344,7 +1346,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
   <video id="videoA" class="clip media-video" data-start="0" data-duration="2.666667"></video>
   <video id="videoB" class="clip media-video" data-start="2.666667" data-duration="2.666666"></video>
   <video id="videoC" class="clip media-video" data-start="5.333333" data-duration="2.666667"></video>
-  <audio id="bgm" data-start="0" data-duration="8"></audio>
+  <audio id="bgm" data-start="0" data-duration="8" data-var-src="bgm" src="assets/bgm/silence.m4a"></audio>
   <section id="typography" class="clip text-layer" data-start="0" data-duration="8"></section>
 </div>
 <script>
@@ -1375,6 +1377,29 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "fps": 30,
             "templates": templates,
         }), encoding="utf-8")
+
+    def _reference_bgm_inputs(self, job_id: str):
+        payload = self.service.validate_payload({
+            "top_text": "团队8个人每天产出100条短视频",
+            "bottom_text": "想进健康赛道评论区留言",
+            "template_id": "ref-17-fixture-17",
+            "bgm": True,
+        })
+        payload = self.service._freeze_font_provenance(job_id, payload)
+        payload["_reference_template"]["duration"] = 14
+        prefix = job_id[:8]
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"{prefix}-bgm-video-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({"media_type": "video", "record_id": f"v{index}"})
+        bgm_path = self.root / f"{prefix}-selected-bgm.mp3"
+        bgm_path.write_bytes(b"selected-bgm")
+        paths.append(bgm_path)
+        materials.append({"media_type": "bgm", "record_id": "bgm-1"})
+        return payload, materials, paths
 
     def test_reference_catalog_is_19_and_ignores_font_selection(self):
         self.assertEqual(19, len(self.service.catalog))
@@ -2337,6 +2362,242 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}',
             matrix._reference_private_font_style("v02", {"top2": fixed}),
         )
+
+    def test_reference_render_uses_selected_bgm_as_authored_audio_source(self):
+        job_id = "6" * 32
+        payload, materials, paths = self._reference_bgm_inputs(job_id)
+        bgm_path = paths[-1]
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        prepared = {}
+
+        def prepare_bgm(source, destination, duration, *, deadline_at):
+            prepared.update({
+                "source": source, "destination": destination,
+                "duration": duration, "deadline_at": deadline_at,
+            })
+            destination.write_bytes(source.read_bytes())
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_prepare_reference_bgm", side_effect=prepare_bgm,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            variables = self.service._render_reference(
+                payload, job_id, materials, paths
+            )
+        workdir = self.service.data_root / job_id / "hyperframes"
+        index = (workdir / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(14.0, prepared["duration"])
+        self.assertGreater(prepared["deadline_at"], time.time())
+        self.assertEqual(bgm_path, prepared["source"])
+        self.assertEqual(workdir / "assets/input/bgm.m4a", prepared["destination"])
+        self.assertEqual("assets/input/bgm.m4a", variables["bgm"])
+        self.assertRegex(
+            index,
+            r'<audio\b(?=[^>]*\bid="bgm")(?=[^>]*\bdata-var-src="bgm")'
+            r'[^>]*\ssrc="assets/input/bgm\.m4a"[^>]*>',
+        )
+        self.assertNotRegex(
+            index,
+            r'<audio\b(?=[^>]*\bid="bgm")[^>]*'
+            r'\ssrc="assets/bgm/silence\.m4a"[^>]*>',
+        )
+
+    def test_reference_bgm_is_looped_or_trimmed_to_video_duration(self):
+        source = self.root / "source-bgm.mp3"
+        source.write_bytes(b"source-bgm")
+        destination = self.root / "prepared/bgm.m4a"
+        captured = {}
+
+        def popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            Path(command[-1]).write_bytes(b"prepared-bgm")
+            process = mock.Mock(returncode=0)
+            process.communicate.return_value = (b"", b"")
+            process.poll.return_value = 0
+            captured["process"] = process
+            return process
+
+        with mock.patch.object(matrix.subprocess, "Popen", side_effect=popen):
+            self.service._prepare_reference_bgm(
+                source, destination, 14.0, deadline_at=time.time() + 300
+            )
+
+        self.assertEqual(b"prepared-bgm", destination.read_bytes())
+        command = captured["command"]
+        self.assertEqual(
+            ["-stream_loop", "-1"],
+            command[command.index("-stream_loop"):command.index("-stream_loop") + 2],
+        )
+        self.assertEqual("14", command[command.index("-t") + 1])
+        self.assertEqual("aac", command[command.index("-c:a") + 1])
+        self.assertEqual("48000", command[command.index("-ar") + 1])
+        timeout = captured["process"].communicate.call_args.kwargs["timeout"]
+        self.assertGreater(timeout, 119)
+        self.assertLessEqual(
+            timeout, matrix.REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS
+        )
+        self.assertEqual(set(), self.service.active_processes)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg tools are unavailable",
+    )
+    def test_reference_bgm_preparation_has_exact_media_duration(self):
+        source = self.root / "short-bgm.wav"
+        destination = self.root / "exact-bgm.m4a"
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+            "-c:a", "pcm_s16le", str(source),
+        ], check=True)
+
+        self.service._prepare_reference_bgm(
+            source, destination, 3.0, deadline_at=time.time() + 30
+        )
+
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(destination),
+        ], check=True, capture_output=True, text=True)
+        self.assertAlmostEqual(3.0, float(probe.stdout.strip()), places=2)
+
+    def test_five_reference_bgm_jobs_share_two_hyperframes_slots(self):
+        cases = [
+            (format(index + 10, "032x"), *self._reference_bgm_inputs(
+                format(index + 10, "032x")
+            ))
+            for index in range(5)
+        ]
+        barrier = threading.Barrier(6)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+        completed = []
+        errors = []
+
+        def prepare(source, destination, duration, *, deadline_at):
+            nonlocal active, peak
+            self.assertTrue(source.is_file())
+            self.assertEqual(14, duration)
+            self.assertGreater(deadline_at, time.time())
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            destination.write_bytes(b"prepared-bgm")
+            with lock:
+                active -= 1
+
+        def popen(_command, **_kwargs):
+            process = mock.Mock(returncode=0)
+            process.communicate.return_value = (b"", b"")
+            process.poll.return_value = 0
+            return process
+
+        def render(case):
+            job_id, payload, materials, paths = case
+            barrier.wait()
+            try:
+                self.service._render_reference(
+                    payload, job_id, materials, paths,
+                    deadline_at=time.time() + 5,
+                )
+                with lock:
+                    completed.append(job_id)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_prepare_reference_bgm", side_effect=prepare,
+        ), mock.patch.object(matrix.subprocess, "Popen", side_effect=popen):
+            threads = [threading.Thread(target=render, args=(case,)) for case in cases]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=3)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertFalse(errors)
+        self.assertEqual(5, len(completed))
+        self.assertEqual(2, peak)
+        self.assertEqual(set(), self.service.active_processes)
+
+    def test_reference_bgm_deadline_timeout_does_not_start_render(self):
+        job_id = "d" * 32
+        payload, materials, paths = self._reference_bgm_inputs(job_id)
+        process = mock.Mock(returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd="ffmpeg", timeout=1
+        )
+        process.poll.return_value = None
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            matrix.subprocess, "Popen", return_value=process,
+        ) as popen, mock.patch.object(
+            self.service, "_terminate"
+        ) as terminate, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "超过总时限"
+        ):
+            self.service._render_reference(
+                payload, job_id, materials, paths,
+                deadline_at=time.time() + 1,
+            )
+
+        self.assertEqual(1, popen.call_count)
+        terminate.assert_called_once_with(process)
+        timeout = process.communicate.call_args.kwargs["timeout"]
+        self.assertGreater(timeout, 0)
+        self.assertLessEqual(timeout, 1)
+        workdir = self.service.data_root / job_id / "hyperframes"
+        self.assertFalse((workdir / "assets/input/bgm.m4a").exists())
+        self.assertFalse((workdir / "assets/input/.bgm.m4a.part.m4a").exists())
+        self.assertEqual(set(), self.service.active_processes)
+        self.assertTrue(self.service.hyperframes_slots.acquire(timeout=0.1))
+        self.service.hyperframes_slots.release()
+
+    def test_shutdown_terminates_real_tracked_process_without_residual(self):
+        errors = []
+
+        def run():
+            try:
+                self.service._run_tracked_process(
+                    [matrix.sys.executable, "-c", "import time; time.sleep(30)"],
+                    timeout_seconds=60,
+                    timeout_error="slow process timeout",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        process = None
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            with self.service.process_lock:
+                process = self.service.active_process
+            if process is not None:
+                break
+            time.sleep(0.02)
+        self.assertIsNotNone(process)
+
+        self.service.shutdown()
+        thread.join(timeout=3)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(errors)
+        self.assertIn("服务正在停止", str(errors[0]))
+        self.assertIsNotNone(process.poll())
+        self.assertEqual(set(), self.service.active_processes)
 
     def test_v02_semantic_layout_uses_frozen_source_indices_and_font_widths(self):
         top = "团队8个人，每天产出100条短视频，覆盖全部短视频平台，"

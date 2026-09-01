@@ -35,6 +35,7 @@ MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
 RENDER_TIMEOUT_SECONDS = 900
+REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
 DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
 DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 600
@@ -181,6 +182,9 @@ REFERENCE_CTA_SAFE_AREA_STYLE = (
     f'<style id="{REFERENCE_CTA_SAFE_AREA_STYLE_ID}">'
     f'#root .bottom{{bottom:{REFERENCE_CTA_SAFE_AREA_PERCENT}%}}'
     '</style>'
+)
+REFERENCE_BGM_SOURCE_RE = re.compile(
+    r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
 REFERENCE_MIN_SEGMENT_SECONDS = 0.5
@@ -1103,6 +1107,27 @@ def _rewrite_reference_timeline(
     if result.count(REFERENCE_DYNAMIC_TIMING_JS) != 1:
         raise MatrixTemplateError("HyperFrames 模板动态时间轴声明发生变化")
     return result.replace(REFERENCE_DYNAMIC_TIMING_JS, timing_js)
+
+
+def _rewrite_reference_bgm_source(html: str, source: str) -> str:
+    if not REFERENCE_BGM_SOURCE_RE.fullmatch(str(source or "")):
+        raise MatrixTemplateError("HyperFrames 模板背景音乐路径无效")
+    pattern = re.compile(r'<audio\b[^>]*\bid="bgm"[^>]*>')
+    matches = list(pattern.finditer(html))
+    if len(matches) != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐元素发生变化")
+    tag = matches[0].group(0)
+    if tag.count(' data-var-src="bgm"') != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐变量声明发生变化")
+    tag, count = re.subn(
+        r'(\ssrc=")[^"]*(")',
+        lambda match: match.group(1) + source + match.group(2),
+        tag,
+        count=1,
+    )
+    if count != 1:
+        raise MatrixTemplateError("HyperFrames 模板背景音乐来源声明发生变化")
+    return html[:matches[0].start()] + tag + html[matches[0].end():]
 
 
 def _reference_private_font_style(
@@ -2564,6 +2589,39 @@ class MatrixTemplateService:
                     os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=2)
 
+    def _run_tracked_process(
+        self, command: list[str], *, timeout_seconds: float,
+        timeout_error: str, env: dict | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        options = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE}
+        if env is not None:
+            options["env"] = env
+        if os.name == "nt":
+            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            options["start_new_session"] = True
+        with self.process_lock:
+            if self.stop_event.is_set():
+                raise MatrixTemplateError("模板成片服务正在停止")
+            process = subprocess.Popen(command, **options)
+            self.active_processes.add(process)
+            self.active_process = process
+        try:
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=max(0.001, float(timeout_seconds))
+                )
+            except subprocess.TimeoutExpired as exc:
+                self._terminate(process)
+                raise MatrixTemplateError(timeout_error) from exc
+            if self.stop_event.is_set():
+                raise MatrixTemplateError("模板成片服务正在停止")
+            return process.returncode, stdout or b"", stderr or b""
+        finally:
+            with self.process_lock:
+                self.active_processes.discard(process)
+                self.active_process = next(iter(self.active_processes), None)
+
     def _render(self, project_path: Path) -> None:
         output = project_path.parent / "output/final.mp4"
         command = [
@@ -2600,6 +2658,51 @@ class MatrixTemplateService:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         return destination.as_posix()
+
+    def _prepare_reference_bgm(
+        self, source: Path, destination: Path, duration: float,
+        *, deadline_at: float,
+    ) -> None:
+        if (
+            not source.is_file()
+            or not math.isfinite(duration)
+            or duration <= 0
+            or not math.isfinite(deadline_at)
+        ):
+            raise MatrixTemplateError("HyperFrames 模板背景音乐参数无效")
+        remaining = deadline_at - time.time()
+        if remaining <= 0:
+            raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
+        deadline_limited = remaining < REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS
+        timeout_seconds = min(
+            float(REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS), remaining
+        )
+        timeout_error = (
+            "HyperFrames 模板任务超过总时限"
+            if deadline_limited
+            else "HyperFrames 模板背景音乐预处理超时"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name("." + destination.name + ".part.m4a")
+        temporary.unlink(missing_ok=True)
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-stream_loop", "-1", "-i", str(source),
+            "-map", "0:a:0", "-t", _format_reference_seconds(duration),
+            "-vn", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", str(temporary),
+        ]
+        try:
+            returncode, _stdout, _stderr = self._run_tracked_process(
+                command, timeout_seconds=timeout_seconds,
+                timeout_error=timeout_error,
+            )
+            prepared = temporary.is_file() and temporary.stat().st_size > 0
+            if returncode or not prepared:
+                raise MatrixTemplateError("HyperFrames 模板背景音乐预处理失败")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _reference_video_duration(path: Path) -> float:
@@ -2788,14 +2891,17 @@ class MatrixTemplateService:
             target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
             self._copy_reference_asset(source, target)
             video_values.append(target.relative_to(workdir).as_posix())
+        bgm_source = None
+        bgm_target = None
         if payload["bgm"]:
             if len(paths) < 4 or materials[3].get("media_type") != "bgm":
                 raise MatrixTemplateError("HyperFrames template BGM binding is invalid")
-            bgm_target = input_dir / f"bgm{paths[3].suffix.lower()}"
-            self._copy_reference_asset(paths[3], bgm_target)
+            bgm_target = input_dir / "bgm.m4a"
+            bgm_source = paths[3]
             bgm = bgm_target.relative_to(workdir).as_posix()
         else:
             bgm = "assets/bgm/silence.m4a"
+        index = _rewrite_reference_bgm_source(index, bgm)
 
         variables = {
             "name": job_id,
@@ -2860,6 +2966,11 @@ class MatrixTemplateService:
         try:
             if self.stop_event.is_set():
                 raise MatrixTemplateError("模板成片服务正在停止")
+            if bgm_source is not None and bgm_target is not None:
+                self._prepare_reference_bgm(
+                    bgm_source, bgm_target, float(reference["duration"]),
+                    deadline_at=deadline_at,
+                )
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
