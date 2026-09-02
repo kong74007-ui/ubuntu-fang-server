@@ -373,17 +373,15 @@ class MaterialLibrary:
                 (item, 0) for item, _score_value in scored
                 if same_orientation(item)
             ]
+            random_all = [(item, 0) for item, _score_value in scored]
             tiers = (
-                (
-                    (random_same, "random"),
-                    ([(item, 0) for item, _score_value in scored], "random"),
-                ) if mode == "random" else (
+                ((random_all, "random"),) if mode == "random" else (
                     (exact_same, "exact"),
                     (loose_same, "loose"),
                     (exact_any, "exact"),
                     (loose_any, "loose"),
                     (random_same, "random"),
-                    ([(item, 0) for item, _score_value in scored], "random"),
+                    (random_all, "random"),
                 )
             )
             rank_seed = f"{seed}:{scene_id}:{position}"
@@ -424,13 +422,16 @@ class MaterialLibrary:
             "materials": selected,
             "used_sha256": sorted(used),
             "selection_mode": mode,
-            "fallback_policy": [
-                "exact_same_orientation",
-                "loose_same_orientation",
-                "exact_any_orientation",
-                "loose_any_orientation",
-                "random_unique",
-            ],
+            "fallback_policy": (
+                ["random_all_orientations_unique"]
+                if mode == "random" else [
+                    "exact_same_orientation",
+                    "loose_same_orientation",
+                    "exact_any_orientation",
+                    "loose_any_orientation",
+                    "random_unique",
+                ]
+            ),
             "ai_fallback": False,
         }
 
