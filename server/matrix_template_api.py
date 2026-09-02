@@ -1975,7 +1975,8 @@ class MatrixTemplateService:
     def validate_payload(self, raw: dict, *, require_available_font: bool = True,
                          allowed_template_ids=None,
                          default_template_id: str = "full-overlay-bold",
-                         enforce_reference_layout: bool = True) -> dict:
+                         enforce_reference_layout: bool = True,
+                         require_reference_semantic_layout: bool = False) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
         top = " ".join(str(raw.get("top_text") or "").split())
@@ -2006,6 +2007,8 @@ class MatrixTemplateService:
                     self._reference_semantic_text_layout(
                         top, bottom, variant, normalized_semantic_layout,
                     )
+            elif enforce_reference_layout and require_reference_semantic_layout:
+                raise ValueError("HyperFrames 模板必须提供 AI 语义排版")
             elif enforce_reference_layout:
                 _reference_text_layout(
                     top,
@@ -2091,7 +2094,10 @@ class MatrixTemplateService:
                 enforce_reference_layout=False,
             )
         else:
-            payload = self.validate_payload(raw, require_available_font=False)
+            payload = self.validate_payload(
+                raw, require_available_font=False,
+                require_reference_semantic_layout=True,
+            )
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
             freeze_payload=self._freeze_font_provenance,
@@ -2138,6 +2144,8 @@ class MatrixTemplateService:
                     template["variant"], payload["semantic_layout"],
                 )
             else:
+                # Persisted jobs accepted before semantic layout became mandatory
+                # remain renderable during rollout and crash recovery.
                 source_text, display_text = _reference_text_layout(
                     payload["top_text"], payload["bottom_text"], top_layer_count
                 )
@@ -3277,7 +3285,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
             if path == "/v1/preflight":
-                payload = self.service.validate_payload(body)
+                payload = self.service.validate_payload(
+                    body, require_reference_semantic_layout=True,
+                )
                 self.send_json(200, {
                     "ok": True,
                     "payload": payload,

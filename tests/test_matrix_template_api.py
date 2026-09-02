@@ -1994,7 +1994,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(existing["job_id"], replay["job_id"])
         with self.assertRaisesRegex(ValueError, "another payload"):
             self.service.submit({**raw, "top_text": "改" + top[1:]}, request_id)
-        with self.assertRaisesRegex(ValueError, "顶部文案过长"):
+        with self.assertRaisesRegex(ValueError, "必须提供 AI 语义排版"):
             self.service.submit(raw, "legacy-reference-layout-new")
 
         version = SimpleNamespace(returncode=0, stdout="0.8.16\n", stderr="")
@@ -2016,10 +2016,25 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.assertEqual(existing["job_id"], replay_after_restart["job_id"])
             with self.assertRaisesRegex(ValueError, "another payload"):
                 restarted.submit({**raw, "bottom_text": "修改行动文案"}, request_id)
-            with self.assertRaisesRegex(ValueError, "顶部文案过长"):
+            with self.assertRaisesRegex(ValueError, "必须提供 AI 语义排版"):
                 restarted.submit(raw, "legacy-reference-layout-new-after-restart")
         finally:
             restarted.shutdown()
+
+    def test_new_reference_submission_requires_ai_semantic_layout(self):
+        raw = {
+            "top_text": "我在广州组了一个健康赛道创业者的圈子",
+            "bottom_text": "评论区扣888",
+            "template_id": "ref-04-fixture-04",
+            "bgm": False,
+        }
+        with self.assertRaisesRegex(ValueError, "必须提供 AI 语义排版"):
+            self.service.submit(raw, "reference-without-semantic-layout")
+        self.assertIsNone(
+            self.service.store.get_by_request_id(
+                "reference-without-semantic-layout"
+            )
+        )
 
     def test_reference_material_selection_requires_three_videos(self):
         payload = self.service.validate_payload({
