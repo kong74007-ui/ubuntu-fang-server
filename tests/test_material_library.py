@@ -181,6 +181,56 @@ class MaterialLibraryTests(unittest.TestCase):
         self.assertEqual("random", first["materials"][0]["match_level"])
         self.assertEqual(0, first["materials"][0]["match_score"])
         self.assertEqual("random", first["selection_mode"])
+        self.assertEqual(
+            ["random_all_orientations_unique"], first["fallback_policy"]
+        )
+
+    def test_random_mode_can_select_cross_orientation_from_full_pool(self):
+        portrait = self.add(
+            "portrait", direction="竖屏", 标签=["人物"],
+        )
+        wide = self.add(
+            "wide", direction="横屏", 标签=["人物"],
+        )
+        seed = next(
+            str(index) for index in range(100)
+            if min(
+                (portrait, wide),
+                key=lambda sha: hashlib.sha256(
+                    f"{index}:s1:0:{sha}".encode("utf-8")
+                ).hexdigest(),
+            ) == wide
+        )
+
+        result = self.library().select(
+            [{"scene_id": "s1", "query": "人物", "media_type": "image"}],
+            orientation="竖屏", seed=seed, selection_mode="random",
+        )
+
+        self.assertEqual(wide, result["materials"][0]["sha256"])
+        self.assertEqual("fallback", result["materials"][0]["orientation_match"])
+
+    def test_random_mode_eventually_reaches_every_eligible_video(self):
+        expected = {
+            self.add(
+                f"video-{index}", media=".mp4",
+                direction="竖屏" if index < 2 else "横屏",
+            )
+            for index in range(10)
+        }
+        library = self.library()
+        called = set()
+        for index in range(500):
+            result = library.select(
+                [{"scene_id": "s1", "media_type": "video"}],
+                orientation="竖屏", seed=f"job-{index}",
+                selection_mode="random",
+            )
+            called.add(result["materials"][0]["sha256"])
+            if called == expected:
+                break
+
+        self.assertEqual(expected, called)
 
     def test_corrupted_exact_match_falls_back_to_healthy_material(self):
         self.add("corrupted", 标签=["产品", "获客"])
