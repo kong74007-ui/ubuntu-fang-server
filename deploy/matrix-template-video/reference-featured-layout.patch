@@ -1,11 +1,10 @@
 diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/index.html b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
-index b724cf8..f3bfff5 100644
+index b724cf8..23d25b4 100644
 --- a/script-to-matrix-video/assets/templates/reference-typography-17/index.html
 +++ b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
 @@ -57,12 +57,12 @@
        }
--
-+
+ 
        /* 01：黑底三段式，绿色手写描边 */
 -      .v01 .top1 { font: 400 68px/1.08 "MaShan"; color: #f7f5ec; -webkit-text-stroke: 11px #789822; paint-order: stroke fill; }
 -      .v01 .top2 { font: 400 62px/1.15 "MaShan"; color: #f8f7ef; -webkit-text-stroke: 9px #789822; paint-order: stroke fill; }
@@ -18,16 +17,16 @@ index b724cf8..f3bfff5 100644
 -      .v01 .bottom2 { width: max-content; max-width: 900px; padding: 14px 26px; border-radius: 22px; background: #f5f4ee; color: #426d24; font: 400 72px/1.15 "MaShan"; box-shadow: 0 9px 0 rgba(0,0,0,.45); }
 +      .v01 .bottom1 { font: 400 56px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 7px #111; paint-order: stroke fill; }
 +      .v01 .bottom2 { width: max-content; max-width: 900px; padding: 14px 26px; border-radius: 22px; background: #f5f4ee; color: #426d24; font: 400 74px/1.15 "MaShan"; box-shadow: 0 9px 0 rgba(0,0,0,.45); }
--
-+
+ 
        /* 02：橙白书法标题，三行CTA */
        .v02 .top { top: 126px; }
-@@ -86,12 +86,60 @@
+@@ -84,14 +84,62 @@
+       .v04 .top2 { font-size: 72px; font-weight: 900; color: #fff; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
+       .v04 .top3 { display: inline-block; margin-top: 22px; padding: 14px 24px; border-radius: 12px; background: #ffd916; color: #111; font-size: 48px; font-weight: 900; }
        .v04 .bottom1 { font-size: 58px; font-weight: 900; color: #ffd923; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
 -      .v04 .bottom2 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
 +      .v04 .bottom2 { font-size: 60px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
--
-+
+ 
 -      /* 05：超粗白主标题，红色说明 */
 -      .v05 .top1 { font: 400 70px/1.06 "MaShan"; color: #fff; -webkit-text-stroke: 11px #111; paint-order: stroke fill; }
 -      .v05 .top2 { font: 400 98px/1.02 "MaShan"; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }
@@ -88,11 +87,21 @@ index b724cf8..f3bfff5 100644
 +        box-shadow: 0 10px 0 rgba(17,36,29,.85), 0 15px 24px rgba(0,0,0,.35);
 +        paint-order: stroke fill;
 +      }
--
-+
+ 
        /* 06：白色超大标题，黄色按钮 */
        .v06 .top1 { font-size: 104px; font-weight: 900; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }
+@@ -114,7 +162,8 @@
+       .v08 .bottom2 { display: inline-block; padding: 10px 24px; background: #ffd719; color: #fff; font: 400 64px/1.1 "MaShan"; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+ 
+       /* 09：米黄手写标题，薄荷绿说明 */
+-      .v09 .top1 { font: 400 78px/1.08 "MaShan"; color: #fff0a8; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
++      .v09 .top { top: 116px; }
++      .v09 .top1 { font: 400 88px/1.08 "MaShan"; color: #fff0a8; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
+       .v09 .top2 { font-size: 50px; font-weight: 700; color: #baf0bd; -webkit-text-stroke: 5px #234629; paint-order: stroke fill; }
+       .v09 .bottom1 { font: 400 60px/1.05 "MaShan"; color: #a5ed7a; -webkit-text-stroke: 7px #234629; paint-order: stroke fill; }
+       .v09 .bottom2 { font: 400 66px/1.05 "MaShan"; color: #fff0a8; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
 diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
+index 69e5e41..923f2aa 100644
 --- a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
 +++ b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
 @@ -42,7 +42,7 @@ window.__previewRows = [
