@@ -9,6 +9,7 @@ Group=ubuntu
 WorkingDirectory=/opt/huangque/material-library/source/server
 EnvironmentFile=/etc/huangque/material-library.env
 Environment=PYTHONUNBUFFERED=1
+Environment=MATERIAL_LIBRARY_USAGE_PATH=/var/lib/huangque-material-library/usage.json
 ExecStart=/usr/bin/python3 /opt/huangque/material-library/source/server/material_library_api.py --host 127.0.0.1 --port 8110
 Restart=on-failure
 RestartSec=3
@@ -16,6 +17,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+StateDirectory=huangque-material-library
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/huangque-material-library
 ReadOnlyPaths=/home/ubuntu/material-libraries/huangque-media
 MemoryMax=256M
 TasksMax=64

@@ -89,11 +89,11 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 
 ## Batch material diversity
 
-Matrix template jobs request `selection_mode=random` for every visual and BGM
-scene. Copy relevance no longer affects material ranking. The remote job id is
-the stable seed, so one admitted job is reproducible while each new job receives
-a new random draw. The material library verifies selected files against the
-approved checksum and skips unhealthy records before returning the selection.
+Matrix template jobs request `selection_mode=round_robin` for every visual and
+BGM scene. Copy relevance no longer affects material ranking. Globally least-used
+healthy assets are selected first, while the remote job id deterministically
+breaks equal-count ties. The material library persists selection counts before
+returning and verifies selected files against the approved checksum.
 
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
 `batch_size` (1-5). Material selection is serialized briefly while job
@@ -121,7 +121,8 @@ does not rewrite or resubmit in-flight work.
 
 Before HyperFrames starts, the service probes all three selected video files,
 allocates a gap-free timeline within their real durations, and writes the final
-clip, typography, audio, and GSAP timings directly into the copied HTML. This
+clip, source `data-media-start`, typography, audio, and GSAP timings directly
+into the copied HTML. This
 avoids the pack's static eight-second media timeline and prevents a short clip
 from leaving an uncovered interval. If the three videos cannot cover the frozen
 8-15 second output, the job fails instead of publishing black frames. Completed

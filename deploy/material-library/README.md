@@ -61,10 +61,16 @@ Then run `sudo bash deploy/pixelle-video/install-material-library-tunnel.sh`.
 ## API
 
 `POST /v1/select` defaults to semantic ranking. Callers may send
-`"selection_mode":"random"` to ignore query scores and choose a stable random
-candidate from the requested media type/orientation. Random selection remains
-deterministic for one seed, excludes `used_sha256`, and skips files whose live
-checksum no longer matches the approved index.
+`"selection_mode":"random"` ignores query scores and chooses a stable random
+candidate from all orientations of the requested media type. Random selection
+remains deterministic for one seed, excludes `used_sha256`, and skips files
+whose live checksum no longer matches the approved index.
+
+`"selection_mode":"round_robin"` uses the same all-orientation candidate pool,
+but chooses the globally least-selected healthy asset and uses the seed only to
+break equal-count ties. Counts are atomically persisted outside the read-only
+approved library at `/var/lib/huangque-material-library/usage.json`; a state
+write failure rejects selection instead of silently losing fairness.
 
 `POST /v1/select` selects one unique approved asset per scene using
 `exact -> loose -> random`. `GET /v1/assets/{sha256}` downloads a selected asset

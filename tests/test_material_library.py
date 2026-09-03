@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import collections
 import hashlib
 import json
 import tempfile
@@ -40,12 +41,12 @@ class MaterialLibraryTests(unittest.TestCase):
         self.rows.append(row)
         return digest
 
-    def library(self):
+    def library(self, usage_path=None):
         (self.root / "index.jsonl").write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in self.rows),
             encoding="utf-8",
         )
-        return MaterialLibrary(self.root)
+        return MaterialLibrary(self.root, usage_path=usage_path)
 
     def test_exact_loose_random_and_no_duplicates(self):
         exact = self.add("exact", 标签=["医美", "抗衰"], 一级场景="美容院")
@@ -231,6 +232,121 @@ class MaterialLibraryTests(unittest.TestCase):
                 break
 
         self.assertEqual(expected, called)
+
+    def test_round_robin_persists_before_return_and_survives_restart(self):
+        first = self.add("round-robin-a", media=".mp4")
+        second = self.add("round-robin-b", media=".mp4")
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+        library = self.library(usage_path)
+
+        selected_first = library.select(
+            scene, seed="same", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+        self.assertTrue(usage_path.is_file())
+
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        selected_second = restarted.select(
+            scene, seed="same", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertEqual({first, second}, {selected_first, selected_second})
+
+    def test_round_robin_selection_and_persistence_are_one_critical_section(self):
+        for index in range(3):
+            self.add(f"round-robin-{index}", media=".mp4")
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+        real_available = library._is_available
+
+        def slow_available(material):
+            time.sleep(0.02)
+            return real_available(material)
+
+        with mock.patch.object(
+            library, "_is_available", side_effect=slow_available,
+        ), concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            selected = list(pool.map(
+                lambda _index: library.select(
+                    scene, seed="same", selection_mode="round_robin",
+                )["materials"][0]["sha256"],
+                range(6),
+            ))
+
+        self.assertEqual([2, 2, 2], sorted(collections.Counter(selected).values()))
+        persisted = json.loads(usage_path.read_text(encoding="utf-8"))
+        self.assertEqual([2, 2, 2], sorted(
+            int(item["count"]) for item in persisted.values()
+        ))
+
+    def test_random_and_round_robin_requests_do_not_deadlock_each_other(self):
+        for index in range(4):
+            self.add(f"mixed-mode-{index}", media=".mp4")
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(
+                    library.select, scene, seed=f"job-{index}",
+                    selection_mode=(
+                        "round_robin" if index % 2 else "random"
+                    ),
+                )
+                for index in range(8)
+            ]
+            results = [future.result(timeout=3) for future in futures]
+
+        self.assertEqual(8, len(results))
+
+    def test_round_robin_save_failure_is_visible_and_rolls_back_memory(self):
+        for index in range(2):
+            self.add(f"save-failure-{index}", media=".mp4")
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+
+        with mock.patch.object(
+            material_library_module.os, "replace",
+            side_effect=PermissionError("read only"),
+        ), self.assertRaisesRegex(MaterialLibraryError, "usage state"):
+            library.select(
+                scene, seed="same", selection_mode="round_robin",
+            )
+
+        self.assertFalse(usage_path.exists())
+        selected = library.select(
+            scene, seed="same", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        self.assertNotEqual(
+            selected,
+            restarted.select(
+                scene, seed="same", selection_mode="round_robin",
+            )["materials"][0]["sha256"],
+        )
+
+    def test_invalid_usage_state_fails_closed_without_touching_the_index(self):
+        self.add("valid-index", media=".mp4")
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text('{"not-a-sha":{"count":1}}', encoding="utf-8")
+        self.library()
+
+        with self.assertRaisesRegex(MaterialLibraryError, "usage state"):
+            MaterialLibrary(self.root, usage_path=usage_path)
+
+        self.assertTrue((self.root / "index.jsonl").is_file())
+        self.assertEqual(
+            '{"not-a-sha":{"count":1}}',
+            usage_path.read_text(encoding="utf-8"),
+        )
 
     def test_corrupted_exact_match_falls_back_to_healthy_material(self):
         self.add("corrupted", 标签=["产品", "获客"])

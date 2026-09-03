@@ -6,10 +6,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import mimetypes
 import os
 import re
+import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -204,10 +207,11 @@ def _stable_rank(seed: str, material: Material) -> str:
 
 
 class MaterialLibrary:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, usage_path: str | Path | None = None):
         self.root = Path(root).resolve()
         self.index_path = self.root / "index.jsonl"
         self._lock = threading.RLock()
+        self._usage_lock = threading.Lock()
         self._stamp: tuple[int, int] | None = None
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
@@ -215,8 +219,11 @@ class MaterialLibrary:
             str, tuple[tuple[int, int, int, int], bool]
         ] = {}
         self._verification_locks: dict[str, threading.Lock] = {}
-        self._usage_path = self.root / "usage.json"
+        self._usage_path = (
+            Path(usage_path).resolve() if usage_path is not None else None
+        )
         self._usage: dict[str, dict[str, int | float]] = {}
+        self._usage_state_ready = False
         self._load_usage()
 
     def _reload_if_needed(self) -> None:
@@ -248,39 +255,76 @@ class MaterialLibrary:
         self._stamp = stamp
 
     def _load_usage(self) -> None:
+        if self._usage_path is None:
+            return
         try:
-            if self._usage_path.is_file():
-                data = json.loads(self._usage_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    for key, value in data.items():
-                        if isinstance(value, dict):
-                            self._usage[str(key)] = {
-                                "count": int(value.get("count", 0) or 0),
-                                "last_used": float(value.get("last_used", 0.0) or 0.0),
-                            }
-                        else:
-                            self._usage[str(key)] = {
-                                "count": int(value) if str(value).lstrip("-").isdigit() else 0,
-                                "last_used": 0.0,
-                            }
-        except (OSError, ValueError, TypeError):
-            self._usage = {}
+            if not self._usage_path.exists():
+                return
+            if self._usage_path.is_symlink() or not self._usage_path.is_file():
+                raise MaterialLibraryError("material usage state is unsafe")
+            if self._usage_path.stat().st_size > 4 * 1024 * 1024:
+                raise MaterialLibraryError("material usage state is too large")
+            data = json.loads(self._usage_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or len(data) > MAX_RECORDS:
+                raise MaterialLibraryError("material usage state is invalid")
+            loaded: dict[str, dict[str, int | float]] = {}
+            for key, value in data.items():
+                if (
+                    not SHA256_RE.fullmatch(str(key))
+                    or not isinstance(value, dict)
+                    or set(value) != {"count", "last_used"}
+                    or isinstance(value.get("count"), bool)
+                    or not isinstance(value.get("count"), int)
+                    or value["count"] < 0
+                    or isinstance(value.get("last_used"), bool)
+                    or not isinstance(value.get("last_used"), (int, float))
+                    or not math.isfinite(float(value["last_used"]))
+                    or float(value["last_used"]) < 0
+                ):
+                    raise MaterialLibraryError("material usage state is invalid")
+                loaded[str(key)] = {
+                    "count": int(value["count"]),
+                    "last_used": float(value["last_used"]),
+                }
+            self._usage = loaded
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MaterialLibraryError("material usage state is unavailable") from exc
 
     def _save_usage(self) -> None:
-        with self._lock:
-            try:
-                payload = json.dumps(self._usage, ensure_ascii=False)
-                temporary = self._usage_path.with_name("." + self._usage_path.name + ".tmp")
-                temporary.write_text(payload + "\n", encoding="utf-8")
-                os.replace(temporary, self._usage_path)
-            except OSError:
-                pass
+        if self._usage_path is None:
+            raise MaterialLibraryError("material usage state is not configured")
+        parent = self._usage_path.parent
+        temporary = None
+        try:
+            if parent.is_symlink() or not parent.is_dir():
+                raise OSError("usage state directory is unavailable")
+            descriptor, name = tempfile.mkstemp(
+                prefix=".usage-", suffix=".tmp", dir=parent,
+            )
+            temporary = Path(name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(self._usage, handle, ensure_ascii=False, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self._usage_path)
+            temporary = None
+        except OSError as exc:
+            raise MaterialLibraryError("material usage state is unavailable") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def verify_usage_state(self) -> None:
+        with self._usage_lock:
+            self._save_usage()
+            self._usage_state_ready = True
 
     def _record_usage(self, sha256: str) -> None:
-        with self._lock:
-            entry = self._usage.setdefault(sha256, {"count": 0, "last_used": 0.0})
-            entry["count"] = int(entry.get("count", 0) or 0) + 1
-            entry["last_used"] = time.time()
+        entry = self._usage.setdefault(sha256, {"count": 0, "last_used": 0.0})
+        entry["count"] = int(entry.get("count", 0) or 0) + 1
+        entry["last_used"] = time.time()
 
     def refresh(self) -> None:
         with self._lock:
@@ -291,7 +335,10 @@ class MaterialLibrary:
         counts = {kind: 0 for kind in ("image", "video", "bgm")}
         for material in self._materials:
             counts[material.media_type] += 1
-        return {"records": len(self._materials), "media_types": counts}
+        return {
+            "records": len(self._materials), "media_types": counts,
+            "usage_state_ready": self._usage_state_ready,
+        }
 
     def resolve(self, sha256: str) -> tuple[Material, Path]:
         self.refresh()
@@ -347,6 +394,34 @@ class MaterialLibrary:
             return False
 
     def select(
+        self,
+        scenes: list[dict[str, Any]],
+        *,
+        orientation: str = "portrait",
+        seed: str = "",
+        used_sha256: Iterable[str] = (),
+        selection_mode: str = "semantic",
+    ) -> dict[str, Any]:
+        mode = _text(selection_mode or "semantic")
+        if mode != "round_robin":
+            return self._select_impl(
+                scenes, orientation=orientation, seed=seed,
+                used_sha256=used_sha256, selection_mode=mode,
+            )
+        with self._usage_lock:
+            previous_usage = {
+                key: dict(value) for key, value in self._usage.items()
+            }
+            try:
+                return self._select_impl(
+                    scenes, orientation=orientation, seed=seed,
+                    used_sha256=used_sha256, selection_mode=mode,
+                )
+            except BaseException:
+                self._usage = previous_usage
+                raise
+
+    def _select_impl(
         self,
         scenes: list[dict[str, Any]],
         *,
@@ -475,7 +550,11 @@ class MaterialLibrary:
             "used_sha256": sorted(used),
             "selection_mode": mode,
             "fallback_policy": (
-                ["random_all_orientations_unique"]
+                [
+                    "round_robin_all_orientations_unique"
+                    if mode == "round_robin"
+                    else "random_all_orientations_unique"
+                ]
                 if mode in {"random", "round_robin"} else [
                     "exact_same_orientation",
                     "loose_same_orientation",

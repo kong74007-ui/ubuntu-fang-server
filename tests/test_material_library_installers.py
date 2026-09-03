@@ -97,7 +97,7 @@ set -e
 [[ "$(cat "$TEST_STATE_DIR/active")" = 1 ]]
 build=$(cat "$TEST_SOURCE_LINK/BUILD_ID")
 if [[ "${TEST_FAIL_NEW_BUILD:-0}" = 1 && "$build" != "$TEST_OLD_BUILD_ID" ]]; then exit 22; fi
-printf '{"ok":true,"build_id":"%s","records":1}\n' "$build"
+printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$build"
 ''')
         return fake
 
