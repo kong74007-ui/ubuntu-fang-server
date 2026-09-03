@@ -18,7 +18,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="956850a7e2e56bc0c68e10884b96266c1221d71dcc27d553ecfd4a1e4c65829a"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -81,13 +81,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_reference_patch_is_hash_locked_and_scoped_to_v01_and_v05(self):
+    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_and_v05(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e",
+            "956850a7e2e56bc0c68e10884b96266c1221d71dcc27d553ecfd4a1e4c65829a",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -102,6 +102,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("font-size: 52px;", patch)
         self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
+        self.assertIn(
+            '.v04 .bottom2 { font-size: 60px; font-weight: 900;', patch,
+        )
         self.assertNotIn(".v02 .top1 {\n+", patch)
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)

@@ -24,7 +24,8 @@ index b724cf8..f3bfff5 100644
        .v02 .top { top: 126px; }
 @@ -86,12 +86,60 @@
        .v04 .bottom1 { font-size: 58px; font-weight: 900; color: #ffd923; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
-       .v04 .bottom2 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+-      .v04 .bottom2 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
++      .v04 .bottom2 { font-size: 60px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
 -
 +
 -      /* 05：超粗白主标题，红色说明 */
