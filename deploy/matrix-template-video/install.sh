@@ -10,7 +10,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
-REFERENCE_LAYOUT_PATCH_SHA256="9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e"
+REFERENCE_LAYOUT_PATCH_SHA256="385d57046ccb99623c40087c1687a88ea06d1ce006aefeea990ef5488a806471"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -23,6 +23,7 @@ UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
 API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
 LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
 REFERENCE_LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-featured-layout.patch"
+REFERENCE_V04_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v04_preview.py"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -74,7 +75,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -210,6 +211,9 @@ xiaowei_width = (
 )
 assert 970 < xiaowei_width <= 996, xiaowei_width
 PY
+python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" \
+  --pack-root "${REFERENCE_PACK_ROOT}" \
+  --browser "${HYPERFRAMES_BROWSER}"
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
 install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"
 env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" install \

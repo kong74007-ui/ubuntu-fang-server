@@ -1327,7 +1327,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             styles.extend((
                 f".{variant} .top1 {{ font-size: 80px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
-                f".{variant} .bottom2 {{ font-size: 70px; }}",
+                f".{variant} .bottom2 {{ font-size: {60 if index == 4 else 70}px; }}",
             ))
             if index == 10:
                 styles.append(
@@ -1476,6 +1476,12 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 self.service.reference_semantic_layouts["v05"][layer]["font_weight"]
                 for layer in ("top1", "top2", "top3", "bottom2")
             ),
+        )
+        self.assertEqual(
+            60,
+            self.service.reference_semantic_layouts["v04"]["bottom2"][
+                "font_size_px"
+            ],
         )
         self.assertEqual(
             970,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import shutil
 import subprocess
 import unittest
@@ -18,7 +19,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="385d57046ccb99623c40087c1687a88ea06d1ce006aefeea990ef5488a806471"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -35,6 +36,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             'git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"',
             installer,
         )
+        self.assertIn(
+            'python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}"', installer,
+        )
+        self.assertIn('--pack-root "${REFERENCE_PACK_ROOT}"', installer)
+        self.assertIn('--browser "${HYPERFRAMES_BROWSER}"', installer)
         self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"', installer)
         self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"', installer)
         self.assertIn('python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"', installer)
@@ -81,13 +87,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_reference_patch_is_hash_locked_and_scoped_to_v01_and_v05(self):
+    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_and_v05(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "9460cb37306ef3efbb0a1bb4277ca010560c903726c9c89461468840b710000e",
+            "385d57046ccb99623c40087c1687a88ea06d1ce006aefeea990ef5488a806471",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -102,9 +108,44 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("font-size: 52px;", patch)
         self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
+        self.assertIn(
+            '.v04 .bottom2 { font-size: 60px; font-weight: 900;', patch,
+        )
+        self.assertIn(
+            '"bottom2": "交友破圈｜信息差｜\\n自媒体｜AI智能体"',
+            patch,
+        )
         self.assertNotIn(".v02 .top1 {\n+", patch)
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
+
+    def test_v04_preview_browser_guard_rejects_visual_regressions(self):
+        path = ROOT / "deploy/matrix-template-video/verify_v04_preview.py"
+        spec = importlib.util.spec_from_file_location("verify_v04_preview", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        valid = {
+            "font_loaded": True,
+            "font_size": "60px",
+            "lines": module.BOTTOM2_LINES,
+            "clipped": False,
+            "overlap": False,
+        }
+        module.validate_report(valid)
+        invalid = (
+            dict(valid, font_loaded=False),
+            dict(valid, font_size="52px"),
+            dict(valid, lines=["交友破圈｜信息差｜自媒体｜AI智能", "体"]),
+            dict(valid, clipped=True),
+            dict(valid, overlap=True),
+        )
+        for report in invalid:
+            with self.subTest(report=report), self.assertRaises(RuntimeError):
+                module.validate_report(report)
+        source = path.read_text(encoding="utf-8")
+        self.assertIn("--headless=new", source)
+        self.assertIn("document.fonts.check", source)
+        self.assertIn("getBoundingClientRect", source)
 
     def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")
