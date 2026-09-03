@@ -92,3 +92,15 @@ index b724cf8..f3bfff5 100644
 +
        /* 06：白色超大标题，黄色按钮 */
        .v06 .top1 { font-size: 104px; font-weight: 900; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }
+diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
+--- a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
++++ b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
+@@ -42,7 +42,7 @@ window.__previewRows = [
+     "top2": "发起100场老板茶话会",
+     "top3": "想进群评论区扣666 拉你进群",
+     "bottom1": "实体老板｜自媒体博主｜行业精英",
+-    "bottom2": "交友破圈｜信息差｜自媒体｜AI智能体",
++    "bottom2": "交友破圈｜信息差｜\n自媒体｜AI智能体",
+     "videoA": "assets/library/clip12.mov",
+     "videoB": "assets/library/clip13.mov",
+     "bgm": "assets/bgm/bgm01.mp3"
