@@ -2522,6 +2522,41 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 f'font-size:{size}px!important}}',
                 style,
             )
+        payload["_reference_template"]["duration"] = 8
+        materials = []
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"v16-source-{index}.mp4"
+            path.write_bytes(f"video-{index}".encode("ascii"))
+            paths.append(path)
+            materials.append({
+                "media_type": "video", "record_id": f"v16-{index}",
+            })
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            variables = self.service._render_reference(
+                payload, "f" * 32, materials, paths,
+            )
+        self.assertEqual("v16", variables["variant"])
+        workdir = self.service.data_root / ("f" * 32) / "hyperframes"
+        fonts = [
+            path.name for path in (workdir / "assets/fonts").iterdir()
+            if path.name == "SmileySans-Oblique.ttf"
+        ]
+        self.assertEqual(["SmileySans-Oblique.ttf"], fonts)
+        rendered_index = (workdir / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(
+            1,
+            rendered_index.count(
+                '@font-face{font-family:"HQSmileySansOblique";'
+            ),
+        )
+        for layer in ("top2", "bottom1", "bottom2"):
+            self.assertIn(f'.v16 .{layer}', rendered_index)
 
     def test_reference_render_uses_selected_bgm_as_authored_audio_source(self):
         job_id = "6" * 32
