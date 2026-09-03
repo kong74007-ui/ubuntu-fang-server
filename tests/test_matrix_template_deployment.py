@@ -19,7 +19,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="385d57046ccb99623c40087c1687a88ea06d1ce006aefeea990ef5488a806471"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="f312bca47ab104d2da99c9e31342115593bdec6ef867497d9d7fbc56db499c87"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -87,13 +87,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_and_v05(self):
+    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_v05_and_v09(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "385d57046ccb99623c40087c1687a88ea06d1ce006aefeea990ef5488a806471",
+            "f312bca47ab104d2da99c9e31342115593bdec6ef867497d9d7fbc56db499c87",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -115,6 +115,8 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             '"bottom2": "交友破圈｜信息差｜\\n自媒体｜AI智能体"',
             patch,
         )
+        self.assertIn('.v09 .top { top: 116px; }', patch)
+        self.assertIn('font: 400 88px/1.08 "MaShan";', patch)
         self.assertNotIn(".v02 .top1 {\n+", patch)
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
