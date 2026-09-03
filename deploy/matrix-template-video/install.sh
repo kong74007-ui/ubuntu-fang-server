@@ -10,7 +10,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
-REFERENCE_LAYOUT_PATCH_SHA256="1115b9dad66cb3ee49bb9d4716fccc96d15f88a16ca8c4eb83fbf7714965c909"
+REFERENCE_LAYOUT_PATCH_SHA256="221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -211,13 +211,24 @@ xiaowei_width = (
 )
 assert 970 < xiaowei_width <= 996, xiaowei_width
 
-def text_width(path, size, stroke, value):
+def text_width(path, size, stroke, value, weight=None):
     font = ImageFont.truetype(str(path), size)
+    if weight is not None:
+        axes = font.get_variation_axes()
+        weight_axis = next(
+            index for index, axis in enumerate(axes)
+            if axis["name"].decode("ascii", "ignore").lower() == "weight"
+        )
+        values = [int(axis["default"]) for axis in axes]
+        values[weight_axis] = weight
+        font.set_variation_by_axes(values)
     box = draw.textbbox((0, 0), value, font=font, stroke_width=stroke)
     return box[2] - box[0] + max(0, len(value) - 1) * size * 0.01
 
 smiley_path = Path(os.environ["PRIVATE_FONT_ROOT"]) / "SmileySans-Oblique.ttf"
 checks = (
+    ("v10.top1", root / "assets/fonts/ZCOOLXiaoWei-Regular.ttf", 85, 8,
+     ("我在深圳发起100场",)),
     ("v12.top1", root / "assets/fonts/MaShanZheng-Regular.ttf", 80, 10,
      ("在广州 天河",)),
     ("v12.top3", root / "assets/fonts/MaShanZheng-Regular.ttf", 70, 7,
@@ -233,6 +244,15 @@ for label, path, size, stroke, lines in checks:
     assert path.is_file(), (label, path)
     widths = [text_width(path, size, stroke, line) for line in lines]
     assert max(widths) <= 996, (label, widths)
+v10_top3_lines = ("自媒体｜AI沙龙｜", "抄经｜睡眠沙龙")
+v10_top3_widths = [
+    text_width(
+        root / "assets/fonts/NotoSansSC-Variable.ttf", 65, 6, line,
+        weight=800,
+    )
+    for line in v10_top3_lines
+]
+assert max(v10_top3_widths) <= 996, ("v10.top3", v10_top3_widths)
 PY
 python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" \
   --pack-root "${REFERENCE_PACK_ROOT}" \

@@ -27,7 +27,7 @@ exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
-variants `v01`, `v04`, `v05`, `v09`, `v12`, and `v16`, and installs pinned GSAP
+variants `v01`, `v04`, `v05`, `v09`, `v10`, `v12`, and `v16`, and installs pinned GSAP
 `3.14.2` inside the release.
 Variant `v01` keeps its green-outlined handwritten treatment while its five
 locked text layers increase from `68/62/50/54/72px` to
@@ -42,6 +42,8 @@ Variant `v12` increases `top1` from `72px` to `80px` and `top3` from `50px`
 to `70px`. Variant `v16` increases `top1` from `48px` to `80px`, keeps its
 phrase-safe two-line preview, and fixes `top2`/`bottom1`/`bottom2` to authorized
 Smiley Sans Oblique at `68/70/70px`.
+Variant `v10` increases `top1` from `70px` to `85px` and `top3` from `54px`
+to `65px`; its authored Top3 example keeps complete phrases on two lines.
 The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
 patch and the separate reference-typography patch have SHA-256 locks in
 `install.sh`, so a missing or changed patch fails before the active release is
