@@ -644,7 +644,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual(["video", "image", "bgm"], [item["media_type"] for item in materials])
         self.assertEqual("video", captured["scenes"][0]["media_type"])
         self.assertEqual("portrait", captured["orientation"])
-        self.assertEqual("random", captured["selection_mode"])
+        self.assertEqual("round_robin", captured["selection_mode"])
         self.assertEqual([], captured["used_sha256"])
         self.assertEqual(3, len(set(item["sha256"] for item in materials)))
 
@@ -2219,7 +2219,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.1)
 
     def test_reference_segment_timing_caps_short_media_without_gaps(self):
-        starts, durations = matrix._reference_segment_timing(
+        starts, durations, offsets = matrix._reference_segment_timing(
             14, [94.3, 3.9, 9.897]
         )
         for actual, expected in zip(starts, [0.0, 5.1, 8.9]):
@@ -2232,7 +2232,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             for duration, source in zip(durations, [94.3, 3.9, 9.897])
         ))
 
-        starts, durations = matrix._reference_segment_timing(
+        starts, durations, offsets = matrix._reference_segment_timing(
             12, [30.0, 30.0, 30.0]
         )
         self.assertEqual([0.0, 4.0, 8.0], starts)
@@ -2314,6 +2314,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_reference_video_duration",
             side_effect=[94.3, 3.9, 9.897],
+        ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(
             matrix.subprocess, "Popen", return_value=process
         ) as popen:
@@ -2402,6 +2405,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(
             self.service, "_prepare_reference_bgm", side_effect=prepare_bgm,
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
@@ -2536,6 +2542,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
         ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
+        ), mock.patch.object(
             self.service, "_prepare_reference_bgm", side_effect=prepare,
         ), mock.patch.object(matrix.subprocess, "Popen", side_effect=popen):
             threads = [threading.Thread(target=render, args=(case,)) for case in cases]
@@ -2562,6 +2571,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(
             matrix.subprocess, "Popen", return_value=process,
         ) as popen, mock.patch.object(
@@ -2944,6 +2956,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.poll.return_value = 0
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
             variables = self.service._render_reference(
                 payload, "9" * 32, materials, paths
@@ -3005,6 +3020,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.poll.return_value = 0
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_trim_reference_asset",
+            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
             self.service._render_reference(
                 payload, "7" * 32, materials, paths

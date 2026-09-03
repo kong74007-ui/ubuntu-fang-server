@@ -1020,8 +1020,8 @@ def _format_reference_seconds(value: float) -> str:
 
 
 def _reference_segment_timing(
-    total_duration: float, media_durations: list[float]
-) -> tuple[list[float], list[float]]:
+    total_duration: float, media_durations: list[float], seed: str = ""
+) -> tuple[list[float], list[float], list[float]]:
     total = float(total_duration)
     if not 8 <= total <= 15 or len(media_durations) != 3:
         raise MatrixTemplateError("HyperFrames 模板素材时间轴参数无效")
@@ -1059,7 +1059,20 @@ def _reference_segment_timing(
     ):
         raise MatrixTemplateError("HyperFrames 模板素材时长分配失败")
     starts = [0.0, durations[0], durations[0] + durations[1]]
-    return starts, durations
+    media_offsets = []
+    for index, duration in enumerate(durations):
+        max_start = max(
+            0.0, media_durations[index] - duration - REFERENCE_MEDIA_SAFETY_SECONDS
+        )
+        if max_start <= 0.001:
+            media_offsets.append(0.0)
+            continue
+        digest = hashlib.sha256(
+            f"{seed}:reference-media-offset:{index}".encode("utf-8")
+        ).digest()
+        fraction = int.from_bytes(digest[:4], "big") / float(0xFFFFFFFF)
+        media_offsets.append(round(fraction * max_start, 3))
+    return starts, durations, media_offsets
 
 
 def _rewrite_reference_timeline(
@@ -2400,7 +2413,7 @@ class MatrixTemplateService:
         result = self._library_request("POST", "/v1/select", {
             "scenes": scenes, "orientation": "portrait", "seed": job_id,
             "used_sha256": list(used_sha256),
-            "selection_mode": "random",
+            "selection_mode": "round_robin",
         })
         values = result.get("materials") or []
         by_scene = {str(item.get("scene_id") or ""): item for item in values if isinstance(item, dict)}
@@ -2532,12 +2545,29 @@ class MatrixTemplateService:
         ):
             raise MatrixTemplateError("frozen font provenance is invalid")
         media = []
+        segment_hint = max(1.0, float(payload["duration"]) / max(1, count))
         for item, path in zip(materials[:count], paths[:count]):
-            media.append({
+            entry = {
                 "path": path.relative_to(self.data_root / job_id).as_posix(),
                 "type": item["media_type"],
                 "record_id": item.get("record_id"),
-            })
+            }
+            if item["media_type"] == "video":
+                try:
+                    source_duration = self._reference_video_duration(path)
+                except MatrixTemplateError:
+                    source_duration = 0.0
+                max_start = max(
+                    0.0,
+                    source_duration - segment_hint - REFERENCE_MEDIA_SAFETY_SECONDS,
+                )
+                if max_start > 0.001:
+                    digest = hashlib.sha256(
+                        f"{job_id}:ffmpeg-media-start:{item.get('sha256') or path.name}".encode("utf-8")
+                    ).digest()
+                    fraction = int.from_bytes(digest[:4], "big") / float(0xFFFFFFFF)
+                    entry["start"] = round(fraction * max_start, 3)
+            media.append(entry)
         project = {
             "version": 1,
             "project_id": job_id,
@@ -2665,6 +2695,36 @@ class MatrixTemplateService:
     def _copy_reference_asset(source: Path, destination: Path) -> str:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        return destination.as_posix()
+
+    def _trim_reference_asset(
+        self, source: Path, destination: Path, start: float, duration: float
+    ) -> str:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name("." + destination.name + ".part")
+        temporary.unlink(missing_ok=True)
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-ss", _format_reference_seconds(start),
+            "-i", str(source),
+            "-t", _format_reference_seconds(duration),
+            "-c", "copy", "-movflags", "+faststart",
+            str(temporary),
+        ]
+        try:
+            returncode, _stdout, _stderr = self._run_tracked_process(
+                command, timeout_seconds=60,
+                timeout_error="HyperFrames 模板素材切段超时",
+            )
+            if (
+                returncode
+                or not temporary.is_file()
+                or temporary.stat().st_size == 0
+            ):
+                raise MatrixTemplateError("HyperFrames 模板素材切段失败")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return destination.as_posix()
 
     def _prepare_reference_bgm(
@@ -2894,10 +2954,21 @@ class MatrixTemplateService:
         shutil.copy2(self.hyperframes_gsap, workdir / "gsap.min.js")
 
         input_dir = workdir / "assets/input"
+        media_durations = [
+            self._reference_video_duration(path) for path in paths[:3]
+        ]
+        segment_starts, segment_durations, media_offsets = _reference_segment_timing(
+            float(reference["duration"]), media_durations, seed=job_id
+        )
         video_values = []
         for asset_index, source in enumerate(paths[:3], 1):
             target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
-            self._copy_reference_asset(source, target)
+            offset = media_offsets[asset_index - 1]
+            segment = segment_durations[asset_index - 1]
+            if offset > 0.001:
+                self._trim_reference_asset(source, target, offset, segment)
+            else:
+                self._copy_reference_asset(source, target)
             video_values.append(target.relative_to(workdir).as_posix())
         bgm_source = None
         bgm_target = None
@@ -2921,12 +2992,6 @@ class MatrixTemplateService:
             "videoC": video_values[2],
             "bgm": bgm,
         }
-        media_durations = [
-            self._reference_video_duration(path) for path in paths[:3]
-        ]
-        segment_starts, segment_durations = _reference_segment_timing(
-            float(reference["duration"]), media_durations
-        )
         index = _rewrite_reference_timeline(
             index, float(reference["duration"]),
             segment_starts, segment_durations,

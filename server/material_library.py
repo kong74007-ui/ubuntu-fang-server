@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -214,6 +215,9 @@ class MaterialLibrary:
             str, tuple[tuple[int, int, int, int], bool]
         ] = {}
         self._verification_locks: dict[str, threading.Lock] = {}
+        self._usage_path = self.root / "usage.json"
+        self._usage: dict[str, dict[str, int | float]] = {}
+        self._load_usage()
 
     def _reload_if_needed(self) -> None:
         stat = self.index_path.stat()
@@ -242,6 +246,41 @@ class MaterialLibrary:
         self._by_sha = {item.sha256: item for item in materials}
         self._verification_cache.clear()
         self._stamp = stamp
+
+    def _load_usage(self) -> None:
+        try:
+            if self._usage_path.is_file():
+                data = json.loads(self._usage_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if isinstance(value, dict):
+                            self._usage[str(key)] = {
+                                "count": int(value.get("count", 0) or 0),
+                                "last_used": float(value.get("last_used", 0.0) or 0.0),
+                            }
+                        else:
+                            self._usage[str(key)] = {
+                                "count": int(value) if str(value).lstrip("-").isdigit() else 0,
+                                "last_used": 0.0,
+                            }
+        except (OSError, ValueError, TypeError):
+            self._usage = {}
+
+    def _save_usage(self) -> None:
+        with self._lock:
+            try:
+                payload = json.dumps(self._usage, ensure_ascii=False)
+                temporary = self._usage_path.with_name("." + self._usage_path.name + ".tmp")
+                temporary.write_text(payload + "\n", encoding="utf-8")
+                os.replace(temporary, self._usage_path)
+            except OSError:
+                pass
+
+    def _record_usage(self, sha256: str) -> None:
+        with self._lock:
+            entry = self._usage.setdefault(sha256, {"count": 0, "last_used": 0.0})
+            entry["count"] = int(entry.get("count", 0) or 0) + 1
+            entry["last_used"] = time.time()
 
     def refresh(self) -> None:
         with self._lock:
@@ -325,8 +364,8 @@ class MaterialLibrary:
             raise ValueError("each scene must be an object")
         requested_orientation = _orientation(orientation)
         mode = _text(selection_mode or "semantic")
-        if mode not in {"semantic", "random"}:
-            raise ValueError("selection_mode must be semantic or random")
+        if mode not in {"semantic", "random", "round_robin"}:
+            raise ValueError("selection_mode must be semantic, random or round_robin")
         used = {str(value).lower() for value in used_sha256 if SHA256_RE.fullmatch(str(value).lower())}
         selected: list[dict[str, Any]] = []
 
@@ -375,7 +414,7 @@ class MaterialLibrary:
             ]
             random_all = [(item, 0) for item, _score_value in scored]
             tiers = (
-                ((random_all, "random"),) if mode == "random" else (
+                ((random_all, "random"),) if mode in {"random", "round_robin"} else (
                     (exact_same, "exact"),
                     (loose_same, "loose"),
                     (exact_any, "exact"),
@@ -388,12 +427,21 @@ class MaterialLibrary:
             selected_pair = None
             match_level = ""
             for pool, level in tiers:
-                ranked = sorted(
-                    pool,
-                    key=lambda pair: (
-                        -pair[1], _stable_rank(rank_seed, pair[0])
-                    ),
-                )
+                if mode == "round_robin":
+                    ranked = sorted(
+                        pool,
+                        key=lambda pair: (
+                            self._usage.get(pair[0].sha256, {}).get("count", 0),
+                            _stable_rank(rank_seed, pair[0]),
+                        ),
+                    )
+                else:
+                    ranked = sorted(
+                        pool,
+                        key=lambda pair: (
+                            -pair[1], _stable_rank(rank_seed, pair[0])
+                        ),
+                    )
                 selected_pair = next(
                     (pair for pair in ranked if self._is_available(pair[0])),
                     None,
@@ -407,6 +455,8 @@ class MaterialLibrary:
                 )
             material, score = selected_pair
             used.add(material.sha256)
+            if mode == "round_robin":
+                self._record_usage(material.sha256)
             orientation_match = (
                 "not_applicable" if material.media_type == "bgm"
                 else "same" if same_orientation(material)
@@ -418,13 +468,15 @@ class MaterialLibrary:
             item["match_score"] = score
             selected.append(item)
 
+        if mode == "round_robin":
+            self._save_usage()
         return {
             "materials": selected,
             "used_sha256": sorted(used),
             "selection_mode": mode,
             "fallback_policy": (
                 ["random_all_orientations_unique"]
-                if mode == "random" else [
+                if mode in {"random", "round_robin"} else [
                     "exact_same_orientation",
                     "loose_same_orientation",
                     "exact_any_orientation",
