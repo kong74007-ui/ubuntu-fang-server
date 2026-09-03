@@ -10,7 +10,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
-REFERENCE_LAYOUT_PATCH_SHA256="8a0aa9f34ee2b474cafcd2fd824818f06b396eef71670e1f3039c7d7584709de"
+REFERENCE_LAYOUT_PATCH_SHA256="1115b9dad66cb3ee49bb9d4716fccc96d15f88a16ca8c4eb83fbf7714965c909"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -160,7 +160,7 @@ git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_LAYOUT_PATCH_SOURCE}"
 git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"
 REFERENCE_SKILL_ROOT="${REFERENCE_UPSTREAM}/script-to-matrix-video"
 REFERENCE_PACK_ROOT="${REFERENCE_SKILL_ROOT}/assets/templates/reference-typography-17"
-REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" python3 - <<'PY'
+REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" PRIVATE_FONT_ROOT="${PRIVATE_FONT_ROOT}" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -210,6 +210,29 @@ xiaowei_width = (
     + (len(xiaowei_sample) - 1) * 80 * 0.01
 )
 assert 970 < xiaowei_width <= 996, xiaowei_width
+
+def text_width(path, size, stroke, value):
+    font = ImageFont.truetype(str(path), size)
+    box = draw.textbbox((0, 0), value, font=font, stroke_width=stroke)
+    return box[2] - box[0] + max(0, len(value) - 1) * size * 0.01
+
+smiley_path = Path(os.environ["PRIVATE_FONT_ROOT"]) / "SmileySans-Oblique.ttf"
+checks = (
+    ("v12.top1", root / "assets/fonts/MaShanZheng-Regular.ttf", 80, 10,
+     ("在广州 天河",)),
+    ("v12.top3", root / "assets/fonts/MaShanZheng-Regular.ttf", 70, 7,
+     ("不打麻将 不逛街", "资源链接 相互成长 社交突破")),
+    ("v16.top1", root / "assets/fonts/ZCOOLXiaoWei-Regular.ttf", 80, 5,
+     ("我在深圳发起了共享办公", "共享创业 OPC 自媒体平台")),
+    ("v16.top2", smiley_path, 68, 7, ("我有流量 共创600场地",)),
+    ("v16.bottom1", smiley_path, 70, 8, ("坐标：深圳-南山",)),
+    ("v16.bottom2", smiley_path, 70, 8,
+     ("每周都有聚会活动", "想参加扣777 我拉你")),
+)
+for label, path, size, stroke, lines in checks:
+    assert path.is_file(), (label, path)
+    widths = [text_width(path, size, stroke, line) for line in lines]
+    assert max(widths) <= 996, (label, widths)
 PY
 python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" \
   --pack-root "${REFERENCE_PACK_ROOT}" \
