@@ -2922,6 +2922,7 @@ class MatrixTemplateService:
             shutil.copy2(source, fonts_dir / filename)
         fixed_fonts = fixed_fonts or {}
         staged_filenames = set(REFERENCE_FONT_FILES)
+        staged_private_fonts = {}
         for layer, frozen in sorted(fixed_fonts.items()):
             if layer not in REFERENCE_TEXT_LAYER_IDS or not isinstance(frozen, dict):
                 raise MatrixTemplateError("HyperFrames fixed private font metadata is invalid")
@@ -2932,13 +2933,21 @@ class MatrixTemplateService:
                 or current["file"] != frozen.get("file")
                 or current["sha256"] != frozen.get("sha256")
                 or _file_sha256(current["path"]) != frozen.get("sha256")
-                or current["file"] in staged_filenames
             ):
                 raise MatrixTemplateError(
                     "HyperFrames frozen private font is unavailable or changed"
                 )
+            filename = current["file"]
+            fingerprint = (family, current["sha256"])
+            if filename in staged_filenames:
+                if staged_private_fonts.get(filename) != fingerprint:
+                    raise MatrixTemplateError(
+                        "HyperFrames frozen private font is unavailable or changed"
+                    )
+                continue
             shutil.copy2(current["path"], fonts_dir / current["file"])
-            staged_filenames.add(current["file"])
+            staged_filenames.add(filename)
+            staged_private_fonts[filename] = fingerprint
 
         index_path = workdir / "index.html"
         index = index_path.read_text(encoding="utf-8")
