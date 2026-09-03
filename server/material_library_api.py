@@ -169,11 +169,19 @@ class MaterialHandler(BaseHTTPRequestHandler):
             self._json(503, {"error": "library_unavailable", "detail": str(exc)})
 
 
-def build_server(host: str, port: int, root: Path, api_token: str) -> ThreadingHTTPServer:
+def build_server(
+    host: str, port: int, root: Path, api_token: str,
+    *, usage_path: Path | None = None,
+) -> ThreadingHTTPServer:
     if not api_token:
         raise SystemExit("MATERIAL_LIBRARY_API_TOKEN is required")
     server = ThreadingHTTPServer((host, port), MaterialHandler)
-    server.library = MaterialLibrary(root)  # type: ignore[attr-defined]
+    library = MaterialLibrary(
+        root, usage_path=usage_path,
+    )
+    if usage_path is not None:
+        library.verify_usage_state()
+    server.library = library  # type: ignore[attr-defined]
     server.api_token = api_token  # type: ignore[attr-defined]
     return server
 
@@ -189,7 +197,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     token = os.environ.get("MATERIAL_LIBRARY_API_TOKEN", "").strip()
-    with build_server(args.host, args.port, args.root, token) as server:
+    usage_path_value = os.environ.get("MATERIAL_LIBRARY_USAGE_PATH", "").strip()
+    if not usage_path_value:
+        raise SystemExit("MATERIAL_LIBRARY_USAGE_PATH is required")
+    usage_path = Path(usage_path_value)
+    with build_server(
+        args.host, args.port, args.root, token, usage_path=usage_path,
+    ) as server:
         server.serve_forever()
 
 

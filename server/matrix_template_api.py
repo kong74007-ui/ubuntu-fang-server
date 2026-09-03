@@ -1078,12 +1078,21 @@ def _reference_segment_timing(
 def _rewrite_reference_timeline(
     html: str, total_duration: float,
     starts: list[float], durations: list[float],
+    media_offsets: list[float] | None = None,
 ) -> str:
-    if len(starts) != 3 or len(durations) != 3:
+    offsets = [0.0, 0.0, 0.0] if media_offsets is None else media_offsets
+    if (
+        len(starts) != 3 or len(durations) != 3 or len(offsets) != 3
+        or any(
+            not math.isfinite(float(value)) or float(value) < 0
+            for value in offsets
+        )
+    ):
         raise MatrixTemplateError("HyperFrames 模板素材时间轴参数无效")
 
     def rewrite_element(source: str, element_id: str,
-                        start: float, duration: float) -> str:
+                        start: float, duration: float,
+                        media_start: float | None = None) -> str:
         pattern = re.compile(
             rf'<(?:video|audio|section)\b[^>]*\bid="{re.escape(element_id)}"[^>]*>'
         )
@@ -1100,12 +1109,31 @@ def _rewrite_reference_timeline(
             )
             if count != 1:
                 raise MatrixTemplateError("HyperFrames 模板时间轴属性发生变化")
+        if media_start is not None:
+            occurrences = len(re.findall(r'\sdata-media-start="[^"]*"', tag))
+            if occurrences > 1:
+                raise MatrixTemplateError("HyperFrames 模板媒体起点属性发生变化")
+            value = _format_reference_seconds(media_start)
+            if occurrences == 1:
+                tag = re.sub(
+                    r'(\sdata-media-start=")[^"]*(")',
+                    rf'\g<1>{value}\g<2>', tag, count=1,
+                )
+            else:
+                tag, count = re.subn(
+                    r'(\sdata-duration="[^"]*")',
+                    rf'\g<1> data-media-start="{value}"', tag, count=1,
+                )
+                if count != 1:
+                    raise MatrixTemplateError(
+                        "HyperFrames 模板媒体起点属性发生变化"
+                    )
         return source[:matches[0].start()] + tag + source[matches[0].end():]
 
     result = html
     for index, element_id in enumerate(("videoA", "videoB", "videoC")):
         result = rewrite_element(
-            result, element_id, starts[index], durations[index]
+            result, element_id, starts[index], durations[index], offsets[index]
         )
     result = rewrite_element(result, "bgm", 0.0, total_duration)
     result = rewrite_element(result, "typography", 0.0, total_duration)
@@ -2697,36 +2725,6 @@ class MatrixTemplateService:
         shutil.copy2(source, destination)
         return destination.as_posix()
 
-    def _trim_reference_asset(
-        self, source: Path, destination: Path, start: float, duration: float
-    ) -> str:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name("." + destination.name + ".part")
-        temporary.unlink(missing_ok=True)
-        command = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-ss", _format_reference_seconds(start),
-            "-i", str(source),
-            "-t", _format_reference_seconds(duration),
-            "-c", "copy", "-movflags", "+faststart",
-            str(temporary),
-        ]
-        try:
-            returncode, _stdout, _stderr = self._run_tracked_process(
-                command, timeout_seconds=60,
-                timeout_error="HyperFrames 模板素材切段超时",
-            )
-            if (
-                returncode
-                or not temporary.is_file()
-                or temporary.stat().st_size == 0
-            ):
-                raise MatrixTemplateError("HyperFrames 模板素材切段失败")
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return destination.as_posix()
-
     def _prepare_reference_bgm(
         self, source: Path, destination: Path, duration: float,
         *, deadline_at: float,
@@ -2963,12 +2961,7 @@ class MatrixTemplateService:
         video_values = []
         for asset_index, source in enumerate(paths[:3], 1):
             target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
-            offset = media_offsets[asset_index - 1]
-            segment = segment_durations[asset_index - 1]
-            if offset > 0.001:
-                self._trim_reference_asset(source, target, offset, segment)
-            else:
-                self._copy_reference_asset(source, target)
+            self._copy_reference_asset(source, target)
             video_values.append(target.relative_to(workdir).as_posix())
         bgm_source = None
         bgm_target = None
@@ -2994,7 +2987,7 @@ class MatrixTemplateService:
         }
         index = _rewrite_reference_timeline(
             index, float(reference["duration"]),
-            segment_starts, segment_durations,
+            segment_starts, segment_durations, media_offsets,
         )
         index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"

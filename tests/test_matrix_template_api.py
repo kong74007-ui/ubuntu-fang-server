@@ -2231,6 +2231,21 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             duration <= source - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
             for duration, source in zip(durations, [94.3, 3.9, 9.897])
         ))
+        seeded = matrix._reference_segment_timing(
+            14, [94.3, 3.9, 9.897], seed="stable-job",
+        )
+        self.assertEqual(
+            seeded,
+            matrix._reference_segment_timing(
+                14, [94.3, 3.9, 9.897], seed="stable-job",
+            ),
+        )
+        self.assertTrue(all(
+            0 <= offset <= source - duration - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+            for offset, duration, source in zip(
+                seeded[2], seeded[1], [94.3, 3.9, 9.897],
+            )
+        ))
 
         starts, durations, offsets = matrix._reference_segment_timing(
             12, [30.0, 30.0, 30.0]
@@ -2242,6 +2257,33 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             matrix.MatrixTemplateError, "素材总时长不足"
         ):
             matrix._reference_segment_timing(14, [3.0, 3.0, 3.0])
+
+    def test_reference_timeline_replaces_existing_media_offsets_and_rejects_bad_values(self):
+        html = """
+<video id="videoA" data-start="0" data-duration="1" data-media-start="99"></video>
+<video id="videoB" data-start="1" data-duration="1"></video>
+<video id="videoC" data-start="2" data-duration="1"></video>
+<audio id="bgm" data-start="0" data-duration="3"></audio>
+<section id="typography" data-start="0" data-duration="3"></section>
+<script>      const segment = duration / 3;
+      const segmentStarts = [0, segment, segment * 2];
+      const segmentDurations = [segment, segment, duration - segment * 2];</script>
+"""
+        rendered = matrix._rewrite_reference_timeline(
+            html, 9, [0, 3, 6], [3, 3, 3], [1.25, 0, 4.5],
+        )
+
+        self.assertEqual(1, rendered.count('data-media-start="1.25"'))
+        self.assertEqual(1, rendered.count('data-media-start="0"'))
+        self.assertEqual(1, rendered.count('data-media-start="4.5"'))
+        self.assertNotIn('data-media-start="99"', rendered)
+        for offsets in ([0, 1], [0, -1, 2], [0, float("nan"), 2]):
+            with self.subTest(offsets=offsets), self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "时间轴参数无效",
+            ):
+                matrix._rewrite_reference_timeline(
+                    html, 9, [0, 3, 6], [3, 3, 3], offsets,
+                )
 
     def test_reference_visual_coverage_rejects_sustained_black(self):
         clean = mock.Mock(returncode=0)
@@ -2315,9 +2357,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service, "_reference_video_duration",
             side_effect=[94.3, 3.9, 9.897],
         ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
-        ), mock.patch.object(
             matrix.subprocess, "Popen", return_value=process
         ) as popen:
             variables = self.service._render_reference(
@@ -2347,15 +2386,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}', index
         )
         self.assertIn(
-            'id="videoA" class="clip media-video" data-start="0" data-duration="5.1"',
+            'id="videoA" class="clip media-video" data-start="0" data-duration="5.1" data-media-start="30.568"',
             index,
         )
         self.assertIn(
-            'id="videoB" class="clip media-video" data-start="5.1" data-duration="3.8"',
+            'id="videoB" class="clip media-video" data-start="5.1" data-duration="3.8" data-media-start="0"',
             index,
         )
         self.assertIn(
-            'id="videoC" class="clip media-video" data-start="8.9" data-duration="5.1"',
+            'id="videoC" class="clip media-video" data-start="8.9" data-duration="5.1" data-media-start="1.984"',
             index,
         )
         self.assertIn('id="bgm" data-start="0" data-duration="14"', index)
@@ -2363,6 +2402,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn("const segmentStarts = [0, 5.1, 8.9];", index)
         self.assertIn("const segmentDurations = [5.1, 3.8, 5.1];", index)
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
+        for asset_index, source in enumerate(paths, 1):
+            copied = workdir / f"assets/input/video-{asset_index}.mp4"
+            self.assertEqual(source.read_bytes(), copied.read_bytes())
+        self.assertFalse(list(workdir.rglob("*.part")))
         self.assertEqual(
             set(matrix.REFERENCE_FONT_FILES) | {"SmileySans-Oblique.ttf"},
             {path.name for path in (workdir / "assets/fonts").iterdir()},
@@ -2405,9 +2448,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
-        ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(
             self.service, "_prepare_reference_bgm", side_effect=prepare_bgm,
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
@@ -2542,9 +2582,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
         ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
-        ), mock.patch.object(
             self.service, "_prepare_reference_bgm", side_effect=prepare,
         ), mock.patch.object(matrix.subprocess, "Popen", side_effect=popen):
             threads = [threading.Thread(target=render, args=(case,)) for case in cases]
@@ -2571,9 +2608,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
-        ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(
             matrix.subprocess, "Popen", return_value=process,
         ) as popen, mock.patch.object(
@@ -2956,9 +2990,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.poll.return_value = 0
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
-        ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
             variables = self.service._render_reference(
                 payload, "9" * 32, materials, paths
@@ -3020,9 +3051,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         process.poll.return_value = 0
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
-        ), mock.patch.object(
-            self.service, "_trim_reference_asset",
-            side_effect=lambda src, dst, start, duration: self.service._copy_reference_asset(src, dst),
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
             self.service._render_reference(
                 payload, "7" * 32, materials, paths
