@@ -19,7 +19,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="1115b9dad66cb3ee49bb9d4716fccc96d15f88a16ca8c4eb83fbf7714965c909"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -87,13 +87,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_v05_v09_v12_v16(self):
+    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_v05_v09_v10_v12_v16(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "1115b9dad66cb3ee49bb9d4716fccc96d15f88a16ca8c4eb83fbf7714965c909",
+            "221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -117,6 +117,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         self.assertIn('.v09 .top { top: 116px; }', patch)
         self.assertIn('font: 400 88px/1.08 "MaShan";', patch)
+        self.assertIn('font: 400 85px/1.02 "XiaoWei";', patch)
+        self.assertIn('font-size: 65px; font-weight: 800;', patch)
+        self.assertIn(
+            '"top3": "自媒体｜AI沙龙｜\\n抄经｜睡眠沙龙"', patch,
+        )
         self.assertIn('font: 400 80px/1.08 "MaShan";', patch)
         self.assertIn('font: 400 70px/1.12 "MaShan";', patch)
         self.assertIn('font: 400 80px/1.1 "XiaoWei";', patch)
@@ -163,11 +168,12 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('PRIVATE_FONT_ROOT="${PRIVATE_FONT_ROOT}" python3 -', installer)
         self.assertIn('smiley_path = Path(os.environ["PRIVATE_FONT_ROOT"])', installer)
         for value in (
-            '"v12.top1"', '"v12.top3"', '"v16.top1"',
+            '"v10.top1"', '"v10.top3"', '"v12.top1"', '"v12.top3"', '"v16.top1"',
             '"v16.top2"', '"v16.bottom1"', '"v16.bottom2"',
         ):
             self.assertIn(value, installer)
         self.assertIn("assert max(widths) <= 996", installer)
+        self.assertIn("weight=800", installer)
 
     def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")

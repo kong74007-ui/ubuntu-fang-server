@@ -100,6 +100,15 @@ index b724cf8..23d25b4 100644
        .v09 .top2 { font-size: 50px; font-weight: 700; color: #baf0bd; -webkit-text-stroke: 5px #234629; paint-order: stroke fill; }
        .v09 .bottom1 { font: 400 60px/1.05 "MaShan"; color: #a5ed7a; -webkit-text-stroke: 7px #234629; paint-order: stroke fill; }
        .v09 .bottom2 { font: 400 66px/1.05 "MaShan"; color: #fff0a8; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+@@ -120,6 +169,6 @@
+       /* 10：黄白层级，左对齐意向词 */
+       .v10 .top { top: 92px; }
+-      .v10 .top1 { font: 400 70px/1.02 "XiaoWei"; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
++      .v10 .top1 { font: 400 85px/1.02 "XiaoWei"; color: #fff; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+       .v10 .top2 { font: 400 78px/1.03 "XiaoWei"; color: #ffd819; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+-      .v10 .top3 { font-size: 54px; font-weight: 800; color: #fff; -webkit-text-stroke: 6px #111; paint-order: stroke fill; }
++      .v10 .top3 { font-size: 65px; font-weight: 800; color: #fff; -webkit-text-stroke: 6px #111; paint-order: stroke fill; }
+       .v10 .bottom { text-align: left; padding-left: 68px; bottom: 118px; }
 @@ -139,6 +188,6 @@
        /* 12：黑白手写标题，黄色信息行 */
 -      .v12 .top1 { font: 400 72px/1.08 "MaShan"; color: #fff; -webkit-text-stroke: 10px #111; paint-order: stroke fill; }
@@ -115,7 +124,7 @@ index b724cf8..23d25b4 100644
 +      .v16 .top1 { font: 400 80px/1.1 "XiaoWei"; color: #fff1af; -webkit-text-stroke: 5px #111; paint-order: stroke fill; }
        .v16 .top2 { font: 400 68px/1.04 "XiaoWei"; color: #fff; -webkit-text-stroke: 7px #111; paint-order: stroke fill; }
 diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
-index 69e5e41..11eb3cf 100644
+index 69e5e41..8ca47ed 100644
 --- a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
 +++ b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
 @@ -42,7 +42,7 @@ window.__previewRows = [
@@ -127,6 +136,15 @@ index 69e5e41..11eb3cf 100644
      "videoA": "assets/library/clip12.mov",
      "videoB": "assets/library/clip13.mov",
      "bgm": "assets/bgm/bgm01.mp3"
+@@ -110,7 +110,7 @@ window.__previewRows = [
+     "variant": "v10",
+     "top1": "我在深圳发起100场",
+     "top2": "欢迎70.80.90的姐妹",
+-    "top3": "自媒体｜AI沙龙｜抄经｜睡眠沙龙",
++    "top3": "自媒体｜AI沙龙｜\n抄经｜睡眠沙龙",
+     "bottom1": "想要\n自我提升的",
+     "bottom2": "扣666，我邀请你",
+     "videoA": "assets/library/clip15.mov",
 @@ -182,7 +182,7 @@ window.__previewRows = [
    {
      "name": "16-shenzhen-opc",

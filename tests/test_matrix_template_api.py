@@ -1324,6 +1324,17 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v05 .bottom2 { max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
                 ))
                 continue
+            if index == 10:
+                styles.extend((
+                    '.v10 .top { top: 92px; }',
+                    '.v10 .top1 { font: 400 85px/1.02 "XiaoWei"; color: #fff; -webkit-text-stroke: 8px #111; }',
+                    '.v10 .top2 { font: 400 78px/1.03 "XiaoWei"; color: #ffd819; -webkit-text-stroke: 8px #111; }',
+                    '.v10 .top3 { font-size: 65px; font-weight: 800; color: #fff; -webkit-text-stroke: 6px #111; }',
+                    '.v10 .bottom { padding-left: 68px; }',
+                    '.v10 .bottom1 { font: 400 68px/1.04 "XiaoWei"; color: #fff; -webkit-text-stroke: 8px #111; }',
+                    '.v10 .bottom2 { font: 400 80px/1.03 "XiaoWei"; color: #fff; -webkit-text-stroke: 9px #111; }',
+                ))
+                continue
             if index == 12:
                 styles.extend((
                     '.v12 .top1 { font: 400 80px/1.08 "MaShan"; color: #fff; -webkit-text-stroke: 10px #111; }',
@@ -1347,10 +1358,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 f".{variant} .top2 {{ font-size: 60px; }}",
                 f".{variant} .bottom2 {{ font-size: {80 if index == 4 else 70}px; }}",
             ))
-            if index == 10:
-                styles.append(
-                    ".v10 .bottom { padding-left: 68px; }"
-                )
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
             if index == 4:
@@ -1541,6 +1548,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.reference_semantic_layouts["v10"]["bottom2"][
                 "max_width_px"
             ],
+        )
+        self.assertEqual(
+            (85, 65),
+            tuple(
+                self.service.reference_semantic_layouts["v10"][layer][
+                    "font_size_px"
+                ]
+                for layer in ("top1", "top3")
+            ),
         )
         self.assertEqual(
             970,
