@@ -19,7 +19,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="f312bca47ab104d2da99c9e31342115593bdec6ef867497d9d7fbc56db499c87"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="8a0aa9f34ee2b474cafcd2fd824818f06b396eef71670e1f3039c7d7584709de"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -93,7 +93,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "f312bca47ab104d2da99c9e31342115593bdec6ef867497d9d7fbc56db499c87",
+            "8a0aa9f34ee2b474cafcd2fd824818f06b396eef71670e1f3039c7d7584709de",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -109,7 +109,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
         self.assertIn(
-            '.v04 .bottom2 { font-size: 60px; font-weight: 900;', patch,
+            '.v04 .bottom2 { font-size: 80px; font-weight: 900;', patch,
         )
         self.assertIn(
             '"bottom2": "交友破圈｜信息差｜\\n自媒体｜AI智能体"',
@@ -128,7 +128,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         spec.loader.exec_module(module)
         valid = {
             "font_loaded": True,
-            "font_size": "60px",
+            "font_size": "80px",
             "lines": module.BOTTOM2_LINES,
             "clipped": False,
             "overlap": False,
@@ -136,7 +136,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         module.validate_report(valid)
         invalid = (
             dict(valid, font_loaded=False),
-            dict(valid, font_size="52px"),
+            dict(valid, font_size="60px"),
             dict(valid, lines=["交友破圈｜信息差｜自媒体｜AI智能", "体"]),
             dict(valid, clipped=True),
             dict(valid, overlap=True),

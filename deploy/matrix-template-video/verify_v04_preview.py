@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the v04 60px preview with the production font in real Chrome."""
+"""Verify the v04 80px preview with the production font in real Chrome."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ BOTTOM2_LINES = ["交友破圈｜信息差｜", "自媒体｜AI智能体"]
 def validate_report(report: dict) -> None:
     if report.get("font_loaded") is not True:
         raise RuntimeError("v04 preview did not load NotoSC 900")
-    if report.get("font_size") != "60px":
-        raise RuntimeError("v04 preview Bottom2 is not 60px")
+    if report.get("font_size") != "80px":
+        raise RuntimeError("v04 preview Bottom2 is not 80px")
     if report.get("lines") != BOTTOM2_LINES:
         raise RuntimeError("v04 preview changed its authored phrase lines")
     if any(len(re.sub(r"[\s｜|]", "", line)) <= 1 for line in report["lines"]):
@@ -41,7 +41,7 @@ def _document(font_uri: str) -> str:
 .bottom{{position:absolute;left:0;bottom:15%;width:100%;padding:0 42px;text-align:center}}
 .bottom1,.bottom2{{max-width:996px;margin-left:auto;margin-right:auto;font-family:"NotoSC";font-weight:900;line-height:1.13;letter-spacing:.01em;white-space:pre-line}}
 .bottom1{{font-size:58px;color:#ffd923;-webkit-text-stroke:8px #111}}
-.bottom2{{margin-top:16px;font-size:60px;color:#fff;-webkit-text-stroke:8px #111}}
+.bottom2{{margin-top:16px;font-size:80px;color:#fff;-webkit-text-stroke:8px #111}}
 #report{{display:none}}
 </style></head><body><div id="stage"><div class="bottom">
 <div id="bottom1" class="bottom1">{BOTTOM1}</div>
@@ -68,7 +68,7 @@ addEventListener('load',async()=>{{
   const element=document.getElementById('bottom2');
   const bottom2=element.getBoundingClientRect();
   const report={{
-    font_loaded:document.fonts.check('900 60px "NotoSC"'),
+    font_loaded:document.fonts.check('900 80px "NotoSC"'),
     font_size:getComputedStyle(element).fontSize,
     lines:renderedLines(element),
     clipped:bottom2.left<stage.left-0.5||bottom2.right>stage.right+0.5||bottom2.top<stage.top-0.5||bottom2.bottom>stage.bottom+0.5||element.scrollWidth>element.clientWidth+1,

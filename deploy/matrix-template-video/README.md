@@ -34,7 +34,7 @@ locked text layers increase from `68/62/50/54/72px` to
 style, blue-black outlines and yellow CTA treatment. Catalog order is unchanged,
 including `v05` as the third item.
 Variant `v04` keeps its yellow-white hierarchy and increases only `bottom2`
-from `52px` to `60px`. Its authored preview uses a phrase-safe two-line break,
+from the current `60px` to `80px`. Its authored preview uses a phrase-safe two-line break,
 and installation verifies the real Noto Sans SC 900 layout in headless Chrome
 for font loading, exact lines, canvas clipping, orphan characters, and overlap.
 The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
