@@ -27,7 +27,8 @@ exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
-variants `v01`, `v04`, and `v05`, and installs pinned GSAP `3.14.2` inside the release.
+variants `v01`, `v04`, `v05`, `v09`, `v12`, and `v16`, and installs pinned GSAP
+`3.14.2` inside the release.
 Variant `v01` keeps its green-outlined handwritten treatment while its five
 locked text layers increase from `68/62/50/54/72px` to
 `70/64/52/56/74px`. Variant `v05` keeps the approved Noto Sans SC 900 block
@@ -37,6 +38,10 @@ Variant `v04` keeps its yellow-white hierarchy and increases only `bottom2`
 from the current `60px` to `80px`. Its authored preview uses a phrase-safe two-line break,
 and installation verifies the real Noto Sans SC 900 layout in headless Chrome
 for font loading, exact lines, canvas clipping, orphan characters, and overlap.
+Variant `v12` increases `top1` from `72px` to `80px` and `top3` from `50px`
+to `70px`. Variant `v16` increases `top1` from `48px` to `80px`, keeps its
+phrase-safe two-line preview, and fixes `top2`/`bottom1`/`bottom2` to authorized
+Smiley Sans Oblique at `68/70/70px`.
 The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
 patch and the separate reference-typography patch have SHA-256 locks in
 `install.sh`, so a missing or changed patch fails before the active release is
@@ -68,10 +73,10 @@ instead of starting an unsafe five-worker service.
 - The selected pair is persisted in `project.json` and returned as `font_selection` for audit and troubleshooting.
 - `/health` reports `private_font_bundle_sha256`; completed job results retain the selected families, filenames, file hashes, and bundle fingerprint after staged files expire.
 - For a private-font render, the service copies the four baseline fonts and only the selected private font into the job directory. FFmpeg never reads the persistent private directory directly.
-- HyperFrames fixed-font overrides are server-owned template settings, not user-selectable inputs. `v02` and `v03` use the authorized `Smiley Sans Oblique` private font at `62px` for `top2`; each template keeps its original color, stroke, and line height. New jobs freeze the family/file/SHA/size mapping, stage only that extra font, and inject a task-local `@font-face`; already-admitted jobs without the frozen override keep their original template style.
+- HyperFrames fixed-font overrides are server-owned template settings, not user-selectable inputs. `v02` and `v03` use the authorized `Smiley Sans Oblique` private font at `62px` for `top2`; `v16` uses it for `top2`/`bottom1`/`bottom2` at `68/70/70px`. Each template keeps its original color, stroke, and line height. New jobs freeze the family/file/SHA/size mapping, stage only that extra font, and inject a task-local `@font-face`; already-admitted jobs without the frozen override keep their original template style.
 - `/health` reports `reference_fixed_private_fonts` and deployment requires the expected fixed private font set, so a missing or changed private file fails before release activation.
 - Top copy is balanced and frozen when the job is created. The service keeps English runs, number classifiers, and common Chinese modal pairs together, prefers punctuation boundaries, and preserves the untouched source copy for audit.
-- All 17 HyperFrames variants require versioned AI semantic-boundary indices on every new preflight and submission. At startup the service parses each variant's actual CSS font family, size, weight, stroke, letter spacing, child padding, parent `.top`/`.bottom` padding, border-box content width, and available top layers; v02/v03 private-font overrides are then applied to those extracted metrics. Noto Sans SC measurements set the real variable-font weight axis, while a static font requesting a non-native synthetic weight fails closed. The installer includes real Noto 400/900 and v10 970/996 width-threshold probes. The service verifies indices against the untouched source hash, rejects protected-word splits, and freezes the shortest balanced layout. Three-layer variants distribute detail copy across `top2` and `top3` while preferring complete punctuation boundaries. Missing or invalid semantic layout fails before material selection or rendering; only already-persisted jobs and idempotent replay retain the legacy layout path for rollout recovery.
+- All 17 HyperFrames variants require versioned AI semantic-boundary indices on every new preflight and submission. At startup the service parses each variant's actual CSS font family, size, weight, stroke, letter spacing, child padding, parent `.top`/`.bottom` padding, border-box content width, and available top layers; v02/v03/v16 private-font overrides are then applied to those extracted metrics. Noto Sans SC measurements set the real variable-font weight axis, while a static font requesting a non-native synthetic weight fails closed. The installer includes real Noto 400/900, v10 970/996 width-threshold probes, and target-copy width checks for v12/v16. The service verifies indices against the untouched source hash, rejects protected-word splits, and freezes the shortest balanced layout. Three-layer variants distribute detail copy across `top2` and `top3` while preferring complete punctuation boundaries. Missing or invalid semantic layout fails before material selection or rendering; only already-persisted jobs and idempotent replay retain the legacy layout path for rollout recovery.
 - `GET /v1/templates` returns only fonts verified at service startup. `POST /v1/preflight` and `POST /v1/jobs` accept optional `font_family`; omitting it keeps automatic template-specific pairing, while a valid value applies that family to both title regions and freezes its file SHA in the job.
 
 ## Storage and delivery policy

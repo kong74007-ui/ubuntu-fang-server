@@ -1324,6 +1324,24 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v05 .bottom2 { max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
                 ))
                 continue
+            if index == 12:
+                styles.extend((
+                    '.v12 .top1 { font: 400 80px/1.08 "MaShan"; color: #fff; -webkit-text-stroke: 10px #111; }',
+                    '.v12 .top2 { font: 400 62px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 9px #111; }',
+                    '.v12 .top3 { font: 400 70px/1.12 "MaShan"; color: #ffe036; -webkit-text-stroke: 7px #111; }',
+                    '.v12 .bottom1 { font: 400 58px/1.08 "MaShan"; color: #fff; -webkit-text-stroke: 8px #111; }',
+                    '.v12 .bottom2 { font: 400 62px/1.08 "MaShan"; color: #ffe036; -webkit-text-stroke: 8px #111; }',
+                ))
+                continue
+            if index == 16:
+                styles.extend((
+                    '.v16 .top1 { font: 400 80px/1.1 "XiaoWei"; color: #fff1af; -webkit-text-stroke: 5px #111; }',
+                    '.v16 .top2 { font: 400 68px/1.04 "XiaoWei"; color: #fff; -webkit-text-stroke: 7px #111; }',
+                    '.v16 .top3 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 6px #111; }',
+                    '.v16 .bottom1 { font: 400 70px/1.04 "XiaoWei"; color: #fff0b0; -webkit-text-stroke: 8px #111; }',
+                    '.v16 .bottom2 { font: 400 70px/1.04 "XiaoWei"; color: #fff; -webkit-text-stroke: 8px #111; }',
+                ))
+                continue
             styles.extend((
                 f".{variant} .top1 {{ font-size: 80px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
@@ -1437,6 +1455,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.templates["ref-03-fixture-03"]["fixed_fonts"],
         )
         self.assertEqual(
+            {
+                "top2": "Smiley Sans Oblique",
+                "bottom1": "Smiley Sans Oblique",
+                "bottom2": "Smiley Sans Oblique",
+            },
+            self.service.templates["ref-16-fixture-16"]["fixed_fonts"],
+        )
+        self.assertEqual(
             {}, self.service.templates["ref-04-fixture-04"]["fixed_fonts"]
         )
         self.assertEqual(
@@ -1482,6 +1508,33 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             self.service.reference_semantic_layouts["v04"]["bottom2"][
                 "font_size_px"
             ],
+        )
+        self.assertEqual(
+            (80, 70),
+            tuple(
+                self.service.reference_semantic_layouts["v12"][layer][
+                    "font_size_px"
+                ]
+                for layer in ("top1", "top3")
+            ),
+        )
+        self.assertEqual(
+            (80, 68, 70),
+            tuple(
+                self.service.reference_semantic_layouts["v16"][layer][
+                    "font_size_px"
+                ]
+                for layer in ("top1", "top2", "bottom2")
+            ),
+        )
+        self.assertEqual(
+            ("Smiley Sans Oblique", "Smiley Sans Oblique"),
+            tuple(
+                self.service.reference_semantic_layouts["v16"][layer][
+                    "family"
+                ]
+                for layer in ("top2", "bottom2")
+            ),
         )
         self.assertEqual(
             970,
@@ -2429,6 +2482,46 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}',
             matrix._reference_private_font_style("v02", {"top2": fixed}),
         )
+
+    def test_v16_uses_smiley_for_top2_and_both_bottom_layers(self):
+        payload = self.service.validate_payload({
+            "top_text": "深圳共享创业平台",
+            "bottom_text": "评论区回复777",
+            "template_id": "ref-16-fixture-16",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("f" * 32, payload)
+        fixed_fonts = payload["_reference_template"]["fixed_fonts"]
+        self.assertEqual(
+            {"top2": 68, "bottom1": 70, "bottom2": 70},
+            {
+                layer: item["font_size_px"]
+                for layer, item in fixed_fonts.items()
+            },
+        )
+        self.assertTrue(all(
+            item["family"] == "Smiley Sans Oblique"
+            and item["alias"] == "HQSmileySansOblique"
+            and item["file"] == "SmileySans-Oblique.ttf"
+            for item in fixed_fonts.values()
+        ))
+        self.assertEqual(
+            1,
+            sum(
+                item["family"] == "Smiley Sans Oblique"
+                and item["source"] == "private"
+                for item in payload["_font_provenance"]["fonts"]
+            ),
+        )
+        style = matrix._reference_private_font_style("v16", fixed_fonts)
+        self.assertEqual(1, style.count('@font-face{font-family:"HQSmileySansOblique";'))
+        for layer, size in (("top2", 68), ("bottom1", 70), ("bottom2", 70)):
+            self.assertIn(
+                f'.v16 .{layer}'
+                '{font-family:"HQSmileySansOblique"!important;'
+                f'font-size:{size}px!important}}',
+                style,
+            )
 
     def test_reference_render_uses_selected_bgm_as_authored_audio_source(self):
         job_id = "6" * 32

@@ -211,6 +211,23 @@ REFERENCE_FIXED_PRIVATE_FONTS = {
             "font_size_px": 62,
         },
     },
+    "v16": {
+        "top2": {
+            "family": "Smiley Sans Oblique",
+            "alias": "HQSmileySansOblique",
+            "font_size_px": 68,
+        },
+        "bottom1": {
+            "family": "Smiley Sans Oblique",
+            "alias": "HQSmileySansOblique",
+            "font_size_px": 70,
+        },
+        "bottom2": {
+            "family": "Smiley Sans Oblique",
+            "alias": "HQSmileySansOblique",
+            "font_size_px": 70,
+        },
+    },
 }
 REFERENCE_TEXT_LAYER_IDS = frozenset({
     "top1", "top2", "top3", "bottom1", "bottom2",
