@@ -123,6 +123,11 @@ index b724cf8..23d25b4 100644
 -      .v16 .top1 { font: 400 48px/1.1 "XiaoWei"; color: #fff1af; -webkit-text-stroke: 5px #111; paint-order: stroke fill; }
 +      .v16 .top1 { font: 400 80px/1.1 "XiaoWei"; color: #fff1af; -webkit-text-stroke: 5px #111; paint-order: stroke fill; }
        .v16 .top2 { font: 400 68px/1.04 "XiaoWei"; color: #fff; -webkit-text-stroke: 7px #111; paint-order: stroke fill; }
+@@ -174,3 +223,4 @@
+       .v17 .bottom1 { font-size: 54px; font-weight: 900; color: #ffdb16; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }
+       .v17 .bottom2 { font-size: 84px; font-weight: 900; color: #fff; -webkit-text-stroke: 10px #d80c0c; paint-order: stroke fill; }
++      #root .top { top: 8%; }
+     </style>
 diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js b/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
 index 69e5e41..8ca47ed 100644
 --- a/script-to-matrix-video/assets/templates/reference-typography-17/preview-data.js
