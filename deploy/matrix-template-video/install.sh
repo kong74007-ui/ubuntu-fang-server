@@ -10,7 +10,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
-REFERENCE_LAYOUT_PATCH_SHA256="221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15"
+REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -163,6 +163,7 @@ REFERENCE_PACK_ROOT="${REFERENCE_SKILL_ROOT}/assets/templates/reference-typograp
 REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" PRIVATE_FONT_ROOT="${PRIVATE_FONT_ROOT}" python3 - <<'PY'
 import json
 import os
+import re
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -174,6 +175,14 @@ assert manifest.get("engine") == "hyperframes"
 assert manifest.get("hyperframes_version") == os.environ["HYPERFRAMES_VERSION"]
 assert len(templates) == 17
 assert len({item.get("id") for item in templates}) == 17
+index_html = (root / "assets/templates/reference-typography-17/index.html").read_text(
+    encoding="utf-8"
+)
+top_safe_area = re.search(
+    r"(?m)^\s*#root \.top\s*\{\s*top:\s*8%;\s*\}\s*$",
+    index_html,
+)
+assert top_safe_area is not None
 for name in (
     "NotoSansSC-Variable.ttf", "MaShanZheng-Regular.ttf",
     "ZCOOLKuaiLe-Regular.ttf", "ZCOOLXiaoWei-Regular.ttf",

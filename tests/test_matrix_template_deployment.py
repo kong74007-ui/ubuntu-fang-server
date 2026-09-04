@@ -19,7 +19,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -69,6 +69,8 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             'd.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"]',
             installer,
         )
+        self.assertIn('r"(?m)^\\s*#root \\.top', installer)
+        self.assertIn("assert top_safe_area is not None", installer)
         self.assertIn("from PIL import Image, ImageDraw, ImageFont", installer)
         self.assertIn('sample = "AI视频获客增长100条"', installer)
         self.assertIn("font.set_variation_by_axes(values)", installer)
@@ -87,13 +89,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
 
-    def test_reference_patch_is_hash_locked_and_scoped_to_v01_v04_v05_v09_v10_v12_v16(self):
+    def test_reference_patch_is_hash_locked_and_sets_all_top_offsets_to_eight_percent(self):
         patch_path = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "221297c33c721eba07de4abf740bbe5b77780781dabfa89f2a4289abe7adca15",
+            "07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -115,7 +117,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             '"bottom2": "交友破圈｜信息差｜\\n自媒体｜AI智能体"',
             patch,
         )
-        self.assertIn('.v09 .top { top: 116px; }', patch)
+        self.assertIn("#root .top { top: 8%; }", patch)
         self.assertIn('font: 400 88px/1.08 "MaShan";', patch)
         self.assertIn('font: 400 85px/1.02 "XiaoWei";', patch)
         self.assertIn('font-size: 65px; font-weight: 800;', patch)
