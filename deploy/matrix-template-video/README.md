@@ -7,8 +7,9 @@ tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
 The runtime exposes 19 templates: two generation-server-owned FFmpeg layouts
 and the 17-template `reference-typography-17` HyperFrames pack. HyperFrames
-templates require exactly three distinct approved video assets, render with
-HyperFrames `0.8.16`, and run at most two concurrent renders on the 8 GB host.
+templates use three to five distinct approved video assets, keeping every
+visible material clip between two and three seconds. They render with
+HyperFrames `0.8.16` and run at most two concurrent renders on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these 17 templates; the two
 FFmpeg layouts continue to support automatic or explicit font selection.
@@ -59,6 +60,10 @@ committed. Deploy only after the material-library tunnel is healthy. The system
 Python must provide Pillow (`Image`, `ImageDraw`, and `ImageFont`); the installer
 verifies it before switching releases.
 
+Deploy the material-library service before this renderer. Tunnel readiness
+requires selection contract v2 and clip contract v1, and every newly admitted
+template job fails closed if either version or any clip field is missing.
+
 The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
 least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
 memory. The upgraded 4-vCPU/8-GB host completed a five-render 1080x1920 smoke
@@ -97,10 +102,10 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 ## Batch material diversity
 
 Matrix template jobs request `selection_mode=round_robin` for every visual and
-BGM scene. Copy relevance no longer affects material ranking. Globally least-used
-healthy assets are selected first, while the remote job id deterministically
-breaks equal-count ties. The material library persists selection counts before
-returning and verifies selected files against the approved checksum.
+BGM scene. Copy relevance no longer affects material ranking. Source-scene and
+exact-asset cooldowns rotate healthy assets before count and stable-seed
+tie-breaking. The material library persists selection counts and clip windows
+before returning and verifies selected files against the approved checksum.
 
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
 `batch_size` (1-5). Material selection is serialized briefly while job
@@ -109,6 +114,19 @@ reserved in SQLite before the next batch member selects, then supplied to the
 material library as `used_sha256`. This prevents visual reuse across one batch
 while allowing BGM reuse. A retry or service restart reuses the frozen per-job
 selection instead of choosing new assets.
+
+Single jobs use the same persisted selection table with an empty batch id.
+Every new job stores its complete scene-to-source-to-clip binding and contract
+version immediately after selection, before downloads or rendering. A worker
+restart replays that exact binding. Existing rows migrate to explicit contract
+v1 and retain the legacy no-clip fallback; newly admitted v2 jobs never silently
+downgrade.
+
+Each material request also sends `selection_id=matrix-template:<job_id>`.
+The material service atomically commits usage counters and the full response
+receipt, closing the crash window before the renderer's local selection row is
+written. If that local write or the HTTP response is lost, recovery receives the
+same remote receipt without double-counting or choosing another clip.
 
 The five service workers may prepare five jobs concurrently, but HyperFrames
 rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait
@@ -126,12 +144,14 @@ detected two-layer/three-layer counts for deployment drift checks.
 Already-admitted jobs keep their frozen layer text unchanged, so an upgrade
 does not rewrite or resubmit in-flight work.
 
-Before HyperFrames starts, the service probes all three selected video files,
-allocates a gap-free timeline within their real durations, and writes the final
-clip, source `data-media-start`, typography, audio, and GSAP timings directly
-into the copied HTML. This
-avoids the pack's static eight-second media timeline and prevents a short clip
-from leaving an uncovered interval. If the three videos cannot cover the frozen
-8-15 second output, the job fails instead of publishing black frames. Completed
-reference renders also run a sustained-black check over the central media area;
-0.5 seconds or more fails before publication.
+Before HyperFrames starts, the service calculates three to five two-to-three
+second slots from the frozen 8-15 second output, rejects source videos that are
+too short, and expands the copied template with task-local video elements when
+needed. The material library freezes a different valid source offset each time
+a long source is selected: all of its non-overlapping virtual clips participate
+in ranking immediately and keep independent usage counts. One complete source
+can therefore supply multiple callable clips without changing playback speed or
+duplicating the stored file. The service writes every clip, source
+`data-media-start`, typography, audio, and GSAP timing directly into the copied
+HTML. Completed reference renders also run a sustained-black check over the
+central media area; 0.5 seconds or more fails before publication.

@@ -77,11 +77,20 @@ class MaterialLibraryTunnelTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE}"', service_installer)
         self.assertIn('systemctl start "${SERVICE}"', service_installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', service_installer)
+        self.assertIn('type(d.get("selection_contract_version")) is int', service_installer)
+        self.assertIn('d["selection_contract_version"]==2', service_installer)
+        self.assertIn('type(d.get("clip_contract_version")) is int', service_installer)
+        self.assertIn('d["clip_contract_version"]==1', service_installer)
         checker = (ROOT / "deploy/pixelle-video/bin/check-material-library-account").read_text(encoding="utf-8")
         for rule in ("allowstreamlocalforwarding no", "gatewayports no", "permittunnel no", "permituserrc no"):
             self.assertIn(rule, checker)
         self.assertIn("root:root mode 600", generation)
         self.assertIn("pixelle-material-tunnel", generation)
+        tunnel_check = (
+            ROOT / "deploy/pixelle-video/bin/check-material-library-tunnel"
+        ).read_text(encoding="utf-8")
+        self.assertIn('data.get("selection_contract_version")', tunnel_check)
+        self.assertIn('data.get("clip_contract_version")', tunnel_check)
         for script in (
             "deploy/material-library/install-forwarding-account.sh",
             "deploy/pixelle-video/install-material-library-tunnel.sh",

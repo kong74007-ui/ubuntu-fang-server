@@ -70,6 +70,8 @@ class MaterialLibraryApiTests(unittest.TestCase):
         self.assertEqual(1, payload["records"])
         self.assertEqual("development", payload["build_id"])
         self.assertTrue(payload["usage_state_ready"])
+        self.assertEqual(2, payload["selection_contract_version"])
+        self.assertEqual(1, payload["clip_contract_version"])
         self.assertNotIn(str(self.root), json.dumps(payload))
 
     def test_authenticated_ping_validates_the_runtime_token(self):
@@ -95,6 +97,8 @@ class MaterialLibraryApiTests(unittest.TestCase):
             payload = json.load(response)
         self.assertEqual(self.sha, payload["materials"][0]["sha256"])
         self.assertEqual("random", payload["selection_mode"])
+        self.assertEqual(2, payload["selection_contract_version"])
+        self.assertEqual(1, payload["clip_contract_version"])
         serialized = json.dumps(payload)
         self.assertNotIn("relative_path", serialized)
         self.assertNotIn(str(self.root), serialized)
@@ -132,6 +136,45 @@ class MaterialLibraryApiTests(unittest.TestCase):
         )
         usage = json.loads(self.usage_path.read_text(encoding="utf-8"))
         self.assertEqual(1, usage[self.sha]["count"])
+
+    def test_selection_id_replays_same_http_receipt_without_double_usage(self):
+        body = {
+            "scenes": [{"scene_id": "s1", "media_type": "image"}],
+            "orientation": "portrait",
+            "selection_mode": "round_robin",
+            "seed": "stable-job",
+            "selection_id": "matrix-template:" + "a" * 32,
+        }
+
+        with self.request(
+            "/v1/select", method="POST", payload=body, token="test-token",
+        ) as response:
+            first = json.load(response)
+        with self.request(
+            "/v1/select", method="POST", payload=body, token="test-token",
+        ) as response:
+            second = json.load(response)
+
+        self.assertEqual(first, second)
+        state = json.loads(self.usage_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, state[self.sha]["count"])
+        receipt_path = self.server.library._receipt_path(
+            body["selection_id"]
+        )
+        self.assertEqual(
+            body["selection_id"],
+            json.loads(receipt_path.read_text(encoding="utf-8"))[
+                "selection_id"
+            ],
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self.request(
+                "/v1/select", method="POST",
+                payload={**body, "seed": "different-job"},
+                token="test-token",
+            )
+        self.assertEqual(409, conflict.exception.code)
 
     def test_select_rejects_non_object_root_and_scene_entries(self):
         for payload in ([{"scene_id": "bad"}], {"scenes": ["bad"]}):

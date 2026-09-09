@@ -22,7 +22,14 @@ request = urllib.request.Request(
 try:
     with urllib.request.urlopen(request, timeout=3) as response:
         data = json.load(response)
-    ready = data.get("ok") is True and int(data.get("records") or 0) > 0
+    ready = (
+        data.get("ok") is True
+        and int(data.get("records") or 0) > 0
+        and type(data.get("selection_contract_version")) is int
+        and data["selection_contract_version"] == 2
+        and type(data.get("clip_contract_version")) is int
+        and data["clip_contract_version"] == 1
+    )
 except Exception:
     ready = False
 raise SystemExit(0 if ready else 1)
