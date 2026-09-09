@@ -4,6 +4,7 @@ import hashlib
 import json
 import random
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -11,11 +12,12 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from server import matrix_template_api as matrix
+from server import material_library_api, matrix_template_api as matrix
 
 
 class MatrixTemplateApiTests(unittest.TestCase):
@@ -496,6 +498,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
             start_worker=True,
             cleanup_interval_seconds=3600,
         )
+        service._library_readiness_cache = (float("inf"), {
+            "ready": True,
+            "selection_contract_version": 2,
+            "clip_contract_version": 1,
+        })
         active = 0
         peak = 0
         lock = threading.Lock()
@@ -636,17 +643,238 @@ class MatrixTemplateApiTests(unittest.TestCase):
             return {"materials": [
                 {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1"},
                 {"scene_id": "media_02", "sha256": "b" * 64, "media_type": "image", "record_id": "i1"},
-                {"scene_id": "bgm", "sha256": "c" * 64, "media_type": "bgm", "record_id": "m1"},
+                {"scene_id": "media_03", "sha256": "c" * 64, "media_type": "image", "record_id": "i2"},
+                {"scene_id": "bgm", "sha256": "d" * 64, "media_type": "bgm", "record_id": "m1"},
             ]}
 
         with mock.patch.object(self.service, "_library_request", side_effect=selection):
             materials = self.service._select_materials(payload, "f" * 32)
-        self.assertEqual(["video", "image", "bgm"], [item["media_type"] for item in materials])
+        self.assertEqual(
+            ["video", "image", "image", "bgm"],
+            [item["media_type"] for item in materials],
+        )
         self.assertEqual("video", captured["scenes"][0]["media_type"])
+        self.assertTrue(all(
+            2 <= scene["clip_duration_seconds"] <= 3
+            for scene in captured["scenes"][:-1]
+        ))
         self.assertEqual("portrait", captured["orientation"])
         self.assertEqual("round_robin", captured["selection_mode"])
         self.assertEqual([], captured["used_sha256"])
-        self.assertEqual(3, len(set(item["sha256"] for item in materials)))
+        self.assertEqual(4, len(set(item["sha256"] for item in materials)))
+
+    def test_non_batch_material_selection_is_frozen_and_replayed_after_restart(self):
+        payload = self.service.validate_payload({
+            "top_text": "素材切片冻结",
+            "bottom_text": "评论区获取资料",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("a" * 32, payload)
+        self.assertEqual(
+            2, payload["_material_selection_contract_version"],
+        )
+        calls = []
+
+        def selection(_method, _path, body):
+            calls.append(body)
+            generation = len(calls)
+            materials = []
+            for index, scene in enumerate(body["scenes"], 1):
+                duration = float(scene["clip_duration_seconds"])
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "sha256": format(generation * 100 + index, "064x"),
+                    "media_type": "video",
+                    "record_id": f"video-{generation}-{index}",
+                    "clip_id": format(generation * 1000 + index, "064x"),
+                    "clip_start_seconds": float(index - 1) * 3,
+                    "clip_duration_seconds": round(duration, 3),
+                    "clip_slot_index": index,
+                    "clip_slot_count": len(body["scenes"]),
+                })
+            return {
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": materials,
+            }
+
+        job_id = "b" * 32
+        with mock.patch.object(
+            self.service, "_library_request", side_effect=selection,
+        ):
+            first = self.service._select_materials(payload, job_id)
+            second = self.service._select_materials(payload, job_id)
+
+        self.assertEqual(first, second)
+        self.assertEqual(1, len(calls))
+        self.assertTrue(all(item.get("clip_id") for item in first))
+        frozen = self.service.store.material_selection(job_id)
+        self.assertEqual(2, frozen["selection_contract_version"])
+        self.assertEqual(first, frozen["materials"])
+
+        restarted = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            start_worker=False,
+        )
+        try:
+            with mock.patch.object(
+                restarted, "_library_request",
+                side_effect=AssertionError("frozen selection must replay"),
+            ):
+                self.assertEqual(
+                    first, restarted._select_materials(payload, job_id),
+                )
+        finally:
+            restarted.shutdown()
+
+    def test_remote_receipt_closes_crash_before_local_freeze(self):
+        library_root = self.root / "material-library"
+        files = library_root / "files"
+        files.mkdir(parents=True)
+        rows = []
+        for index in range(5):
+            content = f"video-{index}".encode("ascii")
+            sha256 = hashlib.sha256(content).hexdigest()
+            path = files / f"video-{index}.mp4"
+            path.write_bytes(content)
+            rows.append({
+                "record_id": f"video-{index}",
+                "sha256": sha256,
+                "素材名称": f"video-{index}",
+                "状态": "可使用",
+                "画面方向": "横屏",
+                "时长秒": 10.0,
+                "导入批次": f"batch-{index}",
+                "二级场景": f"scene-{index}",
+                "server_relative_path": path.relative_to(
+                    library_root
+                ).as_posix(),
+            })
+        (library_root / "index.jsonl").write_text(
+            "".join(
+                json.dumps(row, ensure_ascii=False) + "\n" for row in rows
+            ),
+            encoding="utf-8",
+        )
+        usage_path = self.root / "material-state/usage.json"
+        usage_path.parent.mkdir()
+        library_server = material_library_api.build_server(
+            "127.0.0.1", 0, library_root, "library-token",
+            usage_path=usage_path,
+        )
+        library_thread = threading.Thread(
+            target=library_server.serve_forever, daemon=True,
+        )
+        library_thread.start()
+        library_url = "http://127.0.0.1:%d" % library_server.server_port
+        self.service.library_url = library_url
+        payload = self.service.validate_payload({
+            "top_text": "远端回执恢复",
+            "bottom_text": "评论区获取资料",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("f" * 32, payload)
+        job_id = "f" * 32
+
+        try:
+            with mock.patch.object(
+                self.service.store, "reserve_job_materials",
+                side_effect=SystemExit("simulated crash"),
+            ), self.assertRaisesRegex(SystemExit, "simulated crash"):
+                self.service._select_materials(payload, job_id)
+
+            receipt_path = library_server.library._receipt_path(
+                "matrix-template:" + job_id
+            )
+            receipt = json.loads(
+                receipt_path.read_text(encoding="utf-8")
+            )["result"]["materials"]
+            restarted = matrix.MatrixTemplateService(
+                data_root=self.service.data_root,
+                skill_root=self.skill,
+                library_url=library_url,
+                library_token="library-token",
+                start_worker=False,
+            )
+            try:
+                recovered = restarted._select_materials(payload, job_id)
+            finally:
+                restarted.shutdown()
+
+            self.assertEqual(receipt, recovered)
+            after = json.loads(usage_path.read_text(encoding="utf-8"))
+            source_counts = [
+                value["count"]
+                for key, value in after.items()
+                if key in {row["sha256"] for row in rows}
+            ]
+            self.assertEqual([1, 1, 1], sorted(source_counts))
+        finally:
+            library_server.shutdown()
+            library_server.server_close()
+            library_thread.join(timeout=2)
+
+    def test_new_job_rejects_old_or_incomplete_clip_contract(self):
+        payload = self.service.validate_payload({
+            "top_text": "切片契约校验",
+            "bottom_text": "评论区获取资料",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("c" * 32, payload)
+        scenes, _count, _reference = self.service._material_scenes(payload)
+        legacy_materials = [{
+            "scene_id": scene["scene_id"],
+            "sha256": format(index, "064x"),
+            "media_type": "video",
+            "record_id": f"video-{index}",
+        } for index, scene in enumerate(scenes, 1)]
+
+        with mock.patch.object(
+            self.service, "_library_request",
+            return_value={"materials": legacy_materials},
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "能力版本不兼容",
+        ):
+            self.service._select_materials(payload, "c" * 32)
+
+        with mock.patch.object(
+            self.service, "_library_request", return_value={
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": legacy_materials,
+            },
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "切片契约不完整",
+        ):
+            self.service._select_materials(payload, "d" * 32)
+
+    def test_legacy_material_selection_row_is_marked_contract_v1(self):
+        path = self.root / "legacy-material-selection.db"
+        database = sqlite3.connect(path)
+        try:
+            database.execute("""CREATE TABLE batch_material_selections(
+                job_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                materials TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )""")
+            database.execute(
+                "INSERT INTO batch_material_selections("
+                "job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
+                ("e" * 32, "", "[]", 1),
+            )
+            database.commit()
+        finally:
+            database.close()
+
+        store = matrix.JobStore(path)
+        selection = store.material_selection("e" * 32)
+
+        self.assertEqual(1, selection["selection_contract_version"])
+        self.assertEqual([], selection["materials"])
 
     def test_concurrent_batch_jobs_reserve_distinct_visual_materials(self):
         batch_id = "b" * 32
@@ -663,6 +891,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             return {"materials": [
                 {"scene_id": "media_01", "sha256": available[0], "media_type": "video", "record_id": "v-" + available[0][:4]},
                 {"scene_id": "media_02", "sha256": available[1], "media_type": "image", "record_id": "i-" + available[1][:4]},
+                {"scene_id": "media_03", "sha256": available[2], "media_type": "image", "record_id": "i-" + available[2][:4]},
                 {"scene_id": "bgm", "sha256": bgm_sha, "media_type": "bgm", "record_id": "bgm-1"},
             ]}
 
@@ -691,11 +920,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 thread.join(timeout=3)
             self.assertFalse(errors)
             self.assertEqual(5, len(results))
-            self.assertEqual(10, len({
+            self.assertEqual(15, len({
                 item["sha256"] for materials in results.values()
                 for item in materials if item["media_type"] in {"image", "video"}
             }))
-            self.assertEqual([0, 2, 4, 6, 8], sorted(
+            self.assertEqual([0, 3, 6, 9, 12], sorted(
                 len(item["used_sha256"]) for item in requests
             ))
             before = len(requests)
@@ -744,11 +973,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "execute-1", payload, freeze_payload=self.service._freeze_font_provenance
         )
         materials = [
-            {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1", "match_level": "exact"},
+            {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1", "match_level": "exact", "clip_id": "e" * 64, "clip_start_seconds": 1.25, "clip_duration_seconds": 2.667, "clip_slot_index": 2, "clip_slot_count": 4},
             {"scene_id": "media_02", "sha256": "b" * 64, "media_type": "image", "record_id": "i1", "match_level": "loose"},
-            {"scene_id": "bgm", "sha256": "c" * 64, "media_type": "bgm", "record_id": "m1", "match_level": "random"},
+            {"scene_id": "media_03", "sha256": "c" * 64, "media_type": "image", "record_id": "i2", "match_level": "loose"},
+            {"scene_id": "bgm", "sha256": "d" * 64, "media_type": "bgm", "record_id": "m1", "match_level": "random"},
         ]
-        counter = iter(range(3))
+        counter = iter(range(4))
 
         def download(item, target):
             suffix = ".mp4" if item["media_type"] == "video" else ".jpg" if item["media_type"] == "image" else ".mp3"
@@ -764,6 +994,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
 
         with mock.patch.object(self.service, "_select_materials", return_value=materials), \
              mock.patch.object(self.service, "_download", side_effect=download), \
+             mock.patch.object(self.service, "_reference_video_duration", return_value=10.0), \
              mock.patch.object(self.service, "_render", side_effect=render), \
              mock.patch.object(self.service, "_probe", return_value={"duration": 8.0, "width": 1080, "height": 1920}):
             result = self.service._execute(job["job_id"])
@@ -781,10 +1012,18 @@ class MatrixTemplateApiTests(unittest.TestCase):
             frozen["private_bundle_sha256"], result["private_font_bundle_sha256"]
         )
         self.assertFalse(project["voice"]["enabled"])
-        self.assertEqual(2, len(project["scenes"][0]["media"]))
+        self.assertEqual(3, len(project["scenes"][0]["media"]))
+        self.assertEqual(1.25, project["scenes"][0]["media"][0]["start"])
         self.assertEqual("huangque-internal-api", project["material_library"]["index_source"])
         self.assertEqual("/v1/files/%s.mp4" % job["job_id"], result["file_url"])
-        self.assertEqual(["v1", "i1", "m1"], [item["record_id"] for item in result["material_manifest"]])
+        self.assertEqual(
+            ["v1", "i1", "i2", "m1"],
+            [item["record_id"] for item in result["material_manifest"]],
+        )
+        self.assertEqual(2, result["material_selection_contract_version"])
+        self.assertEqual(1, result["material_clip_contract_version"])
+        self.assertEqual("e" * 64, result["material_manifest"][0]["clip_id"])
+        self.assertEqual(1.25, result["material_manifest"][0]["clip_start_seconds"])
         self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
         self.assertFalse((self.service.data_root / job["job_id"] / "output/final.mp4").exists())
         self.service.store.update(job["job_id"], "completed", result=result)
@@ -1077,6 +1316,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 self.service.submit(body, "disk-new")
 
     def test_http_auth_templates_submit_and_status(self):
+        self.service._library_request = mock.Mock(return_value={
+            "ok": True,
+            "records": 1,
+            "selection_contract_version": 2,
+            "clip_contract_version": 1,
+        })
         server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1127,8 +1372,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "api-token",
             ) as response:
                 preflight = json.load(response)
-            self.assertEqual((14.9, 3), (
+            self.assertEqual((14.9, 5), (
                 preflight["duration"], preflight["required_visuals"]))
+            self.assertEqual(2, preflight["material_selection_contract_version"])
+            self.assertEqual(1, preflight["material_clip_contract_version"])
             self.assertEqual([], self.service.store.pending_ids())
             self.assertEqual(0, self.service.jobs.qsize())
             with self.assertRaises(urllib.error.HTTPError) as too_long:
@@ -1170,6 +1417,67 @@ class MatrixTemplateApiTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_health_and_preflight_reject_old_material_library_contract(self):
+        class OldMaterialLibraryHandler(BaseHTTPRequestHandler):
+            def log_message(self, _format, *_args):
+                return
+
+            def do_GET(self):
+                body = json.dumps({
+                    "ok": True,
+                    "records": 10,
+                    "selection_contract_version": 1,
+                    "clip_contract_version": 0,
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        old_library = ThreadingHTTPServer(
+            ("127.0.0.1", 0), OldMaterialLibraryHandler,
+        )
+        old_library_thread = threading.Thread(
+            target=old_library.serve_forever, daemon=True,
+        )
+        old_library_thread.start()
+        self.service.library_url = (
+            "http://127.0.0.1:%d" % old_library.server_port
+        )
+        self.service.enforce_library_readiness = True
+        self.service._library_readiness_cache = None
+        health = self.service.health()
+        self.assertFalse(health["ok"])
+        self.assertFalse(health["material_library_ready"])
+
+        server = matrix.build_server(
+            "127.0.0.1", 0, self.service, "api-token",
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d/v1/preflight" % server.server_port,
+                data=json.dumps({
+                    "top_text": "素材服务版本检查",
+                    "bottom_text": "评论区获取资料",
+                }).encode("utf-8"),
+                method="POST",
+                headers={"Authorization": "Bearer api-token"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(409, rejected.exception.code)
+            self.assertEqual([], self.service.store.pending_ids())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            old_library.shutdown()
+            old_library.server_close()
+            old_library_thread.join(timeout=2)
 
     def test_shutdown_terminates_active_render_process_group(self):
         project_root = self.root / "cancel-job"
@@ -1368,15 +1676,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 styles.append(".v08 .bottom2 { padding: 10px 24px; }")
         timeline_fixture = """
 <div id="root">
-  <video id="videoA" class="clip media-video" data-start="0" data-duration="2.666667"></video>
-  <video id="videoB" class="clip media-video" data-start="2.666667" data-duration="2.666666"></video>
-  <video id="videoC" class="clip media-video" data-start="5.333333" data-duration="2.666667"></video>
+  <video data-hf-id="a" id="videoA" class="clip media-video" data-start="0" data-duration="2.666667" data-var-src="videoA" src="a.mp4"></video>
+  <video data-hf-id="b" id="videoB" class="clip media-video" data-start="2.666667" data-duration="2.666666" data-var-src="videoB" src="b.mp4"></video>
+  <video data-hf-id="c" id="videoC" class="clip media-video" data-start="5.333333" data-duration="2.666667" data-var-src="videoC" src="c.mp4"></video>
   <audio id="bgm" data-start="0" data-duration="8" data-var-src="bgm" src="assets/bgm/silence.m4a"></audio>
   <section id="typography" class="clip text-layer" data-start="0" data-duration="8"></section>
 </div>
 <script>
       const duration = 8;
 """ + matrix.REFERENCE_DYNAMIC_TIMING_JS + """
+      const videos = [
+        document.getElementById("videoA"),
+        document.getElementById("videoB"),
+        document.getElementById("videoC")
+      ];
 """ + matrix.REFERENCE_BASE_TIMELINE_JS + """
 </script>
 """
@@ -1413,10 +1726,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance(job_id, payload)
         payload["_reference_template"]["duration"] = 14
+        payload["_reference_template"]["editing_plan"] = (
+            matrix._reference_editing_plan(
+                job_id, "ref-17-fixture-17", 5
+            )
+        )
         prefix = job_id[:8]
         materials = []
         paths = []
-        for index in range(1, 4):
+        for index in range(1, 6):
             path = self.root / f"{prefix}-bgm-video-{index}.mp4"
             path.write_bytes(f"video-{index}".encode("ascii"))
             paths.append(path)
@@ -1430,6 +1748,12 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
     def test_reference_catalog_is_19_and_ignores_font_selection(self):
         self.assertEqual(19, len(self.service.catalog))
         self.assertEqual(17, len(self.service.reference_templates))
+        for item in self.service.reference_templates.values():
+            self.assertEqual(3, item["required_visuals"])
+            self.assertEqual(5, item["required_visuals_max"])
+            self.assertEqual(
+                [2.0, 3.0], item["clip_duration_range_seconds"],
+            )
         self.assertEqual(
             ["full-overlay-bold", "poster-split", "ref-05-fixture-05"],
             [item["id"] for item in self.service.catalog[:3]],
@@ -1619,6 +1943,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertNotIn("font_family", payload)
         self.assertEqual(3, self.service.required_visuals(payload))
         frozen = self.service._freeze_font_provenance("1" * 32, payload)
+        self.assertTrue(3 <= self.service.required_visuals(frozen) <= 5)
         self.assertEqual(
             "template-locked",
             frozen["_font_provenance"]["selection"]["variant"],
@@ -2112,30 +2437,45 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             )
         )
 
-    def test_reference_material_selection_requires_three_videos(self):
+    def test_reference_material_selection_uses_dynamic_two_to_three_second_slots(self):
         payload = self.service.validate_payload({
             "top_text": "活动标题",
             "bottom_text": "报名获取资料",
             "template_id": "ref-02-fixture-02",
             "bgm": False,
         })
+        payload = self.service._freeze_font_provenance("2" * 32, payload)
+        payload["_reference_template"]["duration"] = 14
         captured = {}
 
         def selection(_method, _path, body):
             captured.update(body)
-            return {"materials": [{
-                "scene_id": f"media_{index:02d}",
-                "sha256": format(index, "064x"),
-                "media_type": "video",
-                "record_id": f"video-{index}",
-            } for index in range(1, 4)]}
+            return {
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": [{
+                    "scene_id": f"media_{index:02d}",
+                    "sha256": format(index, "064x"),
+                    "media_type": "video",
+                    "record_id": f"video-{index}",
+                    "clip_id": format(index + 100, "064x"),
+                    "clip_start_seconds": float(index - 1) * 3,
+                    "clip_duration_seconds": 2.8,
+                    "clip_slot_index": index,
+                    "clip_slot_count": 5,
+                } for index in range(1, 6)],
+            }
 
         with mock.patch.object(self.service, "_library_request", side_effect=selection):
             materials = self.service._select_materials(payload, "2" * 32)
-        self.assertEqual(3, len(materials))
+        self.assertEqual(5, len(materials))
         self.assertEqual(
-            ["video", "video", "video"],
+            ["video"] * 5,
             [scene["media_type"] for scene in captured["scenes"]],
+        )
+        self.assertEqual(
+            [2.8] * 5,
+            [scene["clip_duration_seconds"] for scene in captured["scenes"]],
         )
 
     def test_five_reference_batch_jobs_reserve_fifteen_distinct_videos(self):
@@ -2288,45 +2628,63 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(2, peak)
         self.assertGreaterEqual(elapsed, 0.1)
 
-    def test_reference_segment_timing_caps_short_media_without_gaps(self):
+    def test_reference_segment_timing_keeps_every_clip_between_two_and_three_seconds(self):
         starts, durations, offsets = matrix._reference_segment_timing(
-            14, [94.3, 3.9, 9.897]
+            14, [94.3, 3.9, 9.897, 6.0, 4.0]
         )
-        for actual, expected in zip(starts, [0.0, 5.1, 8.9]):
+        for actual, expected in zip(starts, [0.0, 2.8, 5.6, 8.4, 11.2]):
             self.assertAlmostEqual(expected, actual)
-        for actual, expected in zip(durations, [5.1, 3.8, 5.1]):
-            self.assertAlmostEqual(expected, actual)
+        self.assertTrue(all(
+            matrix.REFERENCE_MIN_SEGMENT_SECONDS
+            <= duration <= matrix.REFERENCE_MAX_SEGMENT_SECONDS
+            for duration in durations
+        ))
         self.assertAlmostEqual(14.0, sum(durations))
         self.assertTrue(all(
             duration <= source - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
-            for duration, source in zip(durations, [94.3, 3.9, 9.897])
+            for duration, source in zip(
+                durations, [94.3, 3.9, 9.897, 6.0, 4.0],
+            )
         ))
         seeded = matrix._reference_segment_timing(
-            14, [94.3, 3.9, 9.897], seed="stable-job",
+            14, [94.3, 3.9, 9.897, 6.0, 4.0], seed="stable-job",
         )
         self.assertEqual(
             seeded,
             matrix._reference_segment_timing(
-                14, [94.3, 3.9, 9.897], seed="stable-job",
+                14, [94.3, 3.9, 9.897, 6.0, 4.0], seed="stable-job",
             ),
         )
         self.assertTrue(all(
             0 <= offset <= source - duration - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
             for offset, duration, source in zip(
-                seeded[2], seeded[1], [94.3, 3.9, 9.897],
+                seeded[2], seeded[1], [94.3, 3.9, 9.897, 6.0, 4.0],
             )
         ))
 
         starts, durations, offsets = matrix._reference_segment_timing(
-            12, [30.0, 30.0, 30.0]
+            12, [30.0, 30.0, 30.0, 30.0]
         )
-        self.assertEqual([0.0, 4.0, 8.0], starts)
-        self.assertEqual([4.0, 4.0, 4.0], durations)
+        self.assertEqual([0.0, 3.0, 6.0, 9.0], starts)
+        self.assertEqual([3.0, 3.0, 3.0, 3.0], durations)
 
         with self.assertRaisesRegex(
-            matrix.MatrixTemplateError, "素材总时长不足"
+            matrix.MatrixTemplateError, "单素材可用时长不足"
         ):
-            matrix._reference_segment_timing(14, [3.0, 3.0, 3.0])
+            matrix._reference_segment_timing(
+                14, [3.0, 3.0, 3.0, 3.0, 2.8]
+            )
+
+    def test_visual_count_keeps_every_8_to_15_second_clip_in_range(self):
+        expected = {8: 3, 9: 3, 10: 4, 11: 4, 12: 4,
+                    13: 5, 14: 5, 15: 5}
+
+        self.assertEqual(
+            expected,
+            {duration: matrix._required_visuals(duration) for duration in expected},
+        )
+        for duration, count in expected.items():
+            self.assertTrue(2 <= duration / count <= 3)
 
     def test_reference_timeline_replaces_existing_media_offsets_and_rejects_bad_values(self):
         html = """
@@ -2379,6 +2737,13 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
         matrix._validate_reference_editing_plan(first)
 
+        five = matrix._reference_editing_plan(
+            "4" * 32, "ref-03-fixture-03", 5
+        )
+        self.assertEqual(5, len(five["segments"]))
+        self.assertEqual(4, len(five["transitions"]))
+        matrix._validate_reference_editing_plan(five)
+
     def test_reference_editing_script_has_no_color_effects_or_text_animation(self):
         plan = matrix._reference_editing_plan("3" * 32, "ref-03-fixture-03")
         source = """<html><head></head><body>
@@ -2413,28 +2778,43 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 "<html><body></body></html>", invalid
             )
 
-    def test_reference_transition_timing_overlaps_without_exceeding_media(self):
-        starts, durations, _offsets = matrix._reference_segment_timing(
-            14, [94.3, 3.9, 9.897], seed="stable-job"
-        )
-        starts, durations, offsets, windows = matrix._reference_transition_timing(
-            14, starts, durations, [94.3, 3.9, 9.897], seed="stable-job"
+    def test_reference_timeline_expands_to_five_video_slots(self):
+        html = """
+<video data-hf-id="a" id="videoA" data-start="0" data-duration="1" data-var-src="videoA" src="a.mp4"></video>
+<video data-hf-id="b" id="videoB" data-start="1" data-duration="1" data-var-src="videoB" src="b.mp4"></video>
+<video data-hf-id="c" id="videoC" data-start="2" data-duration="1" data-var-src="videoC" src="c.mp4"></video>
+<audio id="bgm" data-start="0" data-duration="3"></audio>
+<section id="typography" data-start="0" data-duration="3"></section>
+<script>
+      const segment = duration / 3;
+      const segmentStarts = [0, segment, segment * 2];
+      const segmentDurations = [segment, segment, duration - segment * 2];
+      const videos = [
+        document.getElementById("videoA"),
+        document.getElementById("videoB"),
+        document.getElementById("videoC")
+      ];
+</script>
+"""
+        sources = [f"assets/input/video-{index}.mp4" for index in range(1, 6)]
+
+        expanded = matrix._expand_reference_video_slots(html, sources)
+        rendered = matrix._rewrite_reference_timeline(
+            expanded, 14,
+            [0, 2.8, 5.6, 8.4, 11.2], [2.8] * 5,
+            [0, 1, 2, 3, 4],
         )
 
-        self.assertEqual(0.32, windows[0]["duration"])
-        self.assertEqual(0.32, windows[1]["duration"])
-        self.assertAlmostEqual(14.0, starts[-1] + durations[-1])
-        self.assertTrue(all(
-            duration <= source - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
-            for duration, source in zip(durations, [94.3, 3.9, 9.897])
-        ))
-        self.assertTrue(all(offset >= 0 for offset in offsets))
-
-        exact = matrix._reference_transition_timing(
-            8, [0, 2, 5], [2, 3, 3], [2.1, 3.1, 3.1], seed="exact"
+        self.assertIn('id="videoD"', rendered)
+        self.assertIn('id="videoE"', rendered)
+        self.assertIn('src="assets/input/video-4.mp4"', rendered)
+        self.assertIn('src="assets/input/video-5.mp4"', rendered)
+        self.assertNotRegex(rendered, r'id="video[DE]"[^>]*data-var-src')
+        self.assertEqual(5, rendered.count('document.getElementById("video'))
+        self.assertIn(
+            "const segmentDurations = [2.8, 2.8, 2.8, 2.8, 2.8];",
+            rendered,
         )
-        self.assertEqual([0, 0], [item["duration"] for item in exact[3]])
-
     def test_reference_visual_coverage_rejects_sustained_black(self):
         clean = mock.Mock(returncode=0)
         clean.communicate.return_value = (
@@ -2482,6 +2862,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance("3" * 32, payload)
         payload["_reference_template"]["duration"] = 14
+        payload["_reference_template"]["editing_plan"] = (
+            matrix._reference_editing_plan(
+                "3" * 32, "ref-03-fixture-03", 5
+            )
+        )
         fixed = payload["_reference_template"]["fixed_fonts"]["top2"]
         self.assertEqual("Smiley Sans Oblique", fixed["family"])
         self.assertEqual("HQSmileySansOblique", fixed["alias"])
@@ -2494,18 +2879,23 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         ))
         materials = []
         paths = []
-        for index in range(1, 4):
+        clip_starts = [1.0, 0.5, 1.0, 1.5, 0.5]
+        for index in range(1, 6):
             path = self.root / f"source-{index}.mp4"
             path.write_bytes(f"video-{index}".encode("ascii"))
             paths.append(path)
-            materials.append({"media_type": "video", "record_id": f"v{index}"})
+            materials.append({
+                "media_type": "video", "record_id": f"v{index}",
+                "clip_start_seconds": clip_starts[index - 1],
+                "clip_duration_seconds": 2.8,
+            })
         process = mock.Mock()
         process.returncode = 0
         process.communicate.return_value = (b"", b"")
         process.poll.return_value = 0
         with mock.patch.object(
             self.service, "_reference_video_duration",
-            side_effect=[94.3, 3.9, 9.897],
+            side_effect=[94.3, 3.9, 9.897, 6.0, 4.0],
         ), mock.patch.object(
             matrix.subprocess, "Popen", return_value=process
         ) as popen:
@@ -2536,21 +2926,32 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}', index
         )
         self.assertIn(
-            'id="videoA" class="clip media-video" data-start="0" data-duration="5.42"',
+            'id="videoA" class="clip media-video" data-start="0" data-duration="2.8" data-media-start="1"',
             index,
         )
         self.assertIn(
-            'id="videoB" class="clip media-video" data-start="5.1" data-duration="3.8" data-media-start="0"',
+            'id="videoB" class="clip media-video" data-start="2.8" data-duration="2.8" data-media-start="0.5"',
             index,
         )
         self.assertIn(
-            'id="videoC" class="clip media-video" data-start="8.58" data-duration="5.42"',
+            'id="videoC" class="clip media-video" data-start="5.6" data-duration="2.8" data-media-start="1"',
+            index,
+        )
+        self.assertIn(
+            'id="videoD" class="clip media-video" data-start="8.4" data-duration="2.8" data-media-start="1.5"',
+            index,
+        )
+        self.assertIn(
+            'id="videoE" class="clip media-video" data-start="11.2" data-duration="2.8" data-media-start="0.5"',
             index,
         )
         self.assertIn('id="bgm" data-start="0" data-duration="14"', index)
         self.assertIn('id="typography" class="clip text-layer" data-start="0" data-duration="14"', index)
-        self.assertIn("const segmentStarts = [0, 5.1, 8.58];", index)
-        self.assertIn("const segmentDurations = [5.42, 3.8, 5.42];", index)
+        self.assertIn("const segmentStarts = [0, 2.8, 5.6, 8.4, 11.2];", index)
+        self.assertIn(
+            "const segmentDurations = [2.8, 2.8, 2.8, 2.8, 2.8];",
+            index,
+        )
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
         self.assertEqual(
             1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID)
@@ -2559,15 +2960,13 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             payload["_reference_template"]["editing_plan"]["seed"],
             variables["_editing_plan"]["seed"],
         )
-        self.assertEqual(
-            [0.32, 0.32],
-            [
-                item["duration"]
-                for item in variables["_editing_plan"]["transitions"]
-            ],
-        )
+        self.assertEqual(5, len(variables["_editing_plan"]["segments"]))
+        self.assertEqual(4, len(variables["_editing_plan"]["transitions"]))
         self.assertEqual([], variables["_editing_plan"]["color_effects"])
         self.assertEqual(1, index.count("gsap.timeline({paused: true})"))
+        for element_id in matrix.REFERENCE_VIDEO_IDS:
+            self.assertIn(f'id="{element_id}-transition"', index)
+            self.assertIn(f'id="{element_id}-motion"', index)
         for asset_index, source in enumerate(paths, 1):
             copied = workdir / f"assets/input/video-{asset_index}.mp4"
             self.assertEqual(source.read_bytes(), copied.read_bytes())
@@ -3220,7 +3619,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         materials = []
         paths = []
-        for index in range(1, 4):
+        for index in range(1, 6):
             path = self.root / f"edge-{index}.mp4"
             path.write_bytes(f"video-{index}".encode("ascii"))
             paths.append(path)

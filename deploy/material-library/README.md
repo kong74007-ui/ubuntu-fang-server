@@ -66,11 +66,18 @@ candidate from all orientations of the requested media type. Random selection
 remains deterministic for one seed, excludes `used_sha256`, and skips files
 whose live checksum no longer matches the approved index.
 
-`"selection_mode":"round_robin"` uses the same all-orientation candidate pool,
-but chooses the globally least-selected healthy asset and uses the seed only to
-break equal-count ties. Counts are atomically persisted outside the read-only
-approved library at `/var/lib/huangque-material-library/usage.json`; a state
-write failure rejects selection instead of silently losing fairness.
+`"selection_mode":"round_robin"` uses the same all-orientation candidate pool.
+For image and video assets it first rotates the least-recently-used source batch
+and scene group, avoids groups already used by the current request or batch when
+an alternative exists, then chooses the least-used and least-recently-used file
+inside that group. The most recent nine source-scene groups, 50 source videos,
+and 200 virtual clips are temporarily deprioritized. A two-use fairness window
+keeps newly imported groups from monopolizing every output while still bringing
+new files into rotation. If the library does not contain enough distinct groups,
+selection falls back to unique files instead of failing. Counts are atomically
+persisted outside the read-only approved library at
+`/var/lib/huangque-material-library/usage.json`; a state write failure rejects
+selection instead of silently losing fairness.
 
 `POST /v1/select` selects one unique approved asset per scene using
 `exact -> loose -> random`. `GET /v1/assets/{sha256}` downloads a selected asset
@@ -78,3 +85,34 @@ after verifying its checksum. Both endpoints require the bearer token.
 
 `GET /health` is unauthenticated and returns counts only. `GET /v1/ping`
 requires the bearer token and is used for pre-charge readiness checks.
+Both responses expose `selection_contract_version=2` and
+`clip_contract_version=1`; generation-server tunnel readiness rejects older
+material-library releases before accepting template jobs.
+
+Round-robin callers may provide a stable `selection_id`. Source/clip counters
+and the complete response are protected by a write-ahead receipt stored under
+`usage.json.receipts-v1/`. The receipt is atomically persisted before the flat
+usage file; startup and request retries reconcile its expected counters using
+monotonic maxima before replaying the same result. This closes both a lost HTTP
+response and a crash between receipt and usage replacement without double
+counting. Reusing a key for a different request returns a conflict.
+
+`usage.json` remains the flat SHA-to-count mapping accepted by the previous
+production reader, including its 20,000-record and 4 MiB limits. A successful
+upgrade can therefore roll back to the old source against the live state, and
+the installer never restores a stale usage snapshot over selections confirmed
+while services are switching.
+
+Video scenes may provide `clip_duration_seconds` from `2` through `3`. Every
+eligible source is expanded into deterministic, non-overlapping three-second
+virtual candidates across its full duration; sources that cannot cover one clip
+plus the safety margin are excluded. Each candidate has its own persisted usage
+key, so later portions participate in selection immediately instead of waiting
+for the whole source to cycle. The response freezes `clip_id`,
+`clip_start_seconds`, `clip_duration_seconds`, `clip_slot_index`, and
+`clip_slot_count` while downloads continue to use the approved source SHA.
+
+Explicit index durations must be finite, non-boolean, non-negative, and at most
+30 minutes. One source may expose at most 600 slots, and one selection request
+may inspect at most 20,000 unique virtual candidates. Invalid metadata or a cap
+breach fails closed before a material is returned.

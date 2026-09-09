@@ -4,6 +4,7 @@ import concurrent.futures
 import collections
 import hashlib
 import json
+import math
 import tempfile
 import time
 import unittest
@@ -12,6 +13,30 @@ from unittest import mock
 
 from server import material_library as material_library_module
 from server.material_library import MaterialLibrary, MaterialLibraryError, MaterialShortageError
+
+
+def load_legacy_usage(path: Path) -> dict[str, dict[str, int | float]]:
+    raw = path.read_bytes()
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError("legacy usage state is too large")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or len(data) > 20_000:
+        raise ValueError("legacy usage state is invalid")
+    for key, value in data.items():
+        if (
+            not material_library_module.SHA256_RE.fullmatch(str(key))
+            or not isinstance(value, dict)
+            or set(value) != {"count", "last_used"}
+            or isinstance(value.get("count"), bool)
+            or not isinstance(value.get("count"), int)
+            or value["count"] < 0
+            or isinstance(value.get("last_used"), bool)
+            or not isinstance(value.get("last_used"), (int, float))
+            or not math.isfinite(float(value["last_used"]))
+            or float(value["last_used"]) < 0
+        ):
+            raise ValueError("legacy usage state is invalid")
+    return data
 
 
 class MaterialLibraryTests(unittest.TestCase):
@@ -116,6 +141,129 @@ class MaterialLibraryTests(unittest.TestCase):
             ]
         )
         self.assertEqual([image, video, bgm], [item["sha256"] for item in result["materials"]])
+
+    def test_video_clip_duration_skips_sources_that_are_too_short(self):
+        self.add("short", media=".mp4", 时长秒=2.5)
+        expected = self.add("long", media=".mp4", 时长秒=6.0)
+
+        result = self.library().select([{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }], seed="clip-length")
+
+        self.assertEqual(expected, result["materials"][0]["sha256"])
+        self.assertEqual(3.0, result["materials"][0]["clip_duration_seconds"])
+
+    def test_round_robin_splits_one_full_video_into_distinct_clip_windows(self):
+        expected = self.add("long", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 2.5,
+        }]
+
+        selected = [
+            library.select(
+                scene, seed=f"clip-{index}", selection_mode="round_robin",
+            )["materials"][0]
+            for index in range(3)
+        ]
+
+        self.assertEqual({expected}, {item["sha256"] for item in selected})
+        self.assertEqual(3, len({item["clip_id"] for item in selected}))
+        self.assertEqual(3, len({item["clip_start_seconds"] for item in selected}))
+        self.assertEqual({1, 2, 3}, {item["clip_slot_index"] for item in selected})
+        self.assertEqual({3}, {item["clip_slot_count"] for item in selected})
+        self.assertTrue(all(
+            item["clip_start_seconds"] + item["clip_duration_seconds"] <= 9.9
+            for item in selected
+        ))
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        self.assertEqual(3, usage[expected]["count"])
+        self.assertEqual(
+            [1, 1, 1], sorted(usage[item["clip_id"]]["count"] for item in selected),
+        )
+
+    def test_invalid_video_clip_duration_is_rejected(self):
+        self.add("video", media=".mp4", 时长秒=10.0)
+        library = self.library()
+
+        for value in (
+            True, "2.5", 1.99, 3.01, float("nan"), 10 ** 400,
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "between 2 and 3",
+            ):
+                library.select([{
+                    "scene_id": "s1", "media_type": "video",
+                    "clip_duration_seconds": value,
+                }])
+
+    def test_invalid_index_duration_fails_closed(self):
+        invalid_values = (
+            True, float("nan"), float("inf"), "1e309",
+            10 ** 400,
+            material_library_module.MAX_MATERIAL_DURATION_SECONDS + 1,
+        )
+        for index, value in enumerate(invalid_values):
+            with self.subTest(value=value):
+                self.rows = []
+                self.add(
+                    f"invalid-duration-{index}", media=".mp4", 时长秒=value,
+                )
+                with self.assertRaisesRegex(
+                    MaterialLibraryError, "invalid material duration",
+                ):
+                    self.library().refresh()
+
+    def test_virtual_clip_limits_fail_closed(self):
+        self.add("long-a", media=".mp4", 时长秒=12.1)
+        self.add("long-b", media=".mp4", 时长秒=12.1)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        with mock.patch.object(
+            material_library_module, "MAX_CLIP_SLOTS_PER_SOURCE", 2,
+        ), self.assertRaisesRegex(MaterialLibraryError, "slot limit"):
+            self.library().select(scene)
+
+        with mock.patch.object(
+            material_library_module,
+            "MAX_VIRTUAL_CANDIDATES_PER_REQUEST", 3,
+        ), self.assertRaisesRegex(MaterialLibraryError, "candidate limit"):
+            self.library().select(scene)
+
+    def test_virtual_clip_pool_uses_later_parts_as_independent_candidates(self):
+        sources = {
+            self.add(
+                f"source-{index}", media=".mp4", 时长秒=12.1,
+                导入批次=f"batch-{index}", 二级场景=f"scene-{index}",
+            )
+            for index in range(10)
+        }
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        selected = [
+            library.select(
+                scene, seed=f"job-{index}", selection_mode="round_robin",
+            )["materials"][0]
+            for index in range(30)
+        ]
+
+        self.assertEqual(30, len({item["clip_id"] for item in selected}))
+        self.assertEqual(sources, {item["sha256"] for item in selected})
+        self.assertTrue(any(item["clip_start_seconds"] >= 6 for item in selected))
+        self.assertEqual({4}, {item["clip_slot_count"] for item in selected})
 
     def test_shortage_fails_without_ai_fallback(self):
         only = self.add("only", 标签=["产品"])
@@ -252,6 +400,363 @@ class MaterialLibraryTests(unittest.TestCase):
         )["materials"][0]["sha256"]
 
         self.assertEqual({first, second}, {selected_first, selected_second})
+
+    def test_round_robin_selection_id_replays_receipt_across_restart(self):
+        for index in range(3):
+            self.add(
+                f"receipt-{index}", media=".mp4", 时长秒=10.0,
+                导入批次=f"batch-{index}", 二级场景=f"scene-{index}",
+            )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "a" * 32
+
+        first = library.select(
+            scenes, seed="stable-job", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+        persisted = usage_path.read_bytes()
+        receipt_path = library._receipt_path(selection_id)
+        persisted_receipt = receipt_path.read_bytes()
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        second = restarted.select(
+            scenes, seed="stable-job", selection_mode="round_robin",
+            selection_id=selection_id,
+            used_sha256=["f" * 64],
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(persisted, usage_path.read_bytes())
+        self.assertEqual(persisted_receipt, receipt_path.read_bytes())
+        self.assertEqual(1, len(restarted._selection_receipts))
+        self.assertEqual(
+            selection_id,
+            json.loads(persisted_receipt)["selection_id"],
+        )
+        with self.assertRaisesRegex(
+            MaterialLibraryError, "selection_id request conflict",
+        ):
+            restarted.select(
+                scenes, seed="different-job", selection_mode="round_robin",
+                selection_id=selection_id,
+            )
+
+    def test_successful_upgrade_remains_readable_after_legacy_rollback(self):
+        source = self.add("rollback", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "b" * 32
+
+        first = library.select(
+            scenes, seed="upgrade", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+
+        legacy_state = load_legacy_usage(usage_path)
+        self.assertNotIn("version", legacy_state)
+        self.assertEqual(1, legacy_state[source]["count"])
+        legacy_state[source]["count"] += 1
+        legacy_state[source]["last_used"] = time.time()
+        usage_path.write_text(
+            json.dumps(legacy_state, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(2, load_legacy_usage(usage_path)[source]["count"])
+
+        upgraded_again = MaterialLibrary(self.root, usage_path=usage_path)
+        upgraded_again.verify_usage_state()
+        replayed = upgraded_again.select(
+            scenes, seed="upgrade", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+
+        self.assertEqual(first, replayed)
+        self.assertEqual(2, load_legacy_usage(usage_path)[source]["count"])
+
+    def test_receipt_recovers_crash_before_usage_replace(self):
+        source = self.add("write-ahead", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        before = usage_path.read_bytes()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "c" * 32
+        real_replace = material_library_module.os.replace
+        failed = False
+
+        def fail_first_usage_replace(source_path, target_path):
+            nonlocal failed
+            if Path(target_path) == usage_path and not failed:
+                failed = True
+                raise OSError("simulated usage replace crash")
+            return real_replace(source_path, target_path)
+
+        with mock.patch.object(
+            material_library_module.os, "replace",
+            side_effect=fail_first_usage_replace,
+        ), self.assertRaisesRegex(
+            MaterialLibraryError, "usage state is unavailable",
+        ):
+            library.select(
+                scenes, seed="write-ahead", selection_mode="round_robin",
+                selection_id=selection_id,
+            )
+
+        receipt_path = library._receipt_path(selection_id)
+        self.assertTrue(receipt_path.is_file())
+        self.assertEqual(before, usage_path.read_bytes())
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        restarted.verify_usage_state()
+        replayed = restarted.select(
+            scenes, seed="write-ahead", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+        usage = load_legacy_usage(usage_path)
+
+        self.assertEqual(receipt["result"], replayed)
+        self.assertEqual(1, usage[source]["count"])
+        self.assertEqual(
+            [1], sorted(
+                value["count"]
+                for key, value in usage.items()
+                if key != source
+            ),
+        )
+
+    def test_usage_save_prunes_stale_keys(self):
+        valid = self.add("valid", media=".mp4", 时长秒=10.0)
+        stale = "f" * 64
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            valid: {"count": 2, "last_used": 10},
+            stale: {"count": 9, "last_used": 20},
+        }), encoding="utf-8")
+        library = self.library(usage_path)
+
+        library.verify_usage_state()
+
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        self.assertIn(valid, usage)
+        self.assertNotIn(stale, usage)
+
+    def test_usage_save_limits_preserve_previous_valid_file(self):
+        self.add("bounded", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        before = usage_path.read_bytes()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        with mock.patch.object(
+            material_library_module, "MAX_USAGE_RECORDS", 1,
+        ), self.assertRaisesRegex(MaterialLibraryError, "state is too large"):
+            library.select(
+                scenes, seed="record-cap", selection_mode="round_robin",
+            )
+        self.assertEqual(before, usage_path.read_bytes())
+
+        with mock.patch.object(
+            material_library_module, "MAX_STATE_BYTES", len(before) - 1,
+        ), self.assertRaisesRegex(MaterialLibraryError, "state is too large"):
+            library.select(
+                scenes, seed="byte-cap", selection_mode="round_robin",
+            )
+        self.assertEqual(before, usage_path.read_bytes())
+        MaterialLibrary(self.root, usage_path=usage_path).verify_usage_state()
+
+    def test_round_robin_prefers_distinct_source_groups_within_one_video(self):
+        group_a = {
+            self.add(
+                f"group-a-{index}", media=".mp4",
+                导入批次="batch-a", 二级场景="培训授课",
+            )
+            for index in range(3)
+        }
+        group_b = self.add(
+            "group-b", media=".mp4",
+            导入批次="batch-b", 二级场景="商务交流",
+        )
+        group_c = self.add(
+            "group-c", media=".mp4",
+            导入批次="batch-c", 二级场景="门店探访",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            group_b: {"count": 2, "last_used": 10},
+            group_c: {"count": 2, "last_used": 20},
+        }), encoding="utf-8")
+
+        result = self.library(usage_path).select(
+            [
+                {"scene_id": f"s{index}", "media_type": "video"}
+                for index in range(1, 4)
+            ],
+            seed="distinct-groups", selection_mode="round_robin",
+        )
+        selected = {item["sha256"] for item in result["materials"]}
+
+        self.assertEqual(1, len(selected & group_a))
+        self.assertIn(group_b, selected)
+        self.assertIn(group_c, selected)
+
+    def test_round_robin_avoids_used_batch_group_when_alternative_exists(self):
+        used = self.add(
+            "used-a", media=".mp4",
+            导入批次="batch-a", 二级场景="培训授课",
+        )
+        self.add(
+            "unused-a", media=".mp4",
+            导入批次="batch-a", 二级场景="培训授课",
+        )
+        alternative = self.add(
+            "alternative-b", media=".mp4",
+            导入批次="batch-b", 二级场景="商务交流",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+
+        selected = self.library(usage_path).select(
+            [{"scene_id": "s1", "media_type": "video"}],
+            used_sha256=[used], seed="batch-groups",
+            selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertEqual(alternative, selected)
+
+    def test_round_robin_reuses_group_only_when_no_distinct_group_remains(self):
+        expected = {
+            self.add(
+                f"same-group-{index}", media=".mp4",
+                导入批次="one-batch", 二级场景="同一场景",
+            )
+            for index in range(2)
+        }
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+
+        result = self.library(usage_path).select(
+            [
+                {"scene_id": "s1", "media_type": "video"},
+                {"scene_id": "s2", "media_type": "video"},
+            ],
+            seed="group-fallback", selection_mode="round_robin",
+        )
+
+        self.assertEqual(
+            expected, {item["sha256"] for item in result["materials"]},
+        )
+
+    def test_round_robin_rotates_groups_before_draining_new_large_group(self):
+        group_a = {
+            self.add(
+                f"new-group-{index}", media=".mp4",
+                导入批次="new-batch", 二级场景="培训授课",
+            )
+            for index in range(2)
+        }
+        old_group = self.add(
+            "old-group", media=".mp4",
+            导入批次="old-batch", 二级场景="商务交流",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            old_group: {"count": 2, "last_used": 10},
+        }), encoding="utf-8")
+        library = self.library(usage_path)
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+
+        first = library.select(
+            scene, seed="first", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+        second = library.select(
+            scene, seed="second", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertIn(first, group_a)
+        self.assertEqual(old_group, second)
+
+    def test_round_robin_recent_asset_cooldown_beats_two_use_gap(self):
+        recent = self.add(
+            "recent", media=".mp4",
+            导入批次="same-batch", 二级场景="同一场景",
+        )
+        older = self.add(
+            "older", media=".mp4",
+            导入批次="same-batch", 二级场景="同一场景",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            recent: {"count": 1, "last_used": 100},
+            older: {"count": 3, "last_used": 10},
+        }), encoding="utf-8")
+
+        selected = self.library(usage_path).select(
+            [{"scene_id": "s1", "media_type": "video"}],
+            seed="asset-cooldown", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertEqual(older, selected)
+
+    def test_round_robin_large_rotation_has_no_adjacent_group_or_asset_reuse(self):
+        group_by_sha = {}
+        for group_index in range(12):
+            for asset_index in range(20):
+                sha256 = self.add(
+                    f"group-{group_index}-asset-{asset_index}", media=".mp4",
+                    导入批次=f"batch-{group_index}",
+                    二级场景=f"scene-{group_index}",
+                )
+                group_by_sha[sha256] = group_index
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        jobs = []
+
+        for job_index in range(50):
+            result = library.select(
+                [
+                    {"scene_id": f"s{index}", "media_type": "video"}
+                    for index in range(1, 4)
+                ],
+                seed=f"job-{job_index}", selection_mode="round_robin",
+            )
+            jobs.append([
+                item["sha256"] for item in result["materials"]
+            ])
+
+        self.assertEqual(150, len({sha256 for job in jobs for sha256 in job}))
+        for job in jobs:
+            self.assertEqual(3, len({group_by_sha[sha256] for sha256 in job}))
+        for previous, current in zip(jobs, jobs[1:]):
+            self.assertFalse(
+                {group_by_sha[sha256] for sha256 in previous}
+                & {group_by_sha[sha256] for sha256 in current}
+            )
 
     def test_round_robin_selection_and_persistence_are_one_critical_section(self):
         for index in range(3):

@@ -51,6 +51,10 @@ class MaterialLibraryInstallerTests(unittest.TestCase):
         (state / "enabled").write_text("1")
         (state / "pid").write_text("100")
         (state / "trace").write_text("")
+        (state / "usage.json").write_text(
+            json.dumps({"a" * 64: {"count": 1, "last_used": 1}}),
+            encoding="utf-8",
+        )
         return library, runtime, source, unit, env_file, state
 
     def _fake_bin(self, root: Path) -> Path:
@@ -81,7 +85,12 @@ case "$1" in
   is-active) [[ "$(cat "$TEST_STATE_DIR/active")" = 1 ]] ;;
   is-enabled) [[ "$(cat "$TEST_STATE_DIR/enabled")" = 1 ]] ;;
   show) cat "$TEST_STATE_DIR/pid" ;;
-  stop) echo 0 > "$TEST_STATE_DIR/active" ;;
+  stop)
+    if [[ "${TEST_WRITE_USAGE_ON_STOP:-0}" = 1 ]]; then
+      printf '%s\n' "$TEST_CONFIRMED_USAGE_JSON" > "$TEST_USAGE_PATH"
+    fi
+    echo 0 > "$TEST_STATE_DIR/active"
+    ;;
   start|restart)
     echo 1 > "$TEST_STATE_DIR/active"
     value=$(cat "$TEST_STATE_DIR/pid"); echo $((value + 1)) > "$TEST_STATE_DIR/pid"
@@ -97,7 +106,7 @@ set -e
 [[ "$(cat "$TEST_STATE_DIR/active")" = 1 ]]
 build=$(cat "$TEST_SOURCE_LINK/BUILD_ID")
 if [[ "${TEST_FAIL_NEW_BUILD:-0}" = 1 && "$build" != "$TEST_OLD_BUILD_ID" ]]; then exit 22; fi
-printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$build"
+printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true,"selection_contract_version":2,"clip_contract_version":1}\n' "$build"
 ''')
         return fake
 
@@ -117,6 +126,10 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             "TEST_STATE_DIR": str(state),
             "TEST_SOURCE_LINK": str(runtime / "source"),
             "TEST_OLD_BUILD_ID": "0" * 64,
+            "TEST_USAGE_PATH": str(state / "usage.json"),
+            "TEST_CONFIRMED_USAGE_JSON": json.dumps({
+                "a" * 64: {"count": 2, "last_used": 2},
+            }),
         })
         return env
 
@@ -137,13 +150,14 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             self.assertIn("stop huangque-material-library.service", (state / "trace").read_text())
             self.assertIn("start huangque-material-library.service", (state / "trace").read_text())
 
-    def test_failed_new_build_restores_old_release_unit_and_service_state(self):
+    def test_failed_build_keeps_last_usage_write_while_restoring_release(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             library, runtime, _, unit, env_file, state = self._fixture(root)
             fake = self._fake_bin(root)
             env = self._environment(root, library, runtime, unit, env_file, state, fake)
             env["TEST_FAIL_NEW_BUILD"] = "1"
+            env["TEST_WRITE_USAGE_ON_STOP"] = "1"
             result = subprocess.run(
                 [BASH, str(ROOT / "deploy/material-library/install.sh")],
                 env=env, capture_output=True, text=True,
@@ -153,6 +167,12 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             self.assertEqual("old-unit", unit.read_text())
             self.assertEqual("1", (state / "active").read_text().strip())
             self.assertEqual("1", (state / "enabled").read_text().strip())
+            self.assertEqual(
+                2,
+                json.loads(
+                    (state / "usage.json").read_text(encoding="utf-8")
+                )["a" * 64]["count"],
+            )
 
     def test_early_preflight_failure_does_not_call_systemctl_or_change_files(self):
         with tempfile.TemporaryDirectory() as temp:

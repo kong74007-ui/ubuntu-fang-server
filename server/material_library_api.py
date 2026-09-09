@@ -20,6 +20,7 @@ try:
     from .material_library import (
         MaterialLibrary,
         MaterialLibraryError,
+        MaterialSelectionConflictError,
         MaterialShortageError,
         content_type_for,
 )
@@ -27,6 +28,7 @@ except ImportError:
     from material_library import (
         MaterialLibrary,
         MaterialLibraryError,
+        MaterialSelectionConflictError,
         MaterialShortageError,
         content_type_for,
     )
@@ -159,12 +161,15 @@ class MaterialHandler(BaseHTTPRequestHandler):
                 seed=str(payload.get("seed") or ""),
                 used_sha256=payload.get("used_sha256") or [],
                 selection_mode=payload.get("selection_mode") or "semantic",
+                selection_id=str(payload.get("selection_id") or ""),
             )
             self._json(200, result)
         except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             self._json(400, {"error": "invalid_request", "detail": str(exc)})
         except MaterialShortageError as exc:
             self._json(409, {"error": "material_shortage", "detail": str(exc)})
+        except MaterialSelectionConflictError as exc:
+            self._json(409, {"error": "selection_conflict", "detail": str(exc)})
         except MaterialLibraryError as exc:
             self._json(503, {"error": "library_unavailable", "detail": str(exc)})
 
