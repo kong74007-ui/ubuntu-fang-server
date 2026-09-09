@@ -191,8 +191,15 @@ REFERENCE_MIN_SEGMENT_SECONDS = 0.5
 REFERENCE_DYNAMIC_TIMING_JS = """      const segment = duration / 3;
       const segmentStarts = [0, segment, segment * 2];
       const segmentDurations = [segment, segment, duration - segment * 2];"""
-REFERENCE_EDITING_PLAN_VERSION = 1
+REFERENCE_BASE_TIMELINE_JS = '''      const tl = gsap.timeline({ paused: true });
+      videos.forEach((video, index) => {
+        tl.fromTo(video, { scale: 1.015 }, { scale: 1.04, duration: segmentDurations[index], ease: "none" }, segmentStarts[index]);
+      });
+      window.__timelines["main"] = tl;'''
+REFERENCE_EDITING_PLAN_VERSION = 2
 REFERENCE_EDITING_SCRIPT_ID = "matrix-reference-editing-plan"
+REFERENCE_EDITING_STYLE_ID = "matrix-reference-editing-layers"
+REFERENCE_TRANSITION_MAX_SECONDS = 0.32
 REFERENCE_MOTIONS = (
     "slow_push", "pull_back", "pan_left", "pan_right",
     "pan_up", "tilt", "handheld", "breath_zoom",
@@ -210,8 +217,13 @@ REFERENCE_TRANSITIONS = (
     "page_turn", "cube_flip",
 )
 REFERENCE_FORBIDDEN_COLOR_EFFECTS = (
-    "filter", "mix-blend-mode", "mixBlendMode", "hue-rotate",
+    "filter", "mix-blend-mode", "mixblendmode", "hue-rotate",
     "saturate(", "contrast(", "grayscale(", "sepia(",
+    "brightness(", "invert(", "opacity", "background:",
+    "backgroundcolor", "color:", "box-shadow", "boxshadow",
+    "rgb(", "rgba(", "hsl(", "hsla(", "linear-gradient(",
+    "radial-gradient(", "fecolormatrix", "color-matrix",
+    "<canvas", "webgl", "shader",
 )
 REFERENCE_BLACK_SCREEN_SECONDS = 0.5
 REFERENCE_BLACK_SCREEN_FILTER = (
@@ -1065,7 +1077,7 @@ def _reference_effect_order(seed: str, category: str,
 
 def _reference_editing_plan(job_id: str, template_id: str) -> dict:
     seed = hashlib.sha256(
-        f"{job_id}:{template_id}:reference-editing-v1".encode("utf-8")
+        f"{job_id}:{template_id}:reference-editing-v2".encode("utf-8")
     ).hexdigest()[:16]
     motions = _reference_effect_order(seed, "motion", REFERENCE_MOTIONS)
     entrances = _reference_effect_order(seed, "entrance", REFERENCE_ENTRANCES)
@@ -1080,11 +1092,13 @@ def _reference_editing_plan(job_id: str, template_id: str) -> dict:
             {
                 "index": index + 1,
                 "motion": motions[index],
-                "entrance": entrances[index],
-                "exit": exits[index],
             }
             for index in range(3)
         ],
+        "bookends": {
+            "entrance": entrances[0],
+            "exit": exits[0],
+        },
         "transitions": [
             {"boundary": index + 1, "name": transitions[index]}
             for index in range(2)
@@ -1098,11 +1112,16 @@ def _validate_reference_editing_plan(value) -> dict:
         raise MatrixTemplateError("HyperFrames 剪辑方案无效")
     segments = value.get("segments")
     transitions = value.get("transitions")
+    bookends = value.get("bookends")
     if (
         value.get("version") != REFERENCE_EDITING_PLAN_VERSION
         or not re.fullmatch(r"[0-9a-f]{16}", str(value.get("seed") or ""))
         or not isinstance(segments, list) or len(segments) != 3
         or not isinstance(transitions, list) or len(transitions) != 2
+        or not isinstance(bookends, dict)
+        or bookends.get("entrance") not in REFERENCE_ENTRANCES
+        or bookends.get("exit") not in REFERENCE_EXITS
+        or set(bookends) != {"entrance", "exit"}
         or value.get("color_effects") != []
     ):
         raise MatrixTemplateError("HyperFrames 剪辑方案无效")
@@ -1111,15 +1130,36 @@ def _validate_reference_editing_plan(value) -> dict:
             not isinstance(segment, dict)
             or segment.get("index") != index
             or segment.get("motion") not in REFERENCE_MOTIONS
-            or segment.get("entrance") not in REFERENCE_ENTRANCES
-            or segment.get("exit") not in REFERENCE_EXITS
+            or set(segment) != {"index", "motion"}
         ):
             raise MatrixTemplateError("HyperFrames 剪辑方案无效")
     for index, transition in enumerate(transitions, 1):
+        transition_keys = set(transition) if isinstance(transition, dict) else set()
+        has_window = transition_keys == {
+            "boundary", "name", "start", "duration",
+        }
         if (
             not isinstance(transition, dict)
             or transition.get("boundary") != index
             or transition.get("name") not in REFERENCE_TRANSITIONS
+            or transition_keys not in (
+                {"boundary", "name"},
+                {"boundary", "name", "start", "duration"},
+            )
+            or (
+                has_window and (
+                    isinstance(transition.get("start"), bool)
+                    or not isinstance(transition.get("start"), (int, float))
+                    or not math.isfinite(float(transition["start"]))
+                    or float(transition["start"]) < 0
+                    or isinstance(transition.get("duration"), bool)
+                    or not isinstance(transition.get("duration"), (int, float))
+                    or not math.isfinite(float(transition["duration"]))
+                    or float(transition["duration"]) < 0
+                    or float(transition["duration"])
+                    > REFERENCE_TRANSITION_MAX_SECONDS + 0.001
+                )
+            )
         ):
             raise MatrixTemplateError("HyperFrames 剪辑方案无效")
     return value
@@ -1127,14 +1167,42 @@ def _validate_reference_editing_plan(value) -> dict:
 
 def _inject_reference_editing_plan(html: str, plan: dict) -> str:
     plan = _validate_reference_editing_plan(plan)
-    if REFERENCE_EDITING_SCRIPT_ID in html or html.count("</body>") != 1:
+    if (
+        REFERENCE_EDITING_SCRIPT_ID in html
+        or REFERENCE_EDITING_STYLE_ID in html
+        or html.count("</head>") != 1
+        or html.count("</body>") != 1
+        or html.count(REFERENCE_BASE_TIMELINE_JS) != 1
+    ):
         raise MatrixTemplateError("HyperFrames 剪辑脚本声明发生变化")
+    html = html.replace(REFERENCE_BASE_TIMELINE_JS, "")
+    for element_id in ("videoA", "videoB", "videoC"):
+        pattern = re.compile(
+            rf'(<video\b[^>]*\bid="{element_id}"[^>]*>.*?</video>)',
+            re.DOTALL,
+        )
+        matches = list(pattern.finditer(html))
+        if len(matches) != 1:
+            raise MatrixTemplateError("HyperFrames 剪辑素材层发生变化")
+        video = matches[0].group(1)
+        layers = (
+            f'<div id="{element_id}-transition" class="matrix-media-transition" '
+            f'data-layout-allow-overflow="">'
+            f'<div id="{element_id}-motion" class="matrix-media-motion">'
+            f'{video}</div></div>'
+        )
+        html = html[:matches[0].start()] + layers + html[matches[0].end():]
     plan_json = json.dumps(plan, ensure_ascii=True, separators=(",", ":"))
+    style = f'''<style id="{REFERENCE_EDITING_STYLE_ID}">
+.matrix-media-transition,.matrix-media-motion{{position:absolute;inset:0;width:1080px;height:1920px;overflow:hidden;transform-origin:50% 50%;transform-style:preserve-3d;backface-visibility:hidden}}
+</style>'''
     runtime = f'''<script id="{REFERENCE_EDITING_SCRIPT_ID}">
 (() => {{
   const plan = {plan_json};
   const videos = ["videoA", "videoB", "videoC"].map(id => document.getElementById(id));
-  const neutral = {{x: 0, y: 0, scale: 1.06, rotation: 0, rotationX: 0, rotationY: 0, clipPath: "inset(0% 0% 0% 0%)"}};
+  const transitionLayers = videos.map(video => document.getElementById(`${{video.id}}-transition`));
+  const motionLayers = videos.map(video => document.getElementById(`${{video.id}}-motion`));
+  const neutral = {{x: 0, y: 0, scale: 1, rotation: 0, rotationX: 0, rotationY: 0, clipPath: "inset(0% 0% 0% 0%)"}};
   const motions = {{
     slow_push: [{{scale: 1.03}}, {{scale: 1.14}}],
     pull_back: [{{scale: 1.15}}, {{scale: 1.03}}],
@@ -1175,25 +1243,42 @@ def _inject_reference_editing_plan(html: str, plan: dict) -> str:
     const duration = Number(video.dataset.duration);
     const segment = plan.segments[index];
     const motion = motions[segment.motion];
-    const edge = Math.min(0.34, duration * 0.16);
-    gsap.set(video, {{transformOrigin: "50% 50%", transformPerspective: 1200, backfaceVisibility: "hidden", force3D: true}});
-    timeline.fromTo(video, motion[0], {{...motion[1], duration, ease: "none", immediateRender: false}}, start);
-    timeline.fromTo(video, entrances[segment.entrance], {{...neutral, duration: edge, ease: "power3.out", immediateRender: false}}, start);
-    timeline.to(video, {{...exits[segment.exit], duration: edge, ease: "power3.in"}}, start + duration - edge);
+    timeline.fromTo(motionLayers[index], motion[0], {{...motion[1], duration, ease: "none", immediateRender: false}}, start);
   }});
+  const firstStart = Number(videos[0].dataset.start);
+  const firstEdge = Math.min(0.34, Number(videos[0].dataset.duration) * 0.16);
+  timeline.fromTo(transitionLayers[0], entrances[plan.bookends.entrance], {{...neutral, duration: firstEdge, ease: "power3.out", immediateRender: false}}, firstStart);
   plan.transitions.forEach((item, index) => {{
-    const boundary = Number(videos[index + 1].dataset.start);
-    const edge = Math.min(0.28, Number(videos[index].dataset.duration) * 0.12);
+    const outgoingStart = Number(videos[index].dataset.start);
+    const outgoingEnd = outgoingStart + Number(videos[index].dataset.duration);
+    const incomingStart = Number(videos[index + 1].dataset.start);
+    const incomingEnd = incomingStart + Number(videos[index + 1].dataset.duration);
+    const overlapStart = Math.max(outgoingStart, incomingStart);
+    const overlapEnd = Math.min(outgoingEnd, incomingEnd);
+    const edge = Math.max(0, overlapEnd - overlapStart);
     const transition = transitions[item.name];
-    timeline.to(videos[index], {{...transition[0], duration: edge, ease: "power4.in"}}, boundary - edge);
-    timeline.fromTo(videos[index + 1], transition[1], {{...neutral, duration: edge, ease: "power4.out", immediateRender: false}}, boundary);
+    if (edge > 0.001) {{
+      timeline.to(transitionLayers[index], {{...transition[0], duration: edge, ease: "power4.in"}}, overlapStart);
+      timeline.fromTo(transitionLayers[index + 1], transition[1], {{...neutral, duration: edge, ease: "power4.out", immediateRender: false}}, overlapStart);
+    }}
   }});
+  const lastIndex = videos.length - 1;
+  const lastStart = Number(videos[lastIndex].dataset.start);
+  const lastDuration = Number(videos[lastIndex].dataset.duration);
+  const lastEdge = Math.min(0.34, lastDuration * 0.16);
+  timeline.to(transitionLayers[lastIndex], {{...exits[plan.bookends.exit], duration: lastEdge, ease: "power3.in"}}, lastStart + lastDuration - lastEdge);
   window.__matrixEditingPlan = plan;
   window.__timelines["main"] = timeline;
 }})();
 </script>'''
-    if any(token in runtime for token in REFERENCE_FORBIDDEN_COLOR_EFFECTS):
+    injected = style + runtime
+    normalized_injected = injected.lower()
+    if any(
+        token in normalized_injected
+        for token in REFERENCE_FORBIDDEN_COLOR_EFFECTS
+    ):
         raise MatrixTemplateError("HyperFrames 剪辑脚本包含禁用调色效果")
+    html = html.replace("</head>", style + "\n</head>")
     return html.replace("</body>", runtime + "\n</body>")
 
 
@@ -1256,6 +1341,83 @@ def _reference_segment_timing(
         fraction = int.from_bytes(digest[:4], "big") / float(0xFFFFFFFF)
         media_offsets.append(round(fraction * max_start, 3))
     return starts, durations, media_offsets
+
+
+def _reference_transition_timing(
+    total_duration: float, starts: list[float], durations: list[float],
+    media_durations: list[float], seed: str = "",
+) -> tuple[list[float], list[float], list[float], list[dict]]:
+    if not all(len(values) == 3 for values in (starts, durations, media_durations)):
+        raise MatrixTemplateError("HyperFrames 模板转场时间轴参数无效")
+    capacities = [
+        max(0.0, float(value) - REFERENCE_MEDIA_SAFETY_SECONDS)
+        for value in media_durations
+    ]
+    result_starts = [float(value) for value in starts]
+    result_durations = [float(value) for value in durations]
+    slack = [
+        max(0.0, capacity - duration)
+        for capacity, duration in zip(capacities, result_durations)
+    ]
+    windows = []
+    for index in range(2):
+        boundary = float(starts[index + 1])
+        wanted = REFERENCE_TRANSITION_MAX_SECONDS
+        before = min(wanted / 2.0, slack[index + 1])
+        after = min(wanted - before, slack[index])
+        if before + after < wanted:
+            extra_before = min(
+                wanted - before - after, slack[index + 1] - before
+            )
+            before += extra_before
+        if before + after < wanted:
+            extra_after = min(
+                wanted - before - after, slack[index] - after
+            )
+            after += extra_after
+        overlap = before + after
+        if overlap < 0.08:
+            before = after = overlap = 0.0
+        result_starts[index + 1] -= before
+        result_durations[index + 1] += before
+        result_durations[index] += after
+        slack[index + 1] -= before
+        slack[index] -= after
+        windows.append({
+            "boundary": index + 1,
+            "start": round(boundary - before, 6),
+            "duration": round(overlap, 6),
+        })
+
+    if (
+        abs(result_starts[0]) > 0.001
+        or abs(
+            result_starts[-1] + result_durations[-1]
+            - float(total_duration)
+        ) > 0.001
+        or any(
+            duration > capacities[index] + 0.001
+            for index, duration in enumerate(result_durations)
+        )
+    ):
+        raise MatrixTemplateError("HyperFrames 模板转场时间轴参数无效")
+
+    media_offsets = []
+    for index, duration in enumerate(result_durations):
+        max_start = max(
+            0.0,
+            float(media_durations[index]) - duration
+            - REFERENCE_MEDIA_SAFETY_SECONDS,
+        )
+        if max_start <= 0.001:
+            media_offsets.append(0.0)
+            continue
+        digest = hashlib.sha256(
+            f"{seed}:reference-transition-offset:{index}".encode("utf-8")
+        ).digest()
+        fraction = int.from_bytes(digest[:4], "big") / float(0xFFFFFFFF)
+        media_offsets.append(round(fraction * max_start, 3))
+    return result_starts, result_durations, media_offsets, windows
 
 
 def _rewrite_reference_timeline(
@@ -3151,6 +3313,15 @@ class MatrixTemplateService:
         segment_starts, segment_durations, media_offsets = _reference_segment_timing(
             float(reference["duration"]), media_durations, seed=job_id
         )
+        (
+            segment_starts,
+            segment_durations,
+            media_offsets,
+            transition_windows,
+        ) = _reference_transition_timing(
+            float(reference["duration"]), segment_starts, segment_durations,
+            media_durations, seed=job_id,
+        )
         video_values = []
         for asset_index, source in enumerate(paths[:3], 1):
             target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
@@ -3187,6 +3358,15 @@ class MatrixTemplateService:
             # Jobs persisted before editing-plan rollout stay recoverable.
             editing_plan = _reference_editing_plan(job_id, payload["template_id"])
         editing_plan = _validate_reference_editing_plan(editing_plan)
+        editing_plan = {
+            **editing_plan,
+            "transitions": [
+                {**item, **window}
+                for item, window in zip(
+                    editing_plan["transitions"], transition_windows
+                )
+            ],
+        }
         index = _inject_reference_editing_plan(index, editing_plan)
         index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"

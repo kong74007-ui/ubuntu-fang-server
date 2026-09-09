@@ -1377,6 +1377,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 <script>
       const duration = 8;
 """ + matrix.REFERENCE_DYNAMIC_TIMING_JS + """
+""" + matrix.REFERENCE_BASE_TIMELINE_JS + """
 </script>
 """
         (pack / "index.html").write_text(
@@ -2363,6 +2364,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         self.assertEqual(first, repeated)
         self.assertNotEqual(first["seed"], second["seed"])
+        self.assertNotEqual(
+            (first["segments"], first["transitions"], first["bookends"]),
+            (second["segments"], second["transitions"], second["bookends"]),
+        )
         self.assertEqual([], first["color_effects"])
         self.assertEqual(3, len(first["segments"]))
         self.assertEqual(2, len(first["transitions"]))
@@ -2376,17 +2381,28 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
     def test_reference_editing_script_has_no_color_effects_or_text_animation(self):
         plan = matrix._reference_editing_plan("3" * 32, "ref-03-fixture-03")
+        source = """<html><head></head><body>
+<video id="videoA" class="clip media-video"></video>
+<video id="videoB" class="clip media-video"></video>
+<video id="videoC" class="clip media-video"></video>
+<section id="typography"></section><script>""" \
+            + matrix.REFERENCE_BASE_TIMELINE_JS + """</script></body></html>"""
         rendered = matrix._inject_reference_editing_plan(
-            "<html><body><section id=\"typography\"></section></body></html>",
-            plan,
+            source, plan,
         )
 
         self.assertEqual(1, rendered.count(matrix.REFERENCE_EDITING_SCRIPT_ID))
         self.assertIn('window.__timelines["main"] = timeline', rendered)
         self.assertIn('const videos = ["videoA", "videoB", "videoC"]', rendered)
+        self.assertNotIn(matrix.REFERENCE_BASE_TIMELINE_JS, rendered)
+        self.assertEqual(1, rendered.count("gsap.timeline({paused: true})"))
+        for element_id in ("videoA", "videoB", "videoC"):
+            self.assertIn(f'id="{element_id}-transition"', rendered)
+            self.assertIn(f'id="{element_id}-motion"', rendered)
         self.assertNotIn('getElementById("typography")', rendered)
+        normalized_rendered = rendered.lower()
         for forbidden in matrix.REFERENCE_FORBIDDEN_COLOR_EFFECTS:
-            self.assertNotIn(forbidden, rendered)
+            self.assertNotIn(forbidden, normalized_rendered)
 
         invalid = json.loads(json.dumps(plan))
         invalid["color_effects"] = ["grayscale"]
@@ -2396,6 +2412,28 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             matrix._inject_reference_editing_plan(
                 "<html><body></body></html>", invalid
             )
+
+    def test_reference_transition_timing_overlaps_without_exceeding_media(self):
+        starts, durations, _offsets = matrix._reference_segment_timing(
+            14, [94.3, 3.9, 9.897], seed="stable-job"
+        )
+        starts, durations, offsets, windows = matrix._reference_transition_timing(
+            14, starts, durations, [94.3, 3.9, 9.897], seed="stable-job"
+        )
+
+        self.assertEqual(0.32, windows[0]["duration"])
+        self.assertEqual(0.32, windows[1]["duration"])
+        self.assertAlmostEqual(14.0, starts[-1] + durations[-1])
+        self.assertTrue(all(
+            duration <= source - matrix.REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+            for duration, source in zip(durations, [94.3, 3.9, 9.897])
+        ))
+        self.assertTrue(all(offset >= 0 for offset in offsets))
+
+        exact = matrix._reference_transition_timing(
+            8, [0, 2, 5], [2, 3, 3], [2.1, 3.1, 3.1], seed="exact"
+        )
+        self.assertEqual([0, 0], [item["duration"] for item in exact[3]])
 
     def test_reference_visual_coverage_rejects_sustained_black(self):
         clean = mock.Mock(returncode=0)
@@ -2498,7 +2536,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             'font-size:62px!important}', index
         )
         self.assertIn(
-            'id="videoA" class="clip media-video" data-start="0" data-duration="5.1" data-media-start="30.568"',
+            'id="videoA" class="clip media-video" data-start="0" data-duration="5.42"',
             index,
         )
         self.assertIn(
@@ -2506,22 +2544,30 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             index,
         )
         self.assertIn(
-            'id="videoC" class="clip media-video" data-start="8.9" data-duration="5.1" data-media-start="1.984"',
+            'id="videoC" class="clip media-video" data-start="8.58" data-duration="5.42"',
             index,
         )
         self.assertIn('id="bgm" data-start="0" data-duration="14"', index)
         self.assertIn('id="typography" class="clip text-layer" data-start="0" data-duration="14"', index)
-        self.assertIn("const segmentStarts = [0, 5.1, 8.9];", index)
-        self.assertIn("const segmentDurations = [5.1, 3.8, 5.1];", index)
+        self.assertIn("const segmentStarts = [0, 5.1, 8.58];", index)
+        self.assertIn("const segmentDurations = [5.42, 3.8, 5.42];", index)
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
         self.assertEqual(
             1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID)
         )
         self.assertEqual(
-            payload["_reference_template"]["editing_plan"],
-            variables["_editing_plan"],
+            payload["_reference_template"]["editing_plan"]["seed"],
+            variables["_editing_plan"]["seed"],
+        )
+        self.assertEqual(
+            [0.32, 0.32],
+            [
+                item["duration"]
+                for item in variables["_editing_plan"]["transitions"]
+            ],
         )
         self.assertEqual([], variables["_editing_plan"]["color_effects"])
+        self.assertEqual(1, index.count("gsap.timeline({paused: true})"))
         for asset_index, source in enumerate(paths, 1):
             copied = workdir / f"assets/input/video-{asset_index}.mp4"
             self.assertEqual(source.read_bytes(), copied.read_bytes())
