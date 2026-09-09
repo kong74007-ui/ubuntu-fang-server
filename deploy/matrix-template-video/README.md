@@ -131,8 +131,10 @@ Before HyperFrames starts, the service calculates three to five two-to-three
 second slots from the frozen 8-15 second output, rejects source videos that are
 too short, and expands the copied template with task-local video elements when
 needed. The material library freezes a different valid source offset each time
-a long source is reused, so one complete source can yield multiple
-non-overlapping clips without changing playback speed. The service writes every
-clip, source `data-media-start`, typography, audio, and GSAP timing directly
-into the copied HTML. Completed reference renders also run a sustained-black
-check over the central media area; 0.5 seconds or more fails before publication.
+a long source is selected: all of its non-overlapping virtual clips participate
+in ranking immediately and keep independent usage counts. One complete source
+can therefore supply multiple callable clips without changing playback speed or
+duplicating the stored file. The service writes every clip, source
+`data-media-start`, typography, audio, and GSAP timing directly into the copied
+HTML. Completed reference renders also run a sustained-black check over the
+central media area; 0.5 seconds or more fails before publication.

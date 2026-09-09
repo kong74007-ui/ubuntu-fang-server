@@ -50,10 +50,15 @@ MAX_RECORDS = 20_000
 # abandoning long-term per-file fairness.
 ROUND_ROBIN_COUNT_SLACK = 2
 ROUND_ROBIN_RECENT_GROUP_WINDOW = 9
-ROUND_ROBIN_RECENT_ASSET_WINDOW = 200
-ROUND_ROBIN_RECENT_ASSET_PENALTY = ROUND_ROBIN_COUNT_SLACK + 1
+ROUND_ROBIN_RECENT_SOURCE_WINDOW = 50
+ROUND_ROBIN_RECENT_CLIP_WINDOW = 200
+ROUND_ROBIN_RECENT_CLIP_PENALTY = ROUND_ROBIN_COUNT_SLACK + 1
+ROUND_ROBIN_RECENT_SOURCE_PENALTY = (
+    ROUND_ROBIN_COUNT_SLACK + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
+)
 ROUND_ROBIN_RECENT_GROUP_PENALTY = (
-    ROUND_ROBIN_COUNT_SLACK + ROUND_ROBIN_RECENT_ASSET_PENALTY + 1
+    ROUND_ROBIN_COUNT_SLACK + ROUND_ROBIN_RECENT_SOURCE_PENALTY
+    + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
 )
 MIN_CLIP_SECONDS = 2.0
 MAX_CLIP_SECONDS = 3.0
@@ -97,6 +102,32 @@ class Material:
             "match_level": match_level,
             "orientation_match": orientation_match,
         }
+
+
+@dataclass(frozen=True)
+class MaterialCandidate:
+    material: Material
+    usage_key: str
+    clip_start_seconds: float | None = None
+    clip_duration_seconds: float | None = None
+    clip_slot_index: int | None = None
+    clip_slot_count: int | None = None
+
+    def public_dict(
+        self, match_level: str, scene_id: str, orientation_match: str,
+    ) -> dict[str, Any]:
+        result = self.material.public_dict(
+            match_level, scene_id, orientation_match,
+        )
+        if self.clip_duration_seconds is not None:
+            result.update({
+                "clip_id": self.usage_key,
+                "clip_start_seconds": self.clip_start_seconds,
+                "clip_duration_seconds": self.clip_duration_seconds,
+                "clip_slot_index": self.clip_slot_index,
+                "clip_slot_count": self.clip_slot_count,
+            })
+        return result
 
 
 def _text(value: Any) -> str:
@@ -190,42 +221,39 @@ def _clip_duration(value: Any) -> float | None:
     return round(float(value), 6)
 
 
-def _can_supply_clip(material: Material, clip_duration: float | None) -> bool:
+def _material_candidates(
+    material: Material, clip_duration: float | None,
+) -> tuple[MaterialCandidate, ...]:
     if material.media_type != "video" or clip_duration is None:
-        return True
-    return (
-        material.duration_seconds is not None
-        and material.duration_seconds + 0.001
-        >= clip_duration + CLIP_SAFETY_SECONDS
-    )
-
-
-def _clip_window(
-    material: Material, clip_duration: float, sequence: int,
-) -> dict[str, int | float]:
+        return (MaterialCandidate(material, material.sha256),)
     available = float(material.duration_seconds or 0) - CLIP_SAFETY_SECONDS
     if available + 0.001 < clip_duration:
-        raise MaterialLibraryError("selected video is too short for clip")
-    slot_count = max(
-        1, int(math.floor(
-            (available - clip_duration) / CLIP_SLOT_SECONDS + 1e-9
-        )) + 1,
-    )
-    occupied = (slot_count - 1) * CLIP_SLOT_SECONDS + clip_duration
+        return ()
+    slot_count = max(1, int(math.floor(
+        available / CLIP_SLOT_SECONDS + 1e-9
+    )))
+    occupied = CLIP_SLOT_SECONDS * slot_count if slot_count > 1 else clip_duration
     leading = max(0.0, (available - occupied) / 2)
-    digest = hashlib.sha256(
-        f"{material.sha256}:clip-slots".encode("ascii")
-    ).digest()
-    first_slot = int.from_bytes(digest[:4], "big") % slot_count
-    slot_index = (first_slot + max(0, int(sequence))) % slot_count
-    return {
-        "clip_start_seconds": round(
-            leading + slot_index * CLIP_SLOT_SECONDS, 3,
-        ),
-        "clip_duration_seconds": round(clip_duration, 3),
-        "clip_slot_index": slot_index + 1,
-        "clip_slot_count": slot_count,
-    }
+    inset = (
+        (CLIP_SLOT_SECONDS - clip_duration) / 2
+        if slot_count > 1 else 0.0
+    )
+    result = []
+    for slot_index in range(slot_count):
+        clip_id = hashlib.sha256(
+            f"{material.sha256}:clip-slot:{slot_index}".encode("ascii")
+        ).hexdigest()
+        result.append(MaterialCandidate(
+            material=material,
+            usage_key=clip_id,
+            clip_start_seconds=round(
+                leading + inset + slot_index * CLIP_SLOT_SECONDS, 3,
+            ),
+            clip_duration_seconds=round(clip_duration, 3),
+            clip_slot_index=slot_index + 1,
+            clip_slot_count=slot_count,
+        ))
+    return tuple(result)
 
 
 def _diversity_group(row: dict[str, Any], media_type: str, sha256: str) -> str:
@@ -278,8 +306,10 @@ def _score(material: Material, tokens: Iterable[str], query_text: str) -> int:
     return total
 
 
-def _stable_rank(seed: str, material: Material) -> str:
-    return hashlib.sha256(f"{seed}:{material.sha256}".encode("utf-8")).hexdigest()
+def _stable_rank(seed: str, candidate: MaterialCandidate) -> str:
+    return hashlib.sha256(
+        f"{seed}:{candidate.usage_key}".encode("utf-8")
+    ).hexdigest()
 
 
 class MaterialLibrary:
@@ -402,18 +432,25 @@ class MaterialLibrary:
         entry["count"] = int(entry.get("count", 0) or 0) + 1
         entry["last_used"] = time.time()
 
-    def _usage_values(self, material: Material) -> tuple[int, float]:
-        entry = self._usage.get(material.sha256, {})
+    def _usage_values(
+        self, value: str | Material | MaterialCandidate,
+    ) -> tuple[int, float]:
+        key = (
+            value.usage_key if isinstance(value, MaterialCandidate)
+            else value.sha256 if isinstance(value, Material)
+            else value
+        )
+        entry = self._usage.get(key, {})
         return (
             int(entry.get("count", 0) or 0),
             float(entry.get("last_used", 0.0) or 0.0),
         )
 
     def _round_robin_recency(
-        self, allowed_types: set[str],
-    ) -> tuple[dict[str, float], set[str], set[str]]:
+        self, allowed_types: set[str], candidates: list[MaterialCandidate],
+    ) -> tuple[dict[str, float], set[str], set[str], set[str]]:
         group_last_used: dict[str, float] = {}
-        asset_last_used: list[tuple[float, str]] = []
+        source_last_used: list[tuple[float, str]] = []
         for material in self._materials:
             if material.media_type not in allowed_types:
                 continue
@@ -421,7 +458,7 @@ class MaterialLibrary:
             group_last_used[material.diversity_group] = max(
                 group_last_used.get(material.diversity_group, 0.0), last_used,
             )
-            asset_last_used.append((last_used, material.sha256))
+            source_last_used.append((last_used, material.sha256))
         group_limit = min(
             ROUND_ROBIN_RECENT_GROUP_WINDOW,
             max(0, len(group_last_used) - 1),
@@ -433,18 +470,32 @@ class MaterialLibrary:
             )[:group_limit]
             if last_used > 0
         }
-        asset_limit = min(
-            ROUND_ROBIN_RECENT_ASSET_WINDOW,
-            max(0, len(asset_last_used) - 1),
+        source_limit = min(
+            ROUND_ROBIN_RECENT_SOURCE_WINDOW,
+            max(0, len(source_last_used) - 1),
         )
-        recent_assets = {
+        recent_sources = {
             sha256
             for last_used, sha256 in sorted(
-                asset_last_used, key=lambda item: (-item[0], item[1]),
-            )[:asset_limit]
+                source_last_used, key=lambda item: (-item[0], item[1]),
+            )[:source_limit]
             if last_used > 0
         }
-        return group_last_used, recent_groups, recent_assets
+        clip_limit = min(
+            ROUND_ROBIN_RECENT_CLIP_WINDOW,
+            max(0, len(candidates) - 1),
+        )
+        recent_clips = {
+            candidate.usage_key
+            for candidate in sorted(
+                candidates,
+                key=lambda item: (
+                    -self._usage_values(item)[1], item.usage_key,
+                ),
+            )[:clip_limit]
+            if self._usage_values(candidate)[1] > 0
+        }
+        return group_last_used, recent_groups, recent_sources, recent_clips
 
     def refresh(self) -> None:
         with self._lock:
@@ -577,11 +628,11 @@ class MaterialLibrary:
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
             candidates = [
-                item
+                candidate
                 for item in self._materials
                 if item.sha256 not in used
                 and item.media_type in allowed_types
-                and _can_supply_clip(item, clip_duration)
+                for candidate in _material_candidates(item, clip_duration)
             ]
             if not candidates:
                 raise MaterialShortageError(f"no unique approved material remains for {scene_id}")
@@ -594,11 +645,15 @@ class MaterialLibrary:
             )
             tokens = _tokens(*query_values)
             query_text = " ".join(_text(value) for value in query_values)
-            scored = [(item, _score(item, tokens, query_text)) for item in candidates]
-            same_orientation = lambda item: (
-                item.media_type == "bgm"
+            scored = [
+                (candidate, _score(candidate.material, tokens, query_text))
+                for candidate in candidates
+            ]
+            same_orientation = lambda candidate: (
+                candidate.material.media_type == "bgm"
                 or requested_orientation == "unknown"
-                or item.orientation in {requested_orientation, "unknown"}
+                or candidate.material.orientation
+                in {requested_orientation, "unknown"}
             )
             exact_same = [
                 (item, score) for item, score in scored
@@ -635,12 +690,14 @@ class MaterialLibrary:
                         default=0,
                     )
                     (
-                        group_last_used, recent_groups, recent_assets,
-                    ) = self._round_robin_recency(allowed_types)
+                        group_last_used, recent_groups,
+                        recent_sources, recent_clips,
+                    ) = self._round_robin_recency(allowed_types, candidates)
 
                     def round_robin_key(pair):
-                        material = pair[0]
-                        count, last_used = self._usage_values(material)
+                        candidate = pair[0]
+                        material = candidate.material
+                        count, last_used = self._usage_values(candidate)
                         fairness_distance = min(
                             max(0, count - minimum_count),
                             ROUND_ROBIN_COUNT_SLACK,
@@ -648,15 +705,18 @@ class MaterialLibrary:
                         rotation_score = fairness_distance
                         if material.diversity_group in recent_groups:
                             rotation_score += ROUND_ROBIN_RECENT_GROUP_PENALTY
-                        if material.sha256 in recent_assets:
-                            rotation_score += ROUND_ROBIN_RECENT_ASSET_PENALTY
+                        if material.sha256 in recent_sources:
+                            rotation_score += ROUND_ROBIN_RECENT_SOURCE_PENALTY
+                        if candidate.usage_key in recent_clips:
+                            rotation_score += ROUND_ROBIN_RECENT_CLIP_PENALTY
                         return (
                             material.diversity_group in used_groups,
                             rotation_score,
                             count,
                             group_last_used.get(material.diversity_group, 0.0),
+                            self._usage_values(material)[1],
                             last_used,
-                            _stable_rank(rank_seed, material),
+                            _stable_rank(rank_seed, candidate),
                         )
 
                     ranked = sorted(
@@ -670,7 +730,10 @@ class MaterialLibrary:
                         ),
                     )
                 selected_pair = next(
-                    (pair for pair in ranked if self._is_available(pair[0])),
+                    (
+                        pair for pair in ranked
+                        if self._is_available(pair[0].material)
+                    ),
                     None,
                 )
                 if selected_pair is not None:
@@ -680,28 +743,22 @@ class MaterialLibrary:
                 raise MaterialShortageError(
                     f"no healthy approved material remains for {scene_id}"
                 )
-            material, score = selected_pair
-            usage_count, _last_used = self._usage_values(material)
+            candidate, score = selected_pair
+            material = candidate.material
             used.add(material.sha256)
             used_groups.add(material.diversity_group)
             if mode == "round_robin":
                 self._record_usage(material.sha256)
+                if candidate.usage_key != material.sha256:
+                    self._record_usage(candidate.usage_key)
             orientation_match = (
                 "not_applicable" if material.media_type == "bgm"
-                else "same" if same_orientation(material)
+                else "same" if same_orientation(candidate)
                 else "fallback"
             )
-            item = material.public_dict(
+            item = candidate.public_dict(
                 match_level, scene_id, orientation_match
             )
-            if clip_duration is not None and material.media_type == "video":
-                sequence = usage_count
-                if mode != "round_robin":
-                    digest = hashlib.sha256(
-                        f"{rank_seed}:clip-window".encode("utf-8")
-                    ).digest()
-                    sequence = int.from_bytes(digest[:8], "big")
-                item.update(_clip_window(material, clip_duration, sequence))
             item["match_score"] = score
             selected.append(item)
 

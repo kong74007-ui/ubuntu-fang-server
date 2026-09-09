@@ -147,6 +147,7 @@ class MaterialLibraryTests(unittest.TestCase):
         ]
 
         self.assertEqual({expected}, {item["sha256"] for item in selected})
+        self.assertEqual(3, len({item["clip_id"] for item in selected}))
         self.assertEqual(3, len({item["clip_start_seconds"] for item in selected}))
         self.assertEqual({1, 2, 3}, {item["clip_slot_index"] for item in selected})
         self.assertEqual({3}, {item["clip_slot_count"] for item in selected})
@@ -154,6 +155,11 @@ class MaterialLibraryTests(unittest.TestCase):
             item["clip_start_seconds"] + item["clip_duration_seconds"] <= 9.9
             for item in selected
         ))
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        self.assertEqual(3, usage[expected]["count"])
+        self.assertEqual(
+            [1, 1, 1], sorted(usage[item["clip_id"]]["count"] for item in selected),
+        )
 
     def test_invalid_video_clip_duration_is_rejected(self):
         self.add("video", media=".mp4", 时长秒=10.0)
@@ -167,6 +173,34 @@ class MaterialLibraryTests(unittest.TestCase):
                     "scene_id": "s1", "media_type": "video",
                     "clip_duration_seconds": value,
                 }])
+
+    def test_virtual_clip_pool_uses_later_parts_as_independent_candidates(self):
+        sources = {
+            self.add(
+                f"source-{index}", media=".mp4", 时长秒=12.1,
+                导入批次=f"batch-{index}", 二级场景=f"scene-{index}",
+            )
+            for index in range(10)
+        }
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        selected = [
+            library.select(
+                scene, seed=f"job-{index}", selection_mode="round_robin",
+            )["materials"][0]
+            for index in range(30)
+        ]
+
+        self.assertEqual(30, len({item["clip_id"] for item in selected}))
+        self.assertEqual(sources, {item["sha256"] for item in selected})
+        self.assertTrue(any(item["clip_start_seconds"] >= 6 for item in selected))
+        self.assertEqual({4}, {item["clip_slot_count"] for item in selected})
 
     def test_shortage_fails_without_ai_fallback(self):
         only = self.add("only", 标签=["产品"])

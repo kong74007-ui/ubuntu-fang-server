@@ -70,12 +70,12 @@ whose live checksum no longer matches the approved index.
 For image and video assets it first rotates the least-recently-used source batch
 and scene group, avoids groups already used by the current request or batch when
 an alternative exists, then chooses the least-used and least-recently-used file
-inside that group. The most recent nine source-scene groups and 200 exact assets
-are temporarily deprioritized. A two-use fairness window keeps newly imported
-groups from monopolizing every output while still bringing new files into
-rotation. If the library does not contain enough distinct groups, selection
-falls back to unique files instead of failing. Counts are atomically persisted
-outside the read-only approved library at
+inside that group. The most recent nine source-scene groups, 50 source videos,
+and 200 virtual clips are temporarily deprioritized. A two-use fairness window
+keeps newly imported groups from monopolizing every output while still bringing
+new files into rotation. If the library does not contain enough distinct groups,
+selection falls back to unique files instead of failing. Counts are atomically
+persisted outside the read-only approved library at
 `/var/lib/huangque-material-library/usage.json`; a state write failure rejects
 selection instead of silently losing fairness.
 
@@ -86,9 +86,11 @@ after verifying its checksum. Both endpoints require the bearer token.
 `GET /health` is unauthenticated and returns counts only. `GET /v1/ping`
 requires the bearer token and is used for pre-charge readiness checks.
 
-Video scenes may provide `clip_duration_seconds` from `2` through `3`. Sources
-that cannot cover the requested clip plus the safety margin are excluded. The
-response freezes `clip_start_seconds`, `clip_duration_seconds`,
-`clip_slot_index`, and `clip_slot_count`; repeated use of one long source rotates
-through deterministic, non-overlapping three-second slots instead of always
-reusing its opening frames.
+Video scenes may provide `clip_duration_seconds` from `2` through `3`. Every
+eligible source is expanded into deterministic, non-overlapping three-second
+virtual candidates across its full duration; sources that cannot cover one clip
+plus the safety margin are excluded. Each candidate has its own persisted usage
+key, so later portions participate in selection immediately instead of waiting
+for the whole source to cycle. The response freezes `clip_id`,
+`clip_start_seconds`, `clip_duration_seconds`, `clip_slot_index`, and
+`clip_slot_count` while downloads continue to use the approved source SHA.
