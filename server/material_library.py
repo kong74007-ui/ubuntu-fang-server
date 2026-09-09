@@ -46,6 +46,15 @@ SEARCH_FIELD_ALIASES = {
 SHA256_FIELDS = ("sha256", "SHA256")
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 20_000
+# Recency penalties outrank the clamped count gap, so rotation wins without
+# abandoning long-term per-file fairness.
+ROUND_ROBIN_COUNT_SLACK = 2
+ROUND_ROBIN_RECENT_GROUP_WINDOW = 9
+ROUND_ROBIN_RECENT_ASSET_WINDOW = 150
+ROUND_ROBIN_RECENT_ASSET_PENALTY = ROUND_ROBIN_COUNT_SLACK + 1
+ROUND_ROBIN_RECENT_GROUP_PENALTY = (
+    ROUND_ROBIN_COUNT_SLACK + ROUND_ROBIN_RECENT_ASSET_PENALTY + 1
+)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOKEN_RE = re.compile(r"[\w\u3400-\u9fff]+", re.UNICODE)
 
@@ -67,6 +76,7 @@ class Material:
     relative_path: str
     orientation: str
     duration_seconds: float | None
+    diversity_group: str
     searchable: tuple[tuple[str, int], ...]
 
     def public_dict(
@@ -163,6 +173,16 @@ def _duration(value: Any) -> float | None:
         return None
 
 
+def _diversity_group(row: dict[str, Any], media_type: str, sha256: str) -> str:
+    if media_type not in {"image", "video"}:
+        return f"{media_type}:asset:{sha256}"
+    collection = _text(row.get("导入批次")) or _text(row.get("来源平台"))
+    scene = _text(row.get("二级场景")) or _text(row.get("一级场景"))
+    if not collection and not scene:
+        return f"{media_type}:asset:{sha256}"
+    return f"{media_type}:{collection or 'unknown'}:{scene or 'unknown'}"
+
+
 def _record_to_material(root: Path, row: dict[str, Any]) -> Material | None:
     if _text(row.get("状态")) != "可使用":
         return None
@@ -188,6 +208,7 @@ def _record_to_material(root: Path, row: dict[str, Any]) -> Material | None:
         relative_path=relative_path,
         orientation=_orientation(row.get("画面方向")),
         duration_seconds=_duration(row.get("时长秒")),
+        diversity_group=_diversity_group(row, media_type, sha256),
         searchable=searchable,
     )
 
@@ -326,6 +347,50 @@ class MaterialLibrary:
         entry["count"] = int(entry.get("count", 0) or 0) + 1
         entry["last_used"] = time.time()
 
+    def _usage_values(self, material: Material) -> tuple[int, float]:
+        entry = self._usage.get(material.sha256, {})
+        return (
+            int(entry.get("count", 0) or 0),
+            float(entry.get("last_used", 0.0) or 0.0),
+        )
+
+    def _round_robin_recency(
+        self, allowed_types: set[str],
+    ) -> tuple[dict[str, float], set[str], set[str]]:
+        group_last_used: dict[str, float] = {}
+        asset_last_used: list[tuple[float, str]] = []
+        for material in self._materials:
+            if material.media_type not in allowed_types:
+                continue
+            _count, last_used = self._usage_values(material)
+            group_last_used[material.diversity_group] = max(
+                group_last_used.get(material.diversity_group, 0.0), last_used,
+            )
+            asset_last_used.append((last_used, material.sha256))
+        group_limit = min(
+            ROUND_ROBIN_RECENT_GROUP_WINDOW,
+            max(0, len(group_last_used) - 1),
+        )
+        recent_groups = {
+            group
+            for group, last_used in sorted(
+                group_last_used.items(), key=lambda item: (-item[1], item[0]),
+            )[:group_limit]
+            if last_used > 0
+        }
+        asset_limit = min(
+            ROUND_ROBIN_RECENT_ASSET_WINDOW,
+            max(0, len(asset_last_used) - 1),
+        )
+        recent_assets = {
+            sha256
+            for last_used, sha256 in sorted(
+                asset_last_used, key=lambda item: (-item[0], item[1]),
+            )[:asset_limit]
+            if last_used > 0
+        }
+        return group_last_used, recent_groups, recent_assets
+
     def refresh(self) -> None:
         with self._lock:
             self._reload_if_needed()
@@ -442,6 +507,11 @@ class MaterialLibrary:
         if mode not in {"semantic", "random", "round_robin"}:
             raise ValueError("selection_mode must be semantic, random or round_robin")
         used = {str(value).lower() for value in used_sha256 if SHA256_RE.fullmatch(str(value).lower())}
+        used_groups = {
+            material.diversity_group
+            for sha256 in used
+            if (material := self._by_sha.get(sha256)) is not None
+        }
         selected: list[dict[str, Any]] = []
 
         for position, scene in enumerate(scenes):
@@ -503,12 +573,37 @@ class MaterialLibrary:
             match_level = ""
             for pool, level in tiers:
                 if mode == "round_robin":
+                    minimum_count = min(
+                        (self._usage_values(pair[0])[0] for pair in pool),
+                        default=0,
+                    )
+                    (
+                        group_last_used, recent_groups, recent_assets,
+                    ) = self._round_robin_recency(allowed_types)
+
+                    def round_robin_key(pair):
+                        material = pair[0]
+                        count, last_used = self._usage_values(material)
+                        fairness_distance = min(
+                            max(0, count - minimum_count),
+                            ROUND_ROBIN_COUNT_SLACK,
+                        )
+                        rotation_score = fairness_distance
+                        if material.diversity_group in recent_groups:
+                            rotation_score += ROUND_ROBIN_RECENT_GROUP_PENALTY
+                        if material.sha256 in recent_assets:
+                            rotation_score += ROUND_ROBIN_RECENT_ASSET_PENALTY
+                        return (
+                            material.diversity_group in used_groups,
+                            rotation_score,
+                            count,
+                            group_last_used.get(material.diversity_group, 0.0),
+                            last_used,
+                            _stable_rank(rank_seed, material),
+                        )
+
                     ranked = sorted(
-                        pool,
-                        key=lambda pair: (
-                            self._usage.get(pair[0].sha256, {}).get("count", 0),
-                            _stable_rank(rank_seed, pair[0]),
-                        ),
+                        pool, key=round_robin_key,
                     )
                 else:
                     ranked = sorted(
@@ -530,6 +625,7 @@ class MaterialLibrary:
                 )
             material, score = selected_pair
             used.add(material.sha256)
+            used_groups.add(material.diversity_group)
             if mode == "round_robin":
                 self._record_usage(material.sha256)
             orientation_match = (

@@ -253,6 +253,178 @@ class MaterialLibraryTests(unittest.TestCase):
 
         self.assertEqual({first, second}, {selected_first, selected_second})
 
+    def test_round_robin_prefers_distinct_source_groups_within_one_video(self):
+        group_a = {
+            self.add(
+                f"group-a-{index}", media=".mp4",
+                导入批次="batch-a", 二级场景="培训授课",
+            )
+            for index in range(3)
+        }
+        group_b = self.add(
+            "group-b", media=".mp4",
+            导入批次="batch-b", 二级场景="商务交流",
+        )
+        group_c = self.add(
+            "group-c", media=".mp4",
+            导入批次="batch-c", 二级场景="门店探访",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            group_b: {"count": 2, "last_used": 10},
+            group_c: {"count": 2, "last_used": 20},
+        }), encoding="utf-8")
+
+        result = self.library(usage_path).select(
+            [
+                {"scene_id": f"s{index}", "media_type": "video"}
+                for index in range(1, 4)
+            ],
+            seed="distinct-groups", selection_mode="round_robin",
+        )
+        selected = {item["sha256"] for item in result["materials"]}
+
+        self.assertEqual(1, len(selected & group_a))
+        self.assertIn(group_b, selected)
+        self.assertIn(group_c, selected)
+
+    def test_round_robin_avoids_used_batch_group_when_alternative_exists(self):
+        used = self.add(
+            "used-a", media=".mp4",
+            导入批次="batch-a", 二级场景="培训授课",
+        )
+        self.add(
+            "unused-a", media=".mp4",
+            导入批次="batch-a", 二级场景="培训授课",
+        )
+        alternative = self.add(
+            "alternative-b", media=".mp4",
+            导入批次="batch-b", 二级场景="商务交流",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+
+        selected = self.library(usage_path).select(
+            [{"scene_id": "s1", "media_type": "video"}],
+            used_sha256=[used], seed="batch-groups",
+            selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertEqual(alternative, selected)
+
+    def test_round_robin_reuses_group_only_when_no_distinct_group_remains(self):
+        expected = {
+            self.add(
+                f"same-group-{index}", media=".mp4",
+                导入批次="one-batch", 二级场景="同一场景",
+            )
+            for index in range(2)
+        }
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+
+        result = self.library(usage_path).select(
+            [
+                {"scene_id": "s1", "media_type": "video"},
+                {"scene_id": "s2", "media_type": "video"},
+            ],
+            seed="group-fallback", selection_mode="round_robin",
+        )
+
+        self.assertEqual(
+            expected, {item["sha256"] for item in result["materials"]},
+        )
+
+    def test_round_robin_rotates_groups_before_draining_new_large_group(self):
+        group_a = {
+            self.add(
+                f"new-group-{index}", media=".mp4",
+                导入批次="new-batch", 二级场景="培训授课",
+            )
+            for index in range(2)
+        }
+        old_group = self.add(
+            "old-group", media=".mp4",
+            导入批次="old-batch", 二级场景="商务交流",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            old_group: {"count": 2, "last_used": 10},
+        }), encoding="utf-8")
+        library = self.library(usage_path)
+        scene = [{"scene_id": "s1", "media_type": "video"}]
+
+        first = library.select(
+            scene, seed="first", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+        second = library.select(
+            scene, seed="second", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertIn(first, group_a)
+        self.assertEqual(old_group, second)
+
+    def test_round_robin_recent_asset_cooldown_beats_two_use_gap(self):
+        recent = self.add(
+            "recent", media=".mp4",
+            导入批次="same-batch", 二级场景="同一场景",
+        )
+        older = self.add(
+            "older", media=".mp4",
+            导入批次="same-batch", 二级场景="同一场景",
+        )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            recent: {"count": 1, "last_used": 100},
+            older: {"count": 3, "last_used": 10},
+        }), encoding="utf-8")
+
+        selected = self.library(usage_path).select(
+            [{"scene_id": "s1", "media_type": "video"}],
+            seed="asset-cooldown", selection_mode="round_robin",
+        )["materials"][0]["sha256"]
+
+        self.assertEqual(older, selected)
+
+    def test_round_robin_large_rotation_has_no_adjacent_group_or_asset_reuse(self):
+        group_by_sha = {}
+        for group_index in range(12):
+            for asset_index in range(20):
+                sha256 = self.add(
+                    f"group-{group_index}-asset-{asset_index}", media=".mp4",
+                    导入批次=f"batch-{group_index}",
+                    二级场景=f"scene-{group_index}",
+                )
+                group_by_sha[sha256] = group_index
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        jobs = []
+
+        for job_index in range(50):
+            result = library.select(
+                [
+                    {"scene_id": f"s{index}", "media_type": "video"}
+                    for index in range(1, 4)
+                ],
+                seed=f"job-{job_index}", selection_mode="round_robin",
+            )
+            jobs.append([
+                item["sha256"] for item in result["materials"]
+            ])
+
+        self.assertEqual(150, len({sha256 for job in jobs for sha256 in job}))
+        for job in jobs:
+            self.assertEqual(3, len({group_by_sha[sha256] for sha256 in job}))
+        for previous, current in zip(jobs, jobs[1:]):
+            self.assertFalse(
+                {group_by_sha[sha256] for sha256 in previous}
+                & {group_by_sha[sha256] for sha256 in current}
+            )
+
     def test_round_robin_selection_and_persistence_are_one_critical_section(self):
         for index in range(3):
             self.add(f"round-robin-{index}", media=".mp4")

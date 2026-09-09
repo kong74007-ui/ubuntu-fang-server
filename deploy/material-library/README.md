@@ -66,11 +66,18 @@ candidate from all orientations of the requested media type. Random selection
 remains deterministic for one seed, excludes `used_sha256`, and skips files
 whose live checksum no longer matches the approved index.
 
-`"selection_mode":"round_robin"` uses the same all-orientation candidate pool,
-but chooses the globally least-selected healthy asset and uses the seed only to
-break equal-count ties. Counts are atomically persisted outside the read-only
-approved library at `/var/lib/huangque-material-library/usage.json`; a state
-write failure rejects selection instead of silently losing fairness.
+`"selection_mode":"round_robin"` uses the same all-orientation candidate pool.
+For image and video assets it first rotates the least-recently-used source batch
+and scene group, avoids groups already used by the current request or batch when
+an alternative exists, then chooses the least-used and least-recently-used file
+inside that group. The most recent nine source-scene groups and 150 exact assets
+are temporarily deprioritized. A two-use fairness window keeps newly imported
+groups from monopolizing every output while still bringing new files into
+rotation. If the library does not contain enough distinct groups, selection
+falls back to unique files instead of failing. Counts are atomically persisted
+outside the read-only approved library at
+`/var/lib/huangque-material-library/usage.json`; a state write failure rejects
+selection instead of silently losing fairness.
 
 `POST /v1/select` selects one unique approved asset per scene using
 `exact -> loose -> random`. `GET /v1/assets/{sha256}` downloads a selected asset
