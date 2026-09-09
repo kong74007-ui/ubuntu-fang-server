@@ -90,15 +90,18 @@ Both responses expose `selection_contract_version=2` and
 material-library releases before accepting template jobs.
 
 Round-robin callers may provide a stable `selection_id`. Source/clip counters
-and the complete response receipt are committed in the same atomic state-file
-replacement. Repeating the same operation key replays the receipt without
-incrementing usage, including after a lost HTTP response or process restart;
-reusing a key for a different request returns a conflict.
+and the complete response are protected by a write-ahead receipt stored under
+`usage.json.receipts-v1/`. The receipt is atomically persisted before the flat
+usage file; startup and request retries reconcile its expected counters using
+monotonic maxima before replaying the same result. This closes both a lost HTTP
+response and a crash between receipt and usage replacement without double
+counting. Reusing a key for a different request returns a conflict.
 
-The v2 state file wraps usage and receipts in one atomic envelope. Installation
-backs up the previous flat usage file before starting v2 and restores it before
-restarting an older release on rollback, so a failed upgrade cannot strand the
-previous service on an unreadable state format.
+`usage.json` remains the flat SHA-to-count mapping accepted by the previous
+production reader, including its 20,000-record and 4 MiB limits. A successful
+upgrade can therefore roll back to the old source against the live state, and
+the installer never restores a stale usage snapshot over selections confirmed
+while services are switching.
 
 Video scenes may provide `clip_duration_seconds` from `2` through `3`. Every
 eligible source is expanded into deterministic, non-overlapping three-second

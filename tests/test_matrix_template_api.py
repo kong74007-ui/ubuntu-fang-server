@@ -786,10 +786,12 @@ class MatrixTemplateApiTests(unittest.TestCase):
             ), self.assertRaisesRegex(SystemExit, "simulated crash"):
                 self.service._select_materials(payload, job_id)
 
-            receipt_state = json.loads(usage_path.read_text(encoding="utf-8"))
-            receipt = receipt_state["receipts"][
+            receipt_path = library_server.library._receipt_path(
                 "matrix-template:" + job_id
-            ]["result"]["materials"]
+            )
+            receipt = json.loads(
+                receipt_path.read_text(encoding="utf-8")
+            )["result"]["materials"]
             restarted = matrix.MatrixTemplateService(
                 data_root=self.service.data_root,
                 skill_root=self.skill,
@@ -806,7 +808,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             after = json.loads(usage_path.read_text(encoding="utf-8"))
             source_counts = [
                 value["count"]
-                for key, value in after["usage"].items()
+                for key, value in after.items()
                 if key in {row["sha256"] for row in rows}
             ]
             self.assertEqual([1, 1, 1], sorted(source_counts))

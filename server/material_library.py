@@ -51,10 +51,18 @@ CLIP_CONTRACT_VERSION = 1
 MAX_MATERIAL_DURATION_SECONDS = 30 * 60
 MAX_CLIP_SLOTS_PER_SOURCE = 600
 MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
-MAX_USAGE_RECORDS = MAX_RECORDS + MAX_VIRTUAL_CANDIDATES_PER_REQUEST
-MAX_STATE_BYTES = 16 * 1024 * 1024
+MAX_SELECTION_SCENES = 21
+# Keep the flat usage file inside the exact limits accepted by the previous
+# production reader so a source rollback can reuse it without conversion.
+MAX_USAGE_RECORDS = MAX_RECORDS
+MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_SELECTION_RECEIPTS = 2_000
 SELECTION_RECEIPT_TTL_SECONDS = 4 * 24 * 60 * 60
+SELECTION_RECEIPT_VERSION = 1
+MAX_SELECTION_RECEIPT_BYTES = 256 * 1024
+MAX_SELECTION_RECEIPT_JOURNAL_BYTES = 64 * 1024 * 1024
+MAX_SELECTION_RECEIPT_FILES = MAX_SELECTION_RECEIPTS * 2
+MAX_SELECTION_RECEIPT_USAGE_RECORDS = MAX_SELECTION_SCENES * 2
 # Recency penalties outrank the clamped count gap, so rotation wins without
 # abandoning long-term per-file fairness.
 ROUND_ROBIN_COUNT_SLACK = 2
@@ -376,10 +384,19 @@ class MaterialLibrary:
         self._usage_path = (
             Path(usage_path).resolve() if usage_path is not None else None
         )
+        self._receipt_dir = (
+            self._usage_path.with_name(
+                f"{self._usage_path.name}.receipts-v1"
+            )
+            if self._usage_path is not None else None
+        )
         self._usage: dict[str, dict[str, int | float]] = {}
         self._selection_receipts: dict[str, dict[str, Any]] = {}
+        self._selection_receipt_sizes: dict[str, int] = {}
+        self._selection_receipt_journal_bytes = 0
         self._usage_state_ready = False
         self._load_usage()
+        self._load_receipts()
 
     def _reload_if_needed(self) -> None:
         stat = self.index_path.stat()
@@ -420,67 +437,152 @@ class MaterialLibrary:
             if self._usage_path.stat().st_size > MAX_STATE_BYTES:
                 raise MaterialLibraryError("material usage state is too large")
             data = json.loads(self._usage_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise MaterialLibraryError("material usage state is invalid")
-            if data.get("version") == 2:
-                if set(data) != {"version", "usage", "receipts"}:
-                    raise MaterialLibraryError("material usage state is invalid")
-                usage_data = data["usage"]
-                receipts_data = data["receipts"]
-            else:
-                usage_data = data
-                receipts_data = {}
-            if (
-                not isinstance(usage_data, dict)
-                or len(usage_data) > MAX_USAGE_RECORDS
-                or not isinstance(receipts_data, dict)
-                or len(receipts_data) > MAX_SELECTION_RECEIPTS
-            ):
-                raise MaterialLibraryError("material usage state is invalid")
-            loaded: dict[str, dict[str, int | float]] = {}
-            for key, value in usage_data.items():
-                if (
-                    not SHA256_RE.fullmatch(str(key))
-                    or not isinstance(value, dict)
-                    or set(value) != {"count", "last_used"}
-                    or isinstance(value.get("count"), bool)
-                    or not isinstance(value.get("count"), int)
-                    or value["count"] < 0
-                    or isinstance(value.get("last_used"), bool)
-                    or not isinstance(value.get("last_used"), (int, float))
-                    or not math.isfinite(float(value["last_used"]))
-                    or float(value["last_used"]) < 0
-                ):
-                    raise MaterialLibraryError("material usage state is invalid")
-                loaded[str(key)] = {
-                    "count": int(value["count"]),
-                    "last_used": float(value["last_used"]),
-                }
-            receipts: dict[str, dict[str, Any]] = {}
-            for key, value in receipts_data.items():
-                if (
-                    not SELECTION_ID_RE.fullmatch(str(key))
-                    or not isinstance(value, dict)
-                    or set(value) != {"request_sha256", "result", "created_at"}
-                    or not SHA256_RE.fullmatch(
-                        str(value.get("request_sha256") or "")
-                    )
-                    or not isinstance(value.get("result"), dict)
-                    or isinstance(value.get("created_at"), bool)
-                    or not isinstance(value.get("created_at"), (int, float))
-                    or not math.isfinite(float(value["created_at"]))
-                    or float(value["created_at"]) < 0
-                ):
-                    raise MaterialLibraryError("material usage state is invalid")
-                receipts[str(key)] = {
-                    "request_sha256": str(value["request_sha256"]),
-                    "result": value["result"],
-                    "created_at": float(value["created_at"]),
-                }
-            self._usage = loaded
-            self._selection_receipts = receipts
+            self._usage = self._validated_usage_records(
+                data, MAX_USAGE_RECORDS, "material usage state is invalid",
+            )
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise MaterialLibraryError("material usage state is unavailable") from exc
+
+    @staticmethod
+    def _validated_usage_records(
+        data: Any, maximum: int, error_message: str,
+    ) -> dict[str, dict[str, int | float]]:
+        if not isinstance(data, dict) or len(data) > maximum:
+            raise MaterialLibraryError(error_message)
+        loaded: dict[str, dict[str, int | float]] = {}
+        for key, value in data.items():
+            if (
+                not SHA256_RE.fullmatch(str(key))
+                or not isinstance(value, dict)
+                or set(value) != {"count", "last_used"}
+                or isinstance(value.get("count"), bool)
+                or not isinstance(value.get("count"), int)
+                or value["count"] < 0
+                or isinstance(value.get("last_used"), bool)
+                or not isinstance(value.get("last_used"), (int, float))
+                or not math.isfinite(float(value["last_used"]))
+                or float(value["last_used"]) < 0
+            ):
+                raise MaterialLibraryError(error_message)
+            loaded[str(key)] = {
+                "count": int(value["count"]),
+                "last_used": float(value["last_used"]),
+            }
+        return loaded
+
+    def _receipt_path(self, selection_id: str) -> Path:
+        if self._receipt_dir is None:
+            raise MaterialLibraryError(
+                "selection receipt state is not configured"
+            )
+        digest = hashlib.sha256(selection_id.encode("utf-8")).hexdigest()
+        return self._receipt_dir / f"{digest}.json"
+
+    def _validated_receipt(
+        self, data: Any, *, expected_digest: str | None = None,
+    ) -> dict[str, Any]:
+        error = "selection receipt state is invalid"
+        if (
+            not isinstance(data, dict)
+            or set(data) != {
+                "version", "selection_id", "request_sha256", "result",
+                "created_at", "usage_after",
+            }
+            or isinstance(data.get("version"), bool)
+            or data.get("version") != SELECTION_RECEIPT_VERSION
+        ):
+            raise MaterialLibraryError(error)
+        selection_id = str(data.get("selection_id") or "")
+        if (
+            not SELECTION_ID_RE.fullmatch(selection_id)
+            or not SHA256_RE.fullmatch(
+                str(data.get("request_sha256") or "")
+            )
+            or not isinstance(data.get("result"), dict)
+            or isinstance(data.get("created_at"), bool)
+            or not isinstance(data.get("created_at"), (int, float))
+            or not math.isfinite(float(data["created_at"]))
+            or float(data["created_at"]) < 0
+        ):
+            raise MaterialLibraryError(error)
+        digest = hashlib.sha256(selection_id.encode("utf-8")).hexdigest()
+        if expected_digest is not None and not hmac.compare_digest(
+            digest, expected_digest,
+        ):
+            raise MaterialLibraryError(error)
+        usage_after = self._validated_usage_records(
+            data.get("usage_after"),
+            MAX_SELECTION_RECEIPT_USAGE_RECORDS,
+            error,
+        )
+        if not usage_after:
+            raise MaterialLibraryError(error)
+        return {
+            "version": SELECTION_RECEIPT_VERSION,
+            "selection_id": selection_id,
+            "request_sha256": str(data["request_sha256"]),
+            "result": json.loads(json.dumps(data["result"])),
+            "created_at": float(data["created_at"]),
+            "usage_after": usage_after,
+        }
+
+    def _load_receipts(self) -> None:
+        if self._receipt_dir is None or not self._receipt_dir.exists():
+            return
+        try:
+            if self._receipt_dir.is_symlink() or not self._receipt_dir.is_dir():
+                raise MaterialLibraryError("selection receipt state is unsafe")
+            paths = []
+            for path in self._receipt_dir.iterdir():
+                if path.is_symlink():
+                    raise MaterialLibraryError(
+                        "selection receipt state is unsafe"
+                    )
+                if path.name.startswith(".receipt-") and path.suffix == ".tmp":
+                    path.unlink(missing_ok=True)
+                    continue
+                if path.suffix != ".json":
+                    continue
+                if not path.is_file() or not SHA256_RE.fullmatch(path.stem):
+                    raise MaterialLibraryError(
+                        "selection receipt state is invalid"
+                    )
+                paths.append(path)
+            if len(paths) > MAX_SELECTION_RECEIPT_FILES:
+                raise MaterialLibraryError(
+                    "selection receipt state is too large"
+                )
+            receipts: dict[str, dict[str, Any]] = {}
+            sizes: dict[str, int] = {}
+            total_bytes = 0
+            for path in sorted(paths):
+                size = path.stat().st_size
+                total_bytes += size
+                if (
+                    size > MAX_SELECTION_RECEIPT_BYTES
+                    or total_bytes > MAX_SELECTION_RECEIPT_JOURNAL_BYTES
+                ):
+                    raise MaterialLibraryError(
+                        "selection receipt state is too large"
+                    )
+                receipt = self._validated_receipt(
+                    json.loads(path.read_text(encoding="utf-8")),
+                    expected_digest=path.stem,
+                )
+                selection_id = receipt["selection_id"]
+                if selection_id in receipts:
+                    raise MaterialLibraryError(
+                        "selection receipt state is invalid"
+                    )
+                receipts[selection_id] = receipt
+                sizes[selection_id] = size
+            self._selection_receipts = receipts
+            self._selection_receipt_sizes = sizes
+            self._selection_receipt_journal_bytes = total_bytes
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MaterialLibraryError(
+                "selection receipt state is unavailable"
+            ) from exc
 
     def _valid_usage_keys(self) -> set[str]:
         valid = {material.sha256 for material in self._materials}
@@ -499,12 +601,130 @@ class MaterialLibrary:
                 valid.add(candidate.usage_key)
         return valid
 
-    def _prune_state(self) -> None:
+    def _prepared_usage_state(
+        self,
+    ) -> tuple[dict[str, dict[str, int | float]], str]:
         valid_usage = self._valid_usage_keys()
-        self._usage = {
-            key: value for key, value in self._usage.items()
+        retained = {
+            key: dict(value) for key, value in self._usage.items()
             if key in valid_usage
         }
+        if len(retained) > MAX_USAGE_RECORDS:
+            raise MaterialLibraryError("material usage state is too large")
+        try:
+            serialized = json.dumps(
+                retained, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n"
+        except (TypeError, ValueError) as exc:
+            raise MaterialLibraryError(
+                "material usage state is unavailable"
+            ) from exc
+        if len(serialized.encode("utf-8")) > MAX_STATE_BYTES:
+            raise MaterialLibraryError("material usage state is too large")
+        return retained, serialized
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        if os.name == "nt":
+            return
+        descriptor = None
+        try:
+            descriptor = os.open(
+                path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            os.fsync(descriptor)
+        except OSError:
+            return
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _ensure_receipt_directory(self) -> None:
+        if self._receipt_dir is None or self._usage_path is None:
+            raise MaterialLibraryError(
+                "selection receipt state is not configured"
+            )
+        parent = self._usage_path.parent
+        try:
+            if parent.is_symlink() or not parent.is_dir():
+                raise OSError("usage state directory is unavailable")
+            self._receipt_dir.mkdir(mode=0o700, exist_ok=True)
+            if self._receipt_dir.is_symlink() or not self._receipt_dir.is_dir():
+                raise OSError("selection receipt directory is unavailable")
+            os.chmod(self._receipt_dir, 0o700)
+        except OSError as exc:
+            raise MaterialLibraryError(
+                "selection receipt state is unavailable"
+            ) from exc
+
+    def _serialized_receipt(self, receipt: dict[str, Any]) -> str:
+        validated = self._validated_receipt(receipt)
+        try:
+            serialized = json.dumps(
+                validated, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n"
+        except (TypeError, ValueError) as exc:
+            raise MaterialLibraryError(
+                "selection receipt state is unavailable"
+            ) from exc
+        if len(serialized.encode("utf-8")) > MAX_SELECTION_RECEIPT_BYTES:
+            raise MaterialLibraryError("selection receipt state is too large")
+        return serialized
+
+    def _write_receipt(self, receipt: dict[str, Any]) -> None:
+        validated = self._validated_receipt(receipt)
+        selection_id = validated["selection_id"]
+        serialized = self._serialized_receipt(validated)
+        size = len(serialized.encode("utf-8"))
+        previous_size = self._selection_receipt_sizes.get(selection_id, 0)
+        if (
+            self._selection_receipt_journal_bytes - previous_size + size
+            > MAX_SELECTION_RECEIPT_JOURNAL_BYTES
+        ):
+            raise MaterialLibraryError("selection receipt state is too large")
+        self._ensure_receipt_directory()
+        target = self._receipt_path(selection_id)
+        temporary = None
+        try:
+            if target.exists():
+                if target.is_symlink() or not target.is_file():
+                    raise OSError("selection receipt path is unsafe")
+                existing = self._validated_receipt(
+                    json.loads(target.read_text(encoding="utf-8")),
+                    expected_digest=target.stem,
+                )
+                if existing != validated:
+                    raise MaterialSelectionConflictError(
+                        "selection receipt state conflict"
+                    )
+                return
+            descriptor, name = tempfile.mkstemp(
+                prefix=".receipt-", suffix=".tmp", dir=self._receipt_dir,
+            )
+            temporary = Path(name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+            temporary = None
+            self._fsync_directory(self._receipt_dir)
+        except MaterialSelectionConflictError:
+            raise
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MaterialLibraryError(
+                "selection receipt state is unavailable"
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        self._selection_receipt_journal_bytes += size - previous_size
+        self._selection_receipt_sizes[selection_id] = size
+
+    def _prune_receipts(self, *, reserve_slots: int = 0) -> None:
         cutoff = time.time() - SELECTION_RECEIPT_TTL_SECONDS
         retained = [
             (key, value)
@@ -514,32 +734,67 @@ class MaterialLibrary:
         retained.sort(
             key=lambda item: (-float(item[1]["created_at"]), item[0])
         )
-        self._selection_receipts = dict(
-            retained[:MAX_SELECTION_RECEIPTS]
+        maximum = max(0, MAX_SELECTION_RECEIPTS - reserve_slots)
+        next_receipts = dict(retained[:maximum])
+        removed = set(self._selection_receipts) - set(next_receipts)
+        if removed and self._receipt_dir is not None:
+            try:
+                for selection_id in removed:
+                    path = self._receipt_path(selection_id)
+                    if path.is_symlink():
+                        raise OSError("selection receipt path is unsafe")
+                    path.unlink(missing_ok=True)
+                if self._receipt_dir.exists():
+                    self._fsync_directory(self._receipt_dir)
+            except OSError as exc:
+                raise MaterialLibraryError(
+                    "selection receipt state is unavailable"
+                ) from exc
+        for selection_id in removed:
+            self._selection_receipt_journal_bytes -= (
+                self._selection_receipt_sizes.pop(selection_id, 0)
+            )
+        self._selection_receipt_journal_bytes = max(
+            0, self._selection_receipt_journal_bytes,
         )
+        self._selection_receipts = next_receipts
 
-    def _save_usage(self) -> None:
+    def _apply_receipt_usage(self) -> bool:
+        changed = False
+        # Absolute post-selection values make reconciliation idempotent while
+        # preserving any larger counters written by a rolled-back old service.
+        for receipt in sorted(
+            self._selection_receipts.values(),
+            key=lambda value: (
+                float(value["created_at"]), value["selection_id"],
+            ),
+        ):
+            for key, expected in receipt["usage_after"].items():
+                current = self._usage.get(
+                    key, {"count": 0, "last_used": 0.0},
+                )
+                merged = {
+                    "count": max(
+                        int(current.get("count", 0) or 0),
+                        int(expected["count"]),
+                    ),
+                    "last_used": max(
+                        float(current.get("last_used", 0.0) or 0.0),
+                        float(expected["last_used"]),
+                    ),
+                }
+                if self._usage.get(key) != merged:
+                    self._usage[key] = merged
+                    changed = True
+        return changed
+
+    def _save_usage(
+        self,
+        prepared: tuple[dict[str, dict[str, int | float]], str] | None = None,
+    ) -> None:
         if self._usage_path is None:
             raise MaterialLibraryError("material usage state is not configured")
-        self._prune_state()
-        if len(self._usage) > MAX_USAGE_RECORDS:
-            raise MaterialLibraryError("material usage state is too large")
-        state = {
-            "version": 2,
-            "usage": self._usage,
-            "receipts": self._selection_receipts,
-        }
-        try:
-            serialized = json.dumps(
-                state, ensure_ascii=False, sort_keys=True,
-                separators=(",", ":"),
-            ) + "\n"
-        except (TypeError, ValueError) as exc:
-            raise MaterialLibraryError(
-                "material usage state is unavailable"
-            ) from exc
-        if len(serialized.encode("utf-8")) > MAX_STATE_BYTES:
-            raise MaterialLibraryError("material usage state is too large")
+        retained, serialized = prepared or self._prepared_usage_state()
         parent = self._usage_path.parent
         temporary = None
         try:
@@ -556,16 +811,20 @@ class MaterialLibrary:
             os.chmod(temporary, 0o600)
             os.replace(temporary, self._usage_path)
             temporary = None
+            self._fsync_directory(parent)
         except OSError as exc:
             raise MaterialLibraryError("material usage state is unavailable") from exc
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+        self._usage = retained
 
     def verify_usage_state(self) -> None:
         self.refresh()
         with self._usage_lock:
+            self._apply_receipt_usage()
             self._save_usage()
+            self._prune_receipts()
             self._usage_state_ready = True
 
     def _record_usage(self, sha256: str) -> None:
@@ -735,18 +994,17 @@ class MaterialLibrary:
         request_sha256 = _selection_request_sha256(
             scenes, str(orientation), str(seed), mode,
         )
+        self.refresh()
         with self._usage_lock:
-            previous_usage = {
+            recovery_usage = {
                 key: dict(value) for key, value in self._usage.items()
             }
-            previous_receipts = {
-                key: {
-                    "request_sha256": value["request_sha256"],
-                    "result": json.loads(json.dumps(value["result"])),
-                    "created_at": value["created_at"],
-                }
-                for key, value in self._selection_receipts.items()
-            }
+            try:
+                if self._apply_receipt_usage():
+                    self._save_usage()
+            except BaseException:
+                self._usage = recovery_usage
+                raise
             if receipt_id:
                 receipt = self._selection_receipts.get(receipt_id)
                 if receipt is not None:
@@ -757,22 +1015,43 @@ class MaterialLibrary:
                             "selection_id request conflict"
                         )
                     return json.loads(json.dumps(receipt["result"]))
+                self._prune_receipts(reserve_slots=1)
+            previous_usage = {
+                key: dict(value) for key, value in self._usage.items()
+            }
+            receipt_committed = False
             try:
                 result = self._select_impl(
                     scenes, orientation=orientation, seed=seed,
                     used_sha256=used_values, selection_mode=mode,
                 )
+                prepared = self._prepared_usage_state()
                 if receipt_id:
-                    self._selection_receipts[receipt_id] = {
+                    usage_after = {
+                        key: dict(value)
+                        for key, value in prepared[0].items()
+                        if previous_usage.get(key) != value
+                    }
+                    receipt = {
+                        "version": SELECTION_RECEIPT_VERSION,
+                        "selection_id": receipt_id,
                         "request_sha256": request_sha256,
                         "result": json.loads(json.dumps(result)),
                         "created_at": time.time(),
+                        "usage_after": usage_after,
                     }
-                self._save_usage()
+                    # The receipt must reach disk first so this selection can
+                    # repair a crash before the flat usage replacement.
+                    self._write_receipt(receipt)
+                    self._selection_receipts[receipt_id] = receipt
+                    receipt_committed = True
+                self._save_usage(prepared)
+                self._prune_receipts()
                 return result
             except BaseException:
                 self._usage = previous_usage
-                self._selection_receipts = previous_receipts
+                if not receipt_committed and receipt_id:
+                    self._selection_receipts.pop(receipt_id, None)
                 raise
 
     def _select_impl(
@@ -787,8 +1066,10 @@ class MaterialLibrary:
         self.refresh()
         if not isinstance(scenes, list) or not scenes:
             raise ValueError("scenes must not be empty")
-        if len(scenes) > 21:
-            raise ValueError("scenes must not exceed 21 items")
+        if len(scenes) > MAX_SELECTION_SCENES:
+            raise ValueError(
+                f"scenes must not exceed {MAX_SELECTION_SCENES} items"
+            )
         if any(not isinstance(scene, dict) for scene in scenes):
             raise ValueError("each scene must be an object")
         requested_orientation = _orientation(orientation)

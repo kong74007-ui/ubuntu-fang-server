@@ -134,9 +134,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
             ["round_robin_all_orientations_unique"],
             payload["fallback_policy"],
         )
-        usage = json.loads(
-            self.usage_path.read_text(encoding="utf-8")
-        )["usage"]
+        usage = json.loads(self.usage_path.read_text(encoding="utf-8"))
         self.assertEqual(1, usage[self.sha]["count"])
 
     def test_selection_id_replays_same_http_receipt_without_double_usage(self):
@@ -159,8 +157,16 @@ class MaterialLibraryApiTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         state = json.loads(self.usage_path.read_text(encoding="utf-8"))
-        self.assertEqual(1, state["usage"][self.sha]["count"])
-        self.assertIn(body["selection_id"], state["receipts"])
+        self.assertEqual(1, state[self.sha]["count"])
+        receipt_path = self.server.library._receipt_path(
+            body["selection_id"]
+        )
+        self.assertEqual(
+            body["selection_id"],
+            json.loads(receipt_path.read_text(encoding="utf-8"))[
+                "selection_id"
+            ],
+        )
 
         with self.assertRaises(urllib.error.HTTPError) as conflict:
             self.request(

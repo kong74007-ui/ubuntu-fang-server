@@ -4,6 +4,7 @@ import concurrent.futures
 import collections
 import hashlib
 import json
+import math
 import tempfile
 import time
 import unittest
@@ -12,6 +13,30 @@ from unittest import mock
 
 from server import material_library as material_library_module
 from server.material_library import MaterialLibrary, MaterialLibraryError, MaterialShortageError
+
+
+def load_legacy_usage(path: Path) -> dict[str, dict[str, int | float]]:
+    raw = path.read_bytes()
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError("legacy usage state is too large")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or len(data) > 20_000:
+        raise ValueError("legacy usage state is invalid")
+    for key, value in data.items():
+        if (
+            not material_library_module.SHA256_RE.fullmatch(str(key))
+            or not isinstance(value, dict)
+            or set(value) != {"count", "last_used"}
+            or isinstance(value.get("count"), bool)
+            or not isinstance(value.get("count"), int)
+            or value["count"] < 0
+            or isinstance(value.get("last_used"), bool)
+            or not isinstance(value.get("last_used"), (int, float))
+            or not math.isfinite(float(value["last_used"]))
+            or float(value["last_used"]) < 0
+        ):
+            raise ValueError("legacy usage state is invalid")
+    return data
 
 
 class MaterialLibraryTests(unittest.TestCase):
@@ -155,7 +180,7 @@ class MaterialLibraryTests(unittest.TestCase):
             item["clip_start_seconds"] + item["clip_duration_seconds"] <= 9.9
             for item in selected
         ))
-        usage = json.loads(usage_path.read_text(encoding="utf-8"))["usage"]
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
         self.assertEqual(3, usage[expected]["count"])
         self.assertEqual(
             [1, 1, 1], sorted(usage[item["clip_id"]]["count"] for item in selected),
@@ -396,6 +421,8 @@ class MaterialLibraryTests(unittest.TestCase):
             selection_id=selection_id,
         )
         persisted = usage_path.read_bytes()
+        receipt_path = library._receipt_path(selection_id)
+        persisted_receipt = receipt_path.read_bytes()
         restarted = MaterialLibrary(self.root, usage_path=usage_path)
         second = restarted.select(
             scenes, seed="stable-job", selection_mode="round_robin",
@@ -405,8 +432,12 @@ class MaterialLibraryTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(persisted, usage_path.read_bytes())
-        state = json.loads(persisted)
-        self.assertIn(selection_id, state["receipts"])
+        self.assertEqual(persisted_receipt, receipt_path.read_bytes())
+        self.assertEqual(1, len(restarted._selection_receipts))
+        self.assertEqual(
+            selection_id,
+            json.loads(persisted_receipt)["selection_id"],
+        )
         with self.assertRaisesRegex(
             MaterialLibraryError, "selection_id request conflict",
         ):
@@ -414,6 +445,100 @@ class MaterialLibraryTests(unittest.TestCase):
                 scenes, seed="different-job", selection_mode="round_robin",
                 selection_id=selection_id,
             )
+
+    def test_successful_upgrade_remains_readable_after_legacy_rollback(self):
+        source = self.add("rollback", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "b" * 32
+
+        first = library.select(
+            scenes, seed="upgrade", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+
+        legacy_state = load_legacy_usage(usage_path)
+        self.assertNotIn("version", legacy_state)
+        self.assertEqual(1, legacy_state[source]["count"])
+        legacy_state[source]["count"] += 1
+        legacy_state[source]["last_used"] = time.time()
+        usage_path.write_text(
+            json.dumps(legacy_state, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(2, load_legacy_usage(usage_path)[source]["count"])
+
+        upgraded_again = MaterialLibrary(self.root, usage_path=usage_path)
+        upgraded_again.verify_usage_state()
+        replayed = upgraded_again.select(
+            scenes, seed="upgrade", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+
+        self.assertEqual(first, replayed)
+        self.assertEqual(2, load_legacy_usage(usage_path)[source]["count"])
+
+    def test_receipt_recovers_crash_before_usage_replace(self):
+        source = self.add("write-ahead", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        before = usage_path.read_bytes()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "c" * 32
+        real_replace = material_library_module.os.replace
+        failed = False
+
+        def fail_first_usage_replace(source_path, target_path):
+            nonlocal failed
+            if Path(target_path) == usage_path and not failed:
+                failed = True
+                raise OSError("simulated usage replace crash")
+            return real_replace(source_path, target_path)
+
+        with mock.patch.object(
+            material_library_module.os, "replace",
+            side_effect=fail_first_usage_replace,
+        ), self.assertRaisesRegex(
+            MaterialLibraryError, "usage state is unavailable",
+        ):
+            library.select(
+                scenes, seed="write-ahead", selection_mode="round_robin",
+                selection_id=selection_id,
+            )
+
+        receipt_path = library._receipt_path(selection_id)
+        self.assertTrue(receipt_path.is_file())
+        self.assertEqual(before, usage_path.read_bytes())
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        restarted.verify_usage_state()
+        replayed = restarted.select(
+            scenes, seed="write-ahead", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+        usage = load_legacy_usage(usage_path)
+
+        self.assertEqual(receipt["result"], replayed)
+        self.assertEqual(1, usage[source]["count"])
+        self.assertEqual(
+            [1], sorted(
+                value["count"]
+                for key, value in usage.items()
+                if key != source
+            ),
+        )
 
     def test_usage_save_prunes_stale_keys(self):
         valid = self.add("valid", media=".mp4", 时长秒=10.0)
@@ -428,7 +553,7 @@ class MaterialLibraryTests(unittest.TestCase):
 
         library.verify_usage_state()
 
-        usage = json.loads(usage_path.read_text(encoding="utf-8"))["usage"]
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))
         self.assertIn(valid, usage)
         self.assertNotIn(stale, usage)
 
@@ -657,9 +782,7 @@ class MaterialLibraryTests(unittest.TestCase):
             ))
 
         self.assertEqual([2, 2, 2], sorted(collections.Counter(selected).values()))
-        persisted = json.loads(
-            usage_path.read_text(encoding="utf-8")
-        )["usage"]
+        persisted = json.loads(usage_path.read_text(encoding="utf-8"))
         self.assertEqual([2, 2, 2], sorted(
             int(item["count"]) for item in persisted.values()
         ))
