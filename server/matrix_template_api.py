@@ -38,6 +38,7 @@ MATERIAL_SELECTION_CONTRACT_VERSION = 2
 MATERIAL_CLIP_CONTRACT_VERSION = 1
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
+MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
@@ -1660,6 +1661,8 @@ class MatrixTemplateService:
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
         self.batch_material_lock = threading.Lock()
+        self.library_readiness_lock = threading.Lock()
+        self._library_readiness_cache: tuple[float, dict] | None = None
         self.active_downloads: set[str] = set()
         self.active_processes: set[subprocess.Popen] = set()
         self.active_process = None
@@ -1667,6 +1670,7 @@ class MatrixTemplateService:
         self.worker = None
         self.cleanup_worker = None
         self.workers_expected = start_worker
+        self.enforce_library_readiness = bool(start_worker)
         self.catalog = self._load_catalog()
         if self.reference_skill_root is not None:
             self.catalog.extend(self._load_reference_catalog())
@@ -2279,6 +2283,8 @@ class MatrixTemplateService:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
         existing = self.store.get_by_request_id(request_id)
+        if existing is None and self.enforce_library_readiness:
+            self.require_library_ready()
         if existing is not None:
             stored_payload = json.loads(existing["payload"])
             stored_template_id = str(stored_payload.get("template_id") or "")
@@ -2440,9 +2446,18 @@ class MatrixTemplateService:
         with self.degraded_lock:
             degraded_job_count = len(self.degraded_jobs)
         worker_degraded = degraded_job_count > 0
-        ready = not self.workers_expected or (
+        library = (
+            self.library_readiness()
+            if self.enforce_library_readiness else {
+                "ready": True,
+                "selection_contract_version": MATERIAL_SELECTION_CONTRACT_VERSION,
+                "clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
+            }
+        )
+        workers_ready = not self.workers_expected or (
             worker_alive and cleanup_alive and not worker_degraded
         )
+        ready = workers_ready and library["ready"]
         return {
             "ok": ready,
             "worker_alive": worker_alive,
@@ -2450,6 +2465,13 @@ class MatrixTemplateService:
             "cleanup_worker_alive": cleanup_alive,
             "worker_degraded": worker_degraded,
             "degraded_jobs": degraded_job_count,
+            "material_library_ready": library["ready"],
+            "material_selection_contract_version": library[
+                "selection_contract_version"
+            ],
+            "material_clip_contract_version": library[
+                "clip_contract_version"
+            ],
             "concurrency": self.concurrency,
             "private_fonts": len(self.private_fonts),
             "private_font_bundle_sha256": self.private_font_fingerprint,
@@ -2556,7 +2578,9 @@ class MatrixTemplateService:
         for name in ("final.mp4", "published.mp4"):
             (output_dir / name).unlink(missing_ok=True)
 
-    def _library_request(self, method: str, path: str, body=None):
+    def _library_request(
+        self, method: str, path: str, body=None, *, timeout: float = 30,
+    ):
         data = _json_bytes(body) if body is not None else None
         request = urllib.request.Request(
             self.library_url + path, data=data, method=method,
@@ -2566,7 +2590,7 @@ class MatrixTemplateService:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -2576,6 +2600,57 @@ class MatrixTemplateService:
             raise MatrixTemplateError(str(detail or "平台素材库暂不可用")) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise MatrixTemplateError("平台素材库暂不可用") from exc
+
+    def library_readiness(self, *, force: bool = False) -> dict:
+        with self.library_readiness_lock:
+            now = time.monotonic()
+            if (
+                not force
+                and self._library_readiness_cache is not None
+                and self._library_readiness_cache[0] > now
+            ):
+                return dict(self._library_readiness_cache[1])
+            try:
+                payload = self._library_request(
+                    "GET", "/v1/ping", timeout=3,
+                )
+                selection_version = payload.get("selection_contract_version")
+                clip_version = payload.get("clip_contract_version")
+                ready = (
+                    payload.get("ok") is True
+                    and isinstance(payload.get("records"), int)
+                    and not isinstance(payload.get("records"), bool)
+                    and payload["records"] > 0
+                    and type(selection_version) is int
+                    and selection_version == MATERIAL_SELECTION_CONTRACT_VERSION
+                    and type(clip_version) is int
+                    and clip_version == MATERIAL_CLIP_CONTRACT_VERSION
+                )
+                result = {
+                    "ready": ready,
+                    "selection_contract_version": (
+                        selection_version if type(selection_version) is int else 0
+                    ),
+                    "clip_contract_version": (
+                        clip_version if type(clip_version) is int else 0
+                    ),
+                }
+            except (MatrixTemplateError, AttributeError, TypeError, ValueError):
+                result = {
+                    "ready": False,
+                    "selection_contract_version": 0,
+                    "clip_contract_version": 0,
+                }
+            self._library_readiness_cache = (
+                now + MATERIAL_LIBRARY_READINESS_TTL_SECONDS, result,
+            )
+            return dict(result)
+
+    def require_library_ready(self, *, force: bool = False) -> dict:
+        result = self.library_readiness(force=force)
+        if not result["ready"]:
+            raise MatrixTemplateError("素材库切片能力暂不可用")
+        return result
 
     def _material_contract_version(self, payload: dict) -> int:
         value = payload.get("_material_selection_contract_version", 1)
@@ -2690,6 +2765,7 @@ class MatrixTemplateService:
             "scenes": scenes, "orientation": "portrait", "seed": job_id,
             "used_sha256": list(used_sha256),
             "selection_mode": "round_robin",
+            "selection_id": "matrix-template:" + job_id,
         })
         if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
             selection_version = result.get("selection_contract_version")
@@ -3679,6 +3755,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
             if path == "/v1/preflight":
+                library = self.service.require_library_ready(force=True)
                 payload = self.service.validate_payload(
                     body, require_reference_semantic_layout=True,
                 )
@@ -3687,6 +3764,12 @@ class Handler(BaseHTTPRequestHandler):
                     "payload": payload,
                     "duration": payload["duration"],
                     "required_visuals": self.service.required_visuals(payload),
+                    "material_selection_contract_version": library[
+                        "selection_contract_version"
+                    ],
+                    "material_clip_contract_version": library[
+                        "clip_contract_version"
+                    ],
                     "duration_mode": (
                         "random_integer_8_15"
                         if payload["template_id"] in self.service.reference_templates

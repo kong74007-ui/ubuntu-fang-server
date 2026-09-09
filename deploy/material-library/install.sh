@@ -10,6 +10,7 @@ UNIT_PATH="${UNIT_PATH:-/etc/systemd/system/huangque-material-library.service}"
 UNIT_SOURCE="${SOURCE_ROOT}/deploy/systemd/huangque-material-library.service"
 ROLLBACK_LIB="${SOURCE_ROOT}/deploy/material-library/lib/rollback.sh"
 LIBRARY_ROOT="${MATERIAL_LIBRARY_ROOT:-/home/ubuntu/material-libraries/huangque-media}"
+USAGE_PATH="${MATERIAL_LIBRARY_USAGE_PATH:-/var/lib/huangque-material-library/usage.json}"
 SERVICE="huangque-material-library.service"
 TEST_MODE="${MATERIAL_LIBRARY_INSTALL_TEST_MODE:-0}"
 BACKUP_ROOT="${MATERIAL_LIBRARY_BACKUP_ROOT:-/var/tmp}"
@@ -31,6 +32,8 @@ WAS_ENABLED=0
 OLD_MAIN_PID=0
 RUNTIME_EXISTED=0
 RELEASES_EXISTED=0
+USAGE_EXISTED=0
+USAGE_MUTATED=0
 SUCCEEDED=0
 
 cleanup() {
@@ -51,6 +54,13 @@ cleanup() {
     fi
     if [[ "${UNIT_MUTATED}" -eq 1 ]]; then
       systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if [[ "${USAGE_MUTATED}" -eq 1 ]]; then
+      if [[ "${USAGE_EXISTED}" -eq 1 ]]; then
+        cp -a "${BACKUP}/usage.json" "${USAGE_PATH}"
+      else
+        rm -f "${USAGE_PATH}"
+      fi
     fi
     if [[ "${SERVICE_MUTATED}" -eq 1 ]]; then
       if [[ "${WAS_ENABLED}" -eq 1 ]]; then
@@ -91,6 +101,10 @@ if [[ "${TEST_MODE}" != "1" && "${RUNTIME_ROOT}" != "/opt/huangque/material-libr
   echo "refusing unexpected runtime root" >&2
   exit 2
 fi
+if [[ "${TEST_MODE}" != "1" && "${USAGE_PATH}" != "/var/lib/huangque-material-library/usage.json" ]]; then
+  echo "refusing unexpected material usage path" >&2
+  exit 2
+fi
 for source in "${SOURCE_ROOT}/server/material_library.py" \
               "${SOURCE_ROOT}/server/material_library_api.py" \
               "${UNIT_SOURCE}" "${ROLLBACK_LIB}"; do
@@ -126,6 +140,14 @@ trap cleanup EXIT
 if [[ -f "${UNIT_PATH}" ]]; then
   cp -a "${UNIT_PATH}" "${BACKUP}/unit"
   UNIT_EXISTED=1
+fi
+if [[ -e "${USAGE_PATH}" ]]; then
+  if [[ ! -f "${USAGE_PATH}" || -L "${USAGE_PATH}" ]]; then
+    echo "material usage state must be a regular file" >&2
+    exit 2
+  fi
+  cp -a "${USAGE_PATH}" "${BACKUP}/usage.json"
+  USAGE_EXISTED=1
 fi
 
 install -d -o root -g root -m 0755 "${RUNTIME_ROOT}" "${RELEASES_DIR}"
@@ -188,6 +210,7 @@ UNIT_MUTATED=1
 install -o root -g root -m 0644 "${UNIT_SOURCE}" "${UNIT_PATH}"
 systemctl daemon-reload
 systemctl enable "${SERVICE}"
+USAGE_MUTATED=1
 systemctl start "${SERVICE}"
 NEW_MAIN_PID="$(systemctl show --property=MainPID --value "${SERVICE}")"
 if [[ ! "${NEW_MAIN_PID}" =~ ^[1-9][0-9]*$ ]] ||

@@ -134,8 +134,41 @@ class MaterialLibraryApiTests(unittest.TestCase):
             ["round_robin_all_orientations_unique"],
             payload["fallback_policy"],
         )
-        usage = json.loads(self.usage_path.read_text(encoding="utf-8"))
+        usage = json.loads(
+            self.usage_path.read_text(encoding="utf-8")
+        )["usage"]
         self.assertEqual(1, usage[self.sha]["count"])
+
+    def test_selection_id_replays_same_http_receipt_without_double_usage(self):
+        body = {
+            "scenes": [{"scene_id": "s1", "media_type": "image"}],
+            "orientation": "portrait",
+            "selection_mode": "round_robin",
+            "seed": "stable-job",
+            "selection_id": "matrix-template:" + "a" * 32,
+        }
+
+        with self.request(
+            "/v1/select", method="POST", payload=body, token="test-token",
+        ) as response:
+            first = json.load(response)
+        with self.request(
+            "/v1/select", method="POST", payload=body, token="test-token",
+        ) as response:
+            second = json.load(response)
+
+        self.assertEqual(first, second)
+        state = json.loads(self.usage_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, state["usage"][self.sha]["count"])
+        self.assertIn(body["selection_id"], state["receipts"])
+
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self.request(
+                "/v1/select", method="POST",
+                payload={**body, "seed": "different-job"},
+                token="test-token",
+            )
+        self.assertEqual(409, conflict.exception.code)
 
     def test_select_rejects_non_object_root_and_scene_entries(self):
         for payload in ([{"scene_id": "bad"}], {"scenes": ["bad"]}):

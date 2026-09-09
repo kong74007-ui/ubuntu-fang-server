@@ -155,7 +155,7 @@ class MaterialLibraryTests(unittest.TestCase):
             item["clip_start_seconds"] + item["clip_duration_seconds"] <= 9.9
             for item in selected
         ))
-        usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))["usage"]
         self.assertEqual(3, usage[expected]["count"])
         self.assertEqual(
             [1, 1, 1], sorted(usage[item["clip_id"]]["count"] for item in selected),
@@ -376,6 +376,91 @@ class MaterialLibraryTests(unittest.TestCase):
 
         self.assertEqual({first, second}, {selected_first, selected_second})
 
+    def test_round_robin_selection_id_replays_receipt_across_restart(self):
+        for index in range(3):
+            self.add(
+                f"receipt-{index}", media=".mp4", 时长秒=10.0,
+                导入批次=f"batch-{index}", 二级场景=f"scene-{index}",
+            )
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+        selection_id = "matrix-template:" + "a" * 32
+
+        first = library.select(
+            scenes, seed="stable-job", selection_mode="round_robin",
+            selection_id=selection_id,
+        )
+        persisted = usage_path.read_bytes()
+        restarted = MaterialLibrary(self.root, usage_path=usage_path)
+        second = restarted.select(
+            scenes, seed="stable-job", selection_mode="round_robin",
+            selection_id=selection_id,
+            used_sha256=["f" * 64],
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(persisted, usage_path.read_bytes())
+        state = json.loads(persisted)
+        self.assertIn(selection_id, state["receipts"])
+        with self.assertRaisesRegex(
+            MaterialLibraryError, "selection_id request conflict",
+        ):
+            restarted.select(
+                scenes, seed="different-job", selection_mode="round_robin",
+                selection_id=selection_id,
+            )
+
+    def test_usage_save_prunes_stale_keys(self):
+        valid = self.add("valid", media=".mp4", 时长秒=10.0)
+        stale = "f" * 64
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        usage_path.write_text(json.dumps({
+            valid: {"count": 2, "last_used": 10},
+            stale: {"count": 9, "last_used": 20},
+        }), encoding="utf-8")
+        library = self.library(usage_path)
+
+        library.verify_usage_state()
+
+        usage = json.loads(usage_path.read_text(encoding="utf-8"))["usage"]
+        self.assertIn(valid, usage)
+        self.assertNotIn(stale, usage)
+
+    def test_usage_save_limits_preserve_previous_valid_file(self):
+        self.add("bounded", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        library.verify_usage_state()
+        before = usage_path.read_bytes()
+        scenes = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        with mock.patch.object(
+            material_library_module, "MAX_USAGE_RECORDS", 1,
+        ), self.assertRaisesRegex(MaterialLibraryError, "state is too large"):
+            library.select(
+                scenes, seed="record-cap", selection_mode="round_robin",
+            )
+        self.assertEqual(before, usage_path.read_bytes())
+
+        with mock.patch.object(
+            material_library_module, "MAX_STATE_BYTES", len(before) - 1,
+        ), self.assertRaisesRegex(MaterialLibraryError, "state is too large"):
+            library.select(
+                scenes, seed="byte-cap", selection_mode="round_robin",
+            )
+        self.assertEqual(before, usage_path.read_bytes())
+        MaterialLibrary(self.root, usage_path=usage_path).verify_usage_state()
+
     def test_round_robin_prefers_distinct_source_groups_within_one_video(self):
         group_a = {
             self.add(
@@ -572,7 +657,9 @@ class MaterialLibraryTests(unittest.TestCase):
             ))
 
         self.assertEqual([2, 2, 2], sorted(collections.Counter(selected).values()))
-        persisted = json.loads(usage_path.read_text(encoding="utf-8"))
+        persisted = json.loads(
+            usage_path.read_text(encoding="utf-8")
+        )["usage"]
         self.assertEqual([2, 2, 2], sorted(
             int(item["count"]) for item in persisted.values()
         ))

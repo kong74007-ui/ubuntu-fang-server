@@ -122,6 +122,12 @@ restart replays that exact binding. Existing rows migrate to explicit contract
 v1 and retain the legacy no-clip fallback; newly admitted v2 jobs never silently
 downgrade.
 
+Each material request also sends `selection_id=matrix-template:<job_id>`.
+The material service atomically commits usage counters and the full response
+receipt, closing the crash window before the renderer's local selection row is
+written. If that local write or the HTTP response is lost, recovery receives the
+same remote receipt without double-counting or choosing another clip.
+
 The five service workers may prepare five jobs concurrently, but HyperFrames
 rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait
 up to 600 seconds and retain the original 900-second admission deadline.

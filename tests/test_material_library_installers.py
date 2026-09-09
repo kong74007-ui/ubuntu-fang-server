@@ -51,6 +51,10 @@ class MaterialLibraryInstallerTests(unittest.TestCase):
         (state / "enabled").write_text("1")
         (state / "pid").write_text("100")
         (state / "trace").write_text("")
+        (state / "usage.json").write_text(
+            json.dumps({"a" * 64: {"count": 1, "last_used": 1}}),
+            encoding="utf-8",
+        )
         return library, runtime, source, unit, env_file, state
 
     def _fake_bin(self, root: Path) -> Path:
@@ -85,6 +89,10 @@ case "$1" in
   start|restart)
     echo 1 > "$TEST_STATE_DIR/active"
     value=$(cat "$TEST_STATE_DIR/pid"); echo $((value + 1)) > "$TEST_STATE_DIR/pid"
+    if [[ "${TEST_MUTATE_USAGE:-0}" = 1 && \
+          "$(cat "$TEST_SOURCE_LINK/BUILD_ID")" != "$TEST_OLD_BUILD_ID" ]]; then
+      echo new-state > "$MATERIAL_LIBRARY_USAGE_PATH"
+    fi
     ;;
   enable) echo 1 > "$TEST_STATE_DIR/enabled" ;;
   disable) echo 0 > "$TEST_STATE_DIR/enabled" ;;
@@ -97,7 +105,7 @@ set -e
 [[ "$(cat "$TEST_STATE_DIR/active")" = 1 ]]
 build=$(cat "$TEST_SOURCE_LINK/BUILD_ID")
 if [[ "${TEST_FAIL_NEW_BUILD:-0}" = 1 && "$build" != "$TEST_OLD_BUILD_ID" ]]; then exit 22; fi
-printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$build"
+printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true,"selection_contract_version":2,"clip_contract_version":1}\n' "$build"
 ''')
         return fake
 
@@ -117,6 +125,7 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             "TEST_STATE_DIR": str(state),
             "TEST_SOURCE_LINK": str(runtime / "source"),
             "TEST_OLD_BUILD_ID": "0" * 64,
+            "MATERIAL_LIBRARY_USAGE_PATH": str(state / "usage.json"),
         })
         return env
 
@@ -144,6 +153,8 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             fake = self._fake_bin(root)
             env = self._environment(root, library, runtime, unit, env_file, state, fake)
             env["TEST_FAIL_NEW_BUILD"] = "1"
+            env["TEST_MUTATE_USAGE"] = "1"
+            old_usage = (state / "usage.json").read_bytes()
             result = subprocess.run(
                 [BASH, str(ROOT / "deploy/material-library/install.sh")],
                 env=env, capture_output=True, text=True,
@@ -153,6 +164,7 @@ printf '{"ok":true,"build_id":"%s","records":1,"usage_state_ready":true}\n' "$bu
             self.assertEqual("old-unit", unit.read_text())
             self.assertEqual("1", (state / "active").read_text().strip())
             self.assertEqual("1", (state / "enabled").read_text().strip())
+            self.assertEqual(old_usage, (state / "usage.json").read_bytes())
 
     def test_early_preflight_failure_does_not_call_systemctl_or_change_files(self):
         with tempfile.TemporaryDirectory() as temp:

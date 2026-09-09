@@ -82,6 +82,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("hyperframes_concurrency")==2', installer)
         self.assertIn('d.get("hyperframes_total_timeout_seconds")==900', installer)
         self.assertIn('d.get("hyperframes_slot_timeout_seconds")==600', installer)
+        self.assertIn('d.get("material_library_ready") is True', installer)
+        self.assertIn(
+            'd.get("material_selection_contract_version")==2', installer,
+        )
+        self.assertIn('d.get("material_clip_contract_version")==1', installer)
         self.assertNotIn("MATRIX_TEMPLATE_API_TOKEN=sk-", installer)
         self.assertIn("MATRIX_TEMPLATE_RETENTION_SECONDS=259200", installer)
         self.assertIn("MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600", installer)

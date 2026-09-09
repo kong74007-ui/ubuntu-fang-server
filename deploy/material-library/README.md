@@ -89,6 +89,17 @@ Both responses expose `selection_contract_version=2` and
 `clip_contract_version=1`; generation-server tunnel readiness rejects older
 material-library releases before accepting template jobs.
 
+Round-robin callers may provide a stable `selection_id`. Source/clip counters
+and the complete response receipt are committed in the same atomic state-file
+replacement. Repeating the same operation key replays the receipt without
+incrementing usage, including after a lost HTTP response or process restart;
+reusing a key for a different request returns a conflict.
+
+The v2 state file wraps usage and receipts in one atomic envelope. Installation
+backs up the previous flat usage file before starting v2 and restores it before
+restarting an older release on rollback, so a failed upgrade cannot strand the
+previous service on an unreadable state format.
+
 Video scenes may provide `clip_duration_seconds` from `2` through `3`. Every
 eligible source is expanded into deterministic, non-overlapping three-second
 virtual candidates across its full duration; sources that cannot cover one clip

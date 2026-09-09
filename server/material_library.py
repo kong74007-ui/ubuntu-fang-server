@@ -52,7 +52,9 @@ MAX_MATERIAL_DURATION_SECONDS = 30 * 60
 MAX_CLIP_SLOTS_PER_SOURCE = 600
 MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
 MAX_USAGE_RECORDS = MAX_RECORDS + MAX_VIRTUAL_CANDIDATES_PER_REQUEST
-MAX_USAGE_BYTES = 8 * 1024 * 1024
+MAX_STATE_BYTES = 16 * 1024 * 1024
+MAX_SELECTION_RECEIPTS = 2_000
+SELECTION_RECEIPT_TTL_SECONDS = 4 * 24 * 60 * 60
 # Recency penalties outrank the clamped count gap, so rotation wins without
 # abandoning long-term per-file fairness.
 ROUND_ROBIN_COUNT_SLACK = 2
@@ -72,6 +74,7 @@ MAX_CLIP_SECONDS = 3.0
 CLIP_SLOT_SECONDS = 3.0
 CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SELECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 TOKEN_RE = re.compile(r"[\w\u3400-\u9fff]+", re.UNICODE)
 
 
@@ -80,6 +83,10 @@ class MaterialLibraryError(RuntimeError):
 
 
 class MaterialShortageError(MaterialLibraryError):
+    pass
+
+
+class MaterialSelectionConflictError(MaterialLibraryError):
     pass
 
 
@@ -337,6 +344,22 @@ def _stable_rank(seed: str, candidate: MaterialCandidate) -> str:
     ).hexdigest()
 
 
+def _selection_request_sha256(
+    scenes: list[dict[str, Any]], orientation: str, seed: str,
+    selection_mode: str,
+) -> str:
+    try:
+        canonical = json.dumps({
+            "scenes": scenes,
+            "orientation": orientation,
+            "seed": seed,
+            "selection_mode": selection_mode,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("selection request is not JSON serializable") from exc
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class MaterialLibrary:
     def __init__(self, root: str | Path, *, usage_path: str | Path | None = None):
         self.root = Path(root).resolve()
@@ -354,6 +377,7 @@ class MaterialLibrary:
             Path(usage_path).resolve() if usage_path is not None else None
         )
         self._usage: dict[str, dict[str, int | float]] = {}
+        self._selection_receipts: dict[str, dict[str, Any]] = {}
         self._usage_state_ready = False
         self._load_usage()
 
@@ -393,13 +417,28 @@ class MaterialLibrary:
                 return
             if self._usage_path.is_symlink() or not self._usage_path.is_file():
                 raise MaterialLibraryError("material usage state is unsafe")
-            if self._usage_path.stat().st_size > MAX_USAGE_BYTES:
+            if self._usage_path.stat().st_size > MAX_STATE_BYTES:
                 raise MaterialLibraryError("material usage state is too large")
             data = json.loads(self._usage_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or len(data) > MAX_USAGE_RECORDS:
+            if not isinstance(data, dict):
+                raise MaterialLibraryError("material usage state is invalid")
+            if data.get("version") == 2:
+                if set(data) != {"version", "usage", "receipts"}:
+                    raise MaterialLibraryError("material usage state is invalid")
+                usage_data = data["usage"]
+                receipts_data = data["receipts"]
+            else:
+                usage_data = data
+                receipts_data = {}
+            if (
+                not isinstance(usage_data, dict)
+                or len(usage_data) > MAX_USAGE_RECORDS
+                or not isinstance(receipts_data, dict)
+                or len(receipts_data) > MAX_SELECTION_RECEIPTS
+            ):
                 raise MaterialLibraryError("material usage state is invalid")
             loaded: dict[str, dict[str, int | float]] = {}
-            for key, value in data.items():
+            for key, value in usage_data.items():
                 if (
                     not SHA256_RE.fullmatch(str(key))
                     or not isinstance(value, dict)
@@ -417,13 +456,90 @@ class MaterialLibrary:
                     "count": int(value["count"]),
                     "last_used": float(value["last_used"]),
                 }
+            receipts: dict[str, dict[str, Any]] = {}
+            for key, value in receipts_data.items():
+                if (
+                    not SELECTION_ID_RE.fullmatch(str(key))
+                    or not isinstance(value, dict)
+                    or set(value) != {"request_sha256", "result", "created_at"}
+                    or not SHA256_RE.fullmatch(
+                        str(value.get("request_sha256") or "")
+                    )
+                    or not isinstance(value.get("result"), dict)
+                    or isinstance(value.get("created_at"), bool)
+                    or not isinstance(value.get("created_at"), (int, float))
+                    or not math.isfinite(float(value["created_at"]))
+                    or float(value["created_at"]) < 0
+                ):
+                    raise MaterialLibraryError("material usage state is invalid")
+                receipts[str(key)] = {
+                    "request_sha256": str(value["request_sha256"]),
+                    "result": value["result"],
+                    "created_at": float(value["created_at"]),
+                }
             self._usage = loaded
+            self._selection_receipts = receipts
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise MaterialLibraryError("material usage state is unavailable") from exc
+
+    def _valid_usage_keys(self) -> set[str]:
+        valid = {material.sha256 for material in self._materials}
+        virtual_count = 0
+        for material in self._materials:
+            if material.media_type != "video":
+                continue
+            for candidate in _material_candidates(
+                material, MIN_CLIP_SECONDS,
+            ):
+                virtual_count += 1
+                if virtual_count > MAX_VIRTUAL_CANDIDATES_PER_REQUEST:
+                    raise MaterialLibraryError(
+                        "virtual candidate limit exceeded"
+                    )
+                valid.add(candidate.usage_key)
+        return valid
+
+    def _prune_state(self) -> None:
+        valid_usage = self._valid_usage_keys()
+        self._usage = {
+            key: value for key, value in self._usage.items()
+            if key in valid_usage
+        }
+        cutoff = time.time() - SELECTION_RECEIPT_TTL_SECONDS
+        retained = [
+            (key, value)
+            for key, value in self._selection_receipts.items()
+            if float(value["created_at"]) >= cutoff
+        ]
+        retained.sort(
+            key=lambda item: (-float(item[1]["created_at"]), item[0])
+        )
+        self._selection_receipts = dict(
+            retained[:MAX_SELECTION_RECEIPTS]
+        )
 
     def _save_usage(self) -> None:
         if self._usage_path is None:
             raise MaterialLibraryError("material usage state is not configured")
+        self._prune_state()
+        if len(self._usage) > MAX_USAGE_RECORDS:
+            raise MaterialLibraryError("material usage state is too large")
+        state = {
+            "version": 2,
+            "usage": self._usage,
+            "receipts": self._selection_receipts,
+        }
+        try:
+            serialized = json.dumps(
+                state, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n"
+        except (TypeError, ValueError) as exc:
+            raise MaterialLibraryError(
+                "material usage state is unavailable"
+            ) from exc
+        if len(serialized.encode("utf-8")) > MAX_STATE_BYTES:
+            raise MaterialLibraryError("material usage state is too large")
         parent = self._usage_path.parent
         temporary = None
         try:
@@ -434,8 +550,7 @@ class MaterialLibrary:
             )
             temporary = Path(name)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(self._usage, handle, ensure_ascii=False, sort_keys=True)
-                handle.write("\n")
+                handle.write(serialized)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temporary, 0o600)
@@ -448,6 +563,7 @@ class MaterialLibrary:
                 temporary.unlink(missing_ok=True)
 
     def verify_usage_state(self) -> None:
+        self.refresh()
         with self._usage_lock:
             self._save_usage()
             self._usage_state_ready = True
@@ -599,24 +715,64 @@ class MaterialLibrary:
         seed: str = "",
         used_sha256: Iterable[str] = (),
         selection_mode: str = "semantic",
+        selection_id: str = "",
     ) -> dict[str, Any]:
         mode = _text(selection_mode or "semantic")
+        used_values = tuple(str(value).lower() for value in used_sha256)
+        receipt_id = str(selection_id or "").strip()
+        if receipt_id and (
+            mode != "round_robin"
+            or not SELECTION_ID_RE.fullmatch(receipt_id)
+        ):
+            raise ValueError(
+                "selection_id requires round_robin and must be a stable key"
+            )
         if mode != "round_robin":
             return self._select_impl(
                 scenes, orientation=orientation, seed=seed,
-                used_sha256=used_sha256, selection_mode=mode,
+                used_sha256=used_values, selection_mode=mode,
             )
+        request_sha256 = _selection_request_sha256(
+            scenes, str(orientation), str(seed), mode,
+        )
         with self._usage_lock:
             previous_usage = {
                 key: dict(value) for key, value in self._usage.items()
             }
+            previous_receipts = {
+                key: {
+                    "request_sha256": value["request_sha256"],
+                    "result": json.loads(json.dumps(value["result"])),
+                    "created_at": value["created_at"],
+                }
+                for key, value in self._selection_receipts.items()
+            }
+            if receipt_id:
+                receipt = self._selection_receipts.get(receipt_id)
+                if receipt is not None:
+                    if not hmac.compare_digest(
+                        receipt["request_sha256"], request_sha256,
+                    ):
+                        raise MaterialSelectionConflictError(
+                            "selection_id request conflict"
+                        )
+                    return json.loads(json.dumps(receipt["result"]))
             try:
-                return self._select_impl(
+                result = self._select_impl(
                     scenes, orientation=orientation, seed=seed,
-                    used_sha256=used_sha256, selection_mode=mode,
+                    used_sha256=used_values, selection_mode=mode,
                 )
+                if receipt_id:
+                    self._selection_receipts[receipt_id] = {
+                        "request_sha256": request_sha256,
+                        "result": json.loads(json.dumps(result)),
+                        "created_at": time.time(),
+                    }
+                self._save_usage()
+                return result
             except BaseException:
                 self._usage = previous_usage
+                self._selection_receipts = previous_receipts
                 raise
 
     def _select_impl(
@@ -802,8 +958,6 @@ class MaterialLibrary:
             item["match_score"] = score
             selected.append(item)
 
-        if mode == "round_robin":
-            self._save_usage()
         return {
             "materials": selected,
             "used_sha256": sorted(used),
