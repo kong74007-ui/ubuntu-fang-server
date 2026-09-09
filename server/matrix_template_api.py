@@ -1150,31 +1150,11 @@ def _validate_reference_editing_plan(value) -> dict:
             raise MatrixTemplateError("HyperFrames 剪辑方案无效")
     for index, transition in enumerate(transitions, 1):
         transition_keys = set(transition) if isinstance(transition, dict) else set()
-        has_window = transition_keys == {
-            "boundary", "name", "start", "duration",
-        }
         if (
             not isinstance(transition, dict)
             or transition.get("boundary") != index
             or transition.get("name") not in REFERENCE_TRANSITIONS
-            or transition_keys not in (
-                {"boundary", "name"},
-                {"boundary", "name", "start", "duration"},
-            )
-            or (
-                has_window and (
-                    isinstance(transition.get("start"), bool)
-                    or not isinstance(transition.get("start"), (int, float))
-                    or not math.isfinite(float(transition["start"]))
-                    or float(transition["start"]) < 0
-                    or isinstance(transition.get("duration"), bool)
-                    or not isinstance(transition.get("duration"), (int, float))
-                    or not math.isfinite(float(transition["duration"]))
-                    or float(transition["duration"]) < 0
-                    or float(transition["duration"])
-                    > REFERENCE_TRANSITION_MAX_SECONDS + 0.001
-                )
-            )
+            or transition_keys != {"boundary", "name"}
         ):
             raise MatrixTemplateError("HyperFrames 剪辑方案无效")
     return value
@@ -3644,15 +3624,11 @@ class MatrixTemplateService:
             segment_starts, segment_durations, media_offsets,
         )
         editing_plan = reference.get("editing_plan")
-        if editing_plan is None:
-            # Jobs persisted before editing-plan rollout stay recoverable.
-            editing_plan = _reference_editing_plan(
-                job_id, payload["template_id"], visual_count
-            )
-        editing_plan = _validate_reference_editing_plan(editing_plan)
-        if len(editing_plan["segments"]) != visual_count:
-            raise MatrixTemplateError("HyperFrames 剪辑方案片段数量不匹配")
-        index = _inject_reference_editing_plan(index, editing_plan)
+        if editing_plan is not None:
+            editing_plan = _validate_reference_editing_plan(editing_plan)
+            if len(editing_plan["segments"]) != visual_count:
+                raise MatrixTemplateError("HyperFrames 剪辑方案片段数量不匹配")
+            index = _inject_reference_editing_plan(index, editing_plan)
         index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -3738,7 +3714,8 @@ class MatrixTemplateService:
             )
         finally:
             self.hyperframes_slots.release()
-        variables["_editing_plan"] = editing_plan
+        if editing_plan is not None:
+            variables["_editing_plan"] = editing_plan
         return variables
 
     def _probe(self, output: Path) -> dict:

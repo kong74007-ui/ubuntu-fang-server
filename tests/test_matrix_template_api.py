@@ -2744,6 +2744,16 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(4, len(five["transitions"]))
         matrix._validate_reference_editing_plan(five)
 
+        unsupported_window = json.loads(json.dumps(first))
+        unsupported_window["transitions"][0].update({
+            "start": 2.0,
+            "duration": 0.2,
+        })
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "剪辑方案无效"
+        ):
+            matrix._validate_reference_editing_plan(unsupported_window)
+
     def test_reference_editing_script_has_no_color_effects_or_text_animation(self):
         plan = matrix._reference_editing_plan("3" * 32, "ref-03-fixture-03")
         source = """<html><head></head><body>
@@ -3666,7 +3676,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     "v03", {"top2": {**base, "font_size_px": value}}
                 )
 
-    def test_legacy_reference_job_without_fixed_font_keeps_original_style(self):
+    def test_legacy_reference_job_without_new_metadata_keeps_original_style_and_timeline(self):
         payload = self.service.validate_payload({
             "top_text": "郑州AI创业活动",
             "bottom_text": "评论区回复关键词",
@@ -3693,13 +3703,18 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
-            self.service._render_reference(
+            variables = self.service._render_reference(
                 payload, "7" * 32, materials, paths
             )
         workdir = self.service.data_root / ("7" * 32) / "hyperframes"
         index = (workdir / "index.html").read_text(encoding="utf-8")
         self.assertNotIn(matrix.REFERENCE_PRIVATE_FONT_STYLE_ID, index)
-        self.assertEqual(1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID))
+        self.assertNotIn(matrix.REFERENCE_EDITING_SCRIPT_ID, index)
+        self.assertNotIn(matrix.REFERENCE_EDITING_STYLE_ID, index)
+        self.assertIn(matrix.REFERENCE_BASE_TIMELINE_JS, index)
+        self.assertNotIn("-transition\"", index)
+        self.assertNotIn("-motion\"", index)
+        self.assertNotIn("_editing_plan", variables)
         self.assertFalse(
             (workdir / "assets/fonts/SmileySans-Oblique.ttf").exists()
         )
