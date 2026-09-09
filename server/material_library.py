@@ -46,6 +46,13 @@ SEARCH_FIELD_ALIASES = {
 SHA256_FIELDS = ("sha256", "SHA256")
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 20_000
+SELECTION_CONTRACT_VERSION = 2
+CLIP_CONTRACT_VERSION = 1
+MAX_MATERIAL_DURATION_SECONDS = 30 * 60
+MAX_CLIP_SLOTS_PER_SOURCE = 600
+MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
+MAX_USAGE_RECORDS = MAX_RECORDS + MAX_VIRTUAL_CANDIDATES_PER_REQUEST
+MAX_USAGE_BYTES = 8 * 1024 * 1024
 # Recency penalties outrank the clamped count gap, so rotation wins without
 # abandoning long-term per-file fairness.
 ROUND_ROBIN_COUNT_SLACK = 2
@@ -201,24 +208,40 @@ def _safe_relative_path(root: Path, value: Any) -> str:
 
 
 def _duration(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise MaterialLibraryError("invalid material duration")
     try:
         parsed = float(value)
-        return parsed if parsed >= 0 else None
-    except (TypeError, ValueError):
-        return None
+        if (
+            not math.isfinite(parsed)
+            or parsed < 0
+            or parsed > MAX_MATERIAL_DURATION_SECONDS
+        ):
+            raise MaterialLibraryError("invalid material duration")
+        return parsed
+    except (TypeError, ValueError, OverflowError):
+        raise MaterialLibraryError("invalid material duration")
 
 
 def _clip_duration(value: Any) -> float | None:
     if value in (None, ""):
         return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("clip_duration_seconds must be between 2 and 3")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "clip_duration_seconds must be between 2 and 3"
+        ) from exc
     if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not MIN_CLIP_SECONDS <= float(value) <= MAX_CLIP_SECONDS
+        not math.isfinite(parsed)
+        or not MIN_CLIP_SECONDS <= parsed <= MAX_CLIP_SECONDS
     ):
         raise ValueError("clip_duration_seconds must be between 2 and 3")
-    return round(float(value), 6)
+    return round(parsed, 6)
 
 
 def _material_candidates(
@@ -232,6 +255,8 @@ def _material_candidates(
     slot_count = max(1, int(math.floor(
         available / CLIP_SLOT_SECONDS + 1e-9
     )))
+    if slot_count > MAX_CLIP_SLOTS_PER_SOURCE:
+        raise MaterialLibraryError("material clip slot limit exceeded")
     occupied = CLIP_SLOT_SECONDS * slot_count if slot_count > 1 else clip_duration
     leading = max(0.0, (available - occupied) / 2)
     inset = (
@@ -368,10 +393,10 @@ class MaterialLibrary:
                 return
             if self._usage_path.is_symlink() or not self._usage_path.is_file():
                 raise MaterialLibraryError("material usage state is unsafe")
-            if self._usage_path.stat().st_size > 4 * 1024 * 1024:
+            if self._usage_path.stat().st_size > MAX_USAGE_BYTES:
                 raise MaterialLibraryError("material usage state is too large")
             data = json.loads(self._usage_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or len(data) > MAX_RECORDS:
+            if not isinstance(data, dict) or len(data) > MAX_USAGE_RECORDS:
                 raise MaterialLibraryError("material usage state is invalid")
             loaded: dict[str, dict[str, int | float]] = {}
             for key, value in data.items():
@@ -509,6 +534,8 @@ class MaterialLibrary:
         return {
             "records": len(self._materials), "media_types": counts,
             "usage_state_ready": self._usage_state_ready,
+            "selection_contract_version": SELECTION_CONTRACT_VERSION,
+            "clip_contract_version": CLIP_CONTRACT_VERSION,
         }
 
     def resolve(self, sha256: str) -> tuple[Material, Path]:
@@ -619,6 +646,7 @@ class MaterialLibrary:
             if (material := self._by_sha.get(sha256)) is not None
         }
         selected: list[dict[str, Any]] = []
+        virtual_candidate_ids: set[str] = set()
 
         for position, scene in enumerate(scenes):
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
@@ -627,13 +655,25 @@ class MaterialLibrary:
             allowed_types = {"image", "video"} if media_type == "visual" else {media_type}
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
-            candidates = [
-                candidate
-                for item in self._materials
-                if item.sha256 not in used
-                and item.media_type in allowed_types
-                for candidate in _material_candidates(item, clip_duration)
-            ]
+            candidates = []
+            for material in self._materials:
+                if (
+                    material.sha256 in used
+                    or material.media_type not in allowed_types
+                ):
+                    continue
+                for candidate in _material_candidates(
+                    material, clip_duration,
+                ):
+                    virtual_candidate_ids.add(candidate.usage_key)
+                    if (
+                        len(virtual_candidate_ids)
+                        > MAX_VIRTUAL_CANDIDATES_PER_REQUEST
+                    ):
+                        raise MaterialLibraryError(
+                            "virtual candidate limit exceeded"
+                        )
+                    candidates.append(candidate)
             if not candidates:
                 raise MaterialShortageError(f"no unique approved material remains for {scene_id}")
 
@@ -768,6 +808,8 @@ class MaterialLibrary:
             "materials": selected,
             "used_sha256": sorted(used),
             "selection_mode": mode,
+            "selection_contract_version": SELECTION_CONTRACT_VERSION,
+            "clip_contract_version": CLIP_CONTRACT_VERSION,
             "fallback_policy": (
                 [
                     "round_robin_all_orientations_unique"

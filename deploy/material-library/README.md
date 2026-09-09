@@ -85,6 +85,9 @@ after verifying its checksum. Both endpoints require the bearer token.
 
 `GET /health` is unauthenticated and returns counts only. `GET /v1/ping`
 requires the bearer token and is used for pre-charge readiness checks.
+Both responses expose `selection_contract_version=2` and
+`clip_contract_version=1`; generation-server tunnel readiness rejects older
+material-library releases before accepting template jobs.
 
 Video scenes may provide `clip_duration_seconds` from `2` through `3`. Every
 eligible source is expanded into deterministic, non-overlapping three-second
@@ -94,3 +97,8 @@ key, so later portions participate in selection immediately instead of waiting
 for the whole source to cycle. The response freezes `clip_id`,
 `clip_start_seconds`, `clip_duration_seconds`, `clip_slot_index`, and
 `clip_slot_count` while downloads continue to use the approved source SHA.
+
+Explicit index durations must be finite, non-boolean, non-negative, and at most
+30 minutes. One source may expose at most 600 slots, and one selection request
+may inspect at most 20,000 unique virtual candidates. Invalid metadata or a cap
+breach fails closed before a material is returned.

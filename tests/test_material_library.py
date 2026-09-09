@@ -165,7 +165,9 @@ class MaterialLibraryTests(unittest.TestCase):
         self.add("video", media=".mp4", 时长秒=10.0)
         library = self.library()
 
-        for value in (True, "2.5", 1.99, 3.01, float("nan")):
+        for value in (
+            True, "2.5", 1.99, 3.01, float("nan"), 10 ** 400,
+        ):
             with self.subTest(value=value), self.assertRaisesRegex(
                 ValueError, "between 2 and 3",
             ):
@@ -173,6 +175,42 @@ class MaterialLibraryTests(unittest.TestCase):
                     "scene_id": "s1", "media_type": "video",
                     "clip_duration_seconds": value,
                 }])
+
+    def test_invalid_index_duration_fails_closed(self):
+        invalid_values = (
+            True, float("nan"), float("inf"), "1e309",
+            10 ** 400,
+            material_library_module.MAX_MATERIAL_DURATION_SECONDS + 1,
+        )
+        for index, value in enumerate(invalid_values):
+            with self.subTest(value=value):
+                self.rows = []
+                self.add(
+                    f"invalid-duration-{index}", media=".mp4", 时长秒=value,
+                )
+                with self.assertRaisesRegex(
+                    MaterialLibraryError, "invalid material duration",
+                ):
+                    self.library().refresh()
+
+    def test_virtual_clip_limits_fail_closed(self):
+        self.add("long-a", media=".mp4", 时长秒=12.1)
+        self.add("long-b", media=".mp4", 时长秒=12.1)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }]
+
+        with mock.patch.object(
+            material_library_module, "MAX_CLIP_SLOTS_PER_SOURCE", 2,
+        ), self.assertRaisesRegex(MaterialLibraryError, "slot limit"):
+            self.library().select(scene)
+
+        with mock.patch.object(
+            material_library_module,
+            "MAX_VIRTUAL_CANDIDATES_PER_REQUEST", 3,
+        ), self.assertRaisesRegex(MaterialLibraryError, "candidate limit"):
+            self.library().select(scene)
 
     def test_virtual_clip_pool_uses_later_parts_as_independent_candidates(self):
         sources = {

@@ -139,10 +139,19 @@ BUILD_ID="$(cd "${RELEASE_DIR}" && sha256sum server/material_library.py server/m
 printf '%s\n' "${BUILD_ID}" > "${RELEASE_DIR}/BUILD_ID"
 PYTHONPATH="${RELEASE_DIR}/server" MATERIAL_LIBRARY_ROOT="${LIBRARY_ROOT}" python3 - <<'PY'
 import os
-from material_library import MaterialLibrary
+from material_library import (
+    CLIP_CONTRACT_VERSION,
+    SELECTION_CONTRACT_VERSION,
+    MaterialLibrary,
+)
 
-if MaterialLibrary(os.environ["MATERIAL_LIBRARY_ROOT"]).stats()["records"] < 1:
-    raise SystemExit("material library has no approved records")
+stats = MaterialLibrary(os.environ["MATERIAL_LIBRARY_ROOT"]).stats()
+if (
+    stats["records"] < 1
+    or stats["selection_contract_version"] != SELECTION_CONTRACT_VERSION
+    or stats["clip_contract_version"] != CLIP_CONTRACT_VERSION
+):
+    raise SystemExit("material library records or selection contract are invalid")
 PY
 
 install -d -o root -g root -m 0755 "$(dirname "${ENV_FILE}")"
@@ -190,7 +199,7 @@ fi
 for _ in $(seq 1 "${HEALTH_ATTEMPTS}"); do
   response="$(curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8110/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("usage_state_ready") is True else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("usage_state_ready") is True and type(d.get("selection_contract_version")) is int and d["selection_contract_version"]==2 and type(d.get("clip_contract_version")) is int and d["clip_contract_version"]==1 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

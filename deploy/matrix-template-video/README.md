@@ -60,6 +60,10 @@ committed. Deploy only after the material-library tunnel is healthy. The system
 Python must provide Pillow (`Image`, `ImageDraw`, and `ImageFont`); the installer
 verifies it before switching releases.
 
+Deploy the material-library service before this renderer. Tunnel readiness
+requires selection contract v2 and clip contract v1, and every newly admitted
+template job fails closed if either version or any clip field is missing.
+
 The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
 least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
 memory. The upgraded 4-vCPU/8-GB host completed a five-render 1080x1920 smoke
@@ -110,6 +114,13 @@ reserved in SQLite before the next batch member selects, then supplied to the
 material library as `used_sha256`. This prevents visual reuse across one batch
 while allowing BGM reuse. A retry or service restart reuses the frozen per-job
 selection instead of choosing new assets.
+
+Single jobs use the same persisted selection table with an empty batch id.
+Every new job stores its complete scene-to-source-to-clip binding and contract
+version immediately after selection, before downloads or rendering. A worker
+restart replays that exact binding. Existing rows migrate to explicit contract
+v1 and retain the legacy no-clip fallback; newly admitted v2 jobs never silently
+downgrade.
 
 The five service workers may prepare five jobs concurrently, but HyperFrames
 rendering is guarded by a two-slot semaphore. Jobs beyond those two slots wait

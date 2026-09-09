@@ -4,6 +4,7 @@ import hashlib
 import json
 import random
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -656,6 +657,132 @@ class MatrixTemplateApiTests(unittest.TestCase):
         self.assertEqual([], captured["used_sha256"])
         self.assertEqual(4, len(set(item["sha256"] for item in materials)))
 
+    def test_non_batch_material_selection_is_frozen_and_replayed_after_restart(self):
+        payload = self.service.validate_payload({
+            "top_text": "素材切片冻结",
+            "bottom_text": "评论区获取资料",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("a" * 32, payload)
+        self.assertEqual(
+            2, payload["_material_selection_contract_version"],
+        )
+        calls = []
+
+        def selection(_method, _path, body):
+            calls.append(body)
+            generation = len(calls)
+            materials = []
+            for index, scene in enumerate(body["scenes"], 1):
+                duration = float(scene["clip_duration_seconds"])
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "sha256": format(generation * 100 + index, "064x"),
+                    "media_type": "video",
+                    "record_id": f"video-{generation}-{index}",
+                    "clip_id": format(generation * 1000 + index, "064x"),
+                    "clip_start_seconds": float(index - 1) * 3,
+                    "clip_duration_seconds": round(duration, 3),
+                    "clip_slot_index": index,
+                    "clip_slot_count": len(body["scenes"]),
+                })
+            return {
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": materials,
+            }
+
+        job_id = "b" * 32
+        with mock.patch.object(
+            self.service, "_library_request", side_effect=selection,
+        ):
+            first = self.service._select_materials(payload, job_id)
+            second = self.service._select_materials(payload, job_id)
+
+        self.assertEqual(first, second)
+        self.assertEqual(1, len(calls))
+        self.assertTrue(all(item.get("clip_id") for item in first))
+        frozen = self.service.store.material_selection(job_id)
+        self.assertEqual(2, frozen["selection_contract_version"])
+        self.assertEqual(first, frozen["materials"])
+
+        restarted = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            start_worker=False,
+        )
+        try:
+            with mock.patch.object(
+                restarted, "_library_request",
+                side_effect=AssertionError("frozen selection must replay"),
+            ):
+                self.assertEqual(
+                    first, restarted._select_materials(payload, job_id),
+                )
+        finally:
+            restarted.shutdown()
+
+    def test_new_job_rejects_old_or_incomplete_clip_contract(self):
+        payload = self.service.validate_payload({
+            "top_text": "切片契约校验",
+            "bottom_text": "评论区获取资料",
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("c" * 32, payload)
+        scenes, _count, _reference = self.service._material_scenes(payload)
+        legacy_materials = [{
+            "scene_id": scene["scene_id"],
+            "sha256": format(index, "064x"),
+            "media_type": "video",
+            "record_id": f"video-{index}",
+        } for index, scene in enumerate(scenes, 1)]
+
+        with mock.patch.object(
+            self.service, "_library_request",
+            return_value={"materials": legacy_materials},
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "能力版本不兼容",
+        ):
+            self.service._select_materials(payload, "c" * 32)
+
+        with mock.patch.object(
+            self.service, "_library_request", return_value={
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": legacy_materials,
+            },
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "切片契约不完整",
+        ):
+            self.service._select_materials(payload, "d" * 32)
+
+    def test_legacy_material_selection_row_is_marked_contract_v1(self):
+        path = self.root / "legacy-material-selection.db"
+        database = sqlite3.connect(path)
+        try:
+            database.execute("""CREATE TABLE batch_material_selections(
+                job_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                materials TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )""")
+            database.execute(
+                "INSERT INTO batch_material_selections("
+                "job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
+                ("e" * 32, "", "[]", 1),
+            )
+            database.commit()
+        finally:
+            database.close()
+
+        store = matrix.JobStore(path)
+        selection = store.material_selection("e" * 32)
+
+        self.assertEqual(1, selection["selection_contract_version"])
+        self.assertEqual([], selection["materials"])
+
     def test_concurrent_batch_jobs_reserve_distinct_visual_materials(self):
         batch_id = "b" * 32
         requests = []
@@ -753,7 +880,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "execute-1", payload, freeze_payload=self.service._freeze_font_provenance
         )
         materials = [
-            {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1", "match_level": "exact", "clip_start_seconds": 1.25, "clip_duration_seconds": 2.667},
+            {"scene_id": "media_01", "sha256": "a" * 64, "media_type": "video", "record_id": "v1", "match_level": "exact", "clip_id": "e" * 64, "clip_start_seconds": 1.25, "clip_duration_seconds": 2.667, "clip_slot_index": 2, "clip_slot_count": 4},
             {"scene_id": "media_02", "sha256": "b" * 64, "media_type": "image", "record_id": "i1", "match_level": "loose"},
             {"scene_id": "media_03", "sha256": "c" * 64, "media_type": "image", "record_id": "i2", "match_level": "loose"},
             {"scene_id": "bgm", "sha256": "d" * 64, "media_type": "bgm", "record_id": "m1", "match_level": "random"},
@@ -800,6 +927,10 @@ class MatrixTemplateApiTests(unittest.TestCase):
             ["v1", "i1", "i2", "m1"],
             [item["record_id"] for item in result["material_manifest"]],
         )
+        self.assertEqual(2, result["material_selection_contract_version"])
+        self.assertEqual(1, result["material_clip_contract_version"])
+        self.assertEqual("e" * 64, result["material_manifest"][0]["clip_id"])
+        self.assertEqual(1.25, result["material_manifest"][0]["clip_start_seconds"])
         self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
         self.assertFalse((self.service.data_root / job["job_id"] / "output/final.mp4").exists())
         self.service.store.update(job["job_id"], "completed", result=result)
@@ -2151,12 +2282,21 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         def selection(_method, _path, body):
             captured.update(body)
-            return {"materials": [{
-                "scene_id": f"media_{index:02d}",
-                "sha256": format(index, "064x"),
-                "media_type": "video",
-                "record_id": f"video-{index}",
-            } for index in range(1, 6)]}
+            return {
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+                "materials": [{
+                    "scene_id": f"media_{index:02d}",
+                    "sha256": format(index, "064x"),
+                    "media_type": "video",
+                    "record_id": f"video-{index}",
+                    "clip_id": format(index + 100, "064x"),
+                    "clip_start_seconds": float(index - 1) * 3,
+                    "clip_duration_seconds": 2.8,
+                    "clip_slot_index": index,
+                    "clip_slot_count": 5,
+                } for index in range(1, 6)],
+            }
 
         with mock.patch.object(self.service, "_library_request", side_effect=selection):
             materials = self.service._select_materials(payload, "2" * 32)

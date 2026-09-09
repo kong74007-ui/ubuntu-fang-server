@@ -34,6 +34,10 @@ MAX_BODY_BYTES = 128 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
+MATERIAL_SELECTION_CONTRACT_VERSION = 2
+MATERIAL_CLIP_CONTRACT_VERSION = 1
+MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
+MAX_MATERIAL_CLIP_SLOTS = 600
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
@@ -1042,6 +1046,18 @@ def _format_reference_seconds(value: float) -> str:
     return text or "0"
 
 
+def _bounded_float(value, minimum: float, maximum: float) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+        return None
+    return parsed
+
+
 def _reference_segment_timing(
     total_duration: float, media_durations: list[float], seed: str = ""
 ) -> tuple[list[float], list[float], list[float]]:
@@ -1313,6 +1329,16 @@ class JobStore:
                 materials TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             )""")
+            selection_columns = {
+                row[1] for row in db.execute(
+                    "PRAGMA table_info(batch_material_selections)"
+                )
+            }
+            if "selection_contract_version" not in selection_columns:
+                db.execute(
+                    "ALTER TABLE batch_material_selections ADD COLUMN "
+                    "selection_contract_version INTEGER NOT NULL DEFAULT 1"
+                )
             db.execute("""CREATE TABLE IF NOT EXISTS batch_material_reservations(
                 batch_id TEXT NOT NULL,
                 sha256 TEXT NOT NULL,
@@ -1387,13 +1413,26 @@ class JobStore:
                 "SELECT id FROM jobs WHERE status='pending' ORDER BY created_at,id"
             )]
 
-    def batch_material_selection(self, job_id: str) -> list[dict] | None:
+    def material_selection(self, job_id: str) -> dict | None:
         with self.connect() as db:
             row = db.execute(
-                "SELECT materials FROM batch_material_selections WHERE job_id=?",
+                "SELECT batch_id,materials,selection_contract_version "
+                "FROM batch_material_selections WHERE job_id=?",
                 (job_id,),
             ).fetchone()
-        return json.loads(row["materials"]) if row else None
+        if not row:
+            return None
+        return {
+            "batch_id": row["batch_id"],
+            "materials": json.loads(row["materials"]),
+            "selection_contract_version": int(
+                row["selection_contract_version"]
+            ),
+        }
+
+    def batch_material_selection(self, job_id: str) -> list[dict] | None:
+        selection = self.material_selection(job_id)
+        return selection["materials"] if selection else None
 
     def batch_used_visuals(self, batch_id: str) -> list[str]:
         with self.connect() as db:
@@ -1402,8 +1441,17 @@ class JobStore:
                 (batch_id,),
             )]
 
-    def reserve_batch_materials(self, batch_id: str, job_id: str,
-                                materials: list[dict]) -> None:
+    def _reserve_materials(
+        self, batch_id: str, job_id: str, materials: list[dict],
+        selection_contract_version: int, *, reserve_batch: bool,
+    ) -> None:
+        if (
+            isinstance(selection_contract_version, bool)
+            or selection_contract_version not in {
+                1, MATERIAL_SELECTION_CONTRACT_VERSION,
+            }
+        ):
+            raise MatrixTemplateError("material selection contract is invalid")
         visual_shas = [
             str(item.get("sha256") or "").lower() for item in materials
             if item.get("media_type") in {"image", "video"}
@@ -1415,24 +1463,60 @@ class JobStore:
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 existing = db.execute(
-                    "SELECT materials,batch_id FROM batch_material_selections WHERE job_id=?",
+                    "SELECT materials,batch_id,selection_contract_version "
+                    "FROM batch_material_selections WHERE job_id=?",
                     (job_id,),
                 ).fetchone()
                 if existing:
-                    if existing["batch_id"] != batch_id or json.loads(existing["materials"]) != materials:
-                        raise MatrixTemplateError("batch material selection conflict")
+                    if (
+                        existing["batch_id"] != batch_id
+                        or int(existing["selection_contract_version"])
+                        != selection_contract_version
+                        or json.loads(existing["materials"]) != materials
+                    ):
+                        raise MatrixTemplateError("material selection conflict")
                     return
-                for sha256 in visual_shas:
-                    db.execute(
-                        "INSERT INTO batch_material_reservations(batch_id,sha256,job_id,created_at) VALUES(?,?,?,?)",
-                        (batch_id, sha256, job_id, now),
-                    )
+                if reserve_batch:
+                    for sha256 in visual_shas:
+                        db.execute(
+                            "INSERT INTO batch_material_reservations("
+                            "batch_id,sha256,job_id,created_at) VALUES(?,?,?,?)",
+                            (batch_id, sha256, job_id, now),
+                        )
                 db.execute(
-                    "INSERT INTO batch_material_selections(job_id,batch_id,materials,created_at) VALUES(?,?,?,?)",
-                    (job_id, batch_id, json.dumps(materials, ensure_ascii=False), now),
+                    "INSERT INTO batch_material_selections("
+                    "job_id,batch_id,materials,created_at,"
+                    "selection_contract_version) VALUES(?,?,?,?,?)",
+                    (
+                        job_id, batch_id,
+                        json.dumps(materials, ensure_ascii=False), now,
+                        selection_contract_version,
+                    ),
                 )
         except sqlite3.IntegrityError as exc:
-            raise MatrixTemplateError("同批次视觉素材重复，请重新生成") from exc
+            message = (
+                "同批次视觉素材重复，请重新生成"
+                if reserve_batch else "素材选择冻结冲突"
+            )
+            raise MatrixTemplateError(message) from exc
+
+    def reserve_job_materials(
+        self, job_id: str, materials: list[dict],
+        selection_contract_version: int,
+    ) -> None:
+        self._reserve_materials(
+            "", job_id, materials, selection_contract_version,
+            reserve_batch=False,
+        )
+
+    def reserve_batch_materials(
+        self, batch_id: str, job_id: str, materials: list[dict],
+        selection_contract_version: int = 1,
+    ) -> None:
+        self._reserve_materials(
+            batch_id, job_id, materials, selection_contract_version,
+            reserve_batch=True,
+        )
 
     def cleanup_candidates(self, *, now: int, retention_seconds: int,
                            delivery_grace_seconds: int, limit: int) -> list[sqlite3.Row]:
@@ -2219,6 +2303,9 @@ class MatrixTemplateService:
         return job
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
+        payload["_material_selection_contract_version"] = (
+            MATERIAL_SELECTION_CONTRACT_VERSION
+        )
         template_id = payload["template_id"]
         if template_id in self.reference_templates:
             payload.pop("font_family", None)
@@ -2490,8 +2577,15 @@ class MatrixTemplateService:
         except (urllib.error.URLError, TimeoutError) as exc:
             raise MatrixTemplateError("平台素材库暂不可用") from exc
 
-    def _select_materials_once(self, payload: dict, job_id: str,
-                               used_sha256=()) -> list[dict]:
+    def _material_contract_version(self, payload: dict) -> int:
+        value = payload.get("_material_selection_contract_version", 1)
+        if isinstance(value, bool) or value not in {
+            1, MATERIAL_SELECTION_CONTRACT_VERSION,
+        }:
+            raise MatrixTemplateError("素材选择契约版本无效")
+        return int(value)
+
+    def _material_scenes(self, payload: dict) -> tuple[list[dict], int, bool]:
         count = self.required_visuals(payload)
         reference = payload.get("_reference_template")
         duration = (
@@ -2499,7 +2593,9 @@ class MatrixTemplateService:
             if isinstance(reference, dict) else payload["duration"]
         )
         segment_duration = float(duration) / count
-        reference_template = payload.get("template_id") in self.reference_templates
+        reference_template = (
+            payload.get("template_id") in self.reference_templates
+        )
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
             "scene_id": "media_01", "query": query,
@@ -2517,24 +2613,33 @@ class MatrixTemplateService:
                 "scene_id": "bgm", "query": query,
                 "purpose": "模板成片背景音乐", "media_type": "bgm",
             })
-        result = self._library_request("POST", "/v1/select", {
-            "scenes": scenes, "orientation": "portrait", "seed": job_id,
-            "used_sha256": list(used_sha256),
-            "selection_mode": "round_robin",
-        })
-        values = result.get("materials") or []
-        by_scene = {str(item.get("scene_id") or ""): item for item in values if isinstance(item, dict)}
+        return scenes, count, reference_template
+
+    def _validate_material_selection(
+        self, payload: dict, values: list[dict], contract_version: int,
+    ) -> list[dict]:
+        scenes, count, reference_template = self._material_scenes(payload)
+        by_scene = {
+            str(item.get("scene_id") or ""): item
+            for item in values if isinstance(item, dict)
+        }
         expected = [scene["scene_id"] for scene in scenes]
         if set(by_scene) != set(expected) or len(by_scene) != len(expected):
             raise MatrixTemplateError("素材库返回的分镜绑定不完整")
         ordered = [by_scene[scene_id] for scene_id in expected]
         shas = [str(item.get("sha256") or "").lower() for item in ordered]
-        if any(not SHA_RE.fullmatch(value) for value in shas) or len(set(shas)) != len(shas):
+        if (
+            any(not SHA_RE.fullmatch(value) for value in shas)
+            or len(set(shas)) != len(shas)
+        ):
             raise MatrixTemplateError("素材库返回了无效或重复素材")
         if ordered[0].get("media_type") != "video":
             raise MatrixTemplateError("模板成片至少需要一个视频素材")
         if reference_template:
-            if any(item.get("media_type") != "video" for item in ordered[:count]):
+            if any(
+                item.get("media_type") != "video"
+                for item in ordered[:count]
+            ):
                 raise MatrixTemplateError("HyperFrames 模板需要不同的视频素材")
         else:
             for item in ordered[1:count]:
@@ -2542,21 +2647,96 @@ class MatrixTemplateService:
                     raise MatrixTemplateError("素材库返回了无效画面素材")
         if payload["bgm"] and ordered[-1].get("media_type") != "bgm":
             raise MatrixTemplateError("素材库返回了无效背景音乐")
+        if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
+            clip_ids = []
+            for scene, item in zip(scenes[:count], ordered[:count]):
+                if item.get("media_type") != "video":
+                    continue
+                clip_id = str(item.get("clip_id") or "").lower()
+                start = _bounded_float(
+                    item.get("clip_start_seconds"),
+                    0, MAX_MATERIAL_CLIP_START_SECONDS,
+                )
+                duration = _bounded_float(
+                    item.get("clip_duration_seconds"),
+                    REFERENCE_MIN_SEGMENT_SECONDS,
+                    REFERENCE_MAX_SEGMENT_SECONDS,
+                )
+                slot_index = item.get("clip_slot_index")
+                slot_count = item.get("clip_slot_count")
+                expected_duration = float(scene["clip_duration_seconds"])
+                if (
+                    not SHA_RE.fullmatch(clip_id)
+                    or start is None
+                    or duration is None
+                    or abs(duration - expected_duration) > 0.001
+                    or isinstance(slot_index, bool)
+                    or not isinstance(slot_index, int)
+                    or isinstance(slot_count, bool)
+                    or not isinstance(slot_count, int)
+                    or not 1 <= slot_index <= slot_count <= MAX_MATERIAL_CLIP_SLOTS
+                ):
+                    raise MatrixTemplateError("素材库返回的切片契约不完整")
+                clip_ids.append(clip_id)
+            if len(clip_ids) != len(set(clip_ids)):
+                raise MatrixTemplateError("素材库返回了重复切片")
         return ordered
+
+    def _select_materials_once(self, payload: dict, job_id: str,
+                               used_sha256=()) -> list[dict]:
+        scenes, _count, _reference_template = self._material_scenes(payload)
+        contract_version = self._material_contract_version(payload)
+        result = self._library_request("POST", "/v1/select", {
+            "scenes": scenes, "orientation": "portrait", "seed": job_id,
+            "used_sha256": list(used_sha256),
+            "selection_mode": "round_robin",
+        })
+        if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
+            selection_version = result.get("selection_contract_version")
+            clip_version = result.get("clip_contract_version")
+            if (
+                isinstance(selection_version, bool)
+                or not isinstance(selection_version, int)
+                or selection_version != MATERIAL_SELECTION_CONTRACT_VERSION
+                or isinstance(clip_version, bool)
+                or not isinstance(clip_version, int)
+                or clip_version != MATERIAL_CLIP_CONTRACT_VERSION
+            ):
+                raise MatrixTemplateError("素材库切片能力版本不兼容")
+        values = result.get("materials") or []
+        return self._validate_material_selection(
+            payload, values, contract_version,
+        )
 
     def _select_materials(self, payload: dict, job_id: str) -> list[dict]:
         batch_id = str(payload.get("batch_id") or "")
-        if not batch_id:
-            return self._select_materials_once(payload, job_id)
+        contract_version = self._material_contract_version(payload)
         with self.batch_material_lock:
-            frozen = self.store.batch_material_selection(job_id)
+            frozen = self.store.material_selection(job_id)
             if frozen is not None:
-                return frozen
-            used = self.store.batch_used_visuals(batch_id)
+                if (
+                    frozen["selection_contract_version"]
+                    != contract_version
+                    or frozen["batch_id"] != batch_id
+                ):
+                    raise MatrixTemplateError("素材选择冻结版本冲突")
+                return self._validate_material_selection(
+                    payload, frozen["materials"], contract_version,
+                )
+            used = (
+                self.store.batch_used_visuals(batch_id) if batch_id else []
+            )
             selected = self._select_materials_once(
                 payload, job_id, used_sha256=used
             )
-            self.store.reserve_batch_materials(batch_id, job_id, selected)
+            if batch_id:
+                self.store.reserve_batch_materials(
+                    batch_id, job_id, selected, contract_version,
+                )
+            else:
+                self.store.reserve_job_materials(
+                    job_id, selected, contract_version,
+                )
             return selected
 
     def _download(self, item: dict, target_dir: Path) -> Path:
@@ -3281,6 +3461,7 @@ class MatrixTemplateService:
         except Exception:
             self._discard_output(job_id)
             raise
+        material_contract_version = self._material_contract_version(payload)
         return {
             **probe,
             "template_id": payload["template_id"],
@@ -3294,9 +3475,20 @@ class MatrixTemplateService:
             "display_top_text": display_top_text,
             "font_files": provenance["fonts"],
             "private_font_bundle_sha256": provenance["private_bundle_sha256"],
+            "material_selection_contract_version": material_contract_version,
+            **({
+                "material_clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
+            } if material_contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION else {}),
             "material_manifest": [{
                 "record_id": item.get("record_id"), "sha256": item.get("sha256"),
                 "media_type": item.get("media_type"), "match_level": item.get("match_level"),
+                **({
+                    "clip_id": item.get("clip_id"),
+                    "clip_start_seconds": item.get("clip_start_seconds"),
+                    "clip_duration_seconds": item.get("clip_duration_seconds"),
+                    "clip_slot_index": item.get("clip_slot_index"),
+                    "clip_slot_count": item.get("clip_slot_count"),
+                } if item.get("clip_id") else {}),
             } for item in materials],
         }
 
