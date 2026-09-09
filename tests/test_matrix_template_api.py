@@ -2354,6 +2354,49 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     html, 9, [0, 3, 6], [3, 3, 3], offsets,
                 )
 
+    def test_reference_editing_plan_is_deterministic_varied_and_color_neutral(self):
+        first = matrix._reference_editing_plan("1" * 32, "ref-01-fixture-01")
+        repeated = matrix._reference_editing_plan(
+            "1" * 32, "ref-01-fixture-01"
+        )
+        second = matrix._reference_editing_plan("2" * 32, "ref-01-fixture-01")
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first["seed"], second["seed"])
+        self.assertEqual([], first["color_effects"])
+        self.assertEqual(3, len(first["segments"]))
+        self.assertEqual(2, len(first["transitions"]))
+        self.assertEqual(
+            3, len({item["motion"] for item in first["segments"]})
+        )
+        self.assertEqual(
+            2, len({item["name"] for item in first["transitions"]})
+        )
+        matrix._validate_reference_editing_plan(first)
+
+    def test_reference_editing_script_has_no_color_effects_or_text_animation(self):
+        plan = matrix._reference_editing_plan("3" * 32, "ref-03-fixture-03")
+        rendered = matrix._inject_reference_editing_plan(
+            "<html><body><section id=\"typography\"></section></body></html>",
+            plan,
+        )
+
+        self.assertEqual(1, rendered.count(matrix.REFERENCE_EDITING_SCRIPT_ID))
+        self.assertIn('window.__timelines["main"] = timeline', rendered)
+        self.assertIn('const videos = ["videoA", "videoB", "videoC"]', rendered)
+        self.assertNotIn('getElementById("typography")', rendered)
+        for forbidden in matrix.REFERENCE_FORBIDDEN_COLOR_EFFECTS:
+            self.assertNotIn(forbidden, rendered)
+
+        invalid = json.loads(json.dumps(plan))
+        invalid["color_effects"] = ["grayscale"]
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "剪辑方案无效"
+        ):
+            matrix._inject_reference_editing_plan(
+                "<html><body></body></html>", invalid
+            )
+
     def test_reference_visual_coverage_rejects_sustained_black(self):
         clean = mock.Mock(returncode=0)
         clean.communicate.return_value = (
@@ -2471,6 +2514,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn("const segmentStarts = [0, 5.1, 8.9];", index)
         self.assertIn("const segmentDurations = [5.1, 3.8, 5.1];", index)
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
+        self.assertEqual(
+            1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID)
+        )
+        self.assertEqual(
+            payload["_reference_template"]["editing_plan"],
+            variables["_editing_plan"],
+        )
+        self.assertEqual([], variables["_editing_plan"]["color_effects"])
         for asset_index, source in enumerate(paths, 1):
             copied = workdir / f"assets/input/video-{asset_index}.mp4"
             self.assertEqual(source.read_bytes(), copied.read_bytes())
@@ -3179,6 +3230,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance("7" * 32, payload)
         payload["_reference_template"].pop("fixed_fonts")
+        payload["_reference_template"].pop("editing_plan")
         payload["_font_provenance"]["fonts"] = [
             item for item in payload["_font_provenance"]["fonts"]
             if item["source"] != "private"
@@ -3202,6 +3254,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         workdir = self.service.data_root / ("7" * 32) / "hyperframes"
         index = (workdir / "index.html").read_text(encoding="utf-8")
         self.assertNotIn(matrix.REFERENCE_PRIVATE_FONT_STYLE_ID, index)
+        self.assertEqual(1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID))
         self.assertFalse(
             (workdir / "assets/fonts/SmileySans-Oblique.ttf").exists()
         )
@@ -3238,12 +3291,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         def render_reference(frozen, job_id, _materials, _paths, *, deadline_at):
             captured_deadline["value"] = deadline_at
+            captured_deadline["plan"] = frozen["_reference_template"]["editing_plan"]
             output = self.service.data_root / job_id / "output/final.mp4"
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"video")
             return {
                 **frozen["_reference_template"]["text"],
                 "duration": frozen["_reference_template"]["duration"],
+                "_editing_plan": frozen["_reference_template"]["editing_plan"],
             }
 
         with mock.patch.object(self.service, "_select_materials", return_value=materials), \
@@ -3257,6 +3312,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual("template_locked", result["font_mode"])
         self.assertEqual("template-locked", result["font_selection"]["variant"])
         self.assertEqual(3, len(result["material_manifest"]))
+        self.assertEqual(
+            captured_deadline["plan"],
+            result["editing_plan"],
+        )
+        self.assertEqual([], result["editing_plan"]["color_effects"])
         self.assertTrue(
             (self.service.data_root / job["job_id"] / "output/published.mp4").is_file()
         )
