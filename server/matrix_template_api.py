@@ -187,7 +187,9 @@ REFERENCE_BGM_SOURCE_RE = re.compile(
     r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
-REFERENCE_MIN_SEGMENT_SECONDS = 0.5
+REFERENCE_MIN_SEGMENT_SECONDS = 2.0
+REFERENCE_MAX_SEGMENT_SECONDS = 3.0
+REFERENCE_VIDEO_IDS = ("videoA", "videoB", "videoC", "videoD", "videoE")
 REFERENCE_DYNAMIC_TIMING_JS = """      const segment = duration / 3;
       const segmentStarts = [0, segment, segment * 2];
       const segmentDurations = [segment, segment, duration - segment * 2];"""
@@ -623,7 +625,11 @@ def _duration(top: str, bottom: str, requested) -> float:
 
 
 def _required_visuals(duration: float) -> int:
-    return 2 if duration <= 10 else 3
+    count = max(1, math.ceil(float(duration) / REFERENCE_MAX_SEGMENT_SECONDS))
+    segment_duration = float(duration) / count
+    if not REFERENCE_MIN_SEGMENT_SECONDS <= segment_duration <= REFERENCE_MAX_SEGMENT_SECONDS:
+        raise MatrixTemplateError("模板单素材时长必须在 2 到 3 秒之间")
+    return count
 
 
 def _visual_width(value: str) -> float:
@@ -1040,42 +1046,30 @@ def _reference_segment_timing(
     total_duration: float, media_durations: list[float], seed: str = ""
 ) -> tuple[list[float], list[float], list[float]]:
     total = float(total_duration)
-    if not 8 <= total <= 15 or len(media_durations) != 3:
+    count = len(media_durations)
+    if not 8 <= total <= 15 or count != _required_visuals(total):
         raise MatrixTemplateError("HyperFrames 模板素材时间轴参数无效")
+    segment_duration = total / count
     capacities = [
         max(0.0, float(value) - REFERENCE_MEDIA_SAFETY_SECONDS)
         for value in media_durations
     ]
-    if (
-        any(value < REFERENCE_MIN_SEGMENT_SECONDS for value in capacities)
-        or sum(capacities) + 0.001 < total
-    ):
-        raise MatrixTemplateError("HyperFrames 模板素材总时长不足")
-
-    durations = [0.0, 0.0, 0.0]
-    remaining = total
-    active = {0, 1, 2}
-    while active:
-        share = remaining / len(active)
-        capped = [index for index in active if capacities[index] < share - 1e-9]
-        if not capped:
-            for index in active:
-                durations[index] = share
-            remaining = 0.0
-            break
-        for index in capped:
-            durations[index] = capacities[index]
-            remaining -= capacities[index]
-            active.remove(index)
-
+    if any(value + 0.001 < segment_duration for value in capacities):
+        raise MatrixTemplateError("HyperFrames 模板单素材可用时长不足")
+    durations = [segment_duration] * count
     durations[-1] += total - sum(durations)
     if any(
         value < REFERENCE_MIN_SEGMENT_SECONDS
+        or value > REFERENCE_MAX_SEGMENT_SECONDS
         or value > capacities[index] + 0.001
         for index, value in enumerate(durations)
     ):
         raise MatrixTemplateError("HyperFrames 模板素材时长分配失败")
-    starts = [0.0, durations[0], durations[0] + durations[1]]
+    starts = []
+    cursor = 0.0
+    for duration in durations:
+        starts.append(cursor)
+        cursor += duration
     media_offsets = []
     for index, duration in enumerate(durations):
         max_start = max(
@@ -1092,14 +1086,67 @@ def _reference_segment_timing(
     return starts, durations, media_offsets
 
 
+def _expand_reference_video_slots(html: str, video_sources: list[str]) -> str:
+    count = len(video_sources)
+    if not 3 <= count <= len(REFERENCE_VIDEO_IDS):
+        raise MatrixTemplateError("HyperFrames 模板视频槽位数量无效")
+    if count == 3:
+        return html
+    video_ids = REFERENCE_VIDEO_IDS[:count]
+    pattern = re.compile(r'<video\b[^>]*\bid="videoC"[^>]*></video>')
+    matches = list(pattern.finditer(html))
+    if len(matches) != 1:
+        raise MatrixTemplateError("HyperFrames 模板基础视频槽位发生变化")
+    source_tag = matches[0].group(0)
+    additions = []
+    for index, element_id in enumerate(video_ids[3:], start=3):
+        tag, hf_count = re.subn(
+            r'data-hf-id="[^"]+"',
+            f'data-hf-id="matrix-{element_id}"', source_tag, count=1,
+        )
+        tag, id_count = re.subn(
+            r'id="videoC"', f'id="{element_id}"', tag, count=1,
+        )
+        tag, variable_count = re.subn(
+            r'\sdata-var-src="videoC"', "", tag, count=1,
+        )
+        tag, source_count = re.subn(
+            r'(\ssrc=")[^"]*(")',
+            rf'\g<1>{video_sources[index]}\g<2>', tag, count=1,
+        )
+        if (hf_count, id_count, variable_count, source_count) != (1, 1, 1, 1):
+            raise MatrixTemplateError("HyperFrames 模板基础视频槽位发生变化")
+        additions.append(tag)
+    html = (
+        html[:matches[0].end()] + "\n      "
+        + "\n      ".join(additions) + html[matches[0].end():]
+    )
+    array_pattern = re.compile(
+        r'(?ms)^      const videos = \[\n.*?^      \];'
+    )
+    arrays = list(array_pattern.finditer(html))
+    if len(arrays) != 1:
+        raise MatrixTemplateError("HyperFrames 模板视频时间轴声明发生变化")
+    declaration = (
+        "      const videos = [\n"
+        + ",\n".join(
+            f'        document.getElementById("{element_id}")'
+            for element_id in video_ids
+        )
+        + "\n      ];"
+    )
+    return html[:arrays[0].start()] + declaration + html[arrays[0].end():]
+
+
 def _rewrite_reference_timeline(
     html: str, total_duration: float,
     starts: list[float], durations: list[float],
     media_offsets: list[float] | None = None,
 ) -> str:
-    offsets = [0.0, 0.0, 0.0] if media_offsets is None else media_offsets
+    offsets = [0.0] * len(starts) if media_offsets is None else media_offsets
     if (
-        len(starts) != 3 or len(durations) != 3 or len(offsets) != 3
+        not 3 <= len(starts) <= len(REFERENCE_VIDEO_IDS)
+        or len(durations) != len(starts) or len(offsets) != len(starts)
         or any(
             not math.isfinite(float(value)) or float(value) < 0
             for value in offsets
@@ -1148,7 +1195,7 @@ def _rewrite_reference_timeline(
         return source[:matches[0].start()] + tag + source[matches[0].end():]
 
     result = html
-    for index, element_id in enumerate(("videoA", "videoB", "videoC")):
+    for index, element_id in enumerate(REFERENCE_VIDEO_IDS[:len(starts)]):
         result = rewrite_element(
             result, element_id, starts[index], durations[index], offsets[index]
         )
@@ -1723,6 +1770,11 @@ class MatrixTemplateService:
                 "text_layers": {"top": top_layer_count, "bottom": 2},
                 "duration_mode": "random_integer_8_15",
                 "required_visuals": 3,
+                "required_visuals_max": 5,
+                "clip_duration_range_seconds": [
+                    REFERENCE_MIN_SEGMENT_SECONDS,
+                    REFERENCE_MAX_SEGMENT_SECONDS,
+                ],
                 "variant": variant,
                 "fixed_fonts": {
                     layer: font["family"]
@@ -2133,9 +2185,11 @@ class MatrixTemplateService:
         return values
 
     def required_visuals(self, payload: dict) -> int:
-        if payload.get("template_id") in self.reference_templates:
-            return 3
-        return _required_visuals(payload["duration"])
+        duration = payload["duration"]
+        reference = payload.get("_reference_template")
+        if isinstance(reference, dict):
+            duration = reference.get("duration", duration)
+        return _required_visuals(duration)
 
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
@@ -2439,16 +2493,24 @@ class MatrixTemplateService:
     def _select_materials_once(self, payload: dict, job_id: str,
                                used_sha256=()) -> list[dict]:
         count = self.required_visuals(payload)
+        reference = payload.get("_reference_template")
+        duration = (
+            reference.get("duration", payload["duration"])
+            if isinstance(reference, dict) else payload["duration"]
+        )
+        segment_duration = float(duration) / count
         reference_template = payload.get("template_id") in self.reference_templates
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
             "scene_id": "media_01", "query": query,
             "purpose": "模板成片主视频", "media_type": "video",
+            "clip_duration_seconds": segment_duration,
         }]
         scenes.extend({
             "scene_id": f"media_{index:02d}", "query": query,
             "purpose": "模板成片补充视频",
             "media_type": "video" if reference_template else "visual",
+            "clip_duration_seconds": segment_duration,
         } for index in range(2, count + 1))
         if payload["bgm"]:
             scenes.append({
@@ -2473,7 +2535,7 @@ class MatrixTemplateService:
             raise MatrixTemplateError("模板成片至少需要一个视频素材")
         if reference_template:
             if any(item.get("media_type") != "video" for item in ordered[:count]):
-                raise MatrixTemplateError("HyperFrames 模板需要三个不同的视频素材")
+                raise MatrixTemplateError("HyperFrames 模板需要不同的视频素材")
         else:
             for item in ordered[1:count]:
                 if item.get("media_type") not in {"image", "video"}:
@@ -2598,20 +2660,39 @@ class MatrixTemplateService:
                 "record_id": item.get("record_id"),
             }
             if item["media_type"] == "video":
+                selected_start = item.get("clip_start_seconds")
                 try:
                     source_duration = self._reference_video_duration(path)
                 except MatrixTemplateError:
                     source_duration = 0.0
-                max_start = max(
-                    0.0,
-                    source_duration - segment_hint - REFERENCE_MEDIA_SAFETY_SECONDS,
-                )
-                if max_start > 0.001:
-                    digest = hashlib.sha256(
-                        f"{job_id}:ffmpeg-media-start:{item.get('sha256') or path.name}".encode("utf-8")
-                    ).digest()
-                    fraction = int.from_bytes(digest[:4], "big") / float(0xFFFFFFFF)
-                    entry["start"] = round(fraction * max_start, 3)
+                if (
+                    not isinstance(selected_start, bool)
+                    and isinstance(selected_start, (int, float))
+                    and math.isfinite(float(selected_start))
+                    and float(selected_start) >= 0
+                ):
+                    if (
+                        float(selected_start) + segment_hint
+                        > source_duration - REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+                    ):
+                        raise MatrixTemplateError("模板素材切片超出原视频时长")
+                    entry["start"] = round(float(selected_start), 3)
+                else:
+                    max_start = max(
+                        0.0,
+                        source_duration - segment_hint
+                        - REFERENCE_MEDIA_SAFETY_SECONDS,
+                    )
+                    if max_start > 0.001:
+                        digest = hashlib.sha256(
+                            f"{job_id}:ffmpeg-media-start:"
+                            f"{item.get('sha256') or path.name}".encode("utf-8")
+                        ).digest()
+                        fraction = (
+                            int.from_bytes(digest[:4], "big")
+                            / float(0xFFFFFFFF)
+                        )
+                        entry["start"] = round(fraction * max_start, 3)
             media.append(entry)
         project = {
             "version": 1,
@@ -2899,10 +2980,12 @@ class MatrixTemplateService:
             or self.reference_pack_root is None
         ):
             raise MatrixTemplateError("frozen HyperFrames template metadata is invalid")
-        if len(paths) < 3 or any(
-            item.get("media_type") != "video" for item in materials[:3]
+        visual_count = _required_visuals(float(reference["duration"]))
+        if len(paths) < visual_count or any(
+            item.get("media_type") != "video"
+            for item in materials[:visual_count]
         ):
-            raise MatrixTemplateError("HyperFrames 模板需要三个不同的视频素材")
+            raise MatrixTemplateError("HyperFrames 模板视频素材数量不足")
         if deadline_at is None:
             deadline_at = time.time() + self.hyperframes_total_timeout_seconds
         if time.time() >= deadline_at:
@@ -2979,23 +3062,57 @@ class MatrixTemplateService:
 
         input_dir = workdir / "assets/input"
         media_durations = [
-            self._reference_video_duration(path) for path in paths[:3]
+            self._reference_video_duration(path)
+            for path in paths[:visual_count]
         ]
         segment_starts, segment_durations, media_offsets = _reference_segment_timing(
             float(reference["duration"]), media_durations, seed=job_id
         )
+        selected_clip_starts = [
+            item.get("clip_start_seconds")
+            for item in materials[:visual_count]
+        ]
+        selected_clip_durations = [
+            item.get("clip_duration_seconds")
+            for item in materials[:visual_count]
+        ]
+        if any(
+            value is not None
+            for value in selected_clip_starts + selected_clip_durations
+        ):
+            if not all(
+                not isinstance(start, bool)
+                and isinstance(start, (int, float))
+                and math.isfinite(float(start))
+                and float(start) >= 0
+                and not isinstance(duration, bool)
+                and isinstance(duration, (int, float))
+                and abs(float(duration) - segment_durations[index]) <= 0.001
+                and float(start) + segment_durations[index]
+                <= media_durations[index] - REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+                for index, (start, duration) in enumerate(zip(
+                    selected_clip_starts, selected_clip_durations,
+                ))
+            ):
+                raise MatrixTemplateError(
+                    "HyperFrames 模板素材切片参数无效"
+                )
+            media_offsets = [float(value) for value in selected_clip_starts]
         video_values = []
-        for asset_index, source in enumerate(paths[:3], 1):
+        for asset_index, source in enumerate(paths[:visual_count], 1):
             target = input_dir / f"video-{asset_index}{source.suffix.lower()}"
             self._copy_reference_asset(source, target)
             video_values.append(target.relative_to(workdir).as_posix())
         bgm_source = None
         bgm_target = None
         if payload["bgm"]:
-            if len(paths) < 4 or materials[3].get("media_type") != "bgm":
+            if (
+                len(paths) <= visual_count
+                or materials[visual_count].get("media_type") != "bgm"
+            ):
                 raise MatrixTemplateError("HyperFrames template BGM binding is invalid")
             bgm_target = input_dir / "bgm.m4a"
-            bgm_source = paths[3]
+            bgm_source = paths[visual_count]
             bgm = bgm_target.relative_to(workdir).as_posix()
         else:
             bgm = "assets/bgm/silence.m4a"
@@ -3011,6 +3128,7 @@ class MatrixTemplateService:
             "videoC": video_values[2],
             "bgm": bgm,
         }
+        index = _expand_reference_video_slots(index, video_values)
         index = _rewrite_reference_timeline(
             index, float(reference["duration"]),
             segment_starts, segment_durations, media_offsets,

@@ -50,11 +50,15 @@ MAX_RECORDS = 20_000
 # abandoning long-term per-file fairness.
 ROUND_ROBIN_COUNT_SLACK = 2
 ROUND_ROBIN_RECENT_GROUP_WINDOW = 9
-ROUND_ROBIN_RECENT_ASSET_WINDOW = 150
+ROUND_ROBIN_RECENT_ASSET_WINDOW = 200
 ROUND_ROBIN_RECENT_ASSET_PENALTY = ROUND_ROBIN_COUNT_SLACK + 1
 ROUND_ROBIN_RECENT_GROUP_PENALTY = (
     ROUND_ROBIN_COUNT_SLACK + ROUND_ROBIN_RECENT_ASSET_PENALTY + 1
 )
+MIN_CLIP_SECONDS = 2.0
+MAX_CLIP_SECONDS = 3.0
+CLIP_SLOT_SECONDS = 3.0
+CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOKEN_RE = re.compile(r"[\w\u3400-\u9fff]+", re.UNICODE)
 
@@ -171,6 +175,57 @@ def _duration(value: Any) -> float | None:
         return parsed if parsed >= 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _clip_duration(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not MIN_CLIP_SECONDS <= float(value) <= MAX_CLIP_SECONDS
+    ):
+        raise ValueError("clip_duration_seconds must be between 2 and 3")
+    return round(float(value), 6)
+
+
+def _can_supply_clip(material: Material, clip_duration: float | None) -> bool:
+    if material.media_type != "video" or clip_duration is None:
+        return True
+    return (
+        material.duration_seconds is not None
+        and material.duration_seconds + 0.001
+        >= clip_duration + CLIP_SAFETY_SECONDS
+    )
+
+
+def _clip_window(
+    material: Material, clip_duration: float, sequence: int,
+) -> dict[str, int | float]:
+    available = float(material.duration_seconds or 0) - CLIP_SAFETY_SECONDS
+    if available + 0.001 < clip_duration:
+        raise MaterialLibraryError("selected video is too short for clip")
+    slot_count = max(
+        1, int(math.floor(
+            (available - clip_duration) / CLIP_SLOT_SECONDS + 1e-9
+        )) + 1,
+    )
+    occupied = (slot_count - 1) * CLIP_SLOT_SECONDS + clip_duration
+    leading = max(0.0, (available - occupied) / 2)
+    digest = hashlib.sha256(
+        f"{material.sha256}:clip-slots".encode("ascii")
+    ).digest()
+    first_slot = int.from_bytes(digest[:4], "big") % slot_count
+    slot_index = (first_slot + max(0, int(sequence))) % slot_count
+    return {
+        "clip_start_seconds": round(
+            leading + slot_index * CLIP_SLOT_SECONDS, 3,
+        ),
+        "clip_duration_seconds": round(clip_duration, 3),
+        "clip_slot_index": slot_index + 1,
+        "clip_slot_count": slot_count,
+    }
 
 
 def _diversity_group(row: dict[str, Any], media_type: str, sha256: str) -> str:
@@ -517,6 +572,7 @@ class MaterialLibrary:
         for position, scene in enumerate(scenes):
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
             media_type = _text(scene.get("media_type") or "visual")
+            clip_duration = _clip_duration(scene.get("clip_duration_seconds"))
             allowed_types = {"image", "video"} if media_type == "visual" else {media_type}
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
@@ -525,6 +581,7 @@ class MaterialLibrary:
                 for item in self._materials
                 if item.sha256 not in used
                 and item.media_type in allowed_types
+                and _can_supply_clip(item, clip_duration)
             ]
             if not candidates:
                 raise MaterialShortageError(f"no unique approved material remains for {scene_id}")
@@ -624,6 +681,7 @@ class MaterialLibrary:
                     f"no healthy approved material remains for {scene_id}"
                 )
             material, score = selected_pair
+            usage_count, _last_used = self._usage_values(material)
             used.add(material.sha256)
             used_groups.add(material.diversity_group)
             if mode == "round_robin":
@@ -636,6 +694,14 @@ class MaterialLibrary:
             item = material.public_dict(
                 match_level, scene_id, orientation_match
             )
+            if clip_duration is not None and material.media_type == "video":
+                sequence = usage_count
+                if mode != "round_robin":
+                    digest = hashlib.sha256(
+                        f"{rank_seed}:clip-window".encode("utf-8")
+                    ).digest()
+                    sequence = int.from_bytes(digest[:8], "big")
+                item.update(_clip_window(material, clip_duration, sequence))
             item["match_score"] = score
             selected.append(item)
 

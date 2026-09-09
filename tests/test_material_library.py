@@ -117,6 +117,57 @@ class MaterialLibraryTests(unittest.TestCase):
         )
         self.assertEqual([image, video, bgm], [item["sha256"] for item in result["materials"]])
 
+    def test_video_clip_duration_skips_sources_that_are_too_short(self):
+        self.add("short", media=".mp4", 时长秒=2.5)
+        expected = self.add("long", media=".mp4", 时长秒=6.0)
+
+        result = self.library().select([{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 3.0,
+        }], seed="clip-length")
+
+        self.assertEqual(expected, result["materials"][0]["sha256"])
+        self.assertEqual(3.0, result["materials"][0]["clip_duration_seconds"])
+
+    def test_round_robin_splits_one_full_video_into_distinct_clip_windows(self):
+        expected = self.add("long", media=".mp4", 时长秒=10.0)
+        usage_path = self.root / "state" / "usage.json"
+        usage_path.parent.mkdir()
+        library = self.library(usage_path)
+        scene = [{
+            "scene_id": "s1", "media_type": "video",
+            "clip_duration_seconds": 2.5,
+        }]
+
+        selected = [
+            library.select(
+                scene, seed=f"clip-{index}", selection_mode="round_robin",
+            )["materials"][0]
+            for index in range(3)
+        ]
+
+        self.assertEqual({expected}, {item["sha256"] for item in selected})
+        self.assertEqual(3, len({item["clip_start_seconds"] for item in selected}))
+        self.assertEqual({1, 2, 3}, {item["clip_slot_index"] for item in selected})
+        self.assertEqual({3}, {item["clip_slot_count"] for item in selected})
+        self.assertTrue(all(
+            item["clip_start_seconds"] + item["clip_duration_seconds"] <= 9.9
+            for item in selected
+        ))
+
+    def test_invalid_video_clip_duration_is_rejected(self):
+        self.add("video", media=".mp4", 时长秒=10.0)
+        library = self.library()
+
+        for value in (True, "2.5", 1.99, 3.01, float("nan")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "between 2 and 3",
+            ):
+                library.select([{
+                    "scene_id": "s1", "media_type": "video",
+                    "clip_duration_seconds": value,
+                }])
+
     def test_shortage_fails_without_ai_fallback(self):
         only = self.add("only", 标签=["产品"])
         with self.assertRaises(MaterialShortageError):
