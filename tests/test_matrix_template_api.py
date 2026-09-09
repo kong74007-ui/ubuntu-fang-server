@@ -1690,6 +1690,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         document.getElementById("videoB"),
         document.getElementById("videoC")
       ];
+""" + matrix.REFERENCE_BASE_TIMELINE_JS + """
 </script>
 """
         (pack / "index.html").write_text(
@@ -1725,6 +1726,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance(job_id, payload)
         payload["_reference_template"]["duration"] = 14
+        payload["_reference_template"]["editing_plan"] = (
+            matrix._reference_editing_plan(
+                job_id, "ref-17-fixture-17", 5
+            )
+        )
         prefix = job_id[:8]
         materials = []
         paths = []
@@ -2707,6 +2713,81 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     html, 9, [0, 3, 6], [3, 3, 3], offsets,
                 )
 
+    def test_reference_editing_plan_is_deterministic_varied_and_color_neutral(self):
+        first = matrix._reference_editing_plan("1" * 32, "ref-01-fixture-01")
+        repeated = matrix._reference_editing_plan(
+            "1" * 32, "ref-01-fixture-01"
+        )
+        second = matrix._reference_editing_plan("2" * 32, "ref-01-fixture-01")
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first["seed"], second["seed"])
+        self.assertNotEqual(
+            (first["segments"], first["transitions"], first["bookends"]),
+            (second["segments"], second["transitions"], second["bookends"]),
+        )
+        self.assertEqual([], first["color_effects"])
+        self.assertEqual(3, len(first["segments"]))
+        self.assertEqual(2, len(first["transitions"]))
+        self.assertEqual(
+            3, len({item["motion"] for item in first["segments"]})
+        )
+        self.assertEqual(
+            2, len({item["name"] for item in first["transitions"]})
+        )
+        matrix._validate_reference_editing_plan(first)
+
+        five = matrix._reference_editing_plan(
+            "4" * 32, "ref-03-fixture-03", 5
+        )
+        self.assertEqual(5, len(five["segments"]))
+        self.assertEqual(4, len(five["transitions"]))
+        matrix._validate_reference_editing_plan(five)
+
+        unsupported_window = json.loads(json.dumps(first))
+        unsupported_window["transitions"][0].update({
+            "start": 2.0,
+            "duration": 0.2,
+        })
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "剪辑方案无效"
+        ):
+            matrix._validate_reference_editing_plan(unsupported_window)
+
+    def test_reference_editing_script_has_no_color_effects_or_text_animation(self):
+        plan = matrix._reference_editing_plan("3" * 32, "ref-03-fixture-03")
+        source = """<html><head></head><body>
+<video id="videoA" class="clip media-video"></video>
+<video id="videoB" class="clip media-video"></video>
+<video id="videoC" class="clip media-video"></video>
+<section id="typography"></section><script>""" \
+            + matrix.REFERENCE_BASE_TIMELINE_JS + """</script></body></html>"""
+        rendered = matrix._inject_reference_editing_plan(
+            source, plan,
+        )
+
+        self.assertEqual(1, rendered.count(matrix.REFERENCE_EDITING_SCRIPT_ID))
+        self.assertIn('window.__timelines["main"] = timeline', rendered)
+        self.assertIn('const videos = ["videoA", "videoB", "videoC"]', rendered)
+        self.assertNotIn(matrix.REFERENCE_BASE_TIMELINE_JS, rendered)
+        self.assertEqual(1, rendered.count("gsap.timeline({paused: true})"))
+        for element_id in ("videoA", "videoB", "videoC"):
+            self.assertIn(f'id="{element_id}-transition"', rendered)
+            self.assertIn(f'id="{element_id}-motion"', rendered)
+        self.assertNotIn('getElementById("typography")', rendered)
+        normalized_rendered = rendered.lower()
+        for forbidden in matrix.REFERENCE_FORBIDDEN_COLOR_EFFECTS:
+            self.assertNotIn(forbidden, normalized_rendered)
+
+        invalid = json.loads(json.dumps(plan))
+        invalid["color_effects"] = ["grayscale"]
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "剪辑方案无效"
+        ):
+            matrix._inject_reference_editing_plan(
+                "<html><body></body></html>", invalid
+            )
+
     def test_reference_timeline_expands_to_five_video_slots(self):
         html = """
 <video data-hf-id="a" id="videoA" data-start="0" data-duration="1" data-var-src="videoA" src="a.mp4"></video>
@@ -2744,7 +2825,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "const segmentDurations = [2.8, 2.8, 2.8, 2.8, 2.8];",
             rendered,
         )
-
     def test_reference_visual_coverage_rejects_sustained_black(self):
         clean = mock.Mock(returncode=0)
         clean.communicate.return_value = (
@@ -2792,6 +2872,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance("3" * 32, payload)
         payload["_reference_template"]["duration"] = 14
+        payload["_reference_template"]["editing_plan"] = (
+            matrix._reference_editing_plan(
+                "3" * 32, "ref-03-fixture-03", 5
+            )
+        )
         fixed = payload["_reference_template"]["fixed_fonts"]["top2"]
         self.assertEqual("Smiley Sans Oblique", fixed["family"])
         self.assertEqual("HQSmileySansOblique", fixed["alias"])
@@ -2878,6 +2963,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             index,
         )
         self.assertNotIn(matrix.REFERENCE_DYNAMIC_TIMING_JS, index)
+        self.assertEqual(
+            1, index.count(matrix.REFERENCE_EDITING_SCRIPT_ID)
+        )
+        self.assertEqual(
+            payload["_reference_template"]["editing_plan"]["seed"],
+            variables["_editing_plan"]["seed"],
+        )
+        self.assertEqual(5, len(variables["_editing_plan"]["segments"]))
+        self.assertEqual(4, len(variables["_editing_plan"]["transitions"]))
+        self.assertEqual([], variables["_editing_plan"]["color_effects"])
+        self.assertEqual(1, index.count("gsap.timeline({paused: true})"))
+        for element_id in matrix.REFERENCE_VIDEO_IDS:
+            self.assertIn(f'id="{element_id}-transition"', index)
+            self.assertIn(f'id="{element_id}-motion"', index)
         for asset_index, source in enumerate(paths, 1):
             copied = workdir / f"assets/input/video-{asset_index}.mp4"
             self.assertEqual(source.read_bytes(), copied.read_bytes())
@@ -3577,7 +3676,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     "v03", {"top2": {**base, "font_size_px": value}}
                 )
 
-    def test_legacy_reference_job_without_fixed_font_keeps_original_style(self):
+    def test_legacy_reference_job_without_new_metadata_keeps_original_style_and_timeline(self):
         payload = self.service.validate_payload({
             "top_text": "郑州AI创业活动",
             "bottom_text": "评论区回复关键词",
@@ -3586,6 +3685,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         })
         payload = self.service._freeze_font_provenance("7" * 32, payload)
         payload["_reference_template"].pop("fixed_fonts")
+        payload["_reference_template"].pop("editing_plan")
         payload["_font_provenance"]["fonts"] = [
             item for item in payload["_font_provenance"]["fonts"]
             if item["source"] != "private"
@@ -3603,12 +3703,18 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_reference_video_duration", return_value=30.0,
         ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
-            self.service._render_reference(
+            variables = self.service._render_reference(
                 payload, "7" * 32, materials, paths
             )
         workdir = self.service.data_root / ("7" * 32) / "hyperframes"
         index = (workdir / "index.html").read_text(encoding="utf-8")
         self.assertNotIn(matrix.REFERENCE_PRIVATE_FONT_STYLE_ID, index)
+        self.assertNotIn(matrix.REFERENCE_EDITING_SCRIPT_ID, index)
+        self.assertNotIn(matrix.REFERENCE_EDITING_STYLE_ID, index)
+        self.assertIn(matrix.REFERENCE_BASE_TIMELINE_JS, index)
+        self.assertNotIn("-transition\"", index)
+        self.assertNotIn("-motion\"", index)
+        self.assertNotIn("_editing_plan", variables)
         self.assertFalse(
             (workdir / "assets/fonts/SmileySans-Oblique.ttf").exists()
         )
@@ -3645,12 +3751,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
         def render_reference(frozen, job_id, _materials, _paths, *, deadline_at):
             captured_deadline["value"] = deadline_at
+            captured_deadline["plan"] = frozen["_reference_template"]["editing_plan"]
             output = self.service.data_root / job_id / "output/final.mp4"
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"video")
             return {
                 **frozen["_reference_template"]["text"],
                 "duration": frozen["_reference_template"]["duration"],
+                "_editing_plan": frozen["_reference_template"]["editing_plan"],
             }
 
         with mock.patch.object(self.service, "_select_materials", return_value=materials), \
@@ -3664,6 +3772,11 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual("template_locked", result["font_mode"])
         self.assertEqual("template-locked", result["font_selection"]["variant"])
         self.assertEqual(3, len(result["material_manifest"]))
+        self.assertEqual(
+            captured_deadline["plan"],
+            result["editing_plan"],
+        )
+        self.assertEqual([], result["editing_plan"]["color_effects"])
         self.assertTrue(
             (self.service.data_root / job["job_id"] / "output/published.mp4").is_file()
         )
