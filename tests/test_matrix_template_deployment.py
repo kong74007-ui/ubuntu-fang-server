@@ -25,7 +25,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
         self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"', installer)
-        self.assertIn('NINE_GRID_ADAPTER_SHA256="d52a6435a9256f92c8b23931c3f37ca095d4d3db0cfaaa06dd1c17f58c1314f8"', installer)
+        self.assertIn('NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"', installer)
         self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
         self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
         self.assertIn(
@@ -141,7 +141,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_nine_grid_adapter_rewrites_copy_and_fullscreen_contract(self):
         path = ROOT / "deploy/matrix-template-video/prepare-nine-grid-template.py"
         self.assertEqual(
-            "d52a6435a9256f92c8b23931c3f37ca095d4d3db0cfaaa06dd1c17f58c1314f8",
+            "b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd",
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         spec = importlib.util.spec_from_file_location(
