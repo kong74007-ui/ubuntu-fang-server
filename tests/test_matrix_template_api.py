@@ -1675,6 +1675,12 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 styles.append(".v06 .bottom2 { padding: 20px 36px; }")
             if index == 8:
                 styles.append(".v08 .bottom2 { padding: 10px 24px; }")
+        reference_variables = html.escape(json.dumps([
+            {"id": "videoA", "type": "string"},
+            {"id": "videoB", "type": "string"},
+            {"id": "videoC", "type": "string"},
+            {"id": "bgm", "type": "string"},
+        ], separators=(",", ":")), quote=True)
         timeline_fixture = """
 <div id="root">
   <video data-hf-id="a" id="videoA" class="clip media-video" data-start="0" data-duration="2.666667" data-var-src="videoA" src="a.mp4"></video>
@@ -1695,7 +1701,8 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 </script>
 """
         (pack / "index.html").write_text(
-            "<html><head><style>\n" + "\n".join(styles) + "\n</style>\n"
+            f'<html data-composition-variables="{reference_variables}"><head><style>\n'
+            + "\n".join(styles) + "\n</style>\n"
             + matrix.REFERENCE_GSAP_CDN
             + "\n</head><body>" + timeline_fixture + "</body></html>\n",
             encoding="utf-8",
