@@ -1553,7 +1553,6 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
-                pexels_api_key="test-pexels-key",
                 start_worker=False,
             )
 
@@ -3821,6 +3820,7 @@ class NineGridTemplateTests(unittest.TestCase):
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
+                pexels_api_key="test-pexels-key",
                 start_worker=False,
             )
 
