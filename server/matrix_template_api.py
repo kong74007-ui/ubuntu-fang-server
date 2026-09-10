@@ -50,6 +50,7 @@ PEXELS_CHINA_QUERIES = (
 )
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
+NINE_GRID_PREPARE_CLIP_TIMEOUT_SECONDS = 120
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
 DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
 DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 600
@@ -107,6 +108,29 @@ PRIVATE_FONT_VARIANTS = {
 REFERENCE_PACK_ID = "reference-typography-17"
 REFERENCE_HYPERFRAMES_VERSION = "0.8.16"
 REFERENCE_TEMPLATE_COUNT = 17
+NINE_GRID_TEMPLATE_ID = "nine-grid-reveal"
+NINE_GRID_TEMPLATE_VERSION = 4
+NINE_GRID_HYPERFRAMES_VERSION = "0.8.33"
+NINE_GRID_DURATION_SECONDS = 12.0
+NINE_GRID_VISUAL_COUNT = 9
+NINE_GRID_SELECTED_CLIP_SECONDS = 3.0
+NINE_GRID_RENDER_CLIP_SECONDS = 3.2
+NINE_GRID_OUTPUT_FPS = 30
+NINE_GRID_HIDDEN_TAIL_SECONDS = 1 / NINE_GRID_OUTPUT_FPS
+NINE_GRID_MAIN_SLOT_INDEXES = (0, 4, 8)
+NINE_GRID_BOUND_BGM_SHA256 = (
+    "d9b3d892623b9dfc9dee4f8642e2844e3700c13a9795e76b48e3a96b24ac9874"
+)
+NINE_GRID_TOP_FONT = {
+    "file": "NotoSerifSC-Variable.ttf", "weight": 900,
+    "maximum": 82, "minimum": 46, "width": 800,
+    "height": 340, "line_height": 1.08, "max_lines": 4,
+}
+NINE_GRID_BOTTOM_FONT = {
+    "file": "NotoSansSC-Variable.ttf", "weight": 900,
+    "maximum": 58, "minimum": 40, "width": 930,
+    "height": 250, "line_height": 1.12, "max_lines": 4,
+}
 REFERENCE_FEATURED_VARIANT = "v05"
 REFERENCE_V01_VARIANT = "v01"
 REFERENCE_V01_STYLE_CONTRACT = {
@@ -1866,7 +1890,9 @@ class MatrixTemplateService:
                  pexels_api_key: str = "",
                  private_font_root: Path | None = None,
                  reference_skill_root: Path | None = None,
+                 nine_grid_root: Path | None = None,
                  hyperframes_cli: Path | None = None,
+                 nine_grid_hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
                  hyperframes_concurrency: int = DEFAULT_HYPERFRAMES_CONCURRENCY,
@@ -1911,7 +1937,19 @@ class MatrixTemplateService:
         self.reference_measure_fonts: dict[
             tuple[str, int, int], ImageFont.FreeTypeFont
         ] = {}
+        self.nine_grid_root = (
+            nine_grid_root.resolve() if nine_grid_root else None
+        )
+        self.nine_grid_template: dict | None = None
+        self.nine_grid_fonts: dict[str, dict] = {}
+        self.nine_grid_measure_fonts: dict[
+            tuple[str, int, int], ImageFont.FreeTypeFont
+        ] = {}
         self.hyperframes_cli = hyperframes_cli.resolve() if hyperframes_cli else None
+        self.nine_grid_hyperframes_cli = (
+            nine_grid_hyperframes_cli.resolve()
+            if nine_grid_hyperframes_cli else None
+        )
         self.hyperframes_gsap = hyperframes_gsap.resolve() if hyperframes_gsap else None
         self.hyperframes_browser = (
             hyperframes_browser.resolve() if hyperframes_browser else None
@@ -1966,6 +2004,8 @@ class MatrixTemplateService:
         self.catalog = self._load_catalog()
         if self.reference_skill_root is not None:
             self.catalog.extend(self._load_reference_catalog())
+        if self.nine_grid_root is not None:
+            self.catalog.append(self._load_nine_grid_catalog())
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()
@@ -2249,6 +2289,176 @@ class MatrixTemplateService:
         self.reference_font_fingerprint = _font_bundle_fingerprint(reference_fonts)
         return result
 
+    def _load_nine_grid_catalog(self) -> dict:
+        root = self.nine_grid_root
+        if root is None or root.is_symlink() or not root.is_dir():
+            raise MatrixTemplateError("nine-grid template root is unavailable")
+        required = (
+            "index.html", "template.json", "hyperframes.json",
+            "index.motion.json", "assets/audio/reference-bgm.m4a",
+            "assets/fonts/NotoSerifSC-Variable.ttf",
+            "assets/fonts/NotoSansSC-Variable.ttf",
+            "assets/vendor/gsap.min.js",
+        )
+        for relative in required:
+            path = root.joinpath(*relative.split("/"))
+            if path.is_symlink() or not path.is_file():
+                raise MatrixTemplateError("nine-grid template is incomplete")
+        manifest = _read_json(root / "template.json")
+        layout = manifest.get("text_layout")
+        if (
+            manifest.get("id") != NINE_GRID_TEMPLATE_ID
+            or manifest.get("version") != NINE_GRID_TEMPLATE_VERSION
+            or manifest.get("renderer")
+                != f"hyperframes@{NINE_GRID_HYPERFRAMES_VERSION}"
+            or manifest.get("canvas") != [1080, 1920]
+            or manifest.get("fps") != NINE_GRID_OUTPUT_FPS
+            or float(manifest.get("duration") or 0)
+                != NINE_GRID_DURATION_SECONDS
+            or manifest.get("text_fields") != ["top_text", "bottom_text"]
+            or manifest.get("text_limits")
+                != {"top_text": 60, "bottom_text": 80}
+            or not isinstance(layout, dict)
+            or layout.get("mode") != "semantic-then-width"
+            or layout.get("semantic_layout_required") is not True
+            or layout.get("top_max_lines") != 4
+            or layout.get("bottom_max_lines") != 4
+            or layout.get("hide_edge_punctuation") is not True
+            or layout.get("truncate") is not False
+        ):
+            raise MatrixTemplateError("nine-grid template contract is invalid")
+        binding = manifest.get("bgm")
+        bgm_path = root / "assets/audio/reference-bgm.m4a"
+        if (
+            not isinstance(binding, dict)
+            or binding.get("mode") != "bound"
+            or binding.get("path") != "assets/audio/reference-bgm.m4a"
+            or binding.get("sha256") != NINE_GRID_BOUND_BGM_SHA256
+            or binding.get("duration") != 12
+            or binding.get("start") != 0
+            or binding.get("volume") != 1
+            or _file_sha256(bgm_path) != NINE_GRID_BOUND_BGM_SHA256
+        ):
+            raise MatrixTemplateError("nine-grid bound BGM changed")
+        index_html = (root / "index.html").read_text(encoding="utf-8")
+        if (
+            index_html.count('data-composition-id="nine-grid-reveal"') != 1
+            or index_html.count('data-var-text="top_text"') != 1
+            or index_html.count('data-var-text="bottom_text"') != 1
+            or 'data-var-text="title"' in index_html
+            or 'data-var-text="tagline"' in index_html
+            or index_html.count('src="assets/audio/reference-bgm.m4a"') != 1
+            or not re.search(
+                r'<audio\b[^>]*\bid="bgm"[^>]*\bdata-volume="1"',
+                index_html,
+            )
+            or any(
+                not re.search(
+                    rf'<video\b[^>]*\bid="main-video{index}"[^>]*'
+                    r'\bdata-media-start="0"',
+                    index_html,
+                )
+                for index in range(1, 4)
+            )
+        ):
+            raise MatrixTemplateError("nine-grid template HTML contract changed")
+        font_specs = {
+            "top_text": NINE_GRID_TOP_FONT,
+            "bottom_text": NINE_GRID_BOTTOM_FONT,
+        }
+        fonts = {}
+        for role, spec in font_specs.items():
+            path = root / "assets/fonts" / spec["file"]
+            fonts[role] = {
+                "family": (
+                    "Noto Serif SC" if role == "top_text"
+                    else "Noto Sans SC"
+                ),
+                "file": spec["file"],
+                "path": path,
+                "sha256": _file_sha256(path),
+            }
+        if (
+            self.nine_grid_hyperframes_cli is None
+            or self.nine_grid_hyperframes_cli.is_symlink()
+            or not self.nine_grid_hyperframes_cli.is_file()
+        ):
+            raise MatrixTemplateError("HyperFrames 0.8.33 CLI is unavailable")
+        version = subprocess.run(
+            [str(self.nine_grid_hyperframes_cli), "--version"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        if (
+            version.returncode
+            or version.stdout.strip() != NINE_GRID_HYPERFRAMES_VERSION
+        ):
+            raise MatrixTemplateError("nine-grid HyperFrames CLI version mismatch")
+        semantic = {
+            "top1": {
+                "family": "Noto Serif SC",
+                "font_size_px": NINE_GRID_TOP_FONT["maximum"],
+                "font_weight": NINE_GRID_TOP_FONT["weight"],
+                "max_width_px": NINE_GRID_TOP_FONT["width"],
+                "max_lines": NINE_GRID_TOP_FONT["max_lines"],
+            },
+            "top2": {
+                "family": "Noto Serif SC",
+                "font_size_px": NINE_GRID_TOP_FONT["maximum"],
+                "font_weight": NINE_GRID_TOP_FONT["weight"],
+                "max_width_px": NINE_GRID_TOP_FONT["width"],
+                "max_lines": NINE_GRID_TOP_FONT["max_lines"],
+            },
+            "bottom2": {
+                "family": "Noto Sans SC",
+                "font_size_px": NINE_GRID_BOTTOM_FONT["maximum"],
+                "font_weight": NINE_GRID_BOTTOM_FONT["weight"],
+                "max_width_px": NINE_GRID_BOTTOM_FONT["width"],
+                "max_lines": NINE_GRID_BOTTOM_FONT["max_lines"],
+            },
+        }
+        self.reference_semantic_layouts["nine-grid"] = semantic
+        public_semantic = {
+            "version": REFERENCE_SEMANTIC_LAYOUT_VERSION,
+            "max_width_px": max(
+                NINE_GRID_TOP_FONT["width"],
+                NINE_GRID_BOTTOM_FONT["width"],
+            ),
+            "layers": {
+                layer: {
+                    key: int(value)
+                    for key, value in metrics.items()
+                    if key in {
+                        "font_size_px", "font_weight",
+                        "max_width_px", "max_lines",
+                    }
+                }
+                for layer, metrics in semantic.items()
+            },
+        }
+        record = {
+            "id": NINE_GRID_TEMPLATE_ID,
+            "name": "九宫格开场·全屏展示",
+            "description": "九格依次显现，随后切换三段全屏素材",
+            "tags": ["HyperFrames", "九宫格", "固定12秒", "绑定音乐"],
+            "engine": "hyperframes",
+            "font_mode": "template_locked",
+            "font_selectable": False,
+            "variant": "nine-grid",
+            "duration_mode": "fixed_12",
+            "required_visuals": NINE_GRID_VISUAL_COUNT,
+            "required_visuals_max": NINE_GRID_VISUAL_COUNT,
+            "clip_duration_range_seconds": [
+                NINE_GRID_SELECTED_CLIP_SECONDS,
+                NINE_GRID_SELECTED_CLIP_SECONDS,
+            ],
+            "bgm_mode": "bound",
+            "bgm_optional": True,
+            "semantic_layout": public_semantic,
+        }
+        self.nine_grid_fonts = fonts
+        self.nine_grid_template = record
+        return record
+
     def _reference_measure_font(self, family: str, size: int, weight: int):
         key = (str(family), int(size), int(weight))
         cached = self.reference_measure_fonts.get(key)
@@ -2313,6 +2523,156 @@ class MatrixTemplateService:
             * float(metrics.get("letter_spacing_em", REFERENCE_LETTER_SPACING_EM))
         )
         return float(box[2] - box[0]) + letter_spacing
+
+    def _nine_grid_measure_font(self, role: str, size: int):
+        spec = (
+            NINE_GRID_TOP_FONT if role == "top_text"
+            else NINE_GRID_BOTTOM_FONT
+        )
+        key = (role, int(size), int(spec["weight"]))
+        cached = self.nine_grid_measure_fonts.get(key)
+        if cached is not None:
+            return cached
+        record = self.nine_grid_fonts.get(role)
+        if record is None or not Path(record["path"]).is_file():
+            raise MatrixTemplateError("nine-grid semantic font is unavailable")
+        try:
+            font = ImageFont.truetype(str(record["path"]), int(size))
+            axes = font.get_variation_axes()
+            weight_axis = next(
+                index for index, axis in enumerate(axes)
+                if str(
+                    axis.get("name", b"").decode("ascii", "ignore")
+                    if isinstance(axis.get("name", b""), bytes)
+                    else axis.get("name", "")
+                ).strip().lower() == "weight"
+            )
+            values = [int(axis["default"]) for axis in axes]
+            values[weight_axis] = int(spec["weight"])
+            font.set_variation_by_axes(values)
+        except Exception as exc:
+            raise MatrixTemplateError(
+                "nine-grid semantic font cannot be measured"
+            ) from exc
+        self.nine_grid_measure_fonts[key] = font
+        return font
+
+    def _nine_grid_text_width(
+        self, value: str, role: str, size: int,
+    ) -> float:
+        display = _hide_reference_edge_punctuation(value)
+        if not display:
+            return 0.0
+        font = self._nine_grid_measure_font(role, size)
+        box = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(
+            (0, 0), display, font=font, stroke_width=2,
+        )
+        return float(box[2] - box[0])
+
+    def _nine_grid_pack_lines(
+        self, text: str, break_after: list[int], role: str,
+    ) -> tuple[list[str], list[str], int]:
+        spec = (
+            NINE_GRID_TOP_FONT if role == "top_text"
+            else NINE_GRID_BOTTOM_FONT
+        )
+        boundaries = [0] + sorted({
+            item + 1 for item in break_after if item < len(text) - 1
+        }) + [len(text)]
+        for size in range(int(spec["maximum"]), int(spec["minimum"]) - 1, -1):
+            candidates = []
+            maximum_lines = min(
+                int(spec["max_lines"]), len(boundaries) - 1,
+                math.floor(float(spec["height"]) / (size * float(spec["line_height"]))),
+            )
+            for line_count in range(1, maximum_lines + 1):
+                widths = {}
+
+                def measured(left_index: int, right_index: int):
+                    key = (left_index, right_index)
+                    if key not in widths:
+                        source = text[
+                            boundaries[left_index]:boundaries[right_index]
+                        ]
+                        display = _hide_reference_edge_punctuation(source)
+                        widths[key] = (
+                            source,
+                            display,
+                            self._nine_grid_text_width(
+                                source, role, size,
+                            ) if display else 0.0,
+                        )
+                    return widths[key]
+
+                total_width = self._nine_grid_text_width(text, role, size)
+                ideal = min(float(spec["width"]), total_width / line_count)
+                states = {0: (0.0, [])}
+                for _line_index in range(line_count):
+                    next_states = {}
+                    for left_index, (score, path) in states.items():
+                        for right_index in range(
+                            left_index + 1, len(boundaries)
+                        ):
+                            source, display, width = measured(
+                                left_index, right_index,
+                            )
+                            if not display:
+                                continue
+                            if width > float(spec["width"]) + 0.001:
+                                break
+                            remaining_lines = line_count - len(path) - 1
+                            remaining_boundaries = (
+                                len(boundaries) - right_index - 1
+                            )
+                            if remaining_boundaries < remaining_lines:
+                                continue
+                            candidate = score + (width - ideal) ** 2
+                            current = next_states.get(right_index)
+                            if current is None or candidate < current[0]:
+                                next_states[right_index] = (
+                                    candidate, path + [(source, display)],
+                                )
+                    states = next_states
+                selected = states.get(len(boundaries) - 1)
+                if selected is not None:
+                    candidates.append((line_count, selected[0], selected[1]))
+            if candidates:
+                _line_count, _score, lines = min(
+                    candidates, key=lambda item: item[:2],
+                )
+                return (
+                    [item[0] for item in lines],
+                    [item[1] for item in lines],
+                    size,
+                )
+        raise ValueError("九宫格文案无法在完整语义边界内排入模板")
+
+    def _nine_grid_text_layout(
+        self, top: str, bottom: str, semantic_layout: dict,
+    ) -> dict:
+        layout = _normalize_reference_semantic_layout(
+            semantic_layout, top, bottom,
+        )
+        top_source, top_display, top_size = self._nine_grid_pack_lines(
+            top, layout["top_break_after"], "top_text",
+        )
+        bottom_source, bottom_display, bottom_size = self._nine_grid_pack_lines(
+            bottom, layout["bottom_break_after"], "bottom_text",
+        )
+        return {
+            "source": {"top_text": top, "bottom_text": bottom},
+            "source_lines": {
+                "top_text": top_source, "bottom_text": bottom_source,
+            },
+            "display": {
+                "top_text": "\n".join(top_display),
+                "bottom_text": "\n".join(bottom_display),
+            },
+            "font_size_px": {
+                "top_text": top_size, "bottom_text": bottom_size,
+            },
+            "semantic_layout": layout,
+        }
 
     def _pack_reference_semantic_span(
         self, text: str, start: int, end: int,
@@ -2483,10 +2843,15 @@ class MatrixTemplateService:
         if template_id not in allowed_templates:
             raise ValueError("请选择有效模板")
         reference_template = template_id in self.reference_templates
+        nine_grid_template = (
+            template_id == NINE_GRID_TEMPLATE_ID
+            and self.nine_grid_template is not None
+        )
+        hyperframes_template = reference_template or nine_grid_template
         semantic_layout = raw.get("semantic_layout")
         normalized_semantic_layout = None
-        if reference_template:
-            variant = self.reference_templates[template_id]["variant"]
+        if hyperframes_template:
+            variant = self.templates[template_id]["variant"]
             if semantic_layout is not None:
                 if variant not in self.reference_semantic_layouts:
                     raise ValueError("HyperFrames 当前模板不支持语义排版")
@@ -2494,32 +2859,43 @@ class MatrixTemplateService:
                     semantic_layout, top, bottom,
                 )
                 if enforce_reference_layout:
-                    self._reference_semantic_text_layout(
-                        top, bottom, variant, normalized_semantic_layout,
-                    )
+                    if nine_grid_template:
+                        self._nine_grid_text_layout(
+                            top, bottom, normalized_semantic_layout,
+                        )
+                    else:
+                        self._reference_semantic_text_layout(
+                            top, bottom, variant, normalized_semantic_layout,
+                        )
             elif enforce_reference_layout and require_reference_semantic_layout:
                 raise ValueError("HyperFrames 模板必须提供 AI 语义排版")
-            elif enforce_reference_layout:
+            elif enforce_reference_layout and reference_template:
                 _reference_text_layout(
                     top,
                     bottom,
                     self.reference_templates[template_id]["text_layers"]["top"],
                 )
+            elif enforce_reference_layout:
+                raise ValueError("九宫格模板必须提供 AI 语义排版")
         elif semantic_layout is not None:
             raise ValueError("semantic_layout 仅支持指定 HyperFrames 模板")
         font_family = str(raw.get("font_family") or "").strip()
         if (
-            not reference_template and font_family
+            not hyperframes_template and font_family
             and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", font_family)
         ):
             raise ValueError("字体参数格式无效")
         if (
-            not reference_template and require_available_font and font_family
+            not hyperframes_template and require_available_font and font_family
             and font_family not in self.available_font_families()
         ):
             raise ValueError("请选择当前可用字体")
-        duration = _duration(
-            top, bottom, None if reference_template else raw.get("duration")
+        duration = (
+            NINE_GRID_DURATION_SECONDS if nine_grid_template
+            else _duration(
+                top, bottom,
+                None if reference_template else raw.get("duration"),
+            )
         )
         bgm = raw.get("bgm", True)
         if not isinstance(bgm, bool):
@@ -2529,7 +2905,7 @@ class MatrixTemplateService:
             "template_id": template_id, "duration": duration,
             "bgm": bgm,
         }
-        if font_family and not reference_template:
+        if font_family and not hyperframes_template:
             result["font_family"] = font_family
         if normalized_semantic_layout is not None:
             result["semantic_layout"] = normalized_semantic_layout
@@ -2565,6 +2941,8 @@ class MatrixTemplateService:
         return values
 
     def required_visuals(self, payload: dict) -> int:
+        if payload.get("template_id") == NINE_GRID_TEMPLATE_ID:
+            return NINE_GRID_VISUAL_COUNT
         duration = payload["duration"]
         reference = payload.get("_reference_template")
         if isinstance(reference, dict):
@@ -2605,6 +2983,57 @@ class MatrixTemplateService:
             MATERIAL_SELECTION_CONTRACT_VERSION
         )
         template_id = payload["template_id"]
+        if (
+            template_id == NINE_GRID_TEMPLATE_ID
+            and self.nine_grid_template is not None
+        ):
+            payload.pop("font_family", None)
+            semantic_layout = payload.get("semantic_layout")
+            if not isinstance(semantic_layout, dict):
+                raise MatrixTemplateError("九宫格模板必须提供 AI 语义排版")
+            text = self._nine_grid_text_layout(
+                payload["top_text"], payload["bottom_text"], semantic_layout,
+            )
+            fonts = [
+                {
+                    "family": item["family"],
+                    "file": item["file"],
+                    "sha256": item["sha256"],
+                    "source": "nine-grid-template",
+                }
+                for item in self.nine_grid_fonts.values()
+            ]
+            font_map = {item["family"]: item for item in fonts}
+            payload["_nine_grid_template"] = {
+                "template_id": NINE_GRID_TEMPLATE_ID,
+                "version": NINE_GRID_TEMPLATE_VERSION,
+                "engine": "hyperframes",
+                "hyperframes_version": NINE_GRID_HYPERFRAMES_VERSION,
+                "duration": NINE_GRID_DURATION_SECONDS,
+                "required_visuals": NINE_GRID_VISUAL_COUNT,
+                "text": text,
+                "font_sha256": {
+                    role: item["sha256"]
+                    for role, item in self.nine_grid_fonts.items()
+                },
+                "bgm_sha256": NINE_GRID_BOUND_BGM_SHA256,
+                "bgm_enabled": bool(payload["bgm"]),
+                "main_slot_indexes": list(NINE_GRID_MAIN_SLOT_INDEXES),
+            }
+            payload["_font_provenance"] = {
+                "selection": {
+                    "variant": "template-locked",
+                    "top_font": "Noto Serif SC",
+                    "bottom_font": "Noto Sans SC",
+                },
+                "fonts": fonts,
+                "private_bundle_sha256": _font_bundle_fingerprint(font_map),
+                "template_font_bundle_sha256": _font_bundle_fingerprint(
+                    font_map
+                ),
+            }
+            payload["_display_top_text"] = text["display"]["top_text"]
+            return payload
         if template_id in self.reference_templates:
             payload.pop("font_family", None)
             template = self.reference_templates[template_id]
@@ -2779,6 +3208,11 @@ class MatrixTemplateService:
             "hyperframes_templates": len(self.reference_templates),
             "hyperframes_version": (
                 REFERENCE_HYPERFRAMES_VERSION if self.reference_templates else ""
+            ),
+            "nine_grid_templates": 1 if self.nine_grid_template else 0,
+            "nine_grid_hyperframes_version": (
+                NINE_GRID_HYPERFRAMES_VERSION
+                if self.nine_grid_template else ""
             ),
             "reference_top_layer_counts": {
                 str(layer_count): sum(
@@ -3137,15 +3571,20 @@ class MatrixTemplateService:
         return selected
 
     def _material_scenes(self, payload: dict) -> tuple[list[dict], int, bool]:
+        nine_grid_template = payload.get("template_id") == NINE_GRID_TEMPLATE_ID
         count = self.required_visuals(payload)
         reference = payload.get("_reference_template")
         duration = (
             reference.get("duration", payload["duration"])
             if isinstance(reference, dict) else payload["duration"]
         )
-        segment_duration = float(duration) / count
+        segment_duration = (
+            NINE_GRID_SELECTED_CLIP_SECONDS
+            if nine_grid_template else float(duration) / count
+        )
         reference_template = (
             payload.get("template_id") in self.reference_templates
+            or nine_grid_template
         )
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
@@ -3159,7 +3598,7 @@ class MatrixTemplateService:
             "media_type": "video" if reference_template or self.pexels_api_key else "visual",
             "clip_duration_seconds": segment_duration,
         } for index in range(2, count + 1))
-        if payload["bgm"]:
+        if payload["bgm"] and not nine_grid_template:
             scenes.append({
                 "scene_id": "bgm", "query": query,
                 "purpose": "模板成片背景音乐", "media_type": "bgm",
@@ -3196,7 +3635,11 @@ class MatrixTemplateService:
             for item in ordered[1:count]:
                 if item.get("media_type") not in {"image", "video"}:
                     raise MatrixTemplateError("素材库返回了无效画面素材")
-        if payload["bgm"] and ordered[-1].get("media_type") != "bgm":
+        if (
+            payload["bgm"]
+            and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+            and ordered[-1].get("media_type") != "bgm"
+        ):
             raise MatrixTemplateError("素材库返回了无效背景音乐")
         if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
             clip_ids = []
@@ -3237,7 +3680,10 @@ class MatrixTemplateService:
                                used_sha256=()) -> list[dict]:
         scenes, count, _reference_template = self._material_scenes(payload)
         contract_version = self._material_contract_version(payload)
-        if not self.pexels_api_key:
+        if (
+            payload.get("template_id") == NINE_GRID_TEMPLATE_ID
+            or not self.pexels_api_key
+        ):
             result = self._library_request("POST", "/v1/select", {
                 "scenes": scenes, "orientation": "portrait", "seed": job_id,
                 "used_sha256": list(used_sha256),
@@ -3784,6 +4230,319 @@ class MatrixTemplateService:
                     raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
                 return
 
+    def _prepare_nine_grid_clip(
+        self, source: Path, destination: Path, start: float,
+        *, deadline_at: float,
+    ) -> None:
+        if (
+            not source.is_file()
+            or not math.isfinite(float(start))
+            or float(start) < 0
+        ):
+            raise MatrixTemplateError("九宫格素材切片参数无效")
+        remaining = deadline_at - time.time()
+        if remaining <= 0:
+            raise MatrixTemplateError("九宫格模板任务超过总时限")
+        timeout = min(
+            float(NINE_GRID_PREPARE_CLIP_TIMEOUT_SECONDS), remaining,
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name("." + destination.name + ".part.mp4")
+        temporary.unlink(missing_ok=True)
+        visible = NINE_GRID_SELECTED_CLIP_SECONDS
+        encoded = NINE_GRID_RENDER_CLIP_SECONDS + NINE_GRID_HIDDEN_TAIL_SECONDS
+        tail = encoded - visible
+        video_filter = (
+            f"trim=duration={visible:.6f},setpts=PTS-STARTPTS,"
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,setsar=1,fps=30,"
+            f"tpad=stop_mode=clone:stop_duration={tail:.6f},"
+            "format=yuv420p"
+        )
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-ss", _format_reference_seconds(float(start)), "-i", str(source),
+            "-map", "0:v:0", "-an", "-vf", video_filter,
+            "-t", f"{encoded:.6f}", "-c:v", "libx264", "-preset", "fast",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-threads", "2",
+            "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-colorspace", "bt709", "-color_range", "tv",
+            "-map_metadata", "-1", "-movflags", "+faststart", str(temporary),
+        ]
+        try:
+            returncode, _stdout, _stderr = self._run_tracked_process(
+                command,
+                timeout_seconds=max(1.0, timeout),
+                timeout_error="九宫格素材预处理超时",
+            )
+            if (
+                returncode
+                or not temporary.is_file()
+                or temporary.stat().st_size < 1024
+                or self._reference_video_duration(temporary)
+                    + 0.001 < NINE_GRID_RENDER_CLIP_SECONDS
+            ):
+                raise MatrixTemplateError("九宫格素材预处理失败")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _rewrite_nine_grid_root_style(index_html: str, text: dict) -> str:
+        sizes = text.get("font_size_px") if isinstance(text, dict) else None
+        if (
+            not isinstance(sizes, dict)
+            or isinstance(sizes.get("top_text"), bool)
+            or not isinstance(sizes.get("top_text"), int)
+            or isinstance(sizes.get("bottom_text"), bool)
+            or not isinstance(sizes.get("bottom_text"), int)
+        ):
+            raise MatrixTemplateError("九宫格冻结字号无效")
+        pattern = re.compile(r'<div\b(?=[^>]*\bid="root")[^>]*>')
+        matches = list(pattern.finditer(index_html))
+        if len(matches) != 1 or re.search(r'\sstyle="', matches[0].group(0)):
+            raise MatrixTemplateError("九宫格模板根元素发生变化")
+        tag = matches[0].group(0)[:-1] + (
+            f' style="--top-font-size:{sizes["top_text"]}px;'
+            f'--bottom-font-size:{sizes["bottom_text"]}px">'
+        )
+        return (
+            index_html[:matches[0].start()] + tag
+            + index_html[matches[0].end():]
+        )
+
+    @staticmethod
+    def _rewrite_nine_grid_bgm(index_html: str, enabled: bool) -> str:
+        if not isinstance(enabled, bool):
+            raise MatrixTemplateError("九宫格背景音乐参数无效")
+        pattern = re.compile(r'<audio\b(?=[^>]*\bid="bgm")[^>]*>')
+        matches = list(pattern.finditer(index_html))
+        if len(matches) != 1:
+            raise MatrixTemplateError("九宫格背景音乐元素发生变化")
+        tag, count = re.subn(
+            r'(\sdata-volume=")[^"]*(")',
+            rf'\g<1>{1 if enabled else 0}\g<2>',
+            matches[0].group(0), count=1,
+        )
+        if count != 1:
+            raise MatrixTemplateError("九宫格背景音乐音量属性发生变化")
+        return (
+            index_html[:matches[0].start()] + tag
+            + index_html[matches[0].end():]
+        )
+
+    @staticmethod
+    def _rewrite_nine_grid_media_sources(
+        index_html: str, variables: dict[str, str],
+    ) -> str:
+        result = index_html
+        for key in (
+            *(f"grid{index}" for index in range(1, 10)),
+            *(f"main{index}" for index in range(1, 4)),
+        ):
+            value = str(variables.get(key) or "")
+            if not re.fullmatch(r"assets/input/video-[1-9]\.mp4", value):
+                raise MatrixTemplateError("九宫格素材变量无效")
+            pattern = re.compile(
+                rf'<video\b(?=[^>]*\bdata-var-src="{key}")[^>]*>'
+            )
+            matches = list(pattern.finditer(result))
+            if len(matches) != 1:
+                raise MatrixTemplateError("九宫格素材变量绑定发生变化")
+            tag, count = re.subn(
+                r'(\ssrc=")[^"]*(")',
+                lambda match: match.group(1) + value + match.group(2),
+                matches[0].group(0), count=1,
+            )
+            if count != 1:
+                raise MatrixTemplateError("九宫格素材备用路径发生变化")
+            result = (
+                result[:matches[0].start()] + tag
+                + result[matches[0].end():]
+            )
+        return result
+
+    def _render_nine_grid(
+        self, payload: dict, job_id: str,
+        materials: list[dict], paths: list[Path],
+        *, deadline_at: float,
+    ) -> dict:
+        frozen = payload.get("_nine_grid_template")
+        text = frozen.get("text") if isinstance(frozen, dict) else None
+        if (
+            not isinstance(frozen, dict)
+            or frozen.get("template_id") != NINE_GRID_TEMPLATE_ID
+            or frozen.get("version") != NINE_GRID_TEMPLATE_VERSION
+            or frozen.get("hyperframes_version")
+                != NINE_GRID_HYPERFRAMES_VERSION
+            or frozen.get("duration") != NINE_GRID_DURATION_SECONDS
+            or frozen.get("required_visuals") != NINE_GRID_VISUAL_COUNT
+            or frozen.get("main_slot_indexes")
+                != list(NINE_GRID_MAIN_SLOT_INDEXES)
+            or frozen.get("bgm_enabled") is not payload.get("bgm")
+            or not isinstance(text, dict)
+            or self.nine_grid_root is None
+            or self.nine_grid_template is None
+            or self.nine_grid_hyperframes_cli is None
+            or len(paths) != NINE_GRID_VISUAL_COUNT
+            or len(materials) != NINE_GRID_VISUAL_COUNT
+            or any(item.get("media_type") != "video" for item in materials)
+        ):
+            raise MatrixTemplateError("frozen nine-grid template metadata is invalid")
+        expected_fonts = frozen.get("font_sha256")
+        if (
+            not isinstance(expected_fonts, dict)
+            or expected_fonts != {
+                role: item["sha256"]
+                for role, item in self.nine_grid_fonts.items()
+            }
+            or any(
+                _file_sha256(Path(item["path"])) != item["sha256"]
+                for item in self.nine_grid_fonts.values()
+            )
+            or frozen.get("bgm_sha256") != NINE_GRID_BOUND_BGM_SHA256
+            or _file_sha256(
+                self.nine_grid_root / "assets/audio/reference-bgm.m4a"
+            ) != NINE_GRID_BOUND_BGM_SHA256
+        ):
+            raise MatrixTemplateError("frozen nine-grid template assets changed")
+        selected_starts = [item.get("clip_start_seconds") for item in materials]
+        selected_durations = [
+            item.get("clip_duration_seconds") for item in materials
+        ]
+        if not all(
+            not isinstance(start, bool)
+            and isinstance(start, (int, float))
+            and math.isfinite(float(start))
+            and float(start) >= 0
+            and not isinstance(duration, bool)
+            and isinstance(duration, (int, float))
+            and abs(float(duration) - NINE_GRID_SELECTED_CLIP_SECONDS) <= 0.001
+            for start, duration in zip(selected_starts, selected_durations)
+        ):
+            raise MatrixTemplateError("九宫格素材切片契约无效")
+        if time.time() >= deadline_at:
+            raise MatrixTemplateError("九宫格模板任务超过总时限")
+        root = self.data_root / job_id
+        workdir = root / "hyperframes-nine-grid"
+        if workdir.exists():
+            shutil.rmtree(workdir)
+        shutil.copytree(self.nine_grid_root, workdir)
+        index_path = workdir / "index.html"
+        variables = {
+            **text["display"],
+            **{
+                f"grid{index}": f"assets/input/video-{index}.mp4"
+                for index in range(1, NINE_GRID_VISUAL_COUNT + 1)
+            },
+        }
+        for index, source_index in enumerate(NINE_GRID_MAIN_SLOT_INDEXES, 1):
+            variables[f"main{index}"] = (
+                f"assets/input/video-{source_index + 1}.mp4"
+            )
+        index_html = self._rewrite_nine_grid_root_style(
+            index_path.read_text(encoding="utf-8"), text,
+        )
+        index_html = self._rewrite_nine_grid_bgm(
+            index_html, bool(payload["bgm"]),
+        )
+        index_html = self._rewrite_nine_grid_media_sources(
+            index_html, variables,
+        )
+        index_path.write_text(index_html, encoding="utf-8")
+        variables_path = workdir / "variables.json"
+        variables_path.write_text(
+            json.dumps(variables, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        output = root / "output/final.mp4"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        runtime_home = self.data_root / ".hyperframes-runtime"
+        cache_home = runtime_home / "cache"
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        cache_home.mkdir(parents=True, exist_ok=True)
+        command = [
+            str(self.nine_grid_hyperframes_cli), "render", str(workdir),
+            "--output", str(output), "--quality", "high", "--workers", "1",
+            "--fps", str(NINE_GRID_OUTPUT_FPS), "--sdr", "--no-browser-gpu",
+            "--strict-variables", "--variables-file", str(variables_path),
+        ]
+        env = os.environ.copy()
+        env.update({
+            "HOME": str(runtime_home),
+            "XDG_CACHE_HOME": str(cache_home),
+            "HYPERFRAMES_BROWSER_PATH": str(self.hyperframes_browser),
+            "ONNXRUNTIME_NODE_INSTALL_CUDA": "skip",
+            "PRODUCER_LOW_MEMORY_MODE": "true",
+        })
+        options = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "env": env,
+        }
+        if os.name == "nt":
+            options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            options["start_new_session"] = True
+        self._acquire_hyperframes_slot(deadline_at)
+        try:
+            for index, (source, start) in enumerate(
+                zip(paths, selected_starts), 1,
+            ):
+                if self.stop_event.is_set():
+                    raise MatrixTemplateError("模板成片服务正在停止")
+                self._prepare_nine_grid_clip(
+                    source, workdir / f"assets/input/video-{index}.mp4",
+                    float(start), deadline_at=deadline_at,
+                )
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise MatrixTemplateError("九宫格模板任务超过总时限")
+            process = subprocess.Popen(command, **options)
+            with self.process_lock:
+                self.active_processes.add(process)
+                self.active_process = process
+            try:
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(RENDER_TIMEOUT_SECONDS, remaining)
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    self._terminate(process)
+                    output.unlink(missing_ok=True)
+                    raise MatrixTemplateError(
+                        "九宫格模板任务超过总时限"
+                    ) from exc
+                if process.returncode:
+                    output.unlink(missing_ok=True)
+                    detail = b"\n".join((stdout or b"", stderr or b"")).decode(
+                        "utf-8", "replace",
+                    ).strip()[-800:]
+                    raise MatrixTemplateError(
+                        "九宫格模板成片渲染失败"
+                        + (": " + detail if detail else "")
+                    )
+            finally:
+                with self.process_lock:
+                    self.active_processes.discard(process)
+                    self.active_process = next(
+                        iter(self.active_processes), None,
+                    )
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise MatrixTemplateError("九宫格模板任务超过总时限")
+            self._validate_reference_visual_coverage(
+                output, timeout_seconds=min(120.0, remaining),
+            )
+        finally:
+            self.hyperframes_slots.release()
+        variables["_bound_bgm"] = {
+            "sha256": NINE_GRID_BOUND_BGM_SHA256,
+            "duration": NINE_GRID_DURATION_SECONDS,
+            "enabled": bool(payload["bgm"]),
+        }
+        return variables
+
     def _render_reference(self, payload: dict, job_id: str,
                           materials: list[dict], paths: list[Path],
                           *, deadline_at: float | None = None) -> dict:
@@ -4075,7 +4834,19 @@ class MatrixTemplateService:
         paths = [self._download(item, assets, job_id) for item in materials]
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
-        if reference_template:
+        nine_grid_template = payload["template_id"] == NINE_GRID_TEMPLATE_ID
+        if nine_grid_template:
+            deadline_at = (
+                float(row["created_at"]) + self.hyperframes_total_timeout_seconds
+            )
+            variables = self._render_nine_grid(
+                payload, job_id, materials, paths, deadline_at=deadline_at,
+            )
+            font_selection = provenance["selection"]
+            display_top_text = variables["top_text"]
+            editing_plan = None
+            engine = "hyperframes"
+        elif reference_template:
             deadline_at = (
                 float(row["created_at"]) + self.hyperframes_total_timeout_seconds
             )
@@ -4119,7 +4890,10 @@ class MatrixTemplateService:
             "batch_size": payload.get("batch_size"),
             "file_url": f"/v1/files/{job_id}.mp4",
             "engine": engine,
-            "font_mode": "template_locked" if reference_template else "selectable",
+            "font_mode": (
+                "template_locked"
+                if reference_template or nine_grid_template else "selectable"
+            ),
             "font_selection": font_selection,
             "display_top_text": display_top_text,
             "font_files": provenance["fonts"],
@@ -4156,6 +4930,10 @@ class MatrixTemplateService:
                 } if item.get("clip_id") else {}),
             } for item in materials],
             "editing_plan": editing_plan,
+            **({
+                "bgm_mode": "bound",
+                "nine_grid_visuals": NINE_GRID_VISUAL_COUNT,
+            } if nine_grid_template else {}),
         }
 
     def _update_with_retry(self, job_id: str, status: str, **kwargs) -> bool:
@@ -4363,9 +5141,13 @@ class Handler(BaseHTTPRequestHandler):
                         "clip_contract_version"
                     ],
                     "duration_mode": (
-                        "random_integer_7_15"
-                        if payload["template_id"] in self.service.reference_templates
-                        else "copy_length"
+                        "fixed_12"
+                        if payload["template_id"] == NINE_GRID_TEMPLATE_ID
+                        else (
+                            "random_integer_7_15"
+                            if payload["template_id"] in self.service.reference_templates
+                            else "copy_length"
+                        )
                     ),
                 })
                 return
@@ -4395,6 +5177,9 @@ def main() -> None:
     reference_root_value = os.environ.get(
         "MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT", ""
     ).strip()
+    nine_grid_root_value = os.environ.get(
+        "MATRIX_TEMPLATE_NINE_GRID_ROOT", ""
+    ).strip()
     service = MatrixTemplateService(
         data_root=Path(os.environ.get("MATRIX_TEMPLATE_DATA_ROOT", "/var/lib/huangque-matrix-template")),
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
@@ -4407,8 +5192,14 @@ def main() -> None:
             "/var/lib/huangque-matrix-template/private-fonts",
         )),
         reference_skill_root=Path(reference_root_value) if reference_root_value else None,
+        nine_grid_root=Path(nine_grid_root_value) if nine_grid_root_value else None,
         hyperframes_cli=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_CLI", "/usr/local/bin/hyperframes"
+        )),
+        nine_grid_hyperframes_cli=Path(os.environ.get(
+            "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI",
+            "/opt/huangque/matrix-template-video/source/"
+            "nine-grid-runtime/node_modules/.bin/hyperframes",
         )),
         hyperframes_gsap=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_GSAP",
