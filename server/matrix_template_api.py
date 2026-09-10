@@ -3325,9 +3325,9 @@ class MatrixTemplateService:
                 )
             return selected
 
-    def _download(self, item: dict, target_dir: Path) -> Path:
+    def _download(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
         if item.get("provider") == "pexels":
-            return self._download_pexels(item, target_dir)
+            return self._download_pexels(item, target_dir, job_id)
         sha = str(item["sha256"]).lower()
         request = urllib.request.Request(
             self.library_url + "/v1/assets/" + sha,
@@ -3361,7 +3361,7 @@ class MatrixTemplateService:
         except urllib.error.HTTPError as exc:
             raise MatrixTemplateError("素材库文件读取失败") from exc
 
-    def _download_pexels(self, item: dict, target_dir: Path) -> Path:
+    def _download_pexels(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
         identity = str(item.get("sha256") or "").lower()
         parsed = urlsplit(str(item.get("source_url") or ""))
         if (
@@ -3400,6 +3400,12 @@ class MatrixTemplateService:
                 or not hmac.compare_digest(frozen, content_sha256)
             ):
                 raise MatrixTemplateError("Pexels 素材文件发生变化")
+            # 先以 CAS 持久化内容哈希，成功后再原子替换最终文件，
+            # 避免「下载完成但数据库未写入」的崩溃窗口。
+            if job_id and item.get("scene_id"):
+                self.store.update_material_content_sha256(
+                    job_id, str(item["scene_id"]), content_sha256,
+                )
             item["content_sha256"] = content_sha256
             os.replace(temporary, target)
             return target
@@ -4066,15 +4072,7 @@ class MatrixTemplateService:
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
-        paths = []
-        for item in materials:
-            path = self._download(item, assets)
-            if item.get("provider") == "pexels" and item.get("content_sha256"):
-                self.store.update_material_content_sha256(
-                    job_id, str(item.get("scene_id") or ""),
-                    item["content_sha256"],
-                )
-            paths.append(path)
+        paths = [self._download(item, assets, job_id) for item in materials]
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         if reference_template:

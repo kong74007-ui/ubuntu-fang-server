@@ -980,7 +980,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         ]
         counter = iter(range(4))
 
-        def download(item, target):
+        def download(item, target, job_id=""):
             suffix = ".mp4" if item["media_type"] == "video" else ".jpg" if item["media_type"] == "image" else ".mp3"
             path = target / (str(next(counter)) + suffix)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -3745,7 +3745,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         } for index in range(1, 4)]
         counter = iter(range(1, 4))
 
-        def download(_item, target):
+        def download(_item, target, job_id=""):
             path = target / f"{next(counter)}.mp4"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"video")
@@ -4104,23 +4104,20 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         self.service.store.reserve_job_materials("j" * 32, [item], 1)
         target = self.root / "dl"
         target.mkdir()
-        # 首次下载：字节 A → 计算并持久化 content_sha256
+        # 首次下载：持久化在 _download_pexels 内部完成（无调用方后续更新）
         with mock.patch.object(matrix.urllib.request, "urlopen",
                                return_value=self._response(b"first-bytes", "video/mp4")):
-            self.service._download_pexels(item, target)
+            self.service._download_pexels(item, target, job_id="j" * 32)
         first_hash = item["content_sha256"]
         self.assertTrue(matrix.SHA_RE.fullmatch(first_hash))
-        self.service.store.update_material_content_sha256(
-            "j" * 32, "media_02", first_hash,
-        )
-        # 模拟重启：从 DB 读回冻结选择，content_sha256 必须还在
+        # 模拟进程退出后重启：从 DB 读回冻结选择，content_sha256 必须已持久化
         recovered = self.service.store.material_selection("j" * 32)["materials"][0]
         self.assertEqual(first_hash, recovered["content_sha256"])
-        # 同一来源返回不同字节 → 明确失败，而不是接受第二次下载
+        # 同一来源返回不同字节 → fail closed，而不是接受第二次下载
         with mock.patch.object(matrix.urllib.request, "urlopen",
                                return_value=self._response(b"other-bytes", "video/mp4")):
             with self.assertRaises(matrix.MatrixTemplateError) as ctx:
-                self.service._download_pexels(recovered, target)
+                self.service._download_pexels(recovered, target, job_id="j" * 32)
             self.assertIn("发生变化", str(ctx.exception))
 
     # 23：source_identity 与 content_sha256 语义区分
@@ -4146,7 +4143,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         materials = [pexels_item]
         self.service.store.reserve_job_materials(job["job_id"], materials, 1)
 
-        def download(item, target):
+        def download(item, target, job_id=""):
             item["content_sha256"] = "e" * 64  # 实际下载文件哈希，与 source_identity 不同
             path = target / "0.mp4"
             path.parent.mkdir(parents=True, exist_ok=True)
