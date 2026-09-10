@@ -5,15 +5,20 @@ Internal generation-server API for the `text-media-text` mode from the pinned
 up to five FFmpeg renders at a time, and uses the existing material-library
 tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
-The runtime exposes 19 templates: two generation-server-owned FFmpeg layouts
-and the 17-template `reference-typography-17` HyperFrames pack. HyperFrames
-templates use three to five distinct video assets, keeping every visible
-material clip between two and three seconds. A three-clip output takes its
+The runtime exposes 22 templates: two generation-server-owned FFmpeg layouts,
+the 17-template `reference-typography-17` HyperFrames pack, the nine-grid
+template, and the fixed `triple-strip-shutter` / `yellow-banner-zoom` Skill
+templates. The 17 reference templates use three to five distinct video assets,
+keeping every selected material clip between two and three seconds. A
+three-clip reference output takes its
 opening clip from the approved Huangque library and its two remaining clips
 from the Pexels China-oriented search pool. Four- and five-clip outputs take
 their opening and closing clips from Huangque and all middle clips from Pexels.
-They render with
-HyperFrames `0.8.16` and run at most two concurrent renders on the 8 GB host.
+The nine-grid and two fixed Skill templates use only the approved Huangque
+library. They retain nine, eight, and three distinct selected video records,
+respectively. Reference templates render with HyperFrames `0.8.16`; the three
+newer templates render with the separately locked HyperFrames `0.8.33` runtime.
+All HyperFrames templates share at most two concurrent render slots on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these 17 templates; the two
 FFmpeg layouts continue to support automatic or explicit font selection.
@@ -34,6 +39,11 @@ It separately sparse-checks out reference template commit
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
 variants `v01`, `v04`, `v05`, `v09`, `v10`, `v12`, and `v16`, and installs pinned GSAP
 `3.14.2` inside the release.
+It also sparse-checks out Skill commit
+`81da5e926aad0d2166845ee0b398282a21ab09e7`, adapts and validates the nine-grid
+template, validates both fixed-template preparation suites and their bound
+audio, and installs one lockfile-pinned HyperFrames `0.8.33` runtime shared by
+those three templates.
 Variant `v01` keeps its green-outlined handwritten treatment while its five
 locked text layers increase from `68/62/50/54/72px` to
 `70/64/52/56/74px`. Variant `v05` keeps the approved Noto Sans SC 900 block
@@ -162,10 +172,14 @@ detected two-layer/three-layer counts for deployment drift checks.
 Already-admitted jobs keep their frozen layer text unchanged, so an upgrade
 does not rewrite or resubmit in-flight work.
 
-Before HyperFrames starts, the service calculates three to five two-to-three
-second slots from the frozen 8-15 second output, rejects source videos that are
-too short, and expands the copied template with task-local video elements when
-needed. The material library freezes a different valid source offset each time
+Before a reference HyperFrames render starts, the service calculates three to
+five two-to-three second slots from the frozen 8-15 second output. The two fixed
+Skill templates instead preserve their authored frame boundaries at 17.6 and
+302/30 seconds while retaining the same public 60-character top and 80-character
+bottom copy contract. AI marks semantic boundaries once; the generation service
+maps every character into the template's internal text regions, scales only
+within measured font bounds, and fails before rendering rather than truncating
+or splitting a phrase. The material library freezes a different valid source offset each time
 a long source is selected: all of its non-overlapping virtual clips participate
 in ranking immediately and keep independent usage counts. One complete source
 can therefore supply multiple callable clips without changing playback speed or

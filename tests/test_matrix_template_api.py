@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import json
@@ -4171,6 +4172,341 @@ class NineGridTemplateTests(unittest.TestCase):
         self.assertEqual(2, index.count('src="assets/input/video-1.mp4"'))
         self.assertEqual(2, index.count('src="assets/input/video-5.mp4"'))
         self.assertEqual(2, index.count('src="assets/input/video-9.mp4"'))
+
+
+class FixedSkillTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        HyperFramesReferenceTemplateTests._write_skill_fixture(
+            self.skill, reference=False,
+        )
+        self.cli = self.root / "hyperframes-0.8.33"
+        self.cli.write_bytes(b"cli")
+        self.browser = self.root / "chrome"
+        self.browser.write_bytes(b"browser")
+        self.configs = copy.deepcopy(matrix.FIXED_SKILL_TEMPLATE_CONFIGS)
+        self.template_roots = {}
+        for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+            root = self.root / template_id
+            self._write_template_fixture(template_id, root)
+            self.template_roots[template_id] = root
+        self.config_patch = mock.patch.object(
+            matrix, "FIXED_SKILL_TEMPLATE_CONFIGS", self.configs,
+        )
+        self.config_patch.start()
+        version = SimpleNamespace(returncode=0, stdout="0.8.33\n", stderr="")
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            self.service = matrix.MatrixTemplateService(
+                data_root=self.root / "data",
+                skill_root=self.skill,
+                triple_strip_root=self.template_roots[
+                    matrix.TRIPLE_STRIP_TEMPLATE_ID
+                ],
+                yellow_banner_root=self.template_roots[
+                    matrix.YELLOW_BANNER_TEMPLATE_ID
+                ],
+                nine_grid_hyperframes_cli=self.cli,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                start_worker=False,
+            )
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.config_patch.stop()
+        self.temp.cleanup()
+
+    def _write_template_fixture(self, template_id: str, root: Path) -> None:
+        config = self.configs[template_id]
+        (root / "assets/audio").mkdir(parents=True)
+        (root / "assets/fonts").mkdir(parents=True)
+        (root / "assets/vendor").mkdir(parents=True)
+        audio = root / config["bgm_path"]
+        audio.write_bytes((template_id + "-bgm").encode("ascii"))
+        config["bgm_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
+        for filename in config["font_files"].values():
+            (root / "assets/fonts" / filename).write_bytes(
+                (template_id + filename).encode("ascii")
+            )
+        for filename in ("gsap.min.js", "yellow-banner-motion.js"):
+            (root / "assets/vendor" / filename).write_text(
+                "window.fixture=true;", encoding="utf-8",
+            )
+        fields = (
+            ("title", "subtitle", "ctaLine1", "ctaLine2")
+            if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID else
+            ("title", "subtitle1", "subtitle2", "sourceLabel", "body", "cta")
+        )
+        schema = html.escape(json.dumps([
+            {"id": field, "type": "string", "default": field}
+            for field in fields
+        ]), quote=True)
+        text_nodes = "".join(
+            f'<p id="{field}" data-var-text="{field}">{field}</p>'
+            for field in fields
+        )
+        grading = (
+            "" if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID else
+            '<video data-color-grading="{}"></video>' * 2
+        )
+        (root / "index.html").write_text(
+            f'<html data-composition-variables="{schema}"><head></head><body>'
+            f'<div id="root" data-composition-id="{template_id}">'
+            f'{grading}{text_nodes}<audio id="bound-bgm" data-volume="1" '
+            f'src="{config["bgm_path"]}"></audio></div></body></html>',
+            encoding="utf-8",
+        )
+        package = {
+            "scripts": {
+                name: f"npx --yes hyperframes@0.8.33 {command}"
+                for name, command in (
+                    ("dev", "preview"), ("check", "check"),
+                    ("render", "render"), ("publish", "publish"),
+                )
+            },
+        }
+        (root / "package.json").write_text(
+            json.dumps(package), encoding="utf-8",
+        )
+        (root / "hyperframes.json").write_text("{}\n", encoding="utf-8")
+        if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
+            (root / "index.motion.json").write_text("{}\n", encoding="utf-8")
+            compositions = root / "compositions"
+            compositions.mkdir()
+            (compositions / "opening.html").write_text(
+                "<html></html>", encoding="utf-8",
+            )
+            for index in range(1, 6):
+                (compositions / f"main-{index:02d}.html").write_text(
+                    "<html></html>", encoding="utf-8",
+                )
+            manifest = {
+                "id": template_id, "version": 1, "renderer": "hyperframes",
+                "width": 1080, "height": 1920, "fps": 30,
+                "duration": 17.6, "openingSlots": 3, "mainSlots": 5,
+                "cutFrames": [0, 117, 199, 281, 363, 445, 528],
+            }
+        else:
+            manifest = {
+                "id": template_id, "version": 1, "renderer": "hyperframes",
+                "hyperframesVersion": "0.8.33",
+                "width": 1080, "height": 1920, "fps": 30,
+                "duration": 302 / 30, "frames": 302, "mediaSlots": 3,
+                "cutFrames": [0, 86, 183, 302],
+            }
+        manifest["boundBgm"] = {
+            "path": config["bgm_path"],
+            "sha256": config["bgm_sha256"],
+            "duration": config["bgm_duration"],
+        }
+        (root / "template.json").write_text(
+            json.dumps(manifest), encoding="utf-8",
+        )
+
+    @staticmethod
+    def semantic(top: str, bottom: str) -> dict:
+        top_breaks = [
+            index for index, char in enumerate(top[:-1])
+            if char in "，。！？；：、,.!?;:|｜ "
+        ]
+        bottom_breaks = [
+            index for index, char in enumerate(bottom[:-1])
+            if char in "，。！？；：、,.!?;:|｜ "
+        ]
+        return {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top_breaks[0] if top_breaks else len(top) - 1,
+            "top_break_after": top_breaks,
+            "bottom_break_after": bottom_breaks,
+        }
+
+    @staticmethod
+    def text_width(value: str, metrics: dict) -> float:
+        display = matrix._hide_reference_edge_punctuation(value)
+        return len(display) * int(metrics["font_size_px"])
+
+    def test_catalog_exposes_two_fixed_templates_after_existing_catalog(self):
+        self.assertEqual(4, len(self.service.catalog))
+        self.assertEqual(
+            list(matrix.FIXED_SKILL_TEMPLATE_IDS),
+            [item["id"] for item in self.service.catalog[-2:]],
+        )
+        for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+            item = self.service.templates[template_id]
+            config = self.configs[template_id]
+            self.assertEqual("fixed", item["duration_mode"])
+            self.assertEqual(config["duration"], item["fixed_duration_seconds"])
+            self.assertEqual(config["required_visuals"], item["required_visuals"])
+            self.assertTrue(item["bgm_optional"])
+            self.assertEqual("bound", item["bgm_mode"])
+
+    def test_shared_sixty_eighty_copy_contract_preserves_source_text(self):
+        top = "创业团队，" * 12
+        bottom = "评论区扣888，" * 10
+        self.assertEqual((60, 80), (len(top), len(bottom)))
+        semantic = self.semantic(top, bottom)
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self.text_width,
+        ):
+            for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+                with self.subTest(template_id=template_id):
+                    payload = self.service.validate_payload({
+                        "top_text": top,
+                        "bottom_text": bottom,
+                        "template_id": template_id,
+                        "semantic_layout": semantic,
+                        "bgm": False,
+                    }, require_reference_semantic_layout=True)
+                    frozen = self.service._freeze_font_provenance(
+                        template_id.replace("-", "")[:32].ljust(32, "0"),
+                        payload,
+                    )
+                    contract = frozen["_fixed_skill_template"]
+                    self.assertEqual(top, contract["text"]["source"]["top_text"])
+                    self.assertEqual(
+                        bottom, contract["text"]["source"]["bottom_text"],
+                    )
+                    self.assertFalse(contract["bgm_enabled"])
+                    self.assertEqual(
+                        self.configs[template_id]["duration"],
+                        payload["duration"],
+                    )
+
+    def test_material_scenes_are_video_only_and_do_not_request_extra_bgm(self):
+        for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+            config = self.configs[template_id]
+            payload = {
+                "top_text": "活动标题", "bottom_text": "评论区扣888",
+                "template_id": template_id,
+                "duration": config["duration"], "bgm": True,
+            }
+            scenes, count, hyperframes = self.service._material_scenes(payload)
+            self.assertEqual(config["required_visuals"], count)
+            self.assertTrue(hyperframes)
+            self.assertEqual(count, len(scenes))
+            self.assertEqual({"video"}, {item["media_type"] for item in scenes})
+            self.assertEqual({3.0}, {
+                item["clip_duration_seconds"] for item in scenes
+            })
+
+    def test_fixed_templates_use_only_the_owned_material_library(self):
+        self.service.pexels_api_key = "configured-pexels-key"
+        for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+            config = self.configs[template_id]
+            payload = {
+                "top_text": "活动标题", "bottom_text": "评论区扣888",
+                "template_id": template_id,
+                "duration": config["duration"], "bgm": True,
+                "_material_selection_contract_version": 2,
+            }
+            materials = [{
+                "scene_id": f"media_{index:02d}",
+                "record_id": f"record-{index}",
+                "sha256": format(index, "064x"),
+                "media_type": "video", "match_level": "random",
+                "clip_id": format(index + 100, "064x"),
+                "clip_start_seconds": float(index),
+                "clip_duration_seconds": 3.0,
+                "clip_slot_index": 1, "clip_slot_count": 1,
+            } for index in range(1, config["required_visuals"] + 1)]
+            response = {
+                "materials": materials,
+                "selection_contract_version": 2,
+                "clip_contract_version": 1,
+            }
+            with self.subTest(template_id=template_id), mock.patch.object(
+                self.service, "_library_request", return_value=response,
+            ) as library, mock.patch.object(
+                self.service, "_select_pexels_materials",
+                side_effect=AssertionError(
+                    "fixed Skill templates must not use Pexels"
+                ),
+            ):
+                selected = self.service._select_materials_once(
+                    payload, "d" * 32,
+                )
+            self.assertEqual(materials, selected)
+            self.assertEqual(
+                config["required_visuals"],
+                len(library.call_args.args[2]["scenes"]),
+            )
+
+    def test_render_stages_frozen_fields_media_and_optional_bgm(self):
+        class Process:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return b"", b""
+
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        semantic = self.semantic(top, bottom)
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self.text_width,
+        ):
+            for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
+                with self.subTest(template_id=template_id):
+                    config = self.configs[template_id]
+                    payload = self.service.validate_payload({
+                        "top_text": top, "bottom_text": bottom,
+                        "template_id": template_id,
+                        "semantic_layout": semantic, "bgm": False,
+                    }, require_reference_semantic_layout=True)
+                    payload = self.service._freeze_font_provenance(
+                        template_id.replace("-", "")[:32].ljust(32, "1"),
+                        payload,
+                    )
+                    materials = [{
+                        "scene_id": f"media_{index:02d}",
+                        "sha256": format(index, "064x"),
+                        "media_type": "video",
+                        "clip_start_seconds": float(index),
+                        "clip_duration_seconds": 3.0,
+                    } for index in range(1, config["required_visuals"] + 1)]
+                    paths = []
+                    for index in range(config["required_visuals"]):
+                        path = self.root / f"source-{template_id}-{index}.mp4"
+                        path.write_bytes(b"source")
+                        paths.append(path)
+                    prepared = []
+
+                    def prepare(source, destination, start, frames, height,
+                                *, deadline_at):
+                        prepared.append((destination, start, frames, height))
+                        return float(start)
+
+                    with mock.patch.object(
+                        self.service, "_prepare_fixed_skill_clip",
+                        side_effect=prepare,
+                    ), mock.patch.object(
+                        matrix.subprocess, "Popen", return_value=Process(),
+                    ) as popen, mock.patch.object(
+                        self.service, "_validate_reference_visual_coverage",
+                    ):
+                        values = self.service._render_fixed_skill_template(
+                            payload, template_id.replace("-", "")[:32].ljust(32, "2"),
+                            materials, paths, deadline_at=time.time() + 60,
+                        )
+                    self.assertEqual(config["required_visuals"], len(prepared))
+                    self.assertFalse(values["_bound_bgm"]["enabled"])
+                    command = popen.call_args.args[0]
+                    self.assertIn("--strict-variables", command)
+                    workdir = Path(command[2])
+                    index_html = (workdir / "index.html").read_text(
+                        encoding="utf-8",
+                    )
+                    self.assertIn('data-volume="0"', index_html)
+                    self.assertIn('id="matrix-fixed-skill-copy"', index_html)
+                    if template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
+                        self.assertNotIn("data-color-grading=", index_html)
+                        self.assertIn("filter:blur(14px)", index_html)
 
 
 class PexelsMaterialRoutingTests(unittest.TestCase):
