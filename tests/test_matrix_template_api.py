@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import random
 import shutil
@@ -3784,6 +3785,295 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertEqual(
             row["created_at"] + self.service.hyperframes_total_timeout_seconds,
             captured_deadline["value"],
+        )
+
+
+class NineGridTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        HyperFramesReferenceTemplateTests._write_skill_fixture(
+            self.skill, reference=False,
+        )
+        self.nine_grid = self.root / "nine-grid"
+        self._write_nine_grid_fixture(self.nine_grid)
+        self.cli = self.root / "hyperframes-0.8.33"
+        self.cli.write_bytes(b"cli")
+        self.browser = self.root / "chrome"
+        self.browser.write_bytes(b"browser")
+        self.bgm_hash_patch = mock.patch.object(
+            matrix, "NINE_GRID_BOUND_BGM_SHA256", self.bgm_hash,
+        )
+        self.bgm_hash_patch.start()
+        version = SimpleNamespace(returncode=0, stdout="0.8.33\n", stderr="")
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            self.service = matrix.MatrixTemplateService(
+                data_root=self.root / "data",
+                skill_root=self.skill,
+                nine_grid_root=self.nine_grid,
+                nine_grid_hyperframes_cli=self.cli,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                start_worker=False,
+            )
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.bgm_hash_patch.stop()
+        self.temp.cleanup()
+
+    def _write_nine_grid_fixture(self, root: Path) -> None:
+        (root / "assets/audio").mkdir(parents=True)
+        (root / "assets/fonts").mkdir(parents=True)
+        (root / "assets/vendor").mkdir(parents=True)
+        audio = root / "assets/audio/reference-bgm.m4a"
+        audio.write_bytes(b"bound-bgm")
+        self.bgm_hash = hashlib.sha256(audio.read_bytes()).hexdigest()
+        for filename in (
+            "NotoSerifSC-Variable.ttf", "NotoSansSC-Variable.ttf",
+        ):
+            (root / "assets/fonts" / filename).write_bytes(
+                filename.encode("ascii")
+            )
+        (root / "assets/vendor/gsap.min.js").write_text(
+            "window.gsap={};", encoding="utf-8",
+        )
+        variables = [
+            {"id": "top_text", "type": "string", "default": "顶部标题"},
+            {"id": "bottom_text", "type": "string", "default": "底部行动"},
+        ] + [
+            {"id": f"grid{index}", "type": "string",
+             "default": f"assets/grid/{index:02}.mp4"}
+            for index in range(1, 10)
+        ] + [
+            {"id": f"main{index}", "type": "string",
+             "default": f"assets/main/{index:02}.mp4"}
+            for index in range(1, 4)
+        ]
+        schema = html.escape(json.dumps(variables), quote=True)
+        videos = "\n".join(
+            f'<video id="main-video{index}" data-var-src="main{index}" '
+            f'data-media-start="0" src="main-{index}.mp4"></video>'
+            for index in range(1, 4)
+        )
+        (root / "index.html").write_text(
+            f'<html data-composition-variables="{schema}"><head></head><body>'
+            '<div id="root" data-composition-id="nine-grid-reveal">'
+            '<span id="top-text" data-var-text="top_text">顶部标题</span>'
+            '<div id="tagline" data-var-text="bottom_text">底部行动</div>'
+            f'{videos}<audio id="bgm" '
+            'src="assets/audio/reference-bgm.m4a"></audio></div>'
+            '</body></html>',
+            encoding="utf-8",
+        )
+        for filename in ("hyperframes.json", "index.motion.json"):
+            (root / filename).write_text("{}\n", encoding="utf-8")
+        (root / "template.json").write_text(json.dumps({
+            "id": matrix.NINE_GRID_TEMPLATE_ID,
+            "name": "九宫格开场·全屏展示",
+            "version": matrix.NINE_GRID_TEMPLATE_VERSION,
+            "renderer": "hyperframes@0.8.33",
+            "canvas": [1080, 1920], "fps": 30, "duration": 12,
+            "text_fields": ["top_text", "bottom_text"],
+            "text_limits": {"top_text": 60, "bottom_text": 80},
+            "text_layout": {
+                "mode": "semantic-then-width",
+                "semantic_layout_required": True,
+                "top_max_lines": 4, "bottom_max_lines": 4,
+                "hide_edge_punctuation": True, "truncate": False,
+            },
+            "bgm": {
+                "mode": "bound", "path": "assets/audio/reference-bgm.m4a",
+                "sha256": self.bgm_hash, "duration": 12,
+                "start": 0, "volume": 1,
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def semantic(top: str, bottom: str) -> dict:
+        top_breaks = [
+            index for index, char in enumerate(top[:-1])
+            if char in "，。！？；：、,.!?;:|｜ "
+        ]
+        bottom_breaks = [
+            index for index, char in enumerate(bottom[:-1])
+            if char in "，。！？；：、,.!?;:|｜ "
+        ]
+        return {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top_breaks[0] if top_breaks else len(top) - 1,
+            "top_break_after": top_breaks,
+            "bottom_break_after": bottom_breaks,
+        }
+
+    @staticmethod
+    def text_width(value: str, _role: str, size: int) -> float:
+        return len(matrix._hide_reference_edge_punctuation(value)) * size
+
+    def test_catalog_and_payload_use_shared_copy_contract(self):
+        self.assertEqual(3, len(self.service.catalog))
+        template = self.service.catalog[-1]
+        self.assertEqual(matrix.NINE_GRID_TEMPLATE_ID, template["id"])
+        self.assertEqual("fixed_12", template["duration_mode"])
+        self.assertEqual(9, template["required_visuals"])
+        self.assertEqual("bound", template["bgm_mode"])
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "想了解完整方法，评论区扣888"
+        with mock.patch.object(
+            self.service, "_nine_grid_text_width", side_effect=self.text_width,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+                "semantic_layout": self.semantic(top, bottom),
+                "bgm": True,
+            }, require_reference_semantic_layout=True)
+            frozen = self.service._freeze_font_provenance(
+                "a" * 32, payload,
+            )
+        self.assertEqual(12.0, payload["duration"])
+        self.assertEqual(9, self.service.required_visuals(payload))
+        self.assertEqual(
+            top, frozen["_nine_grid_template"]["text"]["source"]["top_text"],
+        )
+        self.assertEqual(
+            "template-locked",
+            frozen["_font_provenance"]["selection"]["variant"],
+        )
+
+    def test_new_nine_grid_job_requires_ai_semantic_layout(self):
+        with self.assertRaisesRegex(ValueError, "必须提供 AI 语义排版"):
+            self.service.validate_payload({
+                "top_text": "九宫格标题",
+                "bottom_text": "评论区获取资料",
+                "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+            }, require_reference_semantic_layout=True)
+
+    def test_material_scenes_request_nine_unique_three_second_videos(self):
+        payload = {
+            "top_text": "九宫格标题", "bottom_text": "评论区获取资料",
+            "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+            "duration": 12.0, "bgm": True,
+        }
+        scenes, count, hyperframes = self.service._material_scenes(payload)
+
+        self.assertEqual(9, count)
+        self.assertTrue(hyperframes)
+        self.assertEqual(9, len(scenes))
+        self.assertEqual({"video"}, {item["media_type"] for item in scenes})
+        self.assertEqual(
+            {3.0}, {item["clip_duration_seconds"] for item in scenes},
+        )
+
+    def test_prepare_clip_freezes_selected_window_and_adds_hidden_tail(self):
+        source = self.root / "source.mp4"
+        source.write_bytes(b"source")
+        destination = self.root / "prepared.mp4"
+        captured = {}
+
+        def run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"prepared" * 256)
+            return 0, b"", b""
+
+        with mock.patch.object(
+            self.service, "_run_tracked_process", side_effect=run,
+        ), mock.patch.object(
+            self.service, "_reference_video_duration", return_value=3.233,
+        ):
+            self.service._prepare_nine_grid_clip(
+                source, destination, 12.5, deadline_at=time.time() + 30,
+            )
+
+        command = captured["command"]
+        self.assertEqual("12.5", command[command.index("-ss") + 1])
+        self.assertEqual("3.233333", command[command.index("-t") + 1])
+        self.assertIn(
+            "trim=duration=3.000000", command[command.index("-vf") + 1]
+        )
+        self.assertIn(
+            "tpad=stop_mode=clone:stop_duration=0.233333",
+            command[command.index("-vf") + 1],
+        )
+        self.assertTrue(destination.is_file())
+
+    def test_render_uses_nine_clips_bound_bgm_and_pinned_cli(self):
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "想了解完整方法，评论区扣888"
+        with mock.patch.object(
+            self.service, "_nine_grid_text_width", side_effect=self.text_width,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+                "semantic_layout": self.semantic(top, bottom),
+                "bgm": True,
+            }, require_reference_semantic_layout=True)
+            payload = self.service._freeze_font_provenance("b" * 32, payload)
+        materials = [{
+            "scene_id": f"media_{index:02d}",
+            "record_id": f"record-{index}",
+            "sha256": format(index, "064x"),
+            "media_type": "video",
+            "match_level": "random",
+            "clip_id": format(index + 100, "064x"),
+            "clip_start_seconds": float(index),
+            "clip_duration_seconds": 3.0,
+            "clip_slot_index": 1,
+            "clip_slot_count": 1,
+        } for index in range(1, 10)]
+        paths = []
+        for index in range(1, 10):
+            path = self.root / f"source-{index}.mp4"
+            path.write_bytes(b"video")
+            paths.append(path)
+        prepared = []
+        captured = {}
+
+        def prepare(source, destination, start, **_kwargs):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"prepared" * 256)
+            prepared.append((source, destination, start))
+
+        class Process:
+            returncode = 0
+
+            def communicate(process_self, timeout=None):
+                output = Path(
+                    captured["command"][captured["command"].index("--output") + 1]
+                )
+                output.write_bytes(b"rendered" * 256)
+                return b"", b""
+
+        def popen(command, **_kwargs):
+            captured["command"] = command
+            return Process()
+
+        with mock.patch.object(
+            self.service, "_prepare_nine_grid_clip", side_effect=prepare,
+        ), mock.patch.object(
+            self.service, "_validate_reference_visual_coverage",
+        ), mock.patch.object(matrix.subprocess, "Popen", side_effect=popen):
+            variables = self.service._render_nine_grid(
+                payload, "b" * 32, materials, paths,
+                deadline_at=time.time() + 60,
+            )
+
+        self.assertEqual(9, len(prepared))
+        self.assertEqual(str(self.cli.resolve()), captured["command"][0])
+        self.assertEqual("assets/input/video-1.mp4", variables["main1"])
+        self.assertEqual("assets/input/video-5.mp4", variables["main2"])
+        self.assertEqual("assets/input/video-9.mp4", variables["main3"])
+        self.assertEqual(
+            self.bgm_hash, variables["_bound_bgm"]["sha256"],
         )
 
 
