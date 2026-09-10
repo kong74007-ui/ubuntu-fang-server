@@ -4093,5 +4093,82 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
             health["material_source_policy"],
         )
 
+    # 22：内容哈希跨崩溃恢复冻结
+    def test_content_hash_frozen_across_crash_recovery(self):
+        item = {
+            "scene_id": "media_02", "record_id": "pexels-video-1",
+            "sha256": "b" * 64, "source_identity": "b" * 64,
+            "media_type": "video", "provider": "pexels",
+            "source_url": "https://videos.pexels.com/x.mp4",
+        }
+        self.service.store.reserve_job_materials("j" * 32, [item], 1)
+        target = self.root / "dl"
+        target.mkdir()
+        # 首次下载：字节 A → 计算并持久化 content_sha256
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"first-bytes", "video/mp4")):
+            self.service._download_pexels(item, target)
+        first_hash = item["content_sha256"]
+        self.assertTrue(matrix.SHA_RE.fullmatch(first_hash))
+        self.service.store.update_material_content_sha256(
+            "j" * 32, "media_02", first_hash,
+        )
+        # 模拟重启：从 DB 读回冻结选择，content_sha256 必须还在
+        recovered = self.service.store.material_selection("j" * 32)["materials"][0]
+        self.assertEqual(first_hash, recovered["content_sha256"])
+        # 同一来源返回不同字节 → 明确失败，而不是接受第二次下载
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"other-bytes", "video/mp4")):
+            with self.assertRaises(matrix.MatrixTemplateError) as ctx:
+                self.service._download_pexels(recovered, target)
+            self.assertIn("发生变化", str(ctx.exception))
+
+    # 23：source_identity 与 content_sha256 语义区分
+    def test_manifest_source_identity_vs_content_sha256(self):
+        payload = self.service.validate_payload({
+            "top_text": "大健康行业", "bottom_text": "评论交流",
+        })
+        job, _ = self.service.store.create(
+            "manifest-1", payload,
+            freeze_payload=self.service._freeze_font_provenance,
+        )
+        pexels_item = {
+            "scene_id": "media_01", "record_id": "pexels-video-123",
+            "sha256": "c" * 64, "source_identity": "c" * 64,
+            "media_type": "video", "match_level": "pexels_china_query",
+            "clip_id": "d" * 64, "clip_start_seconds": 1.0,
+            "clip_duration_seconds": 2.5, "clip_slot_index": 1, "clip_slot_count": 1,
+            "provider": "pexels", "provider_video_id": 123,
+            "provider_file_id": 456, "provider_url": "https://www.pexels.com/video/123/",
+            "contributor_name": "作者", "contributor_url": "https://www.pexels.com/@a/",
+            "search_query": "中国城市生活",
+        }
+        materials = [pexels_item]
+        self.service.store.reserve_job_materials(job["job_id"], materials, 1)
+
+        def download(item, target):
+            item["content_sha256"] = "e" * 64  # 实际下载文件哈希，与 source_identity 不同
+            path = target / "0.mp4"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"asset")
+            return path
+
+        def render(project_path):
+            output = project_path.parent / "output/final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"video")
+
+        with mock.patch.object(self.service, "_select_materials", return_value=materials), \
+             mock.patch.object(self.service, "_download", side_effect=download), \
+             mock.patch.object(self.service, "_reference_video_duration", return_value=10.0), \
+             mock.patch.object(self.service, "_render", side_effect=render), \
+             mock.patch.object(self.service, "_probe",
+                               return_value={"duration": 7.0, "width": 1080, "height": 1920}):
+            result = self.service._execute(job["job_id"])
+        manifest = result["material_manifest"][0]
+        self.assertEqual("c" * 64, manifest["source_identity"])
+        self.assertEqual("e" * 64, manifest["content_sha256"])
+        self.assertNotEqual(manifest["source_identity"], manifest["content_sha256"])
+
 if __name__ == "__main__":
     unittest.main()

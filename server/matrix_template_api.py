@@ -1775,6 +1775,38 @@ class JobStore:
             reserve_batch=True,
         )
 
+    def update_material_content_sha256(
+        self, job_id: str, scene_id: str, content_sha256: str,
+    ) -> bool:
+        """原子持久化冻结选择中某片段的内容哈希；已有不同哈希时 fail closed。"""
+        digest = str(content_sha256 or "").lower()
+        if not SHA_RE.fullmatch(digest):
+            raise MatrixTemplateError("Pexels 内容哈希无效")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT materials FROM batch_material_selections WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if not row:
+                raise MatrixTemplateError("素材选择冻结缺失")
+            materials = json.loads(row["materials"])
+            for item in materials:
+                if str(item.get("scene_id") or "") != str(scene_id):
+                    continue
+                existing = str(item.get("content_sha256") or "").lower()
+                if existing:
+                    if existing != digest:
+                        raise MatrixTemplateError("Pexels 素材文件发生变化")
+                    return False
+                item["content_sha256"] = digest
+                db.execute(
+                    "UPDATE batch_material_selections SET materials=? WHERE job_id=?",
+                    (json.dumps(materials, ensure_ascii=False), job_id),
+                )
+                return True
+            raise MatrixTemplateError("素材选择冻结分镜缺失")
+
     def cleanup_candidates(self, *, now: int, retention_seconds: int,
                            delivery_grace_seconds: int, limit: int) -> list[sqlite3.Row]:
         with self.connect() as db:
@@ -3082,6 +3114,7 @@ class MatrixTemplateService:
                 "scene_id": scene["scene_id"],
                 "record_id": f"pexels-video-{video['id']}",
                 "sha256": source_id,
+                "source_identity": source_id,
                 "media_type": "video",
                 "match_level": "pexels_china_query",
                 "orientation": "portrait",
@@ -4033,7 +4066,15 @@ class MatrixTemplateService:
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
-        paths = [self._download(item, assets) for item in materials]
+        paths = []
+        for item in materials:
+            path = self._download(item, assets)
+            if item.get("provider") == "pexels" and item.get("content_sha256"):
+                self.store.update_material_content_sha256(
+                    job_id, str(item.get("scene_id") or ""),
+                    item["content_sha256"],
+                )
+            paths.append(path)
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         if reference_template:
@@ -4091,10 +4132,14 @@ class MatrixTemplateService:
             } if material_contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION else {}),
             "material_manifest": [{
                 "record_id": item.get("record_id"), "sha256": item.get("sha256"),
-                "content_sha256": item.get("content_sha256") or item.get("sha256"),
+                "content_sha256": (
+                    item.get("content_sha256")
+                    if item.get("provider") == "pexels" else item.get("sha256")
+                ),
                 "media_type": item.get("media_type"), "match_level": item.get("match_level"),
                 **({
                     "provider": "pexels",
+                    "source_identity": item.get("source_identity"),
                     "provider_video_id": item.get("provider_video_id"),
                     "provider_file_id": item.get("provider_file_id"),
                     "provider_url": item.get("provider_url"),
