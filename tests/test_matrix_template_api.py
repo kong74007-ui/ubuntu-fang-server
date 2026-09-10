@@ -70,7 +70,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "bottom_text": "评论区留下关键词",
             "template_id": "full-overlay-bold",
         })
-        self.assertEqual(8.0, payload["duration"])
+        self.assertEqual(7.0, payload["duration"])
         self.assertTrue(payload["bgm"])
         self.assertNotIn("font_family", payload)
         fonts = self.service.public_fonts()
@@ -981,7 +981,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         ]
         counter = iter(range(4))
 
-        def download(item, target):
+        def download(item, target, job_id=""):
             suffix = ".mp4" if item["media_type"] == "video" else ".jpg" if item["media_type"] == "image" else ".mp3"
             path = target / (str(next(counter)) + suffix)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1553,6 +1553,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
+                pexels_api_key="test-pexels-key",
                 start_worker=False,
             )
 
@@ -3046,6 +3047,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 style,
             )
         payload["_reference_template"]["duration"] = 8
+        payload["_reference_template"]["editing_plan"] = matrix._reference_editing_plan(
+            "f" * 32, payload["template_id"], matrix._required_visuals(8)
+        )
         materials = []
         paths = []
         for index in range(1, 4):
@@ -3687,6 +3691,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         payload = self.service._freeze_font_provenance("7" * 32, payload)
         payload["_reference_template"].pop("fixed_fonts")
         payload["_reference_template"].pop("editing_plan")
+        payload["_reference_template"]["duration"] = 8
         payload["_font_provenance"]["fonts"] = [
             item for item in payload["_font_provenance"]["fonts"]
             if item["source"] != "private"
@@ -3742,7 +3747,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         } for index in range(1, 4)]
         counter = iter(range(1, 4))
 
-        def download(_item, target):
+        def download(_item, target, job_id=""):
             path = target / f"{next(counter)}.mp4"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"video")
@@ -3854,6 +3859,10 @@ class NineGridTemplateTests(unittest.TestCase):
         ]
         schema = html.escape(json.dumps(variables), quote=True)
         videos = "\n".join(
+            f'<video id="grid-video{index}" data-var-src="grid{index}" '
+            f'src="grid-{index}.mp4"></video>'
+            for index in range(1, 10)
+        ) + "\n" + "\n".join(
             f'<video id="main-video{index}" data-var-src="main{index}" '
             f'data-media-start="0" src="main-{index}.mp4"></video>'
             for index in range(1, 4)
@@ -3863,7 +3872,7 @@ class NineGridTemplateTests(unittest.TestCase):
             '<div id="root" data-composition-id="nine-grid-reveal">'
             '<span id="top-text" data-var-text="top_text">顶部标题</span>'
             '<div id="tagline" data-var-text="bottom_text">底部行动</div>'
-            f'{videos}<audio id="bgm" '
+            f'{videos}<audio id="bgm" data-volume="1" '
             'src="assets/audio/reference-bgm.m4a"></audio></div>'
             '</body></html>',
             encoding="utf-8",
@@ -3923,6 +3932,7 @@ class NineGridTemplateTests(unittest.TestCase):
         self.assertEqual("fixed_12", template["duration_mode"])
         self.assertEqual(9, template["required_visuals"])
         self.assertEqual("bound", template["bgm_mode"])
+        self.assertTrue(template["bgm_optional"])
         top = "团队8个人，每天产出100条短视频"
         bottom = "想了解完整方法，评论区扣888"
         with mock.patch.object(
@@ -3947,6 +3957,35 @@ class NineGridTemplateTests(unittest.TestCase):
             "template-locked",
             frozen["_font_provenance"]["selection"]["variant"],
         )
+        self.assertTrue(frozen["_nine_grid_template"]["bgm_enabled"])
+
+    def test_bgm_false_is_frozen_and_rewrites_bound_track_to_silence(self):
+        top = "九宫格标题"
+        bottom = "评论区获取资料"
+        with mock.patch.object(
+            self.service, "_nine_grid_text_width", side_effect=self.text_width,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+                "semantic_layout": self.semantic(top, bottom),
+                "bgm": False,
+            }, require_reference_semantic_layout=True)
+            frozen = self.service._freeze_font_provenance(
+                "c" * 32, payload,
+            )
+        source = (
+            '<audio id="bgm" data-volume="1" '
+            'src="assets/audio/reference-bgm.m4a"></audio>'
+        )
+
+        rewritten = self.service._rewrite_nine_grid_bgm(source, False)
+
+        self.assertFalse(payload["bgm"])
+        self.assertFalse(frozen["_nine_grid_template"]["bgm_enabled"])
+        self.assertIn('data-volume="0"', rewritten)
+        self.assertNotIn('data-volume="1"', rewritten)
 
     def test_new_nine_grid_job_requires_ai_semantic_layout(self):
         with self.assertRaisesRegex(ValueError, "必须提供 AI 语义排版"):
@@ -3971,6 +4010,41 @@ class NineGridTemplateTests(unittest.TestCase):
         self.assertEqual(
             {3.0}, {item["clip_duration_seconds"] for item in scenes},
         )
+
+    def test_nine_grid_uses_only_owned_library_when_pexels_is_configured(self):
+        payload = {
+            "top_text": "九宫格标题", "bottom_text": "评论区获取资料",
+            "template_id": matrix.NINE_GRID_TEMPLATE_ID,
+            "duration": 12.0, "bgm": True,
+            "_material_selection_contract_version": 2,
+        }
+        materials = [{
+            "scene_id": f"media_{index:02d}",
+            "record_id": f"record-{index}",
+            "sha256": format(index, "064x"),
+            "media_type": "video", "match_level": "random",
+            "clip_id": format(index + 100, "064x"),
+            "clip_start_seconds": float(index),
+            "clip_duration_seconds": 3.0,
+            "clip_slot_index": 1, "clip_slot_count": 1,
+        } for index in range(1, 10)]
+        response = {
+            "materials": materials,
+            "selection_contract_version": 2,
+            "clip_contract_version": 1,
+        }
+        with mock.patch.object(
+            self.service, "_library_request", return_value=response,
+        ) as library, mock.patch.object(
+            self.service, "_select_pexels_materials",
+            side_effect=AssertionError("nine-grid must not use Pexels"),
+        ):
+            selected = self.service._select_materials_once(
+                payload, "d" * 32,
+            )
+
+        self.assertEqual(materials, selected)
+        self.assertEqual(9, len(library.call_args.args[2]["scenes"]))
 
     def test_prepare_clip_freezes_selected_window_and_adds_hidden_tail(self):
         source = self.root / "source.mp4"
@@ -4015,7 +4089,7 @@ class NineGridTemplateTests(unittest.TestCase):
                 "bottom_text": bottom,
                 "template_id": matrix.NINE_GRID_TEMPLATE_ID,
                 "semantic_layout": self.semantic(top, bottom),
-                "bgm": True,
+                "bgm": False,
             }, require_reference_semantic_layout=True)
             payload = self.service._freeze_font_provenance("b" * 32, payload)
         materials = [{
@@ -4075,7 +4149,392 @@ class NineGridTemplateTests(unittest.TestCase):
         self.assertEqual(
             self.bgm_hash, variables["_bound_bgm"]["sha256"],
         )
+        self.assertFalse(variables["_bound_bgm"]["enabled"])
+        index = (
+            self.service.data_root / ("b" * 32)
+            / "hyperframes-nine-grid/index.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('data-volume="0"', index)
+        self.assertNotIn('src="grid-', index)
+        self.assertNotIn('src="main-', index)
+        self.assertEqual(2, index.count('src="assets/input/video-1.mp4"'))
+        self.assertEqual(2, index.count('src="assets/input/video-5.mp4"'))
+        self.assertEqual(2, index.count('src="assets/input/video-9.mp4"'))
 
 
+class PexelsMaterialRoutingTests(unittest.TestCase):
+    """Pexels 中国场景混合素材路由回归测试。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        (self.skill / "assets/templates").mkdir(parents=True)
+        font_root = self.skill / "assets/fonts"
+        font_root.mkdir()
+        bundled = []
+        for index, family in enumerate(sorted(matrix.BASE_FONT_FAMILIES)):
+            path = font_root / f"base-{index}.ttf"
+            path.write_bytes(family.encode("utf-8"))
+            bundled.append({
+                "family": family, "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (font_root / "sources.json").write_text(
+            json.dumps({"fonts": bundled}), encoding="utf-8",
+        )
+        (self.skill / "scripts").mkdir()
+        templates = [{
+            "id": template_id, "name": f"模板 {index}",
+            "description": "测试模板", "tags": ["测试"], "layout": {}, "render": {},
+        } for index, template_id in enumerate(("full-overlay-bold", "poster-split"))]
+        (self.skill / "assets/templates/catalog.json").write_text(
+            json.dumps({"version": 1, "templates": templates}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.skill / "scripts/render_video.py").write_text("# fixture\n", encoding="utf-8")
+        self.service = matrix.MatrixTemplateService(
+            data_root=self.root / "data",
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            pexels_api_key="test-pexels-key",
+            start_worker=False,
+        )
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.temp.cleanup()
+
+    @staticmethod
+    def _pexels_video(video_id, file_id=0, duration=10.0, width=1080, height=1920,
+                      quality="hd"):
+        return {
+            "id": video_id,
+            "duration": duration,
+            "url": f"https://www.pexels.com/video/sample-{video_id}/",
+            "user": {"name": f"作者{video_id}", "url": f"https://www.pexels.com/@a{video_id}/"},
+            "video_files": [{
+                "id": file_id or video_id * 10,
+                "file_type": "video/mp4",
+                "width": width, "height": height, "quality": quality,
+                "link": f"https://videos.pexels.com/video-files/{video_id}/x.mp4",
+            }],
+        }
+
+    def _response(self, body=b"{}", content_type="application/json"):
+        class _Headers:
+            def get_content_type(self):
+                return content_type
+        class _Resp:
+            def __init__(self):
+                self.headers = _Headers()
+                self._buf = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, _n=-1):
+                data = self._buf
+                self._buf = b""
+                return data
+        return _Resp()
+
+    # 1-8：来源顺序与片段数量
+    def test_source_plan_3_4_5_clips(self):
+        self.assertEqual(
+            ("huangque", "pexels", "pexels"), matrix._material_source_plan(3),
+        )
+        self.assertEqual(
+            ("huangque", "pexels", "pexels", "huangque"),
+            matrix._material_source_plan(4),
+        )
+        self.assertEqual(
+            ("huangque", "pexels", "pexels", "pexels", "huangque"),
+            matrix._material_source_plan(5),
+        )
+
+    def test_never_six_clips(self):
+        with self.assertRaises(matrix.MatrixTemplateError):
+            matrix._material_source_plan(6)
+        self.assertLessEqual(matrix._required_visuals(15.0), 5)
+        self.assertGreaterEqual(matrix._required_visuals(7.0), 3)
+
+    def test_clip_duration_2_to_3_seconds(self):
+        for duration in (7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0):
+            count = matrix._required_visuals(duration)
+            segment = duration / count
+            self.assertTrue(
+                matrix.REFERENCE_MIN_SEGMENT_SECONDS <= segment
+                <= matrix.REFERENCE_MAX_SEGMENT_SECONDS,
+                (duration, count, segment),
+            )
+
+    def test_first_clip_always_huangque(self):
+        for count in (3, 4, 5):
+            self.assertEqual("huangque", matrix._material_source_plan(count)[0])
+
+    def test_last_clip_3_pexels_45_huangque(self):
+        self.assertEqual("pexels", matrix._material_source_plan(3)[-1])
+        self.assertEqual("huangque", matrix._material_source_plan(4)[-1])
+        self.assertEqual("huangque", matrix._material_source_plan(5)[-1])
+
+    # 9：BGM 始终来自黄雀
+    def test_bgm_always_huangque(self):
+        payload = self.service.validate_payload({
+            "top_text": "大健康行业", "bottom_text": "评论交流", "bgm": True,
+        })
+        library_scenes = []
+        def fake_library(method, path, body):
+            library_scenes.append(body.get("scenes") or [])
+            return {"materials": [], "selection_contract_version": 1,
+                    "clip_contract_version": 1}
+        pexels_scenes = []
+        def fake_pexels(scenes, job_id, used_sha256=()):
+            pexels_scenes.extend(scenes)
+            return []
+        with mock.patch.object(self.service, "_library_request", side_effect=fake_library), \
+             mock.patch.object(self.service, "_select_pexels_materials", side_effect=fake_pexels), \
+             mock.patch.object(self.service, "_validate_material_selection",
+                               side_effect=lambda p, v, c: v):
+            self.service._select_materials_once(payload, "a" * 32)
+        library_scene_ids = {s["scene_id"] for group in library_scenes for s in group}
+        pexels_scene_ids = {s["scene_id"] for s in pexels_scenes}
+        self.assertIn("bgm", library_scene_ids)
+        self.assertNotIn("bgm", pexels_scene_ids)
+
+    # 10：Pexels 请求参数
+    def test_pexels_search_uses_locale_portrait_medium(self):
+        captured = {}
+        def fake_urlopen(request, timeout=None):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.headers)
+            return self._response(json.dumps({"videos": []}).encode())
+        with mock.patch.object(matrix.urllib.request, "urlopen", side_effect=fake_urlopen):
+            self.service._pexels_search("中国城市生活")
+        self.assertIn("orientation=portrait", captured["url"])
+        self.assertIn("size=medium", captured["url"])
+        self.assertIn("locale=zh-CN", captured["url"])
+        self.assertIn("per_page=80", captured["url"])
+        self.assertEqual("test-pexels-key", captured["headers"].get("Authorization"))
+
+    # 11：顾客文案不作为搜索词
+    def test_query_not_from_customer_copy(self):
+        for job_id in ("a" * 32, "b" * 32, "c" * 32):
+            query = matrix.MatrixTemplateService._pexels_search_query(job_id)
+            self.assertIn(query, matrix.PEXELS_CHINA_QUERIES)
+        self.assertNotIn("大健康", matrix.PEXELS_CHINA_QUERIES)
+
+    # 12-13：去重
+    def test_same_job_no_duplicate_pexels_id(self):
+        def fake_search(query):
+            return {"videos": [self._pexels_video(i) for i in range(1, 12)]}
+        scenes = [{"scene_id": f"m{i}", "clip_duration_seconds": 2.5} for i in range(3)]
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            selected = self.service._select_pexels_materials(scenes, "a" * 32)
+        ids = [item["provider_video_id"] for item in selected]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_batch_no_duplicate_pexels_id(self):
+        def fake_search(query):
+            return {"videos": [self._pexels_video(i) for i in range(1, 20)]}
+        scenes = [{"scene_id": f"m{i}", "clip_duration_seconds": 2.5} for i in range(5)]
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            first = self.service._select_pexels_materials(scenes, "b" * 32)
+        used = [item["sha256"] for item in first]
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            second = self.service._select_pexels_materials(
+                scenes, "c" * 32, used_sha256=used,
+            )
+        first_ids = {item["provider_video_id"] for item in first}
+        second_ids = {item["provider_video_id"] for item in second}
+        self.assertFalse(first_ids & second_ids)
+
+    # 14：重试复用冻结结果（确定性）
+    def test_retry_reuses_frozen(self):
+        def fake_search(query):
+            return {"videos": [self._pexels_video(i) for i in range(1, 15)]}
+        scenes = [{"scene_id": f"m{i}", "clip_duration_seconds": 2.5} for i in range(3)]
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            first = self.service._select_pexels_materials(scenes, "d" * 32)
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            second = self.service._select_pexels_materials(scenes, "d" * 32)
+        self.assertEqual(
+            [item["provider_video_id"] for item in first],
+            [item["provider_video_id"] for item in second],
+        )
+
+    # 15：搜索缓存 24 小时
+    def test_search_cache_24h(self):
+        calls = []
+        def fake_urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            return self._response(json.dumps({"videos": []}).encode())
+        with mock.patch.object(matrix.urllib.request, "urlopen", side_effect=fake_urlopen):
+            self.service._pexels_search("中国商务团队")
+            self.service._pexels_search("中国商务团队")
+        self.assertEqual(1, len(calls))
+        cache_dir = self.service.data_root / ".pexels-search-cache"
+        self.assertTrue(any(cache_dir.iterdir()))
+
+    # 16：401/429/超时/无效 JSON 失败
+    def test_pexels_failures(self):
+        def urlopen_401(*a, **k):
+            raise urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+        with mock.patch.object(matrix.urllib.request, "urlopen", side_effect=urlopen_401):
+            with self.assertRaises(matrix.MatrixTemplateError) as ctx:
+                self.service._pexels_search("中国城市生活")
+            self.assertIn("密钥无效", str(ctx.exception))
+
+        def urlopen_429(*a, **k):
+            raise urllib.error.HTTPError("url", 429, "Too Many", {}, None)
+        with mock.patch.object(matrix.urllib.request, "urlopen", side_effect=urlopen_429):
+            with self.assertRaises(matrix.MatrixTemplateError) as ctx:
+                self.service._pexels_search("中国城市生活")
+            self.assertIn("额度已用完", str(ctx.exception))
+
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("timeout")):
+            with self.assertRaises(matrix.MatrixTemplateError):
+                self.service._pexels_search("中国城市生活")
+
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"not-json")):
+            with self.assertRaises(matrix.MatrixTemplateError):
+                self.service._pexels_search("中国城市生活")
+
+    # 17：素材不足失败，不回退黄雀
+    def test_insufficient_no_fallback(self):
+        def fake_search(query):
+            return {"videos": [self._pexels_video(1, duration=1.0)]}
+        scenes = [{"scene_id": f"m{i}", "clip_duration_seconds": 2.5} for i in range(3)]
+        with mock.patch.object(self.service, "_pexels_search", side_effect=fake_search):
+            with self.assertRaises(matrix.MatrixTemplateError) as ctx:
+                self.service._select_pexels_materials(scenes, "e" * 32)
+            self.assertIn("素材不足", str(ctx.exception))
+
+    # 18：下载类型/大小/SHA 检查
+    def test_download_checks(self):
+        item = {"sha256": "a" * 64, "source_url": "https://videos.pexels.com/x.mp4"}
+        target = self.root / "dl"
+        target.mkdir()
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"x", "text/html")):
+            with self.assertRaises(matrix.MatrixTemplateError):
+                self.service._download_pexels(item, target)
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"", "video/mp4")):
+            with self.assertRaises(matrix.MatrixTemplateError):
+                self.service._download_pexels(item, target)
+        payload = b"fake-mp4-content"
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(payload, "video/mp4")):
+            path = self.service._download_pexels(item, target)
+        self.assertTrue(path.exists())
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), item["content_sha256"])
+
+    # 19：密钥不进入结果与日志
+    def test_key_not_in_result_or_logs(self):
+        with mock.patch.object(self.service, "require_library_ready", return_value={
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 1,
+        }):
+            health = self.service.health()
+        self.assertNotIn("test-pexels-key", json.dumps(health, ensure_ascii=False))
+
+    # 20：安装器在修改服务前检查 pexels.env
+    def test_installer_requires_pexels_env(self):
+        install = (Path(__file__).resolve().parents[1]
+                   / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
+        self.assertIn("PEXELS_ENV_FILE", install)
+        self.assertIn("root:admin", install)
+        self.assertIn("640", install)
+        self.assertIn("PEXELS_API_KEY", install)
+        self.assertLess(install.index("PEXELS_ENV_FILE"), install.index("systemctl"))
+
+    # 21：部署健康门禁检查新字段
+    def test_health_gate_fields(self):
+        with mock.patch.object(self.service, "require_library_ready", return_value={
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 1,
+        }):
+            health = self.service.health()
+        self.assertIs(health["pexels_material_ready"], True)
+        self.assertEqual(
+            "huangque-bookends-pexels-middle-v1",
+            health["material_source_policy"],
+        )
+
+    # 22：内容哈希跨崩溃恢复冻结
+    def test_content_hash_frozen_across_crash_recovery(self):
+        item = {
+            "scene_id": "media_02", "record_id": "pexels-video-1",
+            "sha256": "b" * 64, "source_identity": "b" * 64,
+            "media_type": "video", "provider": "pexels",
+            "source_url": "https://videos.pexels.com/x.mp4",
+        }
+        self.service.store.reserve_job_materials("j" * 32, [item], 1)
+        target = self.root / "dl"
+        target.mkdir()
+        # 首次下载：持久化在 _download_pexels 内部完成（无调用方后续更新）
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"first-bytes", "video/mp4")):
+            self.service._download_pexels(item, target, job_id="j" * 32)
+        first_hash = item["content_sha256"]
+        self.assertTrue(matrix.SHA_RE.fullmatch(first_hash))
+        # 模拟进程退出后重启：从 DB 读回冻结选择，content_sha256 必须已持久化
+        recovered = self.service.store.material_selection("j" * 32)["materials"][0]
+        self.assertEqual(first_hash, recovered["content_sha256"])
+        # 同一来源返回不同字节 → fail closed，而不是接受第二次下载
+        with mock.patch.object(matrix.urllib.request, "urlopen",
+                               return_value=self._response(b"other-bytes", "video/mp4")):
+            with self.assertRaises(matrix.MatrixTemplateError) as ctx:
+                self.service._download_pexels(recovered, target, job_id="j" * 32)
+            self.assertIn("发生变化", str(ctx.exception))
+
+    # 23：source_identity 与 content_sha256 语义区分
+    def test_manifest_source_identity_vs_content_sha256(self):
+        payload = self.service.validate_payload({
+            "top_text": "大健康行业", "bottom_text": "评论交流",
+        })
+        job, _ = self.service.store.create(
+            "manifest-1", payload,
+            freeze_payload=self.service._freeze_font_provenance,
+        )
+        pexels_item = {
+            "scene_id": "media_01", "record_id": "pexels-video-123",
+            "sha256": "c" * 64, "source_identity": "c" * 64,
+            "media_type": "video", "match_level": "pexels_china_query",
+            "clip_id": "d" * 64, "clip_start_seconds": 1.0,
+            "clip_duration_seconds": 2.5, "clip_slot_index": 1, "clip_slot_count": 1,
+            "provider": "pexels", "provider_video_id": 123,
+            "provider_file_id": 456, "provider_url": "https://www.pexels.com/video/123/",
+            "contributor_name": "作者", "contributor_url": "https://www.pexels.com/@a/",
+            "search_query": "中国城市生活",
+        }
+        materials = [pexels_item]
+        self.service.store.reserve_job_materials(job["job_id"], materials, 1)
+
+        def download(item, target, job_id=""):
+            item["content_sha256"] = "e" * 64  # 实际下载文件哈希，与 source_identity 不同
+            path = target / "0.mp4"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"asset")
+            return path
+
+        def render(project_path):
+            output = project_path.parent / "output/final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"video")
+
+        with mock.patch.object(self.service, "_select_materials", return_value=materials), \
+             mock.patch.object(self.service, "_download", side_effect=download), \
+             mock.patch.object(self.service, "_reference_video_duration", return_value=10.0), \
+             mock.patch.object(self.service, "_render", side_effect=render), \
+             mock.patch.object(self.service, "_probe",
+                               return_value={"duration": 7.0, "width": 1080, "height": 1920}):
+            result = self.service._execute(job["job_id"])
+        manifest = result["material_manifest"][0]
+        self.assertEqual("c" * 64, manifest["source_identity"])
+        self.assertEqual("e" * 64, manifest["content_sha256"])
+        self.assertNotEqual(manifest["source_identity"], manifest["content_sha256"])
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ OVERRIDE_STYLE = f"""<style id="{STYLE_ID}">
 #headline{{left:54px;right:54px;top:154px;min-height:116px;max-height:340px;gap:8px;text-align:center;font-size:var(--top-font-size,82px);line-height:1.08}}
 #top-text{{display:block;max-width:800px;white-space:pre;overflow-wrap:normal;word-break:keep-all;letter-spacing:0}}
 #tagline{{left:55px;right:55px;top:auto;bottom:220px;height:auto;max-height:250px;display:block;text-align:center;white-space:pre;overflow-wrap:normal;word-break:keep-all;font-size:var(--bottom-font-size,58px);line-height:1.12;letter-spacing:0}}
+#main-video1{{will-change:filter}}
 </style>"""
 
 
@@ -120,6 +121,39 @@ def adapt(root: Path) -> None:
         '<div id="tagline" data-var-text="bottom_text">'
         '评论区留下关键词，领取完整方案</div>',
         "bottom copy binding",
+    )
+    main_pattern = re.compile(
+        r'<video\b(?=[^>]*\bid="main-video1")[^>]*>'
+    )
+    main_matches = list(main_pattern.finditer(source))
+    if len(main_matches) != 1:
+        raise ValueError("nine-grid main impact source contract changed")
+    main_tag = main_matches[0].group(0)
+    main_tag, grading_count = re.subn(
+        r'\sdata-color-grading="[^"]*"', "", main_tag, count=1,
+    )
+    main_tag, style_count = re.subn(
+        r'\sstyle="--hf-color-grading-blur:0\.1"', "", main_tag, count=1,
+    )
+    if grading_count != 1 or style_count != 1:
+        raise ValueError("nine-grid WebGL impact source contract changed")
+    source = (
+        source[:main_matches[0].start()] + main_tag
+        + source[main_matches[0].end():]
+    )
+    source = replace_once(
+        source,
+        "tl.set('#main-video1',{'--hf-color-grading-blur':0},97/30);",
+        "tl.set('#main-video1',{filter:'blur(10px)'},96/30);\n"
+        " tl.set('#main-video1',{filter:'blur(0px)'},97/30);",
+        "impact blur timeline",
+    )
+    source = replace_once(
+        source,
+        '<div id="main1-visual" class="main-visual">',
+        '<div id="main1-visual" class="main-visual" '
+        'data-layout-allow-overflow>',
+        "intentional impact overflow",
     )
     if STYLE_ID in source or source.count("</head>") != 1:
         raise ValueError("nine-grid style insertion contract changed")

@@ -25,7 +25,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
         self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"', installer)
-        self.assertIn('NINE_GRID_ADAPTER_SHA256="45aad0e7f0af0d4a8dfa5b32effdccc8985c33e9f7dfa9e8842a5ea1349a9850"', installer)
+        self.assertIn('NINE_GRID_ADAPTER_SHA256="d52a6435a9256f92c8b23931c3f37ca095d4d3db0cfaaa06dd1c17f58c1314f8"', installer)
+        self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
+        self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
         self.assertIn(
             'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
             installer,
@@ -103,12 +105,43 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS=900", installer)
         self.assertIn("MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE=10", installer)
         self.assertIn("MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT=95", installer)
-        self.assertIn('"hyperframes@${NINE_GRID_HYPERFRAMES_VERSION}"', installer)
+        self.assertIn('"${NODE_NPM}" ci', installer)
+        self.assertIn('"${NODE_NPM}" ls', installer)
+        self.assertIn('--ignore-scripts --no-audit --no-fund', installer)
+
+    def test_nine_grid_runtime_lock_is_complete_and_integrity_pinned(self):
+        root = ROOT / "deploy/matrix-template-video/nine-grid-runtime"
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        lock_path = root / "package-lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        self.assertEqual("0.8.33", package["dependencies"]["hyperframes"])
+        self.assertEqual(3, lock["lockfileVersion"])
+        self.assertEqual(
+            {"hyperframes": "0.8.33"}, lock["packages"][""]["dependencies"],
+        )
+        self.assertEqual(
+            "0.8.33", lock["packages"]["node_modules/hyperframes"]["version"],
+        )
+        registry_packages = [
+            item for key, item in lock["packages"].items()
+            if key and isinstance(item, dict)
+            and str(item.get("resolved") or "").startswith("https://registry.npmjs.org/")
+        ]
+        self.assertTrue(registry_packages)
+        self.assertTrue(all(item.get("integrity") for item in registry_packages))
+        self.assertEqual(
+            "6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216",
+            hashlib.sha256((root / "package.json").read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            "df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84",
+            hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        )
 
     def test_nine_grid_adapter_rewrites_copy_and_fullscreen_contract(self):
         path = ROOT / "deploy/matrix-template-video/prepare-nine-grid-template.py"
         self.assertEqual(
-            "45aad0e7f0af0d4a8dfa5b32effdccc8985c33e9f7dfa9e8842a5ea1349a9850",
+            "d52a6435a9256f92c8b23931c3f37ca095d4d3db0cfaaa06dd1c17f58c1314f8",
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         spec = importlib.util.spec_from_file_location(
@@ -126,14 +159,29 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             ]
             schema = html.escape(json.dumps(variables), quote=True)
             videos = "".join(
-                f'<video id="main-video{index}" data-media-start="{value}"></video>'
+                f'<video id="main-video{index}" data-media-start="{value}"'
+                + (
+                    ' data-color-grading="{}" '
+                    'style="--hf-color-grading-blur:0.1"'
+                    if index == 1 else ""
+                )
+                + '></video>'
                 for index, value in enumerate((3.2, 2, 2), 1)
             )
+            videos = videos.replace(
+                '<video id="main-video1"',
+                '<div id="main1-visual" class="main-visual">'
+                '<video id="main-video1"',
+                1,
+            ).replace("</video>", "</video></div>", 1)
             (root / "index.html").write_text(
                 f'<html data-composition-variables="{schema}"><head></head><body>'
                 '<span id="title" data-var-text="title">输入公司名称</span>'
                 '<div id="tagline" data-var-text="tagline">'
-                f'品质｜细节｜诚信｜口碑</div>{videos}</body></html>',
+                f'品质｜细节｜诚信｜口碑</div>{videos}'
+                "<script>tl.set('#main-video1',"
+                "{'--hf-color-grading-blur':0},97/30);</script>"
+                "</body></html>",
                 encoding="utf-8",
             )
             (root / "template.json").write_text(json.dumps({
@@ -162,6 +210,10 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             self.assertIn('data-var-text="bottom_text"', index)
             self.assertIn('id="matrix-nine-grid-copy-layout"', index)
             self.assertEqual(3, index.count('data-media-start="0"'))
+            self.assertNotIn("data-color-grading", index)
+            self.assertNotIn("--hf-color-grading-blur", index)
+            self.assertIn("filter:'blur(10px)'", index)
+            self.assertIn("data-layout-allow-overflow", index)
 
     def test_reference_patch_is_hash_locked_and_sets_all_top_offsets_to_eight_percent(self):
         patch_path = (

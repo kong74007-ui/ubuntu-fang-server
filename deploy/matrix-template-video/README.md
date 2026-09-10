@@ -7,8 +7,12 @@ tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
 The runtime exposes 19 templates: two generation-server-owned FFmpeg layouts
 and the 17-template `reference-typography-17` HyperFrames pack. HyperFrames
-templates use three to five distinct approved video assets, keeping every
-visible material clip between two and three seconds. They render with
+templates use three to five distinct video assets, keeping every visible
+material clip between two and three seconds. A three-clip output takes its
+opening clip from the approved Huangque library and its two remaining clips
+from the Pexels China-oriented search pool. Four- and five-clip outputs take
+their opening and closing clips from Huangque and all middle clips from Pexels.
+They render with
 HyperFrames `0.8.16` and run at most two concurrent renders on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these 17 templates; the two
@@ -99,13 +103,27 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 `MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS`, `MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS`,
 `MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE`, and `MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT`.
 
-## Batch material diversity
+## Hybrid material routing and batch diversity
 
-Matrix template jobs request `selection_mode=round_robin` for every visual and
-BGM scene. Copy relevance no longer affects material ranking. Source-scene and
-exact-asset cooldowns rotate healthy assets before count and stable-seed
-tie-breaking. The material library persists selection counts and clip windows
-before returning and verifies selected files against the approved checksum.
+Output duration is frozen between 7 and 15 seconds. It produces three to five
+clips and never produces a sixth clip. Pexels requests use a fixed Chinese
+scene-query bank with `locale=zh-CN`, `orientation=portrait`, and `size=medium`.
+Pexels does not expose a capture-country field, so this is a China-oriented
+best-effort search policy rather than a country guarantee. It does not inspect
+frames or use AI matching. Configure the credential only in
+`/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Search responses
+are cached for 24 hours to respect provider limits. Completed job provenance
+includes the Pexels video/file ids, contributor and source URLs, query, stable
+source identity, and downloaded content SHA-256 for attribution and audit.
+
+Matrix template jobs request `selection_mode=round_robin` for every Huangque
+visual and BGM scene. Copy relevance does not affect Huangque ranking. The
+Pexels middle-clip pool uses a stable job seed over the China-oriented search
+response and also ignores the customer copy. Source-scene and exact-asset
+cooldowns rotate healthy Huangque assets before count and stable-seed
+tie-breaking. The Huangque material library persists selection counts and clip
+windows before returning and verifies selected files against the approved
+checksum.
 
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
 `batch_size` (1-5). Material selection is serialized briefly while job
