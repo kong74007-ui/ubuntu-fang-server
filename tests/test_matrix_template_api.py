@@ -2791,6 +2791,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
 
     def test_reference_timeline_expands_to_five_video_slots(self):
         html = """
+<html data-composition-variables="[{&quot;id&quot;:&quot;videoA&quot;,&quot;type&quot;:&quot;string&quot;},{&quot;id&quot;:&quot;videoB&quot;,&quot;type&quot;:&quot;string&quot;},{&quot;id&quot;:&quot;videoC&quot;,&quot;type&quot;:&quot;string&quot;},{&quot;id&quot;:&quot;bgm&quot;,&quot;type&quot;:&quot;string&quot;}]">
 <video data-hf-id="a" id="videoA" data-start="0" data-duration="1" data-var-src="videoA" src="a.mp4"></video>
 <video data-hf-id="b" id="videoB" data-start="1" data-duration="1" data-var-src="videoB" src="b.mp4"></video>
 <video data-hf-id="c" id="videoC" data-start="2" data-duration="1" data-var-src="videoC" src="c.mp4"></video>
@@ -2806,6 +2807,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         document.getElementById("videoC")
       ];
 </script>
+</html>
 """
         sources = [f"assets/input/video-{index}.mp4" for index in range(1, 6)]
 
@@ -2821,6 +2823,8 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn('src="assets/input/video-4.mp4"', rendered)
         self.assertIn('src="assets/input/video-5.mp4"', rendered)
         self.assertNotRegex(rendered, r'id="video[DE]"[^>]*data-var-src')
+        self.assertEqual(1, rendered.count('&quot;id&quot;:&quot;videoD&quot;'))
+        self.assertEqual(1, rendered.count('&quot;id&quot;:&quot;videoE&quot;'))
         self.assertEqual(5, rendered.count('document.getElementById("video'))
         self.assertIn(
             "const segmentDurations = [2.8, 2.8, 2.8, 2.8, 2.8];",

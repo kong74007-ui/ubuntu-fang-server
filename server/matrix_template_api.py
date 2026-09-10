@@ -1418,6 +1418,22 @@ def _expand_reference_video_slots(html: str, video_sources: list[str]) -> str:
         html[:matches[0].end()] + "\n      "
         + "\n      ".join(additions) + html[matches[0].end():]
     )
+    variable_anchor = re.compile(
+        r'\{&quot;id&quot;:&quot;videoC&quot;.*?&quot;\},'
+    )
+    anchors = list(variable_anchor.finditer(html))
+    if len(anchors) != 1:
+        raise MatrixTemplateError("HyperFrames 模板视频变量声明发生变化")
+    extra_variables = "".join(
+        '{&quot;id&quot;:&quot;%s&quot;,&quot;type&quot;:&quot;string&quot;,'
+        '&quot;label&quot;:&quot;素材%s&quot;,'
+        '&quot;default&quot;:&quot;assets/library/default-a.mp4&quot;},'
+        % (element_id, element_id[-1].upper())
+        for element_id in video_ids[3:]
+    )
+    html = (
+        html[:anchors[0].end()] + extra_variables + html[anchors[0].end():]
+    )
     array_pattern = re.compile(
         r'(?ms)^      const videos = \[\n.*?^      \];'
     )
