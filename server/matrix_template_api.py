@@ -4321,7 +4321,7 @@ class MatrixTemplateService:
                 "orientation_match": "same",
                 "clip_id": clip_id,
                 "clip_start_seconds": start,
-                "clip_duration_seconds": round(required_duration, 3),
+                "clip_duration_seconds": required_duration,
                 "clip_slot_index": 1,
                 "clip_slot_count": 1,
                 "provider": "pexels",

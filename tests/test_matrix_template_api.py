@@ -5049,6 +5049,22 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         ids = [item["provider_video_id"] for item in selected]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_pexels_receipt_preserves_frame_exact_clip_duration(self):
+        duration = 82 / 30
+
+        def fake_search(_query):
+            return {"videos": [self._pexels_video(1)]}
+
+        with mock.patch.object(
+            self.service, "_pexels_search", side_effect=fake_search,
+        ):
+            selected = self.service._select_pexels_materials([{
+                "scene_id": "frame-exact",
+                "clip_duration_seconds": duration,
+            }], "f" * 32)
+
+        self.assertEqual(duration, selected[0]["clip_duration_seconds"])
+
     def test_batch_no_duplicate_pexels_id(self):
         def fake_search(query):
             return {"videos": [self._pexels_video(i) for i in range(1, 20)]}
