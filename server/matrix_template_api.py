@@ -5770,8 +5770,10 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#ctaLine1,#ctaLine2{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
-.subtitle-box{{height:315px!important}}
-.footer{{top:1180px!important;height:558px!important}}
+.title-box{{top:8%!important}}
+.underline{{top:376px!important}}
+.subtitle-box{{top:424px!important;height:315px!important}}
+.footer{{top:auto!important;bottom:15%!important;height:558px!important}}
 .footer-row{{height:275px!important}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1!important}}
 #subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.05!important}}
@@ -5789,8 +5791,10 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty,#sourceLabel:empty,.body-panel:has(#body:empty),.footer:has(#cta:empty){{display:none!important}}
 .background{{filter:blur(14px)!important;transform:scale(1.08)!important}}
-.subtitles{{height:200px!important}}
-.body-panel{{top:1290px!important;height:260px!important}}
+.banner{{top:8%!important}}
+.subtitles{{top:313px!important;height:200px!important}}
+.body-panel{{top:1250px!important;height:260px!important}}
+.footer{{top:auto!important;bottom:15%!important}}
 #title,#subtitle1,#subtitle2,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1.05!important}}
 #subtitle1{{font-size:{sizes["subtitle1"]}px!important;line-height:1!important}}
@@ -5802,6 +5806,8 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+.top,#copy-top{{top:8%!important}}
+#cta{{bottom:15%!important}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1.12!important}}
 #subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.12!important}}
 #body{{font-size:{sizes["body"]}px!important;line-height:1.12!important}}
