@@ -66,6 +66,10 @@ STATUS_WRITE_ATTEMPTS = 3
 STATUS_WRITE_RETRY_SECONDS = 0.1
 JOB_REQUEUE_SECONDS = 0.25
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+# 用户自带素材（内测期新增）：走 provider="user"，文件在落盘时就按 sha256 存好。
+MATERIAL_PROVIDER_USER = "user"
+USER_ASSET_DIRNAME = "user-assets"
+MAX_USER_ASSET_BYTES = 128 * 1024 * 1024
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 BATCH_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -888,7 +892,7 @@ def _read_json(path: Path) -> dict:
 
 def _duration(top: str, bottom: str, requested) -> float:
     visible = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", top + bottom))
-    minimum = max(7.0, visible / 5.0 + 1.5)
+    minimum = max(8.0, visible / 5.0 + 1.5)
     if requested not in (None, ""):
         try:
             minimum = max(minimum, float(requested))
@@ -1337,7 +1341,9 @@ def _normalize_reference_semantic_layout(value, top: str, bottom: str) -> dict:
 
 def _reference_duration(job_id: str, template_id: str) -> int:
     digest = hashlib.sha256(f"{job_id}:{template_id}".encode("utf-8")).digest()
-    return 7 + int.from_bytes(digest[:8], "big") % 9
+    # 动效模板时间轴按 8-15 秒设计（模板变量声明 duration min=8），
+    # 随机出 7 秒会被引擎 strict-variables 拒绝（Variable validation failed）。
+    return 8 + int.from_bytes(digest[:8], "big") % 8
 
 
 def _reference_effect_order(seed: str, category: str,
@@ -2458,7 +2464,7 @@ class MatrixTemplateService:
                     "top": top_layer_count,
                     "bottom": 1 if variant == REFERENCE_V07_VARIANT else 2,
                 },
-                "duration_mode": "random_integer_7_15",
+                "duration_mode": "random_integer_8_15",
                 "required_visuals": 3,
                 "required_visuals_max": 5,
                 "clip_duration_range_seconds": [
@@ -3549,6 +3555,10 @@ class MatrixTemplateService:
                 "batch_index": batch_index,
                 "batch_size": batch_size,
             })
+        # 用户自带素材：透传给后续挑选/渲染环节（数量与格式在 _user_materials 里终审）
+        user_materials = raw.get("user_materials")
+        if user_materials:
+            result["user_materials"] = user_materials
         return result
 
     def available_font_families(self) -> set[str]:
@@ -3581,7 +3591,12 @@ class MatrixTemplateService:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
         existing = self.store.get_by_request_id(request_id)
-        if existing is None and self.enforce_library_readiness:
+        if (
+            existing is None
+            and self.enforce_library_readiness
+            and not (isinstance(raw, dict) and raw.get("user_materials"))
+        ):
+            # 用户自带素材时不依赖平台素材库与 Pexels，素材库不可用也应能接单。
             self.require_library_ready()
         if existing is not None:
             stored_payload = json.loads(existing["payload"])
@@ -3950,9 +3965,60 @@ class MatrixTemplateService:
             else:
                 path.unlink(missing_ok=True)
 
+    def cleanup_user_assets(self, *, now: int | None = None) -> int:
+        """清理过期的用户上传素材，保留期与任务目录一致（默认 3 天）。
+
+        先把最近保留期内被任务引用过的素材续期，再删真正过期的。
+        """
+        root = self.data_root / USER_ASSET_DIRNAME
+        if not root.is_dir():
+            return 0
+        current = _now() if now is None else int(now)
+        cutoff = current - self.retention_seconds
+        referenced: set[str] = set()
+        try:
+            with self.store.connect() as db:
+                for row in db.execute(
+                    "SELECT payload FROM jobs WHERE updated_at > ? LIMIT 2000",
+                    (cutoff,),
+                ):
+                    try:
+                        data = json.loads(row["payload"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    for item in data.get("user_materials") or []:
+                        if isinstance(item, dict):
+                            sha = str(item.get("sha256") or "").lower()
+                            if SHA_RE.fullmatch(sha):
+                                referenced.add(sha)
+        except sqlite3.Error:
+            referenced = set()
+        for sha in referenced:
+            for path in root.glob(sha + ".*"):
+                try:
+                    os.utime(path, (current, current))
+                except OSError:
+                    pass
+        removed = 0
+        for path in root.iterdir():
+            if not path.is_file() or path.name.endswith(".part"):
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
     def cleanup_once(self, *, now: int | None = None) -> int:
         cleaned = 0
         current = _now() if now is None else int(now)
+        try:
+            self.cleanup_user_assets(now=current)
+        except Exception as exc:  # 清理用户素材失败不应影响任务目录清理
+            print("[matrix-template] user-asset cleanup failed: %s" % exc, flush=True)
         candidates = self.store.cleanup_candidates(
             now=current,
             retention_seconds=self.retention_seconds,
@@ -4341,7 +4407,10 @@ class MatrixTemplateService:
             or len(set(shas)) != len(shas)
         ):
             raise MatrixTemplateError("素材库返回了无效或重复素材")
-        if ordered[0].get("media_type") != "video":
+        user_supplied = any(
+            item.get("provider") == MATERIAL_PROVIDER_USER for item in ordered
+        )
+        if ordered[0].get("media_type") != "video" and not user_supplied:
             raise MatrixTemplateError("模板成片至少需要一个视频素材")
         if reference_template:
             if any(
@@ -4475,6 +4544,17 @@ class MatrixTemplateService:
                 return self._validate_material_selection(
                     payload, frozen["materials"], contract_version,
                 )
+            user_selected = self._user_materials(payload)
+            if user_selected is not None:
+                if batch_id:
+                    self.store.reserve_batch_materials(
+                        batch_id, job_id, user_selected, contract_version,
+                    )
+                else:
+                    self.store.reserve_job_materials(
+                        job_id, user_selected, contract_version,
+                    )
+                return user_selected
             used = (
                 self.store.batch_used_visuals(batch_id) if batch_id else []
             )
@@ -4494,6 +4574,8 @@ class MatrixTemplateService:
     def _download(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
         if item.get("provider") == "pexels":
             return self._download_pexels(item, target_dir, job_id)
+        if item.get("provider") == MATERIAL_PROVIDER_USER:
+            return self._download_user_asset(item, target_dir)
         sha = str(item["sha256"]).lower()
         request = urllib.request.Request(
             self.library_url + "/v1/assets/" + sha,
@@ -4526,6 +4608,91 @@ class MatrixTemplateService:
                 return target
         except urllib.error.HTTPError as exc:
             raise MatrixTemplateError("素材库文件读取失败") from exc
+
+    def user_asset_path(self, sha: str) -> Path | None:
+        """按 sha256 找用户上传素材的落地文件。"""
+        value = str(sha or "").lower()
+        if not SHA_RE.fullmatch(value):
+            return None
+        root = self.data_root / USER_ASSET_DIRNAME
+        if not root.is_dir():
+            return None
+        for candidate in sorted(root.glob(value + ".*")):
+            if candidate.is_file() and not candidate.is_symlink():
+                return candidate
+        return None
+
+    def _download_user_asset(self, item: dict, target_dir: Path) -> Path:
+        """用户素材在接收时已按 sha256 落盘，这里直接复用本地文件并校验。"""
+        sha = str(item.get("sha256") or "").lower()
+        source = self.user_asset_path(sha)
+        if source is None:
+            raise MatrixTemplateError("用户素材不存在或已过期，请重新上传")
+        target = target_dir / (sha + source.suffix)
+        temporary = target.with_suffix(target.suffix + ".part")
+        try:
+            digest = hashlib.sha256()
+            total = 0
+            with source.open("rb") as reader, temporary.open("wb") as handle:
+                while chunk := reader.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_USER_ASSET_BYTES:
+                        raise MatrixTemplateError("用户素材文件过大")
+                    digest.update(chunk)
+                    handle.write(chunk)
+            if not total or not hmac.compare_digest(digest.hexdigest(), sha):
+                raise MatrixTemplateError("用户素材文件校验失败")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+    def _user_materials(self, payload: dict) -> list[dict] | None:
+        """payload 自带用户素材时直接采用，跳过素材库与 Pexels。
+
+        payload["user_materials"] 形如 [{"sha256": "<64 hex>", "media_type": "image"|"video"}, ...]
+        数量必须等于该模板的画面位数量。
+        """
+        raw = payload.get("user_materials")
+        if not raw:
+            return None
+        if not isinstance(raw, list):
+            raise MatrixTemplateError("用户素材清单格式无效")
+        scenes, count, _reference = self._material_scenes(payload)
+        if len(raw) != count:
+            raise MatrixTemplateError(
+                "用户素材数量与模板画面位不符（需要 %d 个）" % count
+            )
+        records = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise MatrixTemplateError("用户素材条目格式无效")
+            sha = str(item.get("sha256") or "").lower()
+            if not SHA_RE.fullmatch(sha):
+                raise MatrixTemplateError("用户素材缺少有效校验值")
+            if self.user_asset_path(sha) is None:
+                raise MatrixTemplateError("用户素材不存在或已过期，请重新上传")
+            media_type = str(item.get("media_type") or "").strip().lower()
+            if media_type not in {"image", "video"}:
+                raise MatrixTemplateError("用户素材只支持图片或视频")
+            record = {
+                "sha256": sha,
+                "media_type": media_type,
+                "provider": MATERIAL_PROVIDER_USER,
+                "scene_id": scenes[index]["scene_id"],
+                "slot_index": index + 1,
+                "slot_count": count,
+            }
+            start = item.get("clip_start_seconds")
+            if (
+                media_type == "video"
+                and isinstance(start, (int, float))
+                and not isinstance(start, bool)
+                and start >= 0
+            ):
+                record["clip_start_seconds"] = round(float(start), 3)
+            records.append(record)
+        return records
 
     def _download_pexels(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
         identity = str(item.get("sha256") or "").lower()
@@ -4696,7 +4863,16 @@ class MatrixTemplateService:
                 "bottom_font": font_selection["bottom_font"],
             },
             "font_selection": font_selection,
-            "material_policy": {"allow_image_only": False, "image_only_reason": ""},
+            # 画面位全是图片时必须显式放行，否则渲染器直接拒单
+            # （render_video.py: text-media-text image-only output is disabled by default）。
+            "material_policy": (
+                {
+                    "allow_image_only": True,
+                    "image_only_reason": "用户自带图片素材（模板成片·内测免费）",
+                }
+                if media and all(entry["type"] == "image" for entry in media)
+                else {"allow_image_only": False, "image_only_reason": ""}
+            ),
             "voice": {"enabled": False},
             "scenes": [{
                 "id": "s01", "role": "hook", "text": "",
@@ -6185,13 +6361,68 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json(404, {"error": "not_found"})
 
+    def _receive_user_asset(self) -> None:
+        """接收一个用户素材文件，按 sha256 落盘。请求体是原始二进制。"""
+        expected = str(self.headers.get("X-HQ-Asset-Sha256") or "").strip().lower()
+        if not SHA_RE.fullmatch(expected):
+            self.send_json(400, {"error": "invalid_request", "detail": "缺少有效的素材校验值"})
+            return
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        suffix = CONTENT_SUFFIXES.get(content_type)
+        if suffix not in {".jpg", ".png", ".webp", ".mp4", ".mov"}:
+            self.send_json(400, {"error": "invalid_request", "detail": "素材类型不受支持"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except (TypeError, ValueError):
+            self.send_json(400, {"error": "invalid_request", "detail": "请求长度无效"})
+            return
+        if length <= 0 or length > MAX_USER_ASSET_BYTES:
+            self.send_json(400, {"error": "invalid_request", "detail": "素材大小超出限制"})
+            return
+        target_dir = self.service.data_root / USER_ASSET_DIRNAME
+        target = target_dir / (expected + suffix)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256()
+            total = 0
+            temporary = target.with_suffix(target.suffix + ".part")
+            try:
+                with temporary.open("wb") as handle:
+                    while True:
+                        chunk = self.rfile.read(min(1024 * 1024, length - total))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_USER_ASSET_BYTES:
+                            raise ValueError("素材大小超出限制")
+                        digest.update(chunk)
+                        handle.write(chunk)
+                if total != length:
+                    raise ValueError("素材传输不完整")
+                if not hmac.compare_digest(digest.hexdigest(), expected):
+                    raise ValueError("素材校验失败")
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except ValueError as exc:
+            self.send_json(400, {"error": "invalid_request", "detail": str(exc)})
+            return
+        except OSError:
+            self.send_json(500, {"error": "storage_failed"})
+            return
+        self.send_json(200, {"ok": True, "sha256": expected, "bytes": total})
+
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in {"/v1/jobs", "/v1/preflight"}:
+        if path not in {"/v1/jobs", "/v1/preflight", "/v1/user-assets"}:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
             self.send_json(401, {"error": "unauthorized"})
+            return
+        if path == "/v1/user-assets":
+            self._receive_user_asset()
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -6224,7 +6455,7 @@ class Handler(BaseHTTPRequestHandler):
                             if payload["template_id"]
                                 in self.service.fixed_skill_templates
                             else (
-                                "random_integer_7_15"
+                                "random_integer_8_15"
                                 if payload["template_id"]
                                     in self.service.reference_templates
                                 else "copy_length"
