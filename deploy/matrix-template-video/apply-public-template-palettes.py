@@ -107,9 +107,10 @@ def build_reference_css() -> str:
         for layer in REFERENCE_LAYERS:
             groups[REFERENCE_LAYER_ROLES[layer]].append(layer)
         lines = [f"/* {variant} {template_id} · {name} */"]
+        root = f'#root[class~="{variant}"]'
         for role in ("c1", "c3"):
             selectors = ",\n".join(
-                f"#root.{variant} .{layer}" for layer in groups[role]
+                f"{root} .{layer}" for layer in groups[role]
             )
             lines.append(
                 f"{selectors} {{\n"
@@ -119,11 +120,11 @@ def build_reference_css() -> str:
             )
         for layer in REFERENCE_BACKGROUND_LAYERS.get(variant, ()):
             lines.append(
-                f"#root.{variant} .{layer} {{ background-color: {colors['c2']}; }}"
+                f"{root} .{layer} {{ background-color: {colors['c2']}; }}"
             )
         for layer, shadow in REFERENCE_BOX_SHADOW_OVERRIDES.get(variant, {}).items():
             lines.append(
-                f"#root.{variant} .{layer} {{ box-shadow: {shadow}; }}"
+                f"{root} .{layer} {{ box-shadow: {shadow}; }}"
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
