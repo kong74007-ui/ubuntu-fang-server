@@ -213,11 +213,27 @@ class PublicTemplatePaletteApplyTests(unittest.TestCase):
     def test_reference_v05_box_shadow_only_neutralised(self):
         reference = self.module.style_block("reference")
         self.assertIn(
-            "#root.v05 .bottom2 { box-shadow: 0 10px 0 rgba(8, 8, 8, 0.85), "
+            '#root[class~="v05"] .bottom2 { box-shadow: 0 10px 0 rgba(8, 8, 8, 0.85), '
             "0 15px 24px rgba(0, 0, 0, 0.35); }",
             reference,
         )
         self.assertNotIn("17, 36, 29", reference)
+
+    def test_reference_overlay_avoids_variant_layer_detection(self):
+        # The service detects a present layer with r"\.vNN\s+\.layer\s*(?:,|\{)".
+        # The overlay must never introduce such a fragment; otherwise a two-layer
+        # variant is mis-detected as having top3 and startup fails with
+        # "HyperFrames reference template font size is missing".
+        reference = self.module.style_block("reference")
+        self.assertNotIn("#root.v", reference)
+        for variant in (f"v{i:02d}" for i in range(1, 18)):
+            for layer in ("top1", "top2", "top3", "bottom1", "bottom2"):
+                pattern = rf"\.{variant}\s+\.{layer}\s*(?:,|\{{)"
+                self.assertIsNone(
+                    re.search(pattern, reference),
+                    f"overlay shadows {variant} {layer} detection",
+                )
+        self.assertIn('#root[class~="v02"] .top3', reference)
 
     def test_triple_strip_decorations_have_no_old_colors_left(self):
         triple = self.module.style_block("triple-strip")
