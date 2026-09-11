@@ -28,7 +28,7 @@ try:
         and type(data.get("selection_contract_version")) is int
         and data["selection_contract_version"] == 2
         and type(data.get("clip_contract_version")) is int
-        and data["clip_contract_version"] == 2
+        and data["clip_contract_version"] == 3
     )
 except Exception:
     ready = False

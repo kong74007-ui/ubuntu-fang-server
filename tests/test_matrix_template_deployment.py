@@ -19,7 +19,8 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         installer = (ROOT / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn('UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"', installer)
         self.assertIn('REFERENCE_UPSTREAM_COMMIT="9040a24139372f14346816cf42a97271767a0777"', installer)
-        self.assertIn('NINE_GRID_UPSTREAM_COMMIT="81da5e926aad0d2166845ee0b398282a21ab09e7"', installer)
+        self.assertIn('NINE_GRID_UPSTREAM_COMMIT="2a2db5877728dcf4987f85973cfba38bb80f45a2"', installer)
+        self.assertIn('MOTION_V2_HYPERFRAMES_VERSION="0.8.34"', installer)
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('NINE_GRID_HYPERFRAMES_VERSION="0.8.33"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
@@ -58,10 +59,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('MATRIX_TEMPLATE_NINE_GRID_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/nine-grid-reveal', installer)
         self.assertIn('MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/triple-strip-shutter', installer)
         self.assertIn('MATRIX_TEMPLATE_YELLOW_BANNER_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom', installer)
+        self.assertIn('MATRIX_TEMPLATE_FAN_WHIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static', installer)
+        self.assertIn('MATRIX_TEMPLATE_BRUSH_PANEL_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions', installer)
         self.assertIn('python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_triple_strip.py"', installer)
         self.assertIn('python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_yellow_banner.py"', installer)
         self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}', installer)
         self.assertIn('MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI=${SOURCE_LINK}/nine-grid-runtime/hyperframes', installer)
+        self.assertIn('MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI=${SOURCE_LINK}/motion-v2-runtime/hyperframes', installer)
         self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=2', installer)
         self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS=900', installer)
         self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_SLOT_TIMEOUT_SECONDS=600', installer)
@@ -74,14 +78,15 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
-        self.assertIn('d.get("templates")==20', installer)
+        self.assertIn('d.get("templates")==22', installer)
         self.assertIn('d.get("hyperframes_templates")==17', installer)
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("nine_grid_templates")==1', installer)
         self.assertIn('d.get("nine_grid_hyperframes_version")=="0.8.33"', installer)
-        self.assertIn('d.get("fixed_skill_templates")==["triple-strip-shutter","yellow-banner-zoom"]', installer)
-        self.assertIn('d.get("fixed_skill_template_count")==2', installer)
-        self.assertIn('d.get("fixed_skill_hyperframes_version")=="0.8.33"', installer)
+        self.assertIn('d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"]', installer)
+        self.assertIn('d.get("fixed_skill_template_count")==4', installer)
+        self.assertIn('d.get("fixed_skill_hyperframes_version")=="mixed"', installer)
+        self.assertIn('d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2}', installer)
         self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1}', installer)
         self.assertIn('d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"]', installer)
         self.assertIn(
@@ -105,7 +110,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn(
             'd.get("material_selection_contract_version")==2', installer,
         )
-        self.assertIn('d.get("material_clip_contract_version")==2', installer)
+        self.assertIn('d.get("material_clip_contract_version")==3', installer)
         self.assertNotIn("MATRIX_TEMPLATE_API_TOKEN=sk-", installer)
         self.assertIn("MATRIX_TEMPLATE_RETENTION_SECONDS=259200", installer)
         self.assertIn("MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS=3600", installer)
@@ -142,6 +147,39 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         self.assertEqual(
             "df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84",
+            hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        )
+
+    def test_motion_v2_runtime_lock_is_complete_and_integrity_pinned(self):
+        root = ROOT / "deploy/matrix-template-video/motion-v2-runtime"
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        lock_path = root / "package-lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        self.assertEqual("0.8.34", package["dependencies"]["hyperframes"])
+        self.assertEqual(3, lock["lockfileVersion"])
+        self.assertEqual(
+            {"hyperframes": "0.8.34"},
+            lock["packages"][""]["dependencies"],
+        )
+        self.assertEqual(
+            "0.8.34",
+            lock["packages"]["node_modules/hyperframes"]["version"],
+        )
+        registry_packages = [
+            item for key, item in lock["packages"].items()
+            if key and isinstance(item, dict)
+            and str(item.get("resolved") or "").startswith(
+                "https://registry.npmjs.org/"
+            )
+        ]
+        self.assertTrue(registry_packages)
+        self.assertTrue(all(item.get("integrity") for item in registry_packages))
+        self.assertEqual(
+            "3f0d57a4c19af984134511451ca7acc402cab99d845107b5d316ed466466b65e",
+            hashlib.sha256((root / "package.json").read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            "c727689682957da2372f900c1d9ea77cbc5a1cf407765959cc3b750fceb4945e",
             hashlib.sha256(lock_path.read_bytes()).hexdigest(),
         )
 

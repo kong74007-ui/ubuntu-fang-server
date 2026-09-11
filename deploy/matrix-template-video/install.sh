@@ -4,9 +4,10 @@ set -euo pipefail
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
 UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"
 REFERENCE_UPSTREAM_COMMIT="9040a24139372f14346816cf42a97271767a0777"
-NINE_GRID_UPSTREAM_COMMIT="81da5e926aad0d2166845ee0b398282a21ab09e7"
+NINE_GRID_UPSTREAM_COMMIT="2a2db5877728dcf4987f85973cfba38bb80f45a2"
 HYPERFRAMES_VERSION="0.8.16"
 NINE_GRID_HYPERFRAMES_VERSION="0.8.33"
+MOTION_V2_HYPERFRAMES_VERSION="0.8.34"
 GSAP_VERSION="3.14.2"
 HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
@@ -16,6 +17,8 @@ REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4
 NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"
 NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"
 NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"
+MOTION_V2_PACKAGE_SHA256="3f0d57a4c19af984134511451ca7acc402cab99d845107b5d316ed466466b65e"
+MOTION_V2_LOCK_SHA256="c727689682957da2372f900c1d9ea77cbc5a1cf407765959cc3b750fceb4945e"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -34,6 +37,8 @@ REFERENCE_V07_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/
 NINE_GRID_ADAPTER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-nine-grid-template.py"
 NINE_GRID_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-runtime/package.json"
 NINE_GRID_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-runtime/package-lock.json"
+MOTION_V2_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package.json"
+MOTION_V2_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package-lock.json"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -85,7 +90,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -306,6 +311,8 @@ git -C "${NINE_GRID_UPSTREAM}" sparse-checkout set \
   script-to-matrix-video/assets/templates/nine-grid-reveal \
   script-to-matrix-video/assets/templates/triple-strip-shutter \
   script-to-matrix-video/assets/templates/yellow-banner-zoom \
+  script-to-matrix-video/assets/templates/fan-whip-static \
+  script-to-matrix-video/assets/templates/brush-panel-transitions \
   script-to-matrix-video/scripts
 git -C "${NINE_GRID_UPSTREAM}" checkout --detach "${NINE_GRID_UPSTREAM_COMMIT}"
 git -C "${NINE_GRID_UPSTREAM}" reset --hard "${NINE_GRID_UPSTREAM_COMMIT}"
@@ -319,6 +326,8 @@ fi
 NINE_GRID_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/nine-grid-reveal"
 TRIPLE_STRIP_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/triple-strip-shutter"
 YELLOW_BANNER_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/yellow-banner-zoom"
+FAN_WHIP_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/fan-whip-static"
+BRUSH_PANEL_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/brush-panel-transitions"
 python3 "${NINE_GRID_ADAPTER_SOURCE}" --root "${NINE_GRID_ROOT}"
 NINE_GRID_ROOT="${NINE_GRID_ROOT}" NINE_GRID_VERSION="${NINE_GRID_HYPERFRAMES_VERSION}" python3 - <<'PY'
 import hashlib
@@ -368,6 +377,50 @@ for number in range(1, 4):
 PY
 python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_triple_strip.py"
 python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_yellow_banner.py"
+FAN_WHIP_ROOT="${FAN_WHIP_ROOT}" BRUSH_PANEL_ROOT="${BRUSH_PANEL_ROOT}" python3 - <<'PY'
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+
+contracts = {
+    "fan-whip-static": {
+        "root": Path(os.environ["FAN_WHIP_ROOT"]),
+        "frames": 377, "duration": 377 / 30,
+        "videos": 5, "prepared": 4,
+        "bgm": "95183944e0c5f63e583c52686bff3a57d94fa078c22eee10fd5749026c5fdae8",
+        "composition": "main", "audio": "reference-bgm",
+    },
+    "brush-panel-transitions": {
+        "root": Path(os.environ["BRUSH_PANEL_ROOT"]),
+        "frames": 454, "duration": 15.133333,
+        "videos": 7, "prepared": 5,
+        "bgm": "f3327c91050b6b77c95ffde4d5aeb3926ec447bb4de2d7a45a77acdeba74c4ea",
+        "composition": "brush-panel-transitions", "audio": "bound-bgm",
+    },
+}
+for template_id, contract in contracts.items():
+    root = contract["root"]
+    manifest = json.loads((root / "template.json").read_text(encoding="utf-8"))
+    assert manifest["id"] == template_id
+    assert manifest["renderer"] == "hyperframes"
+    assert manifest["width"] == 1080 and manifest["height"] == 1920
+    assert manifest["fps"] == 30 and manifest["frames"] == contract["frames"]
+    assert abs(float(manifest["duration"]) - contract["duration"]) < 0.000001
+    assert manifest["media"]["requiredDistinctVideos"] == contract["videos"]
+    assert manifest["media"]["minimumPreparedDuration"] == contract["prepared"]
+    audio = root / "assets/media/reference-bgm.m4a"
+    assert hashlib.sha256(audio.read_bytes()).hexdigest() == contract["bgm"]
+    index = (root / "index.html").read_text(encoding="utf-8")
+    assert index.count(f'data-composition-id="{contract["composition"]}"') == 1
+    assert all(index.count(f'data-var-text="{field}"') == 1
+               for field in ("title", "subtitle", "body", "cta"))
+    assert re.search(
+        rf'<audio\b[^>]*\bid="{contract["audio"]}"[^>]*\bdata-volume="1"',
+        index,
+    )
+PY
 NINE_GRID_RUNTIME="${RELEASE}/nine-grid-runtime"
 install -d -o root -g root -m 0755 "${NINE_GRID_RUNTIME}"
 if [[ "$(sha256sum "${NINE_GRID_PACKAGE_SOURCE}" | awk '{print $1}')" != "${NINE_GRID_PACKAGE_SHA256}" ]] || \
@@ -393,11 +446,36 @@ chmod 0755 "${NINE_GRID_CLI}"
 if [[ "$("${NINE_GRID_CLI}" --version)" != "${NINE_GRID_HYPERFRAMES_VERSION}" ]]; then
   echo "nine-grid HyperFrames CLI version mismatch" >&2; exit 1
 fi
+MOTION_V2_RUNTIME="${RELEASE}/motion-v2-runtime"
+install -d -o root -g root -m 0755 "${MOTION_V2_RUNTIME}"
+if [[ "$(sha256sum "${MOTION_V2_PACKAGE_SOURCE}" | awk '{print $1}')" != "${MOTION_V2_PACKAGE_SHA256}" ]] || \
+   [[ "$(sha256sum "${MOTION_V2_LOCK_SOURCE}" | awk '{print $1}')" != "${MOTION_V2_LOCK_SHA256}" ]]; then
+  echo "motion v2 runtime lock files changed" >&2; exit 1
+fi
+install -o root -g root -m 0644 "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_RUNTIME}/package.json"
+install -o root -g root -m 0644 "${MOTION_V2_LOCK_SOURCE}" "${MOTION_V2_RUNTIME}/package-lock.json"
+env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" ci \
+  --prefix "${MOTION_V2_RUNTIME}" --ignore-scripts --no-audit --no-fund
+env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" ls \
+  --prefix "${MOTION_V2_RUNTIME}" --all --json >/dev/null
+if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "${MOTION_V2_RUNTIME}/node_modules/hyperframes/package.json")" != "${MOTION_V2_HYPERFRAMES_VERSION}" ]]; then
+  echo "pinned motion v2 HyperFrames package mismatch" >&2; exit 1
+fi
+MOTION_V2_CLI="${MOTION_V2_RUNTIME}/hyperframes"
+cat > "${MOTION_V2_CLI}" <<EOF
+#!/usr/bin/env bash
+exec "${NODE_BINARY}" "${MOTION_V2_RUNTIME}/node_modules/hyperframes/bin/hyperframes.mjs" "\$@"
+EOF
+chmod 0755 "${MOTION_V2_CLI}"
+if [[ "$("${MOTION_V2_CLI}" --version)" != "${MOTION_V2_HYPERFRAMES_VERSION}" ]]; then
+  echo "motion v2 HyperFrames CLI version mismatch" >&2; exit 1
+fi
 BUILD_ID="$(printf '%s\n' \
   "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" "${NINE_GRID_UPSTREAM_COMMIT}" \
   "${LAYOUT_PATCH_SHA256}" "${REFERENCE_LAYOUT_PATCH_SHA256}" "${NINE_GRID_ADAPTER_SHA256}" \
   "${NINE_GRID_PACKAGE_SHA256}" "${NINE_GRID_LOCK_SHA256}" \
-  "${HYPERFRAMES_VERSION}" "${NINE_GRID_HYPERFRAMES_VERSION}" \
+  "${MOTION_V2_PACKAGE_SHA256}" "${MOTION_V2_LOCK_SHA256}" \
+  "${HYPERFRAMES_VERSION}" "${NINE_GRID_HYPERFRAMES_VERSION}" "${MOTION_V2_HYPERFRAMES_VERSION}" \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/index.html" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/assets/audio/reference-bgm.m4a" | awk '{print $1}')" \
@@ -405,6 +483,10 @@ BUILD_ID="$(printf '%s\n' \
   "$(sha256sum "${TRIPLE_STRIP_ROOT}/assets/audio/bound-bgm.m4a" | awk '{print $1}')" \
   "$(sha256sum "${YELLOW_BANNER_ROOT}/index.html" | awk '{print $1}')" \
   "$(sha256sum "${YELLOW_BANNER_ROOT}/assets/audio/bound-bgm.m4a" | awk '{print $1}')" \
+  "$(sha256sum "${FAN_WHIP_ROOT}/index.html" | awk '{print $1}')" \
+  "$(sha256sum "${FAN_WHIP_ROOT}/assets/media/reference-bgm.m4a" | awk '{print $1}')" \
+  "$(sha256sum "${BRUSH_PANEL_ROOT}/index.html" | awk '{print $1}')" \
+  "$(sha256sum "${BRUSH_PANEL_ROOT}/assets/media/reference-bgm.m4a" | awk '{print $1}')" \
   "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" \
   | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
@@ -424,10 +506,13 @@ MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT=${SOURCE_LINK}/reference-upstream/script-to
 MATRIX_TEMPLATE_NINE_GRID_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/nine-grid-reveal
 MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/triple-strip-shutter
 MATRIX_TEMPLATE_YELLOW_BANNER_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom
+MATRIX_TEMPLATE_FAN_WHIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static
+MATRIX_TEMPLATE_BRUSH_PANEL_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
 MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
 MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
 MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI=${SOURCE_LINK}/nine-grid-runtime/hyperframes
+MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI=${SOURCE_LINK}/motion-v2-runtime/hyperframes
 MATRIX_TEMPLATE_HYPERFRAMES_GSAP=${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js
 MATRIX_TEMPLATE_HYPERFRAMES_BROWSER=${HYPERFRAMES_BROWSER}
 MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=2
@@ -450,7 +535,10 @@ else
   NINE_GRID_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/nine-grid-reveal" \
   TRIPLE_STRIP_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/triple-strip-shutter" \
   YELLOW_BANNER_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom" \
+  FAN_WHIP_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static" \
+  BRUSH_PANEL_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions" \
   NINE_GRID_CLI_VALUE="${SOURCE_LINK}/nine-grid-runtime/hyperframes" \
+  MOTION_V2_CLI_VALUE="${SOURCE_LINK}/motion-v2-runtime/hyperframes" \
   HYPERFRAMES_CLI_VALUE="${HYPERFRAMES_CLI}" \
   HYPERFRAMES_GSAP_VALUE="${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js" \
   HYPERFRAMES_BROWSER_VALUE="${HYPERFRAMES_BROWSER}" python3 - <<'PY'
@@ -465,8 +553,11 @@ settings = {
     "MATRIX_TEMPLATE_NINE_GRID_ROOT": os.environ["NINE_GRID_ROOT_VALUE"],
     "MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT": os.environ["TRIPLE_STRIP_ROOT_VALUE"],
     "MATRIX_TEMPLATE_YELLOW_BANNER_ROOT": os.environ["YELLOW_BANNER_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_FAN_WHIP_ROOT": os.environ["FAN_WHIP_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_BRUSH_PANEL_ROOT": os.environ["BRUSH_PANEL_ROOT_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CLI": os.environ["HYPERFRAMES_CLI_VALUE"],
     "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI": os.environ["NINE_GRID_CLI_VALUE"],
+    "MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI": os.environ["MOTION_V2_CLI_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_GSAP": os.environ["HYPERFRAMES_GSAP_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER": os.environ["HYPERFRAMES_BROWSER_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY": "2",
@@ -516,7 +607,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==20 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==2 and d.get("fixed_skill_hyperframes_version")=="0.8.33" and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-pexels-middle-v1" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==2 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-extra-middle-pexels-v2" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

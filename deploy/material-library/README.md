@@ -86,7 +86,7 @@ after verifying its checksum. Both endpoints require the bearer token.
 `GET /health` is unauthenticated and returns counts only. `GET /v1/ping`
 requires the bearer token and is used for pre-charge readiness checks.
 Both responses expose `selection_contract_version=2` and
-`clip_contract_version=2`; generation-server tunnel readiness rejects older
+`clip_contract_version=3`; generation-server tunnel readiness rejects older
 material-library releases before accepting template jobs.
 
 Round-robin callers may provide a stable `selection_id`. Source/clip counters
@@ -103,9 +103,9 @@ upgrade can therefore roll back to the old source against the live state, and
 the installer never restores a stale usage snapshot over selections confirmed
 while services are switching.
 
-Video scenes may provide `clip_duration_seconds` from `2` through `4`. Ordinary
+Video scenes may provide `clip_duration_seconds` from `2` through `5`. Ordinary
 templates continue to request `2` through `3` seconds; authored fixed templates
-may request longer frame-accurate slots up to `4` seconds. Every eligible source
+may request longer frame-accurate slots up to `5` seconds. Every eligible source
 is expanded into deterministic, non-overlapping virtual candidates across its
 full duration using a slot span at least as long as the requested clip. Sources
 that cannot cover one clip plus the safety margin are excluded. Each candidate
@@ -113,9 +113,6 @@ has its own persisted usage key, so later portions participate in selection
 immediately instead of waiting for the whole source to cycle. The response freezes `clip_id`,
 `clip_start_seconds`, `clip_duration_seconds`, `clip_slot_index`, and
 `clip_slot_count` while downloads continue to use the approved source SHA.
-Fixed templates also send `minimum_source_duration_seconds=4.1`, so source
-eligibility is a simple uniform threshold; the frame-accurate clip duration only
-controls how much of that longer source is rendered.
 
 Explicit index durations must be finite, non-boolean, non-negative, and at most
 30 minutes. One source may expose at most 600 slots, and one selection request
