@@ -1,2804 +1,3932 @@
 {
-  "templates": [
+  "templates": 20,
+  "elements": [
     {
-      "template": "v01",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(247, 245, 236)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(120, 152, 34)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(247, 245, 236)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(247, 245, 236)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(247, 245, 236)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(248, 247, 239)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(120, 152, 34)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(248, 247, 239)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(248, 247, 239)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(248, 247, 239)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(66, 109, 36)",
-              "rgb(255, 251, 234)"
-            ],
-            "backgroundColor": [
-              "rgb(245, 244, 238)",
-              "rgb(71, 1, 37)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(66, 109, 36)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(66, 109, 36)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(66, 109, 36)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(66, 109, 36)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-01-chengdu-green-brush",
+      "elements": 5
     },
     {
-      "template": "v02",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "outlineColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "textDecorationColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 4, 58)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 4, 58)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 4, 58)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 4, 58)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "outlineColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ],
-            "textDecorationColor": [
-              "rgb(245, 106, 0)",
-              "rgb(255, 4, 58)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-02-shenzhen-ai-orange",
+      "elements": 5
     },
     {
-      "template": "v03",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(189, 232, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(11, 11, 11)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(189, 232, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(189, 232, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(189, 232, 255)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "backgroundColor": [
-              "rgb(159, 38, 55)",
-              "rgb(105, 13, 173)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 213, 30)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 213, 30)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(255, 213, 30)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 213, 30)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-03-zhengzhou-blue-banner",
+      "elements": 5
     },
     {
-      "template": "v04",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "backgroundColor": [
-              "rgb(255, 217, 22)",
-              "rgb(71, 23, 109)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 217, 35)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-04-foshan-yellow-strip",
+      "elements": 5
     },
     {
-      "template": "v05",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(244, 247, 242)",
-              "rgb(240, 255, 12)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(32, 52, 73)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(244, 247, 242)",
-              "rgb(240, 255, 12)"
-            ],
-            "outlineColor": [
-              "rgb(244, 247, 242)",
-              "rgb(240, 255, 12)"
-            ],
-            "textDecorationColor": [
-              "rgb(244, 247, 242)",
-              "rgb(240, 255, 12)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(244, 247, 242)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(32, 52, 73)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(244, 247, 242)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(244, 247, 242)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(244, 247, 242)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 248, 217)",
-              "rgb(240, 255, 12)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(38, 57, 74)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 248, 217)",
-              "rgb(240, 255, 12)"
-            ],
-            "outlineColor": [
-              "rgb(255, 248, 217)",
-              "rgb(240, 255, 12)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 248, 217)",
-              "rgb(240, 255, 12)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 224, 0)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(38, 62, 50)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 224, 0)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 224, 0)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 224, 0)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(38, 54, 45)",
-              "rgb(240, 255, 12)"
-            ],
-            "backgroundColor": [
-              "rgb(244, 201, 0)",
-              "rgb(255, 0, 134)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(38, 54, 45)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(38, 54, 45)",
-              "rgb(240, 255, 12)"
-            ],
-            "outlineColor": [
-              "rgb(38, 54, 45)",
-              "rgb(240, 255, 12)"
-            ],
-            "textDecorationColor": [
-              "rgb(38, 54, 45)",
-              "rgb(240, 255, 12)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-05-changsha-white-red",
+      "elements": 5
     },
     {
-      "template": "v06",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 254, 238)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 251, 220)",
-              "rgb(255, 254, 238)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(51, 51, 51)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 251, 220)",
-              "rgb(255, 254, 238)"
-            ],
-            "outlineColor": [
-              "rgb(255, 251, 220)",
-              "rgb(255, 254, 238)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 251, 220)",
-              "rgb(255, 254, 238)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 227, 38)",
-              "rgb(255, 254, 238)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 227, 38)",
-              "rgb(255, 254, 238)"
-            ],
-            "outlineColor": [
-              "rgb(255, 227, 38)",
-              "rgb(255, 254, 238)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 227, 38)",
-              "rgb(255, 254, 238)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(9, 9, 9)",
-              "rgb(255, 254, 238)"
-            ],
-            "backgroundColor": [
-              "rgb(255, 213, 26)",
-              "rgb(78, 137, 102)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(9, 9, 9)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(9, 9, 9)",
-              "rgb(255, 254, 238)"
-            ],
-            "outlineColor": [
-              "rgb(9, 9, 9)",
-              "rgb(255, 254, 238)"
-            ],
-            "textDecorationColor": [
-              "rgb(9, 9, 9)",
-              "rgb(255, 254, 238)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-06-guangzhou-yellow-button",
+      "elements": 5
     },
     {
-      "template": "v07",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 233, 190)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "outlineColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "textDecorationColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 213, 28)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(16, 16, 16)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 213, 28)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 213, 28)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 213, 28)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 213, 28)",
-              "rgb(254, 1, 154)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(16, 16, 16)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 213, 28)",
-              "rgb(254, 1, 154)"
-            ],
-            "outlineColor": [
-              "rgb(255, 213, 28)",
-              "rgb(254, 1, 154)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 213, 28)",
-              "rgb(254, 1, 154)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(212, 20, 13)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 233, 190)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(212, 20, 13)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(212, 20, 13)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(212, 20, 13)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 233, 190)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "outlineColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ],
-            "textDecorationColor": [
-              "rgb(212, 20, 13)",
-              "rgb(254, 1, 154)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-07-shenzhen-red-growth",
+      "elements": 5
     },
     {
-      "template": "v08",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "outlineColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "outlineColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 215, 25)",
-              "rgb(253, 235, 85)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 235, 85)"
-            ],
-            "backgroundColor": [
-              "rgb(255, 215, 25)",
-              "rgb(24, 90, 86)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 235, 85)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 235, 85)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 235, 85)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-08-puyang-yellow-white",
+      "elements": 5
     },
     {
-      "template": "v09",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "outlineColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(186, 240, 189)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(35, 70, 41)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(186, 240, 189)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(186, 240, 189)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(186, 240, 189)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(250, 222, 31)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(250, 222, 31)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(250, 222, 31)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(250, 222, 31)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(165, 237, 122)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(35, 70, 41)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(165, 237, 122)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(165, 237, 122)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(165, 237, 122)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "outlineColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 240, 168)",
-              "rgb(250, 222, 31)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-09-urumqi-soft-brush",
+      "elements": 5
     },
     {
-      "template": "v10",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 216, 25)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 216, 25)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 216, 25)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 216, 25)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 96, 71)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-10-shenzhen-sisters",
+      "elements": 5
     },
     {
-      "template": "v11",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(34, 34, 34)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(34, 34, 34)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(240, 220, 68)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(17, 17, 17)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(216, 36, 36)",
-              "rgb(18, 242, 253)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(216, 36, 36)",
-              "rgb(18, 242, 253)"
-            ],
-            "outlineColor": [
-              "rgb(216, 36, 36)",
-              "rgb(18, 242, 253)"
-            ],
-            "textDecorationColor": [
-              "rgb(216, 36, 36)",
-              "rgb(18, 242, 253)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-11-nansha-clean",
+      "elements": 5
     },
     {
-      "template": "v12",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 255, 0)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 255, 0)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 255, 0)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 255, 0)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "outlineColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "outlineColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 224, 54)",
-              "rgb(255, 255, 0)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-12-guangzhou-brush",
+      "elements": 5
     },
     {
-      "template": "v13",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 225, 34)",
-              "rgb(0, 229, 146)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 225, 34)",
-              "rgb(0, 229, 146)"
-            ],
-            "outlineColor": [
-              "rgb(255, 225, 34)",
-              "rgb(0, 229, 146)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 225, 34)",
-              "rgb(0, 229, 146)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 225, 34)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 225, 34)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 225, 34)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 225, 34)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(0, 229, 146)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(0, 229, 146)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(0, 229, 146)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(0, 229, 146)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(24, 241, 76)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(24, 241, 76)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(24, 241, 76)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(24, 241, 76)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(24, 241, 76)",
-              "rgb(0, 229, 146)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(24, 241, 76)",
-              "rgb(0, 229, 146)"
-            ],
-            "outlineColor": [
-              "rgb(24, 241, 76)",
-              "rgb(0, 229, 146)"
-            ],
-            "textDecorationColor": [
-              "rgb(24, 241, 76)",
-              "rgb(0, 229, 146)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-13-shenzhen-green-location",
+      "elements": 5
     },
     {
-      "template": "v14",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(168, 228, 162)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(49, 90, 49)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(168, 228, 162)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(168, 228, 162)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(168, 228, 162)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(165, 233, 147)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(49, 90, 49)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(165, 233, 147)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(165, 233, 147)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(165, 233, 147)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 242, 172)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 242, 172)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 242, 172)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 242, 172)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-14-karamay-green",
+      "elements": 5
     },
     {
-      "template": "v15",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(8, 252, 46)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-15-tianjin-monochrome",
+      "elements": 5
     },
     {
-      "template": "v16",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 241, 175)",
-              "rgb(253, 116, 45)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 241, 175)",
-              "rgb(253, 116, 45)"
-            ],
-            "outlineColor": [
-              "rgb(255, 241, 175)",
-              "rgb(253, 116, 45)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 241, 175)",
-              "rgb(253, 116, 45)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 240, 176)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(253, 116, 45)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-16-shenzhen-opc",
+      "elements": 5
     },
     {
-      "template": "v17",
-      "elements": [
-        {
-          "tag": "top1",
-          "changed": {
-            "color": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "outlineColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(216, 12, 12)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "top3",
-          "changed": {
-            "color": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "outlineColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom1",
-          "changed": {
-            "color": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(17, 17, 17)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "outlineColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 219, 22)",
-              "rgb(251, 255, 242)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "bottom2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(216, 12, 12)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(251, 255, 242)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "ref-17-shenzhen-yellow-red",
+      "elements": 5
     },
     {
-      "template": "nine-grid",
-      "elements": [
-        {
-          "tag": "headline",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "textShadow": [
-              "rgb(0, 0, 0) 5px 6px 3px",
-              "rgb(101, 131, 224) 5px 6px 3px"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "title",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(204, 164, 227)"
-            ],
-            "textShadow": [
-              "rgb(0, 0, 0) 5px 6px 3px",
-              "rgb(101, 131, 224) 5px 6px 3px"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "tagline",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textShadow": [
-              "rgb(0, 0, 0) 3px 4px 2px",
-              "rgb(101, 131, 224) 3px 4px 2px"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "nine-grid-reveal",
+      "elements": 2
     },
     {
-      "template": "triple-strip",
-      "elements": [
-        {
-          "tag": {},
-          "changed": {
-            "stroke": [
-              "rgb(66, 216, 255)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": {},
-          "changed": {
-            "stroke": [
-              "rgb(66, 216, 255)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": {},
-          "changed": {
-            "fill": [
-              "rgb(35, 213, 255)",
-              "rgb(97, 172, 76)"
-            ],
-            "stroke": [
-              "rgb(66, 216, 255)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": {},
-          "changed": {
-            "stroke": [
-              "rgb(66, 216, 255)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "title",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(242, 225, 255)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(20, 35, 52)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(242, 225, 255)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(242, 225, 255)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(242, 225, 255)"
-            ],
-            "textShadow": [
-              "rgb(237, 83, 197) -4px -3px 0px, rgb(38, 201, 255) 5px 5px 0px, rgb(11, 113, 174) 11px 9px 0px",
-              "rgb(97, 172, 76) -4px -3px 0px, rgb(242, 225, 255) 5px 5px 0px, rgb(16, 24, 32) 11px 9px 0px"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "line",
-          "changed": {
-            "backgroundColor": [
-              "rgb(86, 221, 255)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "slash",
-          "changed": {
-            "backgroundColor": [
-              "rgb(54, 191, 242)",
-              "rgb(242, 225, 255)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "slash",
-          "changed": {
-            "backgroundColor": [
-              "rgb(54, 191, 242)",
-              "rgb(242, 225, 255)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "slash",
-          "changed": {
-            "backgroundColor": [
-              "rgb(77, 99, 236)",
-              "rgb(97, 172, 76)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "subtitle",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(20, 35, 52)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textShadow": [
-              "rgb(185, 246, 255) -3px -3px 0px, rgb(32, 189, 255) 4px 4px 0px, rgb(21, 61, 119) 7px 6px 0px",
-              "rgb(97, 172, 76) -3px -3px 0px, rgb(242, 225, 255) 4px 4px 0px, rgb(16, 24, 32) 7px 6px 0px"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "ctaLine1",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(20, 35, 52)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textShadow": [
-              "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
-              "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "ctaLine2",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(20, 35, 52)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textShadow": [
-              "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
-              "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "triple-strip-shutter",
+      "elements": 12
     },
     {
-      "template": "yellow-banner",
-      "elements": [
-        {
-          "tag": "banner",
-          "changed": {
-            "backgroundColor": [
-              "rgb(250, 225, 8)",
-              "rgb(233, 122, 70)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "title",
-          "changed": {
-            "color": [
-              "rgb(0, 0, 0)",
-              "rgb(16, 24, 32)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(16, 24, 32)"
-            ],
-            "borderColor": [
-              "rgb(0, 0, 0)",
-              "rgb(16, 24, 32)"
-            ],
-            "outlineColor": [
-              "rgb(0, 0, 0)",
-              "rgb(16, 24, 32)"
-            ],
-            "textDecorationColor": [
-              "rgb(0, 0, 0)",
-              "rgb(16, 24, 32)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "subtitle1",
-          "changed": {
-            "color": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "outlineColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "textDecorationColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "subtitle2",
-          "changed": {
-            "color": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "outlineColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "textDecorationColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "sourceLabel",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "body-panel",
-          "changed": {
-            "backgroundColor": [
-              "rgba(0, 0, 0, 0.42)",
-              "rgba(16, 24, 32, 0.42)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "body",
-          "changed": {
-            "color": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "borderColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "outlineColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ],
-            "textDecorationColor": [
-              "rgb(255, 255, 255)",
-              "rgb(255, 251, 234)"
-            ]
-          },
-          "violations": []
-        },
-        {
-          "tag": "cta",
-          "changed": {
-            "color": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "webkitTextStrokeColor": [
-              "rgb(0, 0, 0)",
-              "rgb(8, 8, 8)"
-            ],
-            "borderColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "outlineColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ],
-            "textDecorationColor": [
-              "rgb(250, 225, 8)",
-              "rgb(144, 224, 214)"
-            ]
-          },
-          "violations": []
-        }
-      ]
+      "template": "yellow-banner-zoom",
+      "elements": 8
+    }
+  ],
+  "changes": [
+    {
+      "element": "ref-01-chengdu-green-brush:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(120, 152, 34)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(247, 245, 236)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-01-chengdu-green-brush:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(120, 152, 34)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(248, 247, 239)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-01-chengdu-green-brush:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-01-chengdu-green-brush:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-01-chengdu-green-brush:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "backgroundColor": [
+          "rgb(245, 244, 238)",
+          "rgb(71, 1, 37)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(66, 109, 36)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(66, 109, 36)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-02-shenzhen-ai-orange:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderRightColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderBottomColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderLeftColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "outlineColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "textDecorationColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-02-shenzhen-ai-orange:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-02-shenzhen-ai-orange:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 4, 58)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-02-shenzhen-ai-orange:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-02-shenzhen-ai-orange:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderRightColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderBottomColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "borderLeftColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "outlineColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ],
+        "textDecorationColor": [
+          "rgb(245, 106, 0)",
+          "rgb(255, 4, 58)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-03-zhengzhou-blue-banner:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(11, 11, 11)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(189, 232, 255)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-03-zhengzhou-blue-banner:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-03-zhengzhou-blue-banner:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-03-zhengzhou-blue-banner:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "backgroundColor": [
+          "rgb(159, 38, 55)",
+          "rgb(105, 13, 173)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-03-zhengzhou-blue-banner:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 213, 30)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-04-foshan-yellow-strip:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-04-foshan-yellow-strip:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-04-foshan-yellow-strip:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "backgroundColor": [
+          "rgb(255, 217, 22)",
+          "rgb(71, 23, 109)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-04-foshan-yellow-strip:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 217, 35)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-04-foshan-yellow-strip:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-05-changsha-white-red:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(32, 52, 73)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderRightColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderBottomColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderLeftColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "outlineColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ],
+        "textDecorationColor": [
+          "rgb(244, 247, 242)",
+          "rgb(240, 255, 12)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-05-changsha-white-red:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(32, 52, 73)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(244, 247, 242)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-05-changsha-white-red:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(38, 57, 74)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "outlineColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 248, 217)",
+          "rgb(240, 255, 12)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-05-changsha-white-red:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(38, 62, 50)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 224, 0)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-05-changsha-white-red:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "backgroundColor": [
+          "rgb(244, 201, 0)",
+          "rgb(255, 0, 134)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(38, 54, 45)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderRightColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderBottomColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "borderLeftColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "outlineColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ],
+        "textDecorationColor": [
+          "rgb(38, 54, 45)",
+          "rgb(240, 255, 12)"
+        ]
+      },
+      "shadows": {
+        "boxShadow": [
+          "rgba(17, 36, 29, 0.85) 0px 10px 0px 0px, rgba(0, 0, 0, 0.35) 0px 15px 24px 0px",
+          "rgba(8, 8, 8, 0.85) 0px 10px 0px 0px, rgba(0, 0, 0, 0.35) 0px 15px 24px 0px"
+        ]
+      }
+    },
+    {
+      "element": "ref-06-guangzhou-yellow-button:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-06-guangzhou-yellow-button:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 254, 238)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-06-guangzhou-yellow-button:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(51, 51, 51)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "outlineColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 251, 220)",
+          "rgb(255, 254, 238)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-06-guangzhou-yellow-button:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "outlineColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 227, 38)",
+          "rgb(255, 254, 238)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-06-guangzhou-yellow-button:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "backgroundColor": [
+          "rgb(255, 213, 26)",
+          "rgb(78, 137, 102)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(9, 9, 9)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderRightColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderBottomColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "borderLeftColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "outlineColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ],
+        "textDecorationColor": [
+          "rgb(9, 9, 9)",
+          "rgb(255, 254, 238)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-07-shenzhen-red-growth:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 233, 190)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderRightColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderBottomColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderLeftColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "outlineColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "textDecorationColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-07-shenzhen-red-growth:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(16, 16, 16)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 213, 28)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-07-shenzhen-red-growth:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(16, 16, 16)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "outlineColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 213, 28)",
+          "rgb(254, 1, 154)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-07-shenzhen-red-growth:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 233, 190)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(212, 20, 13)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-07-shenzhen-red-growth:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 233, 190)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderRightColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderBottomColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "borderLeftColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "outlineColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ],
+        "textDecorationColor": [
+          "rgb(212, 20, 13)",
+          "rgb(254, 1, 154)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-08-puyang-yellow-white:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "outlineColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-08-puyang-yellow-white:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-08-puyang-yellow-white:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "outlineColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 215, 25)",
+          "rgb(253, 235, 85)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-08-puyang-yellow-white:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-08-puyang-yellow-white:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "backgroundColor": [
+          "rgb(255, 215, 25)",
+          "rgb(24, 90, 86)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 235, 85)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-09-urumqi-soft-brush:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "outlineColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-09-urumqi-soft-brush:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(35, 70, 41)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(186, 240, 189)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-09-urumqi-soft-brush:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(250, 222, 31)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-09-urumqi-soft-brush:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(35, 70, 41)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(165, 237, 122)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-09-urumqi-soft-brush:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "outlineColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 240, 168)",
+          "rgb(250, 222, 31)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-10-shenzhen-sisters:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-10-shenzhen-sisters:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 216, 25)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-10-shenzhen-sisters:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-10-shenzhen-sisters:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-10-shenzhen-sisters:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 96, 71)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-11-nansha-clean:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(34, 34, 34)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-11-nansha-clean:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-11-nansha-clean:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(34, 34, 34)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(240, 220, 68)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-11-nansha-clean:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(17, 17, 17)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-11-nansha-clean:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderRightColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderBottomColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "borderLeftColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "outlineColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ],
+        "textDecorationColor": [
+          "rgb(216, 36, 36)",
+          "rgb(18, 242, 253)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-12-guangzhou-brush:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 255, 0)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-12-guangzhou-brush:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-12-guangzhou-brush:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "outlineColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-12-guangzhou-brush:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-12-guangzhou-brush:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "outlineColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 224, 54)",
+          "rgb(255, 255, 0)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-13-shenzhen-green-location:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "outlineColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 225, 34)",
+          "rgb(0, 229, 146)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-13-shenzhen-green-location:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 225, 34)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-13-shenzhen-green-location:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(0, 229, 146)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-13-shenzhen-green-location:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(24, 241, 76)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-13-shenzhen-green-location:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderRightColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderBottomColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "borderLeftColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "outlineColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ],
+        "textDecorationColor": [
+          "rgb(24, 241, 76)",
+          "rgb(0, 229, 146)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-14-karamay-green:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-14-karamay-green:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(49, 90, 49)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(168, 228, 162)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-14-karamay-green:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-14-karamay-green:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(49, 90, 49)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(165, 233, 147)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-14-karamay-green:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 242, 172)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-15-tianjin-monochrome:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-15-tianjin-monochrome:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-15-tianjin-monochrome:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-15-tianjin-monochrome:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-15-tianjin-monochrome:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(8, 252, 46)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-16-shenzhen-opc:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "outlineColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 241, 175)",
+          "rgb(253, 116, 45)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-16-shenzhen-opc:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-16-shenzhen-opc:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-16-shenzhen-opc:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 240, 176)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-16-shenzhen-opc:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(253, 116, 45)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-17-shenzhen-yellow-red:#top1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "outlineColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-17-shenzhen-yellow-red:#top2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(216, 12, 12)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-17-shenzhen-yellow-red:#top3#0",
+      "colors": {
+        "color": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "outlineColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-17-shenzhen-yellow-red:#bottom1#0",
+      "colors": {
+        "color": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(17, 17, 17)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "outlineColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 219, 22)",
+          "rgb(251, 255, 242)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "ref-17-shenzhen-yellow-red:#bottom2#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(216, 12, 12)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(251, 255, 242)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "nine-grid-reveal:#headline#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(204, 164, 227)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(0, 0, 0) 5px 6px 3px",
+          "rgb(101, 131, 224) 5px 6px 3px"
+        ]
+      }
+    },
+    {
+      "element": "nine-grid-reveal:#tagline#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(0, 0, 0) 3px 4px 2px",
+          "rgb(101, 131, 224) 3px 4px 2px"
+        ]
+      }
+    },
+    {
+      "element": "triple-strip-shutter:.title#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(20, 35, 52)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(242, 225, 255)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(237, 83, 197) -4px -3px 0px, rgb(38, 201, 255) 5px 5px 0px, rgb(11, 113, 174) 11px 9px 0px",
+          "rgb(97, 172, 76) -4px -3px 0px, rgb(242, 225, 255) 5px 5px 0px, rgb(16, 24, 32) 11px 9px 0px"
+        ]
+      }
+    },
+    {
+      "element": "triple-strip-shutter:.subtitle#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(20, 35, 52)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(185, 246, 255) -3px -3px 0px, rgb(32, 189, 255) 4px 4px 0px, rgb(21, 61, 119) 7px 6px 0px",
+          "rgb(97, 172, 76) -3px -3px 0px, rgb(242, 225, 255) 4px 4px 0px, rgb(16, 24, 32) 7px 6px 0px"
+        ]
+      }
+    },
+    {
+      "element": "triple-strip-shutter:.footer-text#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(20, 35, 52)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
+          "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
+        ]
+      }
+    },
+    {
+      "element": "triple-strip-shutter:.footer-text#1",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(20, 35, 52)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {
+        "textShadow": [
+          "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
+          "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
+        ]
+      }
+    },
+    {
+      "element": "triple-strip-shutter:.underline .line#0",
+      "colors": {
+        "backgroundColor": [
+          "rgb(86, 221, 255)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.underline .slash#0",
+      "colors": {
+        "backgroundColor": [
+          "rgb(54, 191, 242)",
+          "rgb(242, 225, 255)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.underline .slash#1",
+      "colors": {
+        "backgroundColor": [
+          "rgb(54, 191, 242)",
+          "rgb(242, 225, 255)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.underline .slash#2",
+      "colors": {
+        "backgroundColor": [
+          "rgb(77, 99, 236)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.chevron path#0",
+      "colors": {
+        "stroke": [
+          "rgb(66, 216, 255)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.chevron path#1",
+      "colors": {
+        "stroke": [
+          "rgb(66, 216, 255)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.chevron path#2",
+      "colors": {
+        "fill": [
+          "rgb(35, 213, 255)",
+          "rgb(97, 172, 76)"
+        ],
+        "stroke": [
+          "rgb(66, 216, 255)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "triple-strip-shutter:.chevron path#3",
+      "colors": {
+        "stroke": [
+          "rgb(66, 216, 255)",
+          "rgb(97, 172, 76)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:#title#0",
+      "colors": {
+        "color": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "borderTopColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "borderRightColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "borderBottomColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "borderLeftColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "outlineColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ],
+        "textDecorationColor": [
+          "rgb(0, 0, 0)",
+          "rgb(16, 24, 32)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:.subtitle#0",
+      "colors": {
+        "color": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderRightColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderBottomColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderLeftColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "outlineColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "textDecorationColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:.subtitle#1",
+      "colors": {
+        "color": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderRightColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderBottomColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderLeftColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "outlineColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "textDecorationColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:#sourceLabel#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:#body#0",
+      "colors": {
+        "color": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderTopColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderRightColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderBottomColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "borderLeftColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "outlineColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ],
+        "textDecorationColor": [
+          "rgb(255, 255, 255)",
+          "rgb(255, 251, 234)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:#cta#0",
+      "colors": {
+        "color": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "webkitTextStrokeColor": [
+          "rgb(0, 0, 0)",
+          "rgb(8, 8, 8)"
+        ],
+        "borderTopColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderRightColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderBottomColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "borderLeftColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "outlineColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ],
+        "textDecorationColor": [
+          "rgb(250, 225, 8)",
+          "rgb(144, 224, 214)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:.banner#0",
+      "colors": {
+        "backgroundColor": [
+          "rgb(250, 225, 8)",
+          "rgb(233, 122, 70)"
+        ]
+      },
+      "shadows": {}
+    },
+    {
+      "element": "yellow-banner-zoom:.body-panel#0",
+      "colors": {
+        "backgroundColor": [
+          "rgba(0, 0, 0, 0.42)",
+          "rgba(16, 24, 32, 0.42)"
+        ]
+      },
+      "shadows": {}
     }
   ],
   "violations": []

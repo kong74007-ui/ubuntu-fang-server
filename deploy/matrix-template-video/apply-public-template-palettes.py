@@ -45,6 +45,15 @@ REFERENCE_BACKGROUND_LAYERS = {
     "v06": ("bottom2",),
     "v08": ("bottom2",),
 }
+# Existing box-shadows whose colour only is neutralised. Offsets, blur, spread,
+# layer count and alpha are copied verbatim from the upstream template.
+REFERENCE_BOX_SHADOW_OVERRIDES = {
+    "v05": {
+        "bottom2": (
+            "0 10px 0 rgba(8, 8, 8, 0.85), 0 15px 24px rgba(0, 0, 0, 0.35)"
+        ),
+    },
+}
 
 # The 20 public templates in production order. Index 1..17 are the reference
 # variants, 18 is nine-grid, 19 is triple-strip, 20 is yellow-banner.
@@ -111,6 +120,10 @@ def build_reference_css() -> str:
         for layer in REFERENCE_BACKGROUND_LAYERS.get(variant, ()):
             lines.append(
                 f"#root.{variant} .{layer} {{ background-color: {colors['c2']}; }}"
+            )
+        for layer, shadow in REFERENCE_BOX_SHADOW_OVERRIDES.get(variant, {}).items():
+            lines.append(
+                f"#root.{variant} .{layer} {{ box-shadow: {shadow}; }}"
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)

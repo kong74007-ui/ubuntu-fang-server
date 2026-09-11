@@ -210,6 +210,15 @@ class PublicTemplatePaletteApplyTests(unittest.TestCase):
             "background-color: rgba(16, 24, 32, 0.42);", banner
         )
 
+    def test_reference_v05_box_shadow_only_neutralised(self):
+        reference = self.module.style_block("reference")
+        self.assertIn(
+            "#root.v05 .bottom2 { box-shadow: 0 10px 0 rgba(8, 8, 8, 0.85), "
+            "0 15px 24px rgba(0, 0, 0, 0.35); }",
+            reference,
+        )
+        self.assertNotIn("17, 36, 29", reference)
+
     def test_triple_strip_decorations_have_no_old_colors_left(self):
         triple = self.module.style_block("triple-strip")
         # The base template's :last-child slash and the filled chevron keep
@@ -225,6 +234,112 @@ class PublicTemplatePaletteApplyTests(unittest.TestCase):
         self.assertNotIn("#4d63ec", triple)
         self.assertNotIn("#23d5ff", triple)
         self.assertNotIn("#42d8ff", triple)
+
+
+GATE = ROOT / "scripts/verify-public-template-palettes.py"
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location(
+        "verify_public_template_palettes", GATE
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def element(selector, index, style=None, shadows=None):
+    return {
+        "selector": selector, "index": index,
+        "style": dict(style or {}), "colors": {}, "shadows": dict(shadows or {}),
+    }
+
+
+class ShadowParserTests(unittest.TestCase):
+    def setUp(self):
+        self.gate = load_gate()
+
+    def equal(self, before, after):
+        return self.gate.shadow_geometry_equal(before, after)[0]
+
+    def test_rgb_only_change_passes(self):
+        self.assertTrue(self.equal(
+            "rgba(17, 36, 29, 0.85) 0px 10px 0px 0px, "
+            "rgba(0, 0, 0, 0.35) 0px 15px 24px 0px",
+            "rgba(8, 8, 8, 0.85) 0px 10px 0px 0px, "
+            "rgba(0, 0, 0, 0.35) 0px 15px 24px 0px",
+        ))
+
+    def test_offset_x_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px", "rgb(0, 0, 0) 5px 10px 2px"))
+
+    def test_offset_y_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px", "rgb(0, 0, 0) 0px 11px 2px"))
+
+    def test_blur_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px", "rgb(0, 0, 0) 0px 10px 3px"))
+
+    def test_spread_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px 1px", "rgb(0, 0, 0) 0px 10px 2px 4px"))
+
+    def test_layer_count_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px",
+            "rgb(0, 0, 0) 0px 10px 2px, rgb(0, 0, 0) 1px 1px 1px"))
+
+    def test_layer_order_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 1px 1px 1px, rgb(0, 0, 0) 2px 2px 2px",
+            "rgb(0, 0, 0) 2px 2px 2px, rgb(0, 0, 0) 1px 1px 1px"))
+
+    def test_none_to_shadow_fails(self):
+        self.assertFalse(self.equal("none", "rgb(0, 0, 0) 1px 1px 1px"))
+        self.assertFalse(self.equal("rgb(0, 0, 0) 1px 1px 1px", "none"))
+
+    def test_alpha_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgba(0, 0, 0, 0.85) 0px 10px 0px 0px",
+            "rgba(0, 0, 0, 0.50) 0px 10px 0px 0px"))
+
+    def test_inset_change_fails(self):
+        self.assertFalse(self.equal(
+            "rgb(0, 0, 0) 0px 10px 2px", "rgb(0, 0, 0) 0px 10px 2px inset"))
+
+
+class PaletteGateCompareTests(unittest.TestCase):
+    def setUp(self):
+        self.gate = load_gate()
+
+    def test_colour_only_change_passes(self):
+        before = [element("#top1", 0, {"fontSize": "70px"},
+                          {"textShadow": "rgb(9, 9, 9) 5px 6px 3px"})]
+        after = [element("#top1", 0, {"fontSize": "70px"},
+                         {"textShadow": "rgb(101, 131, 224) 5px 6px 3px"})]
+        self.assertEqual([], self.gate.compare(before, after, "t"))
+
+    def test_wrong_element_count_fails(self):
+        before = [element("#top1", 0)]
+        after = [element("#top1", 0), element("#top2", 0)]
+        self.assertTrue(self.gate.compare(before, after, "t"))
+
+    def test_wrong_identity_fails(self):
+        before = [element("#top1", 0)]
+        after = [element("#top2", 0)]
+        self.assertTrue(self.gate.compare(before, after, "t"))
+
+    def test_layout_change_fails(self):
+        before = [element("#top1", 0, {"fontSize": "70px"})]
+        after = [element("#top1", 0, {"fontSize": "68px"})]
+        self.assertTrue(self.gate.compare(before, after, "t"))
+
+    def test_shadow_geometry_change_fails(self):
+        before = [element("#top1", 0, {}, {"boxShadow": "rgb(0, 0, 0) 0px 10px 0px 0px"})]
+        after = [element("#top1", 0, {}, {"boxShadow": "rgb(0, 0, 0) 0px 11px 0px 0px"})]
+        self.assertTrue(self.gate.compare(before, after, "t"))
 
 
 if __name__ == "__main__":
