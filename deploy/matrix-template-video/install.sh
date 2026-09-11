@@ -11,6 +11,7 @@ GSAP_VERSION="3.14.2"
 HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
+LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
 REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"
 NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"
 NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"
@@ -26,6 +27,7 @@ PEXELS_ENV_FILE="/etc/huangque/pexels.env"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-matrix-template.service"
 UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
 API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
+LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
 REFERENCE_LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-featured-layout.patch"
 REFERENCE_V04_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v04_preview.py"
 REFERENCE_V07_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v07_preview.py"
@@ -83,7 +85,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -140,12 +142,21 @@ git -C "${RELEASE}/upstream" clean -fdx
 if [[ "$(git -C "${RELEASE}/upstream" rev-parse HEAD)" != "${UPSTREAM_COMMIT}" ]]; then
   echo "upstream commit mismatch" >&2; exit 1
 fi
+if [[ "$(sha256sum "${LAYOUT_PATCH_SOURCE}" | awk '{print $1}')" != "${LAYOUT_PATCH_SHA256}" ]]; then
+  echo "private-domain layout patch hash mismatch" >&2; exit 1
+fi
+git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video "${LAYOUT_PATCH_SOURCE}"
+git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video "${LAYOUT_PATCH_SOURCE}"
 install -o root -g root -m 0644 "${API_SOURCE}" "${RELEASE}/api.py"
 SKILL_ROOT="${RELEASE}/upstream/script-to-matrix-video"
 python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py"
 python3 -c 'from PIL import Image, ImageDraw, ImageFont'
 python3 "${SKILL_ROOT}/scripts/check_environment.py"
 python3 "${SKILL_ROOT}/scripts/test_template_catalog.py"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"
+python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"
+python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"
 
 REFERENCE_UPSTREAM="${RELEASE}/reference-upstream"
 git clone --filter=blob:none --no-checkout "${UPSTREAM_URL}" "${REFERENCE_UPSTREAM}"
@@ -384,7 +395,7 @@ if [[ "$("${NINE_GRID_CLI}" --version)" != "${NINE_GRID_HYPERFRAMES_VERSION}" ]]
 fi
 BUILD_ID="$(printf '%s\n' \
   "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" "${NINE_GRID_UPSTREAM_COMMIT}" \
-  "${REFERENCE_LAYOUT_PATCH_SHA256}" "${NINE_GRID_ADAPTER_SHA256}" \
+  "${LAYOUT_PATCH_SHA256}" "${REFERENCE_LAYOUT_PATCH_SHA256}" "${NINE_GRID_ADAPTER_SHA256}" \
   "${NINE_GRID_PACKAGE_SHA256}" "${NINE_GRID_LOCK_SHA256}" \
   "${HYPERFRAMES_VERSION}" "${NINE_GRID_HYPERFRAMES_VERSION}" \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \

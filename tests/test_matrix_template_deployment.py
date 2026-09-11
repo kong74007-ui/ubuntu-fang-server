@@ -23,12 +23,19 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('HYPERFRAMES_VERSION="0.8.16"', installer)
         self.assertIn('NINE_GRID_HYPERFRAMES_VERSION="0.8.33"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
-        self.assertNotIn("\nLAYOUT_PATCH_SHA256=", installer)
+        self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
         self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"', installer)
         self.assertIn('NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"', installer)
         self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
         self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
-        self.assertNotIn("private-domain-layouts.patch", installer)
+        self.assertIn(
+            'git -C "${RELEASE}/upstream" apply --check --directory=script-to-matrix-video',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video',
+            installer,
+        )
         self.assertIn(
             'git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_LAYOUT_PATCH_SOURCE}"',
             installer,
@@ -42,9 +49,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         self.assertIn('--pack-root "${REFERENCE_PACK_ROOT}"', installer)
         self.assertIn('--browser "${HYPERFRAMES_BROWSER}"', installer)
-        self.assertNotIn("test_private_domain_layouts.py", installer)
-        self.assertNotIn("test_private_domain_catalog.py", installer)
-        self.assertNotIn("restrict_private_domain_catalog.py", installer)
+        self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_layouts.py"', installer)
+        self.assertIn('python3 "${SKILL_ROOT}/scripts/test_private_domain_catalog.py"', installer)
+        self.assertIn('python3 "${SKILL_ROOT}/scripts/restrict_private_domain_catalog.py"', installer)
         self.assertIn('PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"', installer)
         self.assertIn('MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}', installer)
         self.assertIn('MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT=${SOURCE_LINK}/reference-upstream/script-to-matrix-video', installer)

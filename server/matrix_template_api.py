@@ -2266,9 +2266,11 @@ class MatrixTemplateService:
         for template_id in FIXED_SKILL_TEMPLATE_IDS:
             if template_id in self.fixed_skill_roots:
                 self.catalog.append(self._load_fixed_skill_template(template_id))
-        if not self.catalog:
+        if not self.catalog and start_worker:
             raise MatrixTemplateError("no public matrix templates are available")
-        self.default_template_id = self.catalog[0]["id"]
+        self.default_template_id = (
+            self.catalog[0]["id"] if self.catalog else ""
+        )
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()

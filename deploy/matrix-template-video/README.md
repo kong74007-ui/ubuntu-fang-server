@@ -29,9 +29,11 @@ the normal failure/refund path before the production site's 1200-second poll
 deadline, so accepted work cannot continue after the caller reports a timeout.
 
 The installer clones and verifies commit
-`243d5c168d9ab2d95daf04fef5c5e75924114eb8` for its baseline font and
-rendering utilities, but does not expose any template from that legacy catalog.
-It atomically switches releases and checks the exact runtime build id.
+`243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the
+generation-server-owned private-domain layout patch only to preserve rendering
+for already-frozen legacy jobs. Those two definitions are not loaded into the
+public catalog and cannot be selected by new submissions. The installer then
+atomically switches releases and checks the exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
@@ -67,10 +69,12 @@ bottom CTA stays deep red with a cream outline at `86px`. All five layers are
 fully visible from frame zero. The service splits v07 top copy across
 `top1`/`top2`/`top3`/`bottom1` and keeps the CTA in `bottom2`; only v07 uses
 this four-top-layer path, every other variant keeps its existing layout.
-The reference-typography patch has a SHA-256 lock in `install.sh`, so a
-missing or changed patch fails before the active release is switched. The public
-Skill repository remains unchanged until the generation-server contract is
-accepted and the same change is deliberately upstreamed.
+The private-domain patch retains recovery-only render definitions for
+`full-overlay-bold` and `poster-split`; both that patch and the separate
+reference-typography patch have SHA-256 locks in `install.sh`, so a missing
+or changed patch fails before the active release is switched. The public Skill
+repository remains unchanged until the generation-server contract is accepted
+and the same change is deliberately upstreamed.
 
 ```bash
 sudo bash deploy/matrix-template-video/install.sh
@@ -98,9 +102,9 @@ instead of starting an unsafe five-worker service.
 
 ## Typography variants
 
-- The pinned public Skill supplies its four baseline OFL families. Its legacy
-  `full-overlay-bold` and `poster-split` layouts are not loaded, listed, or
-  accepted for new jobs.
+- The pinned public Skill supplies its four baseline OFL families. The
+  server-owned patch keeps two legacy layout definitions solely for frozen-job
+  recovery; they are absent from `/v1/templates` and rejected for new jobs.
 - Up to ten project-authorized fonts may be provisioned privately under `/var/lib/huangque-matrix-template/private-fonts`; font binaries are never committed to Git.
 - Copy `private-fonts.manifest.example.json` to that directory as `sources.json` together with the matching font files. The service accepts only the ten named families, requires `authorized: true`, rejects symlinks and unsafe filenames, and verifies every SHA-256 at startup.
 - Selection, selected file SHA-256 values, and the complete private-bundle fingerprint are frozen in the SQLite job payload in the same transaction that creates the job. Recovery and retries consume only this frozen provenance and fail closed if a selected file changes.
