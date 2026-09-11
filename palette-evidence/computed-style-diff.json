@@ -1,0 +1,2721 @@
+{
+  "templates": [
+    {
+      "template": "v01",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(247, 245, 236)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(120, 152, 34)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(247, 245, 236)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(247, 245, 236)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(247, 245, 236)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(248, 247, 239)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(120, 152, 34)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(248, 247, 239)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(248, 247, 239)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(248, 247, 239)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(66, 109, 36)",
+              "rgb(255, 251, 234)"
+            ],
+            "backgroundColor": [
+              "rgb(245, 244, 238)",
+              "rgb(71, 1, 37)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(66, 109, 36)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(66, 109, 36)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(66, 109, 36)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(66, 109, 36)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v02",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "outlineColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "textDecorationColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 4, 58)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 4, 58)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 4, 58)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 4, 58)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "outlineColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ],
+            "textDecorationColor": [
+              "rgb(245, 106, 0)",
+              "rgb(255, 4, 58)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v03",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(189, 232, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(11, 11, 11)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(189, 232, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(189, 232, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(189, 232, 255)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "backgroundColor": [
+              "rgb(159, 38, 55)",
+              "rgb(105, 13, 173)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 213, 30)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 213, 30)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(255, 213, 30)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 213, 30)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v04",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "backgroundColor": [
+              "rgb(255, 217, 22)",
+              "rgb(71, 23, 109)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 217, 35)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v05",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(244, 247, 242)",
+              "rgb(240, 255, 12)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(32, 52, 73)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(244, 247, 242)",
+              "rgb(240, 255, 12)"
+            ],
+            "outlineColor": [
+              "rgb(244, 247, 242)",
+              "rgb(240, 255, 12)"
+            ],
+            "textDecorationColor": [
+              "rgb(244, 247, 242)",
+              "rgb(240, 255, 12)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(244, 247, 242)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(32, 52, 73)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(244, 247, 242)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(244, 247, 242)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(244, 247, 242)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 248, 217)",
+              "rgb(240, 255, 12)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(38, 57, 74)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 248, 217)",
+              "rgb(240, 255, 12)"
+            ],
+            "outlineColor": [
+              "rgb(255, 248, 217)",
+              "rgb(240, 255, 12)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 248, 217)",
+              "rgb(240, 255, 12)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 224, 0)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(38, 62, 50)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 224, 0)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 224, 0)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 224, 0)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(38, 54, 45)",
+              "rgb(240, 255, 12)"
+            ],
+            "backgroundColor": [
+              "rgb(244, 201, 0)",
+              "rgb(255, 0, 134)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(38, 54, 45)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(38, 54, 45)",
+              "rgb(240, 255, 12)"
+            ],
+            "outlineColor": [
+              "rgb(38, 54, 45)",
+              "rgb(240, 255, 12)"
+            ],
+            "textDecorationColor": [
+              "rgb(38, 54, 45)",
+              "rgb(240, 255, 12)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v06",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 254, 238)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 251, 220)",
+              "rgb(255, 254, 238)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(51, 51, 51)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 251, 220)",
+              "rgb(255, 254, 238)"
+            ],
+            "outlineColor": [
+              "rgb(255, 251, 220)",
+              "rgb(255, 254, 238)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 251, 220)",
+              "rgb(255, 254, 238)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 227, 38)",
+              "rgb(255, 254, 238)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 227, 38)",
+              "rgb(255, 254, 238)"
+            ],
+            "outlineColor": [
+              "rgb(255, 227, 38)",
+              "rgb(255, 254, 238)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 227, 38)",
+              "rgb(255, 254, 238)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(9, 9, 9)",
+              "rgb(255, 254, 238)"
+            ],
+            "backgroundColor": [
+              "rgb(255, 213, 26)",
+              "rgb(78, 137, 102)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(9, 9, 9)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(9, 9, 9)",
+              "rgb(255, 254, 238)"
+            ],
+            "outlineColor": [
+              "rgb(9, 9, 9)",
+              "rgb(255, 254, 238)"
+            ],
+            "textDecorationColor": [
+              "rgb(9, 9, 9)",
+              "rgb(255, 254, 238)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v07",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 233, 190)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "outlineColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "textDecorationColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 213, 28)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(16, 16, 16)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 213, 28)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 213, 28)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 213, 28)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 213, 28)",
+              "rgb(254, 1, 154)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(16, 16, 16)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 213, 28)",
+              "rgb(254, 1, 154)"
+            ],
+            "outlineColor": [
+              "rgb(255, 213, 28)",
+              "rgb(254, 1, 154)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 213, 28)",
+              "rgb(254, 1, 154)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(212, 20, 13)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 233, 190)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(212, 20, 13)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(212, 20, 13)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(212, 20, 13)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 233, 190)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "outlineColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ],
+            "textDecorationColor": [
+              "rgb(212, 20, 13)",
+              "rgb(254, 1, 154)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v08",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "outlineColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "outlineColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 215, 25)",
+              "rgb(253, 235, 85)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 235, 85)"
+            ],
+            "backgroundColor": [
+              "rgb(255, 215, 25)",
+              "rgb(24, 90, 86)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 235, 85)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 235, 85)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 235, 85)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v09",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "outlineColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(186, 240, 189)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(35, 70, 41)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(186, 240, 189)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(186, 240, 189)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(186, 240, 189)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(250, 222, 31)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(250, 222, 31)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(250, 222, 31)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(250, 222, 31)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(165, 237, 122)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(35, 70, 41)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(165, 237, 122)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(165, 237, 122)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(165, 237, 122)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "outlineColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 240, 168)",
+              "rgb(250, 222, 31)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v10",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 216, 25)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 216, 25)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 216, 25)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 216, 25)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 96, 71)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v11",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(34, 34, 34)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(34, 34, 34)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(240, 220, 68)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(17, 17, 17)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(216, 36, 36)",
+              "rgb(18, 242, 253)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(216, 36, 36)",
+              "rgb(18, 242, 253)"
+            ],
+            "outlineColor": [
+              "rgb(216, 36, 36)",
+              "rgb(18, 242, 253)"
+            ],
+            "textDecorationColor": [
+              "rgb(216, 36, 36)",
+              "rgb(18, 242, 253)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v12",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 255, 0)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 255, 0)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 255, 0)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 255, 0)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "outlineColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "outlineColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 224, 54)",
+              "rgb(255, 255, 0)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v13",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 225, 34)",
+              "rgb(0, 229, 146)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 225, 34)",
+              "rgb(0, 229, 146)"
+            ],
+            "outlineColor": [
+              "rgb(255, 225, 34)",
+              "rgb(0, 229, 146)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 225, 34)",
+              "rgb(0, 229, 146)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 225, 34)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 225, 34)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 225, 34)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 225, 34)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(0, 229, 146)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(0, 229, 146)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(0, 229, 146)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(0, 229, 146)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(24, 241, 76)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(24, 241, 76)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(24, 241, 76)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(24, 241, 76)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(24, 241, 76)",
+              "rgb(0, 229, 146)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(24, 241, 76)",
+              "rgb(0, 229, 146)"
+            ],
+            "outlineColor": [
+              "rgb(24, 241, 76)",
+              "rgb(0, 229, 146)"
+            ],
+            "textDecorationColor": [
+              "rgb(24, 241, 76)",
+              "rgb(0, 229, 146)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v14",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(168, 228, 162)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(49, 90, 49)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(168, 228, 162)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(168, 228, 162)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(168, 228, 162)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(165, 233, 147)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(49, 90, 49)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(165, 233, 147)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(165, 233, 147)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(165, 233, 147)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 242, 172)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 242, 172)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 242, 172)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 242, 172)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v15",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(8, 252, 46)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v16",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 241, 175)",
+              "rgb(253, 116, 45)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 241, 175)",
+              "rgb(253, 116, 45)"
+            ],
+            "outlineColor": [
+              "rgb(255, 241, 175)",
+              "rgb(253, 116, 45)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 241, 175)",
+              "rgb(253, 116, 45)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 240, 176)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(253, 116, 45)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "v17",
+      "elements": [
+        {
+          "tag": "top1",
+          "changed": {
+            "color": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "outlineColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(216, 12, 12)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "top3",
+          "changed": {
+            "color": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "outlineColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom1",
+          "changed": {
+            "color": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(17, 17, 17)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "outlineColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 219, 22)",
+              "rgb(251, 255, 242)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "bottom2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(216, 12, 12)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(251, 255, 242)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "nine-grid",
+      "elements": [
+        {
+          "tag": "headline",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "textShadow": [
+              "rgb(0, 0, 0) 5px 6px 3px",
+              "rgb(101, 131, 224) 5px 6px 3px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "title",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(204, 164, 227)"
+            ],
+            "textShadow": [
+              "rgb(0, 0, 0) 5px 6px 3px",
+              "rgb(101, 131, 224) 5px 6px 3px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "tagline",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textShadow": [
+              "rgb(0, 0, 0) 3px 4px 2px",
+              "rgb(101, 131, 224) 3px 4px 2px"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "triple-strip",
+      "elements": [
+        {
+          "tag": "title",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(242, 225, 255)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(20, 35, 52)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(242, 225, 255)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(242, 225, 255)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(242, 225, 255)"
+            ],
+            "textShadow": [
+              "rgb(237, 83, 197) -4px -3px 0px, rgb(38, 201, 255) 5px 5px 0px, rgb(11, 113, 174) 11px 9px 0px",
+              "rgb(97, 172, 76) -4px -3px 0px, rgb(242, 225, 255) 5px 5px 0px, rgb(16, 24, 32) 11px 9px 0px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "subtitle",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(20, 35, 52)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textShadow": [
+              "rgb(185, 246, 255) -3px -3px 0px, rgb(32, 189, 255) 4px 4px 0px, rgb(21, 61, 119) 7px 6px 0px",
+              "rgb(97, 172, 76) -3px -3px 0px, rgb(242, 225, 255) 4px 4px 0px, rgb(16, 24, 32) 7px 6px 0px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "ctaLine1",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(20, 35, 52)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textShadow": [
+              "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
+              "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "ctaLine2",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(20, 35, 52)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textShadow": [
+              "rgb(38, 157, 200) 3px 4px 0px, rgb(35, 88, 124) 7px 7px 1px",
+              "rgb(97, 172, 76) 3px 4px 0px, rgb(16, 24, 32) 7px 7px 1px"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    },
+    {
+      "template": "yellow-banner",
+      "elements": [
+        {
+          "tag": "banner",
+          "changed": {
+            "backgroundColor": [
+              "rgb(250, 225, 8)",
+              "rgb(233, 122, 70)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "title",
+          "changed": {
+            "color": [
+              "rgb(0, 0, 0)",
+              "rgb(16, 24, 32)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(16, 24, 32)"
+            ],
+            "borderColor": [
+              "rgb(0, 0, 0)",
+              "rgb(16, 24, 32)"
+            ],
+            "outlineColor": [
+              "rgb(0, 0, 0)",
+              "rgb(16, 24, 32)"
+            ],
+            "textDecorationColor": [
+              "rgb(0, 0, 0)",
+              "rgb(16, 24, 32)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "subtitle1",
+          "changed": {
+            "color": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "outlineColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "textDecorationColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "subtitle2",
+          "changed": {
+            "color": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "outlineColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "textDecorationColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "sourceLabel",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "body-panel",
+          "changed": {
+            "backgroundColor": [
+              "rgba(0, 0, 0, 0.42)",
+              "rgba(16, 24, 32, 0.42)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "body",
+          "changed": {
+            "color": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "borderColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "outlineColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ],
+            "textDecorationColor": [
+              "rgb(255, 255, 255)",
+              "rgb(255, 251, 234)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "cta",
+          "changed": {
+            "color": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "webkitTextStrokeColor": [
+              "rgb(0, 0, 0)",
+              "rgb(8, 8, 8)"
+            ],
+            "borderColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "outlineColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ],
+            "textDecorationColor": [
+              "rgb(250, 225, 8)",
+              "rgb(144, 224, 214)"
+            ]
+          },
+          "violations": []
+        }
+      ]
+    }
+  ],
+  "violations": []
+}
