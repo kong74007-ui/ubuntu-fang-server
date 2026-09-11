@@ -47,7 +47,7 @@ SHA256_FIELDS = ("sha256", "SHA256")
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 20_000
 SELECTION_CONTRACT_VERSION = 2
-CLIP_CONTRACT_VERSION = 1
+CLIP_CONTRACT_VERSION = 2
 MAX_MATERIAL_DURATION_SECONDS = 30 * 60
 MAX_CLIP_SLOTS_PER_SOURCE = 600
 MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
@@ -78,7 +78,7 @@ ROUND_ROBIN_RECENT_GROUP_PENALTY = (
     + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
 )
 MIN_CLIP_SECONDS = 2.0
-MAX_CLIP_SECONDS = 3.0
+MAX_CLIP_SECONDS = 4.0
 CLIP_SLOT_SECONDS = 3.0
 CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -244,38 +244,44 @@ def _clip_duration(value: Any) -> float | None:
     if value in (None, ""):
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("clip_duration_seconds must be between 2 and 3")
+        raise ValueError("clip_duration_seconds must be between 2 and 4")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
-            "clip_duration_seconds must be between 2 and 3"
+            "clip_duration_seconds must be between 2 and 4"
         ) from exc
     if (
         not math.isfinite(parsed)
         or not MIN_CLIP_SECONDS <= parsed <= MAX_CLIP_SECONDS
     ):
-        raise ValueError("clip_duration_seconds must be between 2 and 3")
+        raise ValueError("clip_duration_seconds must be between 2 and 4")
     return round(parsed, 6)
 
 
 def _material_candidates(
     material: Material, clip_duration: float | None,
+    minimum_source_duration: float | None = None,
 ) -> tuple[MaterialCandidate, ...]:
     if material.media_type != "video" or clip_duration is None:
         return (MaterialCandidate(material, material.sha256),)
-    available = float(material.duration_seconds or 0) - CLIP_SAFETY_SECONDS
+    source_duration = float(material.duration_seconds or 0)
+    if (
+        minimum_source_duration is not None
+        and source_duration + 0.001 < minimum_source_duration
+    ):
+        return ()
+    available = source_duration - CLIP_SAFETY_SECONDS
     if available + 0.001 < clip_duration:
         return ()
-    slot_count = max(1, int(math.floor(
-        available / CLIP_SLOT_SECONDS + 1e-9
-    )))
+    slot_span = max(CLIP_SLOT_SECONDS, clip_duration)
+    slot_count = max(1, int(math.floor(available / slot_span + 1e-9)))
     if slot_count > MAX_CLIP_SLOTS_PER_SOURCE:
         raise MaterialLibraryError("material clip slot limit exceeded")
-    occupied = CLIP_SLOT_SECONDS * slot_count if slot_count > 1 else clip_duration
+    occupied = slot_span * slot_count if slot_count > 1 else clip_duration
     leading = max(0.0, (available - occupied) / 2)
     inset = (
-        (CLIP_SLOT_SECONDS - clip_duration) / 2
+        (slot_span - clip_duration) / 2
         if slot_count > 1 else 0.0
     )
     result = []
@@ -287,9 +293,9 @@ def _material_candidates(
             material=material,
             usage_key=clip_id,
             clip_start_seconds=round(
-                leading + inset + slot_index * CLIP_SLOT_SECONDS, 3,
+                leading + inset + slot_index * slot_span, 3,
             ),
-            clip_duration_seconds=round(clip_duration, 3),
+            clip_duration_seconds=round(clip_duration, 6),
             clip_slot_index=slot_index + 1,
             clip_slot_count=slot_count,
         ))
@@ -1089,6 +1095,21 @@ class MaterialLibrary:
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
             media_type = _text(scene.get("media_type") or "visual")
             clip_duration = _clip_duration(scene.get("clip_duration_seconds"))
+            minimum_source_duration = _duration(
+                scene.get("minimum_source_duration_seconds")
+            )
+            if (
+                minimum_source_duration is not None
+                and (
+                    clip_duration is None
+                    or minimum_source_duration + 0.001
+                    < clip_duration + CLIP_SAFETY_SECONDS
+                )
+            ):
+                raise ValueError(
+                    "minimum_source_duration_seconds must cover the clip "
+                    "duration and safety margin"
+                )
             allowed_types = {"image", "video"} if media_type == "visual" else {media_type}
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
@@ -1100,7 +1121,7 @@ class MaterialLibrary:
                 ):
                     continue
                 for candidate in _material_candidates(
-                    material, clip_duration,
+                    material, clip_duration, minimum_source_duration,
                 ):
                     virtual_candidate_ids.add(candidate.usage_key)
                     if (

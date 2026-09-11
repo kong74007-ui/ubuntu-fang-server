@@ -4,7 +4,7 @@ set -euo pipefail
 UPSTREAM_URL="https://github.com/kong74007-ui/script-to-matrix-video.git"
 UPSTREAM_COMMIT="243d5c168d9ab2d95daf04fef5c5e75924114eb8"
 REFERENCE_UPSTREAM_COMMIT="9040a24139372f14346816cf42a97271767a0777"
-NINE_GRID_UPSTREAM_COMMIT="fb75a8d24116c93b8958c2e61b0c1ffc0b315e9a"
+NINE_GRID_UPSTREAM_COMMIT="81da5e926aad0d2166845ee0b398282a21ab09e7"
 HYPERFRAMES_VERSION="0.8.16"
 NINE_GRID_HYPERFRAMES_VERSION="0.8.33"
 GSAP_VERSION="3.14.2"
@@ -303,7 +303,10 @@ NINE_GRID_UPSTREAM="${RELEASE}/nine-grid-upstream"
 git clone --filter=blob:none --no-checkout "${UPSTREAM_URL}" "${NINE_GRID_UPSTREAM}"
 git -C "${NINE_GRID_UPSTREAM}" sparse-checkout init --cone
 git -C "${NINE_GRID_UPSTREAM}" sparse-checkout set \
-  script-to-matrix-video/assets/templates/nine-grid-reveal
+  script-to-matrix-video/assets/templates/nine-grid-reveal \
+  script-to-matrix-video/assets/templates/triple-strip-shutter \
+  script-to-matrix-video/assets/templates/yellow-banner-zoom \
+  script-to-matrix-video/scripts
 git -C "${NINE_GRID_UPSTREAM}" checkout --detach "${NINE_GRID_UPSTREAM_COMMIT}"
 git -C "${NINE_GRID_UPSTREAM}" reset --hard "${NINE_GRID_UPSTREAM_COMMIT}"
 git -C "${NINE_GRID_UPSTREAM}" clean -fdx
@@ -314,6 +317,8 @@ if [[ "$(sha256sum "${NINE_GRID_ADAPTER_SOURCE}" | awk '{print $1}')" != "${NINE
   echo "nine-grid adapter hash mismatch" >&2; exit 1
 fi
 NINE_GRID_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/nine-grid-reveal"
+TRIPLE_STRIP_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/triple-strip-shutter"
+YELLOW_BANNER_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/yellow-banner-zoom"
 python3 "${NINE_GRID_ADAPTER_SOURCE}" --root "${NINE_GRID_ROOT}"
 NINE_GRID_ROOT="${NINE_GRID_ROOT}" NINE_GRID_VERSION="${NINE_GRID_HYPERFRAMES_VERSION}" python3 - <<'PY'
 import hashlib
@@ -361,6 +366,8 @@ for number in range(1, 4):
         index,
     )
 PY
+python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_triple_strip.py"
+python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_yellow_banner.py"
 NINE_GRID_RUNTIME="${RELEASE}/nine-grid-runtime"
 install -d -o root -g root -m 0755 "${NINE_GRID_RUNTIME}"
 if [[ "$(sha256sum "${NINE_GRID_PACKAGE_SOURCE}" | awk '{print $1}')" != "${NINE_GRID_PACKAGE_SHA256}" ]] || \
@@ -394,6 +401,10 @@ BUILD_ID="$(printf '%s\n' \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/index.html" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/assets/audio/reference-bgm.m4a" | awk '{print $1}')" \
+  "$(sha256sum "${TRIPLE_STRIP_ROOT}/index.html" | awk '{print $1}')" \
+  "$(sha256sum "${TRIPLE_STRIP_ROOT}/assets/audio/bound-bgm.m4a" | awk '{print $1}')" \
+  "$(sha256sum "${YELLOW_BANNER_ROOT}/index.html" | awk '{print $1}')" \
+  "$(sha256sum "${YELLOW_BANNER_ROOT}/assets/audio/bound-bgm.m4a" | awk '{print $1}')" \
   "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" \
   | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
@@ -411,6 +422,8 @@ MATRIX_TEMPLATE_DATA_ROOT=${STATE_ROOT}
 MATRIX_TEMPLATE_SKILL_ROOT=${SOURCE_LINK}/upstream/script-to-matrix-video
 MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT=${SOURCE_LINK}/reference-upstream/script-to-matrix-video
 MATRIX_TEMPLATE_NINE_GRID_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/nine-grid-reveal
+MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/triple-strip-shutter
+MATRIX_TEMPLATE_YELLOW_BANNER_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
 MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
 MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
@@ -435,6 +448,8 @@ else
   ENV_INPUT="${ENV_FILE}" ENV_OUTPUT="${env_next}" \
   REFERENCE_ROOT="${SOURCE_LINK}/reference-upstream/script-to-matrix-video" \
   NINE_GRID_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/nine-grid-reveal" \
+  TRIPLE_STRIP_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/triple-strip-shutter" \
+  YELLOW_BANNER_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom" \
   NINE_GRID_CLI_VALUE="${SOURCE_LINK}/nine-grid-runtime/hyperframes" \
   HYPERFRAMES_CLI_VALUE="${HYPERFRAMES_CLI}" \
   HYPERFRAMES_GSAP_VALUE="${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js" \
@@ -448,6 +463,8 @@ settings = {
     "MATRIX_TEMPLATE_CONCURRENCY": "5",
     "MATRIX_TEMPLATE_REFERENCE_SKILL_ROOT": os.environ["REFERENCE_ROOT"],
     "MATRIX_TEMPLATE_NINE_GRID_ROOT": os.environ["NINE_GRID_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT": os.environ["TRIPLE_STRIP_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_YELLOW_BANNER_ROOT": os.environ["YELLOW_BANNER_ROOT_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CLI": os.environ["HYPERFRAMES_CLI_VALUE"],
     "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI": os.environ["NINE_GRID_CLI_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_GSAP": os.environ["HYPERFRAMES_GSAP_VALUE"],
@@ -499,7 +516,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==20 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-pexels-middle-v1" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==1 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==2 and d.get("fixed_skill_hyperframes_version")=="0.8.33" and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-pexels-middle-v1" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==2 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"
