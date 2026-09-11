@@ -132,13 +132,13 @@ NINE_GRID_BOUND_BGM_SHA256 = (
 )
 NINE_GRID_TOP_FONT = {
     "file": "NotoSerifSC-Variable.ttf", "weight": 900,
-    "maximum": 82, "minimum": 46, "width": 800,
+    "maximum": 82, "minimum": 50, "width": 800,
     "height": 340, "line_height": 1.08, "max_lines": 4,
 }
 NINE_GRID_BOTTOM_FONT = {
     "file": "NotoSansSC-Variable.ttf", "weight": 900,
-    "maximum": 58, "minimum": 40, "width": 930,
-    "height": 250, "line_height": 1.12, "max_lines": 4,
+    "maximum": 58, "minimum": 50, "width": 930,
+    "height": 560, "line_height": 1.12, "max_lines": 10,
 }
 FIXED_SKILL_HYPERFRAMES_VERSION = "0.8.33"
 MOTION_V2_HYPERFRAMES_VERSION = "0.8.34"
@@ -184,15 +184,15 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.065,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 738,
-                "max_lines": 3, "stroke_px": 4,
+                "max_lines": 6, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 26,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 750, "max_width_px": 620,
-                "max_lines": 4, "stroke_px": 4,
+                "max_lines": 10, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -205,20 +205,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 78, "minimum": 38, "width": 738,
-                "height": 135, "line_height": 1.05, "max_lines": 3,
+                "maximum": 78, "minimum": 50, "width": 738,
+                "height": 315, "line_height": 1.05, "max_lines": 6,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "ctaLine1": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 69, "minimum": 26, "width": 620,
-                "height": 94, "line_height": 1.1, "max_lines": 2,
+                "maximum": 69, "minimum": 50, "width": 620,
+                "height": 275, "line_height": 1.1, "max_lines": 5,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "ctaLine2": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 69, "minimum": 26, "width": 620,
-                "height": 94, "line_height": 1.1, "max_lines": 2,
+                "maximum": 69, "minimum": 50, "width": 620,
+                "height": 275, "line_height": 1.1, "max_lines": 5,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
         },
@@ -253,19 +253,19 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "max_lines": 2,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 900,
                 "max_lines": 2, "stroke_px": 9,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 900,
                 "max_lines": 2, "stroke_px": 9,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 32,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 750, "max_width_px": 787,
-                "max_lines": 4,
+                "max_lines": 5,
             },
         },
         "field_specs": {
@@ -276,24 +276,24 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle1": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 63, "minimum": 38, "width": 900,
-                "height": 78, "line_height": 1.0, "max_lines": 2,
+                "maximum": 63, "minimum": 50, "width": 900,
+                "height": 100, "line_height": 1.0, "max_lines": 2,
                 "stroke_px": 9,
             },
             "subtitle2": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 63, "minimum": 38, "width": 900,
-                "height": 78, "line_height": 1.0, "max_lines": 2,
+                "maximum": 63, "minimum": 50, "width": 900,
+                "height": 100, "line_height": 1.0, "max_lines": 2,
                 "stroke_px": 9,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 48, "minimum": 32, "width": 787,
-                "height": 173, "line_height": 1.15625, "max_lines": 3,
+                "maximum": 50, "minimum": 50, "width": 787,
+                "height": 230, "line_height": 1.15, "max_lines": 4,
             },
             "cta": {
                 "family": "Noto Serif SC", "weight": 700,
-                "maximum": 45, "minimum": 30, "width": 882,
+                "maximum": 50, "minimum": 50, "width": 882,
                 "height": 90, "line_height": 1.1, "max_lines": 1,
                 "stroke_px": 6,
             },
@@ -355,21 +355,21 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.025,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 46,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 42,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
-                "max_lines": 4, "stroke_px": 10,
+                "max_lines": 5, "stroke_px": 10,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -382,20 +382,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 82, "minimum": 46, "width": 996,
+                "maximum": 82, "minimum": 50, "width": 996,
                 "height": 184, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 62, "minimum": 38, "width": 996,
+                "maximum": 62, "minimum": 50, "width": 996,
                 "height": 140, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "cta": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 86, "minimum": 42, "width": 996,
-                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "maximum": 86, "minimum": 50, "width": 996,
+                "height": 290, "line_height": 1.16, "max_lines": 5,
                 "stroke_px": 10, "letter_spacing_em": -0.025,
             },
         },
@@ -440,21 +440,21 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.025,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 46,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 42,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
-                "max_lines": 4, "stroke_px": 10,
+                "max_lines": 5, "stroke_px": 10,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -467,20 +467,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 82, "minimum": 46, "width": 996,
+                "maximum": 82, "minimum": 50, "width": 996,
                 "height": 184, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 62, "minimum": 38, "width": 996,
+                "maximum": 62, "minimum": 50, "width": 996,
                 "height": 140, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "cta": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 86, "minimum": 42, "width": 996,
-                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "maximum": 86, "minimum": 50, "width": 996,
+                "height": 290, "line_height": 1.16, "max_lines": 5,
                 "stroke_px": 10, "letter_spacing_em": -0.025,
             },
         },
@@ -2882,7 +2882,7 @@ class MatrixTemplateService:
             or layout.get("mode") != "semantic-then-width"
             or layout.get("semantic_layout_required") is not True
             or layout.get("top_max_lines") != 4
-            or layout.get("bottom_max_lines") != 4
+            or layout.get("bottom_max_lines") != 10
             or layout.get("hide_edge_punctuation") is not True
             or layout.get("truncate") is not False
         ):
@@ -3490,7 +3490,7 @@ class MatrixTemplateService:
         if not bottom_lines:
             raise ValueError("底部行动文案无法在完整语义边界内排入模板")
         if template_id == TRIPLE_STRIP_TEMPLATE_ID:
-            split = min(2, max(1, math.ceil(len(bottom_lines) / 2)))
+            split = max(1, math.ceil(len(bottom_lines) / 2))
             fields = {
                 "title": display_text["top1"],
                 "subtitle": display_text["top2"],
@@ -5770,6 +5770,9 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#ctaLine1,#ctaLine2{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+.subtitle-box{{height:315px!important}}
+.footer{{top:1180px!important;height:558px!important}}
+.footer-row{{height:275px!important}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1!important}}
 #subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.05!important}}
 #ctaLine1{{font-size:{sizes["ctaLine1"]}px!important;line-height:1.1!important}}
@@ -5786,11 +5789,13 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty,#sourceLabel:empty,.body-panel:has(#body:empty),.footer:has(#cta:empty){{display:none!important}}
 .background{{filter:blur(14px)!important;transform:scale(1.08)!important}}
+.subtitles{{height:200px!important}}
+.body-panel{{top:1290px!important;height:260px!important}}
 #title,#subtitle1,#subtitle2,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1.05!important}}
 #subtitle1{{font-size:{sizes["subtitle1"]}px!important;line-height:1!important}}
 #subtitle2{{font-size:{sizes["subtitle2"]}px!important;line-height:1!important}}
-#body{{font-size:{sizes["body"]}px!important;line-height:1.15625!important}}
+#body{{font-size:{sizes["body"]}px!important;line-height:1.15!important}}
 #cta{{font-size:{sizes["cta"]}px!important;line-height:1.1!important}}
 </style>'''
         elif template_id in MOTION_V2_TEMPLATE_IDS:

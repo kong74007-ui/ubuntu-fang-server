@@ -14,7 +14,7 @@ HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
 REFERENCE_LAYOUT_PATCH_SHA256="937507be0acff2132c8e5dac3ad89590795cba17db65cb168588d9b0381d3a2e"
-NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"
+NINE_GRID_ADAPTER_SHA256="fee9f1ab652b10e1bc6c26ef53ccb22901d6750c8a4bcff83ea31f98da99699d"
 NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"
 NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"
 MOTION_V2_PACKAGE_SHA256="3f0d57a4c19af984134511451ca7acc402cab99d845107b5d316ed466466b65e"
@@ -363,7 +363,7 @@ assert manifest["text_fields"] == ["top_text", "bottom_text"]
 assert manifest["text_limits"] == {"top_text": 60, "bottom_text": 80}
 assert manifest["text_layout"] == {
     "mode": "semantic-then-width", "semantic_layout_required": True,
-    "top_max_lines": 4, "bottom_max_lines": 4,
+    "top_max_lines": 4, "bottom_max_lines": 10,
     "hide_edge_punctuation": True, "truncate": False,
 }
 required = (

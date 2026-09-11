@@ -4196,6 +4196,15 @@ class NineGridTemplateTests(unittest.TestCase):
         self.bgm_hash_patch.stop()
         self.temp.cleanup()
 
+    def test_generated_text_never_shrinks_below_fifty_pixels(self):
+        for spec in (matrix.NINE_GRID_TOP_FONT, matrix.NINE_GRID_BOTTOM_FONT):
+            self.assertGreaterEqual(spec["minimum"], 50)
+            self.assertGreaterEqual(spec["maximum"], spec["minimum"])
+            self.assertGreaterEqual(
+                spec["height"] + 0.001,
+                spec["minimum"] * spec["line_height"] * spec["max_lines"],
+            )
+
     def _write_nine_grid_fixture(self, root: Path) -> None:
         (root / "assets/audio").mkdir(parents=True)
         (root / "assets/fonts").mkdir(parents=True)
@@ -4257,7 +4266,7 @@ class NineGridTemplateTests(unittest.TestCase):
             "text_layout": {
                 "mode": "semantic-then-width",
                 "semantic_layout_required": True,
-                "top_max_lines": 4, "bottom_max_lines": 4,
+                "top_max_lines": 4, "bottom_max_lines": 10,
                 "hide_edge_punctuation": True, "truncate": False,
             },
             "bgm": {
@@ -4601,6 +4610,25 @@ class FixedSkillTemplateTests(unittest.TestCase):
         self.config_patch.stop()
         self.temp.cleanup()
 
+    def test_generated_text_never_shrinks_below_fifty_pixels(self):
+        for template_id, config in self.configs.items():
+            with self.subTest(template_id=template_id):
+                self.assertTrue(all(
+                    item["font_size_px"] >= 50
+                    for item in config["semantic"].values()
+                ))
+                for field, spec in config["field_specs"].items():
+                    with self.subTest(field=field):
+                        self.assertGreaterEqual(spec["minimum"], 50)
+                        self.assertGreaterEqual(
+                            spec["maximum"], spec["minimum"],
+                        )
+                        self.assertGreaterEqual(
+                            spec["height"] + 0.001,
+                            spec["minimum"] * spec["line_height"]
+                            * spec["max_lines"],
+                        )
+
     def _write_template_fixture(self, template_id: str, root: Path) -> None:
         config = self.configs[template_id]
         (root / "assets/fonts").mkdir(parents=True)
@@ -4740,7 +4768,14 @@ class FixedSkillTemplateTests(unittest.TestCase):
     @staticmethod
     def text_width(value: str, metrics: dict) -> float:
         display = matrix._hide_reference_edge_punctuation(value)
-        return len(display) * int(metrics["font_size_px"])
+        size = int(metrics["font_size_px"])
+        spacing = max(0, len(display) - 1) * size * float(
+            metrics.get("letter_spacing_em", 0)
+        )
+        return (
+            len(display) * size + spacing
+            + 2 * int(metrics.get("stroke_px") or 0)
+        )
 
     def test_catalog_exposes_four_fixed_templates_after_existing_catalog(self):
         self.assertEqual(4, len(self.service.catalog))
@@ -4800,6 +4835,29 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     self.assertEqual(
                         bottom, contract["text"]["source"]["bottom_text"],
                     )
+                    self.assertTrue(all(
+                        size >= 50
+                        for size in contract["text"]["font_size_px"].values()
+                    ))
+                    for field, spec in self.configs[template_id][
+                        "field_specs"
+                    ].items():
+                        self.assertLessEqual(
+                            len([
+                                line for line in contract["text"]["display"][
+                                    field
+                                ].splitlines() if line
+                            ]),
+                            spec["max_lines"],
+                        )
+                    if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
+                        self.assertEqual(
+                            [5, 5],
+                            [
+                                len(contract["text"]["display"][field].splitlines())
+                                for field in ("ctaLine1", "ctaLine2")
+                            ],
+                        )
                     self.assertFalse(contract["bgm_enabled"])
                     self.assertEqual(
                         self.configs[template_id]["duration"],
