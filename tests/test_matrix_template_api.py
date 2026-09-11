@@ -5328,9 +5328,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     )
                     self.assertIn('data-volume="0"', index_html)
                     self.assertIn('id="matrix-fixed-skill-copy"', index_html)
-                    if template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
+                    if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
+                        self.assertIn(
+                            ".title-box{top:8%!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".subtitle-box{top:424px!important;"
+                            "height:315px!important}", index_html,
+                        )
+                        self.assertIn(
+                            "bottom:15%!important;height:558px!important",
+                            index_html,
+                        )
+                    elif template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
                         self.assertNotIn("data-color-grading=", index_html)
                         self.assertIn("filter:blur(14px)", index_html)
+                        self.assertIn(".banner{top:8%!important}", index_html)
+                        self.assertIn(
+                            ".body-panel{top:1250px!important;"
+                            "height:260px!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".footer{top:auto!important;"
+                            "bottom:15%!important}", index_html,
+                        )
+                    else:
+                        self.assertIn(
+                            ".top,#copy-top{top:8%!important}", index_html,
+                        )
+                        self.assertIn(
+                            "#cta{bottom:15%!important}", index_html,
+                        )
 
 
 class PexelsMaterialRoutingTests(unittest.TestCase):
