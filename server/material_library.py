@@ -78,7 +78,7 @@ ROUND_ROBIN_RECENT_GROUP_PENALTY = (
     + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
 )
 MIN_CLIP_SECONDS = 2.0
-MAX_CLIP_SECONDS = 3.0
+MAX_CLIP_SECONDS = 4.0
 CLIP_SLOT_SECONDS = 3.0
 CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -244,18 +244,18 @@ def _clip_duration(value: Any) -> float | None:
     if value in (None, ""):
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("clip_duration_seconds must be between 2 and 3")
+        raise ValueError("clip_duration_seconds must be between 2 and 4")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
-            "clip_duration_seconds must be between 2 and 3"
+            "clip_duration_seconds must be between 2 and 4"
         ) from exc
     if (
         not math.isfinite(parsed)
         or not MIN_CLIP_SECONDS <= parsed <= MAX_CLIP_SECONDS
     ):
-        raise ValueError("clip_duration_seconds must be between 2 and 3")
+        raise ValueError("clip_duration_seconds must be between 2 and 4")
     return round(parsed, 6)
 
 
@@ -267,15 +267,14 @@ def _material_candidates(
     available = float(material.duration_seconds or 0) - CLIP_SAFETY_SECONDS
     if available + 0.001 < clip_duration:
         return ()
-    slot_count = max(1, int(math.floor(
-        available / CLIP_SLOT_SECONDS + 1e-9
-    )))
+    slot_span = max(CLIP_SLOT_SECONDS, clip_duration)
+    slot_count = max(1, int(math.floor(available / slot_span + 1e-9)))
     if slot_count > MAX_CLIP_SLOTS_PER_SOURCE:
         raise MaterialLibraryError("material clip slot limit exceeded")
-    occupied = CLIP_SLOT_SECONDS * slot_count if slot_count > 1 else clip_duration
+    occupied = slot_span * slot_count if slot_count > 1 else clip_duration
     leading = max(0.0, (available - occupied) / 2)
     inset = (
-        (CLIP_SLOT_SECONDS - clip_duration) / 2
+        (slot_span - clip_duration) / 2
         if slot_count > 1 else 0.0
     )
     result = []
@@ -287,9 +286,9 @@ def _material_candidates(
             material=material,
             usage_key=clip_id,
             clip_start_seconds=round(
-                leading + inset + slot_index * CLIP_SLOT_SECONDS, 3,
+                leading + inset + slot_index * slot_span, 3,
             ),
-            clip_duration_seconds=round(clip_duration, 3),
+            clip_duration_seconds=round(clip_duration, 6),
             clip_slot_index=slot_index + 1,
             clip_slot_count=slot_count,
         ))

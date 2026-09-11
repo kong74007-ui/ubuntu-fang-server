@@ -39,6 +39,7 @@ MATERIAL_SELECTION_CONTRACT_VERSION = 2
 MATERIAL_CLIP_CONTRACT_VERSION = 1
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
+MAX_MATERIAL_CLIP_DURATION_SECONDS = 4.0
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
@@ -4109,27 +4110,36 @@ class MatrixTemplateService:
             reference.get("duration", payload["duration"])
             if isinstance(reference, dict) else payload["duration"]
         )
-        segment_duration = (
-            NINE_GRID_SELECTED_CLIP_SECONDS
-            if nine_grid_template or fixed_skill_template
-            else float(duration) / count
-        )
+        if fixed_skill_template:
+            clip_durations = [
+                round(frames / 30.0, 6)
+                for frames in FIXED_SKILL_TEMPLATE_CONFIGS[
+                    payload["template_id"]
+                ]["slot_frames"]
+            ]
+        else:
+            segment_duration = (
+                NINE_GRID_SELECTED_CLIP_SECONDS
+                if nine_grid_template else float(duration) / count
+            )
+            clip_durations = [segment_duration] * count
         reference_template = (
             payload.get("template_id") in self.reference_templates
             or nine_grid_template or fixed_skill_template
         )
         query = payload["top_text"] + " " + payload["bottom_text"]
         scenes = [{
-            "scene_id": "media_01", "query": query,
-            "purpose": "模板成片主视频", "media_type": "video",
-            "clip_duration_seconds": segment_duration,
-        }]
-        scenes.extend({
             "scene_id": f"media_{index:02d}", "query": query,
-            "purpose": "模板成片补充视频",
-            "media_type": "video" if reference_template or self.pexels_api_key else "visual",
-            "clip_duration_seconds": segment_duration,
-        } for index in range(2, count + 1))
+            "purpose": (
+                "模板成片主视频" if index == 1 else "模板成片补充视频"
+            ),
+            "media_type": (
+                "video"
+                if index == 1 or reference_template or self.pexels_api_key
+                else "visual"
+            ),
+            "clip_duration_seconds": clip_durations[index - 1],
+        } for index in range(1, count + 1)]
         if payload["bgm"] and not (
             nine_grid_template or fixed_skill_template
         ):
@@ -4186,14 +4196,14 @@ class MatrixTemplateService:
                     item.get("clip_start_seconds"),
                     0, MAX_MATERIAL_CLIP_START_SECONDS,
                 )
+                expected_duration = float(scene["clip_duration_seconds"])
                 duration = _bounded_float(
                     item.get("clip_duration_seconds"),
                     REFERENCE_MIN_SEGMENT_SECONDS,
-                    REFERENCE_MAX_SEGMENT_SECONDS,
+                    MAX_MATERIAL_CLIP_DURATION_SECONDS,
                 )
                 slot_index = item.get("clip_slot_index")
                 slot_count = item.get("clip_slot_count")
-                expected_duration = float(scene["clip_duration_seconds"])
                 if (
                     not SHA_RE.fullmatch(clip_id)
                     or start is None
@@ -4999,15 +5009,12 @@ class MatrixTemplateService:
             raise MatrixTemplateError("固定 Skill 模板素材切片参数无效")
         visible = frames / 30.0
         source_duration = self._reference_video_duration(source)
-        if source_duration + 0.001 < visible + REFERENCE_MEDIA_SAFETY_SECONDS:
+        if (
+            source_duration + 0.001
+            < float(start) + visible + REFERENCE_MEDIA_SAFETY_SECONDS
+        ):
             raise MatrixTemplateError("固定 Skill 模板素材时长不足")
-        actual_start = min(
-            float(start),
-            max(
-                0.0,
-                source_duration - visible - REFERENCE_MEDIA_SAFETY_SECONDS,
-            ),
-        )
+        actual_start = float(start)
         remaining = deadline_at - time.time()
         if remaining <= 0:
             raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -5099,6 +5106,9 @@ class MatrixTemplateService:
         selected_durations = [
             item.get("clip_duration_seconds") for item in materials
         ]
+        expected_durations = [
+            round(frames / 30.0, 6) for frames in config["slot_frames"]
+        ]
         if not all(
             not isinstance(start, bool)
             and isinstance(start, (int, float))
@@ -5106,8 +5116,10 @@ class MatrixTemplateService:
             and float(start) >= 0
             and not isinstance(duration, bool)
             and isinstance(duration, (int, float))
-            and abs(float(duration) - 3.0) <= 0.001
-            for start, duration in zip(selected_starts, selected_durations)
+            and abs(float(duration) - expected_duration) <= 0.000001
+            for start, duration, expected_duration in zip(
+                selected_starts, selected_durations, expected_durations,
+            )
         ):
             raise MatrixTemplateError("固定 Skill 模板素材切片契约无效")
         work_root = self.data_root / job_id
@@ -5172,6 +5184,11 @@ class MatrixTemplateService:
                     float(start), int(frames), int(height),
                     deadline_at=deadline_at,
                 ))
+            for item, actual_start, actual_duration in zip(
+                materials, actual_starts, expected_durations,
+            ):
+                item["clip_start_seconds"] = actual_start
+                item["clip_duration_seconds"] = actual_duration
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")

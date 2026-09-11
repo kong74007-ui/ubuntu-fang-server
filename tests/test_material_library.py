@@ -191,15 +191,33 @@ class MaterialLibraryTests(unittest.TestCase):
         library = self.library()
 
         for value in (
-            True, "2.5", 1.99, 3.01, float("nan"), 10 ** 400,
+            True, "2.5", 1.99, 4.01, float("nan"), 10 ** 400,
         ):
             with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError, "between 2 and 3",
+                ValueError, "between 2 and 4",
             ):
                 library.select([{
                     "scene_id": "s1", "media_type": "video",
                     "clip_duration_seconds": value,
                 }])
+
+    def test_long_fixed_slot_excludes_three_second_source(self):
+        self.add("three-seconds", media=".mp4", 时长秒=3.5)
+        expected = self.add("four-seconds", media=".mp4", 时长秒=4.2)
+
+        result = self.library().select([{
+            "scene_id": "fixed-slot", "media_type": "video",
+            "clip_duration_seconds": 3.966667,
+        }], seed="fixed-slot")
+
+        selected = result["materials"][0]
+        self.assertEqual(expected, selected["sha256"])
+        self.assertEqual(3.966667, selected["clip_duration_seconds"])
+        self.assertLessEqual(
+            selected["clip_start_seconds"]
+            + selected["clip_duration_seconds"],
+            4.1,
+        )
 
     def test_invalid_index_duration_fails_closed(self):
         invalid_values = (

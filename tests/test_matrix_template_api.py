@@ -4392,9 +4392,10 @@ class FixedSkillTemplateTests(unittest.TestCase):
             self.assertTrue(hyperframes)
             self.assertEqual(count, len(scenes))
             self.assertEqual({"video"}, {item["media_type"] for item in scenes})
-            self.assertEqual({3.0}, {
-                item["clip_duration_seconds"] for item in scenes
-            })
+            self.assertEqual(
+                [round(frames / 30.0, 6) for frames in config["slot_frames"]],
+                [item["clip_duration_seconds"] for item in scenes],
+            )
 
     def test_fixed_templates_use_only_the_owned_material_library(self):
         self.service.pexels_api_key = "configured-pexels-key"
@@ -4406,6 +4407,9 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 "duration": config["duration"], "bgm": True,
                 "_material_selection_contract_version": 2,
             }
+            durations = [
+                round(frames / 30.0, 6) for frames in config["slot_frames"]
+            ]
             materials = [{
                 "scene_id": f"media_{index:02d}",
                 "record_id": f"record-{index}",
@@ -4413,7 +4417,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 "media_type": "video", "match_level": "random",
                 "clip_id": format(index + 100, "064x"),
                 "clip_start_seconds": float(index),
-                "clip_duration_seconds": 3.0,
+                "clip_duration_seconds": durations[index - 1],
                 "clip_slot_index": 1, "clip_slot_count": 1,
             } for index in range(1, config["required_visuals"] + 1)]
             response = {
@@ -4436,6 +4440,63 @@ class FixedSkillTemplateTests(unittest.TestCase):
             self.assertEqual(
                 config["required_visuals"],
                 len(library.call_args.args[2]["scenes"]),
+            )
+            self.assertEqual(
+                durations,
+                [
+                    scene["clip_duration_seconds"]
+                    for scene in library.call_args.args[2]["scenes"]
+                ],
+            )
+
+    def test_fixed_template_rejects_legacy_three_second_slot_receipt(self):
+        template_id = matrix.TRIPLE_STRIP_TEMPLATE_ID
+        config = self.configs[template_id]
+        payload = {
+            "top_text": "活动标题", "bottom_text": "评论区扣888",
+            "template_id": template_id,
+            "duration": config["duration"], "bgm": False,
+            "_material_selection_contract_version": 2,
+        }
+        materials = [{
+            "scene_id": f"media_{index:02d}",
+            "record_id": f"record-{index}",
+            "sha256": format(index, "064x"),
+            "media_type": "video", "match_level": "random",
+            "clip_id": format(index + 100, "064x"),
+            "clip_start_seconds": float(index),
+            "clip_duration_seconds": 3.0,
+            "clip_slot_index": 1, "clip_slot_count": 1,
+        } for index in range(1, config["required_visuals"] + 1)]
+        response = {
+            "materials": materials,
+            "selection_contract_version": 2,
+            "clip_contract_version": 1,
+        }
+
+        with mock.patch.object(
+            self.service, "_library_request", return_value=response,
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "素材库返回的切片契约不完整",
+        ):
+            self.service._select_materials_once(payload, "d" * 32)
+
+    def test_fixed_clip_rejects_window_past_source_end_without_repositioning(self):
+        source = self.root / "short-fixed-source.mp4"
+        source.write_bytes(b"source")
+        destination = self.root / "fixed-output.mp4"
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=4.5,
+        ), mock.patch.object(
+            self.service, "_run_tracked_process",
+            side_effect=AssertionError("insufficient source must not render"),
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "固定 Skill 模板素材时长不足",
+        ):
+            self.service._prepare_fixed_skill_clip(
+                source, destination, 1.0, 117, 640,
+                deadline_at=time.time() + 30,
             )
 
     def test_render_stages_frozen_fields_media_and_optional_bgm(self):
@@ -4463,12 +4524,16 @@ class FixedSkillTemplateTests(unittest.TestCase):
                         template_id.replace("-", "")[:32].ljust(32, "1"),
                         payload,
                     )
+                    durations = [
+                        round(frames / 30.0, 6)
+                        for frames in config["slot_frames"]
+                    ]
                     materials = [{
                         "scene_id": f"media_{index:02d}",
                         "sha256": format(index, "064x"),
                         "media_type": "video",
                         "clip_start_seconds": float(index),
-                        "clip_duration_seconds": 3.0,
+                        "clip_duration_seconds": durations[index - 1],
                     } for index in range(1, config["required_visuals"] + 1)]
                     paths = []
                     for index in range(config["required_visuals"]):
@@ -4495,6 +4560,14 @@ class FixedSkillTemplateTests(unittest.TestCase):
                             materials, paths, deadline_at=time.time() + 60,
                         )
                     self.assertEqual(config["required_visuals"], len(prepared))
+                    self.assertEqual(
+                        list(zip(config["slot_frames"], durations)),
+                        [
+                            (frames, materials[index]["clip_duration_seconds"])
+                            for index, (_destination, _start, frames, _height)
+                            in enumerate(prepared)
+                        ],
+                    )
                     self.assertFalse(values["_bound_bgm"]["enabled"])
                     command = popen.call_args.args[0]
                     self.assertIn("--strict-variables", command)
