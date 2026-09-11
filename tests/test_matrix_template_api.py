@@ -1611,7 +1611,6 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
                 data=json.dumps({
                     "top_text": "素材服务版本检查",
                     "bottom_text": "评论区获取资料",
-                    "template_id": matrix.TRIPLE_STRIP_TEMPLATE_ID,
                 }).encode("utf-8"),
                 method="POST",
                 headers={"Authorization": "Bearer api-token"},
