@@ -503,7 +503,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         service._library_readiness_cache = (float("inf"), {
             "ready": True,
             "selection_contract_version": 2,
-            "clip_contract_version": 1,
+            "clip_contract_version": 2,
         })
         active = 0
         peak = 0
@@ -696,7 +696,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 })
             return {
                 "selection_contract_version": 2,
-                "clip_contract_version": 1,
+                "clip_contract_version": 2,
                 "materials": materials,
             }
 
@@ -845,7 +845,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_library_request", return_value={
                 "selection_contract_version": 2,
-                "clip_contract_version": 1,
+                "clip_contract_version": 2,
                 "materials": legacy_materials,
             },
         ), self.assertRaisesRegex(
@@ -1023,7 +1023,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             [item["record_id"] for item in result["material_manifest"]],
         )
         self.assertEqual(2, result["material_selection_contract_version"])
-        self.assertEqual(1, result["material_clip_contract_version"])
+        self.assertEqual(2, result["material_clip_contract_version"])
         self.assertEqual("e" * 64, result["material_manifest"][0]["clip_id"])
         self.assertEqual(1.25, result["material_manifest"][0]["clip_start_seconds"])
         self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
@@ -1322,7 +1322,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "ok": True,
             "records": 1,
             "selection_contract_version": 2,
-            "clip_contract_version": 1,
+            "clip_contract_version": 2,
         })
         server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1377,7 +1377,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             self.assertEqual((14.9, 5), (
                 preflight["duration"], preflight["required_visuals"]))
             self.assertEqual(2, preflight["material_selection_contract_version"])
-            self.assertEqual(1, preflight["material_clip_contract_version"])
+            self.assertEqual(2, preflight["material_clip_contract_version"])
             self.assertEqual([], self.service.store.pending_ids())
             self.assertEqual(0, self.service.jobs.qsize())
             with self.assertRaises(urllib.error.HTTPError) as too_long:
@@ -1429,8 +1429,8 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 body = json.dumps({
                     "ok": True,
                     "records": 10,
-                    "selection_contract_version": 1,
-                    "clip_contract_version": 0,
+                    "selection_contract_version": 2,
+                    "clip_contract_version": 1,
                 }).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1453,6 +1453,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         health = self.service.health()
         self.assertFalse(health["ok"])
         self.assertFalse(health["material_library_ready"])
+        self.assertEqual(1, health["material_clip_contract_version"])
 
         server = matrix.build_server(
             "127.0.0.1", 0, self.service, "api-token",
@@ -1465,6 +1466,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 data=json.dumps({
                     "top_text": "素材服务版本检查",
                     "bottom_text": "评论区获取资料",
+                    "template_id": matrix.TRIPLE_STRIP_TEMPLATE_ID,
                 }).encode("utf-8"),
                 method="POST",
                 headers={"Authorization": "Bearer api-token"},
@@ -2461,7 +2463,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             captured.update(body)
             return {
                 "selection_contract_version": 2,
-                "clip_contract_version": 1,
+                "clip_contract_version": 2,
                 "materials": [{
                     "scene_id": f"media_{index:02d}",
                     "sha256": format(index, "064x"),
@@ -4043,7 +4045,7 @@ class NineGridTemplateTests(unittest.TestCase):
         response = {
             "materials": materials,
             "selection_contract_version": 2,
-            "clip_contract_version": 1,
+            "clip_contract_version": 2,
         }
         with mock.patch.object(
             self.service, "_library_request", return_value=response,
@@ -4423,7 +4425,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
             response = {
                 "materials": materials,
                 "selection_contract_version": 2,
-                "clip_contract_version": 1,
+                "clip_contract_version": 2,
             }
             with self.subTest(template_id=template_id), mock.patch.object(
                 self.service, "_library_request", return_value=response,
@@ -4471,7 +4473,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
         response = {
             "materials": materials,
             "selection_contract_version": 2,
-            "clip_contract_version": 1,
+            "clip_contract_version": 2,
         }
 
         with mock.patch.object(
@@ -4856,7 +4858,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
     # 19：密钥不进入结果与日志
     def test_key_not_in_result_or_logs(self):
         with mock.patch.object(self.service, "require_library_ready", return_value={
-            "ready": True, "selection_contract_version": 2, "clip_contract_version": 1,
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 2,
         }):
             health = self.service.health()
         self.assertNotIn("test-pexels-key", json.dumps(health, ensure_ascii=False))
@@ -4874,7 +4876,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
     # 21：部署健康门禁检查新字段
     def test_health_gate_fields(self):
         with mock.patch.object(self.service, "require_library_ready", return_value={
-            "ready": True, "selection_contract_version": 2, "clip_contract_version": 1,
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 2,
         }):
             health = self.service.health()
         self.assertIs(health["pexels_material_ready"], True)

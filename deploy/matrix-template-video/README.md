@@ -75,8 +75,13 @@ Python must provide Pillow (`Image`, `ImageDraw`, and `ImageFont`); the installe
 verifies it before switching releases.
 
 Deploy the material-library service before this renderer. Tunnel readiness
-requires selection contract v2 and clip contract v1, and every newly admitted
+requires selection contract v2 and clip contract v2, and every newly admitted
 template job fails closed if either version or any clip field is missing.
+
+For this upgrade, deploy in this order: material-library service, generation-side
+tunnel readiness check, matrix-template renderer, then the main-site compatibility
+layer. Do not activate the renderer while the remote library still reports clip
+contract v1; health and preflight must fail closed before any job is admitted.
 
 The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
 least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
