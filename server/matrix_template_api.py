@@ -37,6 +37,8 @@ MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
 MATERIAL_SELECTION_CONTRACT_VERSION = 2
 MATERIAL_CLIP_CONTRACT_VERSION = 3
+PUBLIC_TEMPLATE_PALETTE_VERSION = "reference-palettes-v1"
+PUBLIC_TEMPLATE_PALETTE_COUNT = 20
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 5.0
@@ -4280,6 +4282,8 @@ class MatrixTemplateService:
                 item["variant"] for item in self.reference_templates.values()
                 if item.get("semantic_layout")
             ),
+            "public_template_palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
+            "public_template_palette_count": PUBLIC_TEMPLATE_PALETTE_COUNT,
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,
@@ -6826,7 +6830,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/templates":
             self.send_json(200, {
-                "templates": self.service.catalog,
+                "templates": [
+                    {**item, "palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION}
+                    for item in self.service.catalog
+                ],
                 "default_template": self.service.default_template_id,
                 "fonts": self.service.public_fonts(),
                 "default_font": "",

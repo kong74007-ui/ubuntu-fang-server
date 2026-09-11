@@ -19,6 +19,7 @@ NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346a
 NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"
 MOTION_V2_PACKAGE_SHA256="3f0d57a4c19af984134511451ca7acc402cab99d845107b5d316ed466466b65e"
 MOTION_V2_LOCK_SHA256="c727689682957da2372f900c1d9ea77cbc5a1cf407765959cc3b750fceb4945e"
+PUBLIC_PALETTE_APPLIER_SHA256="eba3321bffcdfc5f9bd35dbfae8913fedd19d0d3750c9d579fdda71daf54fac4"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -39,6 +40,7 @@ NINE_GRID_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-
 NINE_GRID_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-runtime/package-lock.json"
 MOTION_V2_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package.json"
 MOTION_V2_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package-lock.json"
+PUBLIC_PALETTE_APPLIER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/apply-public-template-palettes.py"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -90,7 +92,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${PUBLIC_PALETTE_APPLIER_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -293,6 +295,10 @@ python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" \
 python3 "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" \
   --pack-root "${REFERENCE_PACK_ROOT}" \
   --browser "${HYPERFRAMES_BROWSER}"
+if [[ "$(sha256sum "${PUBLIC_PALETTE_APPLIER_SOURCE}" | awk '{print $1}')" != "${PUBLIC_PALETTE_APPLIER_SHA256}" ]]; then
+  echo "public palette applier hash mismatch" >&2; exit 1
+fi
+python3 "${PUBLIC_PALETTE_APPLIER_SOURCE}" --reference-root "${REFERENCE_PACK_ROOT}"
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
 install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"
 env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" install \
@@ -423,6 +429,10 @@ for template_id, contract in contracts.items():
         index,
     )
 PY
+python3 "${PUBLIC_PALETTE_APPLIER_SOURCE}" \
+  --nine-grid-root "${NINE_GRID_ROOT}" \
+  --triple-strip-root "${TRIPLE_STRIP_ROOT}" \
+  --yellow-banner-root "${YELLOW_BANNER_ROOT}"
 NINE_GRID_RUNTIME="${RELEASE}/nine-grid-runtime"
 install -d -o root -g root -m 0755 "${NINE_GRID_RUNTIME}"
 if [[ "$(sha256sum "${NINE_GRID_PACKAGE_SOURCE}" | awk '{print $1}')" != "${NINE_GRID_PACKAGE_SHA256}" ]] || \
@@ -477,6 +487,7 @@ BUILD_ID="$(printf '%s\n' \
   "${LAYOUT_PATCH_SHA256}" "${REFERENCE_LAYOUT_PATCH_SHA256}" "${NINE_GRID_ADAPTER_SHA256}" \
   "${NINE_GRID_PACKAGE_SHA256}" "${NINE_GRID_LOCK_SHA256}" \
   "${MOTION_V2_PACKAGE_SHA256}" "${MOTION_V2_LOCK_SHA256}" \
+  "${PUBLIC_PALETTE_APPLIER_SHA256}" \
   "${HYPERFRAMES_VERSION}" "${NINE_GRID_HYPERFRAMES_VERSION}" "${MOTION_V2_HYPERFRAMES_VERSION}" \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/index.html" | awk '{print $1}')" \
@@ -609,7 +620,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and type(d.get("pexels_material_ready")) is bool and d.get("pexels_material_optional") is True and d.get("material_source_policy")=="huangque-bookends-extra-middle-pexels-v2" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v1" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and type(d.get("pexels_material_ready")) is bool and d.get("pexels_material_optional") is True and d.get("material_source_policy")=="huangque-bookends-extra-middle-pexels-v2" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"
