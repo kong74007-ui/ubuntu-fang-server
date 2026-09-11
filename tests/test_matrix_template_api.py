@@ -4398,6 +4398,13 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 [round(frames / 30.0, 6) for frames in config["slot_frames"]],
                 [item["clip_duration_seconds"] for item in scenes],
             )
+            self.assertEqual(
+                {matrix.FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS},
+                {
+                    item["minimum_source_duration_seconds"]
+                    for item in scenes
+                },
+            )
 
     def test_fixed_templates_use_only_the_owned_material_library(self):
         self.service.pexels_api_key = "configured-pexels-key"
@@ -4449,6 +4456,13 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     scene["clip_duration_seconds"]
                     for scene in library.call_args.args[2]["scenes"]
                 ],
+            )
+            self.assertEqual(
+                {matrix.FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS},
+                {
+                    scene["minimum_source_duration_seconds"]
+                    for scene in library.call_args.args[2]["scenes"]
+                },
             )
 
     def test_fixed_template_rejects_legacy_three_second_slot_receipt(self):

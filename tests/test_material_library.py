@@ -201,13 +201,15 @@ class MaterialLibraryTests(unittest.TestCase):
                     "clip_duration_seconds": value,
                 }])
 
-    def test_long_fixed_slot_excludes_three_second_source(self):
+    def test_fixed_source_minimum_excludes_sources_at_or_below_four_seconds(self):
         self.add("three-seconds", media=".mp4", 时长秒=3.5)
+        self.add("barely-four-seconds", media=".mp4", 时长秒=4.05)
         expected = self.add("four-seconds", media=".mp4", 时长秒=4.2)
 
         result = self.library().select([{
             "scene_id": "fixed-slot", "media_type": "video",
             "clip_duration_seconds": 3.966667,
+            "minimum_source_duration_seconds": 4.1,
         }], seed="fixed-slot")
 
         selected = result["materials"][0]
@@ -218,6 +220,19 @@ class MaterialLibraryTests(unittest.TestCase):
             + selected["clip_duration_seconds"],
             4.1,
         )
+
+    def test_source_minimum_must_cover_clip_and_safety_margin(self):
+        self.add("video", media=".mp4", 时长秒=10.0)
+
+        with self.assertRaisesRegex(
+            ValueError, "must cover the clip duration and safety margin",
+        ):
+            self.library().select([{
+                "scene_id": "invalid-fixed-slot",
+                "media_type": "video",
+                "clip_duration_seconds": 3.966667,
+                "minimum_source_duration_seconds": 4.0,
+            }])
 
     def test_invalid_index_duration_fails_closed(self):
         invalid_values = (

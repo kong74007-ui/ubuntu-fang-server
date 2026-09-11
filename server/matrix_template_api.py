@@ -40,6 +40,7 @@ MATERIAL_CLIP_CONTRACT_VERSION = 2
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 4.0
+FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS = 4.1
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
@@ -4139,6 +4140,10 @@ class MatrixTemplateService:
                 else "visual"
             ),
             "clip_duration_seconds": clip_durations[index - 1],
+            **({
+                "minimum_source_duration_seconds":
+                    FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS,
+            } if fixed_skill_template else {}),
         } for index in range(1, count + 1)]
         if payload["bgm"] and not (
             nine_grid_template or fixed_skill_template

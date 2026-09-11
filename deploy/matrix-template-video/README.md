@@ -181,7 +181,9 @@ Before a reference HyperFrames render starts, the service calculates three to
 five two-to-three second slots from the frozen 8-15 second output. The two fixed
 Skill templates instead preserve their authored frame boundaries at 17.6 and
 302/30 seconds while retaining the same public 60-character top and 80-character
-bottom copy contract. AI marks semantic boundaries once; the generation service
+bottom copy contract. Their source videos use one uniform 4.1-second minimum;
+the renderer then cuts the exact 2.733-to-3.967-second authored frame window.
+AI marks semantic boundaries once; the generation service
 maps every character into the template's internal text regions, scales only
 within measured font bounds, and fails before rendering rather than truncating
 or splitting a phrase. The material library freezes a different valid source offset each time

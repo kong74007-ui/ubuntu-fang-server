@@ -113,6 +113,9 @@ has its own persisted usage key, so later portions participate in selection
 immediately instead of waiting for the whole source to cycle. The response freezes `clip_id`,
 `clip_start_seconds`, `clip_duration_seconds`, `clip_slot_index`, and
 `clip_slot_count` while downloads continue to use the approved source SHA.
+Fixed templates also send `minimum_source_duration_seconds=4.1`, so source
+eligibility is a simple uniform threshold; the frame-accurate clip duration only
+controls how much of that longer source is rendered.
 
 Explicit index durations must be finite, non-boolean, non-negative, and at most
 30 minutes. One source may expose at most 600 slots, and one selection request

@@ -261,10 +261,17 @@ def _clip_duration(value: Any) -> float | None:
 
 def _material_candidates(
     material: Material, clip_duration: float | None,
+    minimum_source_duration: float | None = None,
 ) -> tuple[MaterialCandidate, ...]:
     if material.media_type != "video" or clip_duration is None:
         return (MaterialCandidate(material, material.sha256),)
-    available = float(material.duration_seconds or 0) - CLIP_SAFETY_SECONDS
+    source_duration = float(material.duration_seconds or 0)
+    if (
+        minimum_source_duration is not None
+        and source_duration + 0.001 < minimum_source_duration
+    ):
+        return ()
+    available = source_duration - CLIP_SAFETY_SECONDS
     if available + 0.001 < clip_duration:
         return ()
     slot_span = max(CLIP_SLOT_SECONDS, clip_duration)
@@ -1088,6 +1095,21 @@ class MaterialLibrary:
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
             media_type = _text(scene.get("media_type") or "visual")
             clip_duration = _clip_duration(scene.get("clip_duration_seconds"))
+            minimum_source_duration = _duration(
+                scene.get("minimum_source_duration_seconds")
+            )
+            if (
+                minimum_source_duration is not None
+                and (
+                    clip_duration is None
+                    or minimum_source_duration + 0.001
+                    < clip_duration + CLIP_SAFETY_SECONDS
+                )
+            ):
+                raise ValueError(
+                    "minimum_source_duration_seconds must cover the clip "
+                    "duration and safety margin"
+                )
             allowed_types = {"image", "video"} if media_type == "visual" else {media_type}
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
@@ -1099,7 +1121,7 @@ class MaterialLibrary:
                 ):
                     continue
                 for candidate in _material_candidates(
-                    material, clip_duration,
+                    material, clip_duration, minimum_source_duration,
                 ):
                     virtual_candidate_ids.add(candidate.usage_key)
                     if (
