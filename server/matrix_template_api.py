@@ -892,7 +892,7 @@ def _read_json(path: Path) -> dict:
 
 def _duration(top: str, bottom: str, requested) -> float:
     visible = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", top + bottom))
-    minimum = max(7.0, visible / 5.0 + 1.5)
+    minimum = max(8.0, visible / 5.0 + 1.5)
     if requested not in (None, ""):
         try:
             minimum = max(minimum, float(requested))
@@ -1341,7 +1341,9 @@ def _normalize_reference_semantic_layout(value, top: str, bottom: str) -> dict:
 
 def _reference_duration(job_id: str, template_id: str) -> int:
     digest = hashlib.sha256(f"{job_id}:{template_id}".encode("utf-8")).digest()
-    return 7 + int.from_bytes(digest[:8], "big") % 9
+    # 动效模板时间轴按 8-15 秒设计（模板变量声明 duration min=8），
+    # 随机出 7 秒会被引擎 strict-variables 拒绝（Variable validation failed）。
+    return 8 + int.from_bytes(digest[:8], "big") % 8
 
 
 def _reference_effect_order(seed: str, category: str,
@@ -2455,7 +2457,7 @@ class MatrixTemplateService:
                     "top": top_layer_count,
                     "bottom": 1 if variant == REFERENCE_V07_VARIANT else 2,
                 },
-                "duration_mode": "random_integer_7_15",
+                "duration_mode": "random_integer_8_15",
                 "required_visuals": 3,
                 "required_visuals_max": 5,
                 "clip_duration_range_seconds": [
@@ -6442,7 +6444,7 @@ class Handler(BaseHTTPRequestHandler):
                             if payload["template_id"]
                                 in self.service.fixed_skill_templates
                             else (
-                                "random_integer_7_15"
+                                "random_integer_8_15"
                                 if payload["template_id"]
                                     in self.service.reference_templates
                                 else "copy_length"

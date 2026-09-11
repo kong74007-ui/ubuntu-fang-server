@@ -71,7 +71,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "bottom_text": "评论区留下关键词",
             "template_id": "full-overlay-bold",
         })
-        self.assertEqual(7.0, payload["duration"])
+        self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
         self.assertNotIn("font_family", payload)
         fonts = self.service.public_fonts()
@@ -153,6 +153,17 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "bottom_text": "A" * 8,
                 "template_id": "full-overlay-bold",
             })
+
+    def test_reference_duration_is_between_8_and_15_seconds(self):
+        outcomes = set()
+        for index in range(2048):
+            value = matrix._reference_duration(
+                f"{index:032x}", "ref-01-fixture-01",
+            )
+            self.assertGreaterEqual(value, 8)
+            self.assertLessEqual(value, 15)
+            outcomes.add(value)
+        self.assertEqual({8, 9, 10, 11, 12, 13, 14, 15}, outcomes)
 
     def test_balanced_title_is_frozen_without_changing_source_copy(self):
         title = "想开店又怕养团队？1个人+AI员工也能运行一家门店"
