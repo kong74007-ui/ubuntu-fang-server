@@ -40,7 +40,6 @@ MATERIAL_CLIP_CONTRACT_VERSION = 2
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 4.0
-FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS = 4.1
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
@@ -915,17 +914,17 @@ def _material_source_plan(count: int) -> tuple[str, ...]:
     """Return the source assigned to each visible clip.
 
     Three-clip outputs keep the opening clip in the approved Huangque library.
-    Four- and five-clip outputs keep both bookends there. All middle clips are
-    supplied by the Pexels China-oriented search pool.
+    Four-, five-, eight- and nine-clip outputs keep both bookends there. All
+    middle clips are supplied by the Pexels China-oriented search pool.
     """
     if count == 3:
         return ("huangque", "pexels", "pexels")
-    if count in {4, 5}:
+    if count in {4, 5, 8, 9}:
         return tuple(
             "huangque" if index in {0, count - 1} else "pexels"
             for index in range(count)
         )
-    raise MatrixTemplateError("模板素材片段数量必须在 3 到 5 之间")
+    raise MatrixTemplateError("模板素材片段数量必须在 3 到 5（或九宫格 9 / 三横屏 8）之间")
 
 
 def _visual_width(value: str) -> float:
@@ -4377,10 +4376,6 @@ class MatrixTemplateService:
                 else "visual"
             ),
             "clip_duration_seconds": clip_durations[index - 1],
-            **({
-                "minimum_source_duration_seconds":
-                    FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS,
-            } if fixed_skill_template else {}),
         } for index in range(1, count + 1)]
         if payload["bgm"] and not (
             nine_grid_template or fixed_skill_template
@@ -4470,11 +4465,7 @@ class MatrixTemplateService:
                                used_sha256=()) -> list[dict]:
         scenes, count, _reference_template = self._material_scenes(payload)
         contract_version = self._material_contract_version(payload)
-        if (
-            payload.get("template_id") == NINE_GRID_TEMPLATE_ID
-            or payload.get("template_id") in FIXED_SKILL_TEMPLATE_CONFIGS
-            or not self.pexels_api_key
-        ):
+        if not self.pexels_api_key:
             result = self._library_request("POST", "/v1/select", {
                 "scenes": scenes, "orientation": "portrait", "seed": job_id,
                 "used_sha256": list(used_sha256),

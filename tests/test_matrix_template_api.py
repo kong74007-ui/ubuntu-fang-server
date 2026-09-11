@@ -4270,25 +4270,30 @@ class NineGridTemplateTests(unittest.TestCase):
             {3.0}, {item["clip_duration_seconds"] for item in scenes},
         )
 
-    def test_nine_grid_uses_only_owned_library_when_pexels_is_configured(self):
+    def test_nine_grid_splits_bookends_library_and_middle_pexels(self):
         payload = {
             "top_text": "九宫格标题", "bottom_text": "评论区获取资料",
             "template_id": matrix.NINE_GRID_TEMPLATE_ID,
             "duration": 12.0, "bgm": True,
             "_material_selection_contract_version": 2,
         }
-        materials = [{
-            "scene_id": f"media_{index:02d}",
-            "record_id": f"record-{index}",
-            "sha256": format(index, "064x"),
-            "media_type": "video", "match_level": "random",
-            "clip_id": format(index + 100, "064x"),
-            "clip_start_seconds": float(index),
-            "clip_duration_seconds": 3.0,
-            "clip_slot_index": 1, "clip_slot_count": 1,
-        } for index in range(1, 10)]
+
+        def material(index):
+            return {
+                "scene_id": f"media_{index:02d}",
+                "record_id": f"record-{index}",
+                "sha256": format(index, "064x"),
+                "media_type": "video", "match_level": "random",
+                "clip_id": format(index + 100, "064x"),
+                "clip_start_seconds": float(index),
+                "clip_duration_seconds": 3.0,
+                "clip_slot_index": 1, "clip_slot_count": 1,
+            }
+
+        library_materials = [material(1), material(9)]
+        pexels_materials = [material(index) for index in range(2, 9)]
         response = {
-            "materials": materials,
+            "materials": library_materials,
             "selection_contract_version": 2,
             "clip_contract_version": 2,
         }
@@ -4296,14 +4301,18 @@ class NineGridTemplateTests(unittest.TestCase):
             self.service, "_library_request", return_value=response,
         ) as library, mock.patch.object(
             self.service, "_select_pexels_materials",
-            side_effect=AssertionError("nine-grid must not use Pexels"),
-        ):
+            return_value=pexels_materials,
+        ) as pexels:
             selected = self.service._select_materials_once(
                 payload, "d" * 32,
             )
 
-        self.assertEqual(materials, selected)
-        self.assertEqual(9, len(library.call_args.args[2]["scenes"]))
+        self.assertEqual(
+            [f"media_{index:02d}" for index in range(1, 10)],
+            [item["scene_id"] for item in selected],
+        )
+        self.assertEqual(2, len(library.call_args.args[2]["scenes"]))
+        self.assertEqual(7, len(pexels.call_args.args[0]))
 
     def test_prepare_clip_freezes_selected_window_and_adds_hidden_tail(self):
         source = self.root / "source.mp4"
@@ -4650,15 +4659,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 [round(frames / 30.0, 6) for frames in config["slot_frames"]],
                 [item["clip_duration_seconds"] for item in scenes],
             )
-            self.assertEqual(
-                {matrix.FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS},
-                {
-                    item["minimum_source_duration_seconds"]
-                    for item in scenes
-                },
-            )
 
-    def test_fixed_templates_use_only_the_owned_material_library(self):
+    def test_fixed_templates_split_bookends_library_and_middle_pexels(self):
         self.service.pexels_api_key = "configured-pexels-key"
         for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
             config = self.configs[template_id]
@@ -4668,21 +4670,36 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 "duration": config["duration"], "bgm": True,
                 "_material_selection_contract_version": 2,
             }
+            count = config["required_visuals"]
             durations = [
                 round(frames / 30.0, 6) for frames in config["slot_frames"]
             ]
-            materials = [{
-                "scene_id": f"media_{index:02d}",
-                "record_id": f"record-{index}",
-                "sha256": format(index, "064x"),
-                "media_type": "video", "match_level": "random",
-                "clip_id": format(index + 100, "064x"),
-                "clip_start_seconds": float(index),
-                "clip_duration_seconds": durations[index - 1],
-                "clip_slot_index": 1, "clip_slot_count": 1,
-            } for index in range(1, config["required_visuals"] + 1)]
+            plan = matrix._material_source_plan(count)
+            library_indexes = [
+                index for index, source in enumerate(plan)
+                if source == "huangque"
+            ]
+            pexels_indexes = [
+                index for index, source in enumerate(plan)
+                if source == "pexels"
+            ]
+
+            def material(index):
+                return {
+                    "scene_id": f"media_{index + 1:02d}",
+                    "record_id": f"record-{index + 1}",
+                    "sha256": format(index + 1, "064x"),
+                    "media_type": "video", "match_level": "random",
+                    "clip_id": format(index + 101, "064x"),
+                    "clip_start_seconds": float(index + 1),
+                    "clip_duration_seconds": durations[index],
+                    "clip_slot_index": 1, "clip_slot_count": 1,
+                }
+
+            library_materials = [material(index) for index in library_indexes]
+            pexels_materials = [material(index) for index in pexels_indexes]
             response = {
-                "materials": materials,
+                "materials": library_materials,
                 "selection_contract_version": 2,
                 "clip_contract_version": 2,
             }
@@ -4690,31 +4707,28 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 self.service, "_library_request", return_value=response,
             ) as library, mock.patch.object(
                 self.service, "_select_pexels_materials",
-                side_effect=AssertionError(
-                    "fixed Skill templates must not use Pexels"
-                ),
-            ):
+                return_value=pexels_materials,
+            ) as pexels:
                 selected = self.service._select_materials_once(
                     payload, "d" * 32,
                 )
-            self.assertEqual(materials, selected)
             self.assertEqual(
-                config["required_visuals"],
+                [f"media_{index + 1:02d}" for index in range(count)],
+                [item["scene_id"] for item in selected],
+            )
+            self.assertEqual(
+                len(library_indexes),
                 len(library.call_args.args[2]["scenes"]),
             )
             self.assertEqual(
-                durations,
+                len(pexels_indexes), len(pexels.call_args.args[0]),
+            )
+            self.assertEqual(
+                [durations[index] for index in library_indexes],
                 [
                     scene["clip_duration_seconds"]
                     for scene in library.call_args.args[2]["scenes"]
                 ],
-            )
-            self.assertEqual(
-                {matrix.FIXED_SKILL_MIN_SOURCE_DURATION_SECONDS},
-                {
-                    scene["minimum_source_duration_seconds"]
-                    for scene in library.call_args.args[2]["scenes"]
-                },
             )
 
     def test_fixed_template_rejects_legacy_three_second_slot_receipt(self):
@@ -4929,7 +4943,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         return _Resp()
 
     # 1-8：来源顺序与片段数量
-    def test_source_plan_3_4_5_clips(self):
+    def test_source_plan_bookends_library_middle_pexels(self):
         self.assertEqual(
             ("huangque", "pexels", "pexels"), matrix._material_source_plan(3),
         )
@@ -4940,6 +4954,16 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         self.assertEqual(
             ("huangque", "pexels", "pexels", "pexels", "huangque"),
             matrix._material_source_plan(5),
+        )
+        self.assertEqual(
+            ("huangque", "pexels", "pexels", "pexels", "pexels",
+             "pexels", "pexels", "huangque"),
+            matrix._material_source_plan(8),
+        )
+        self.assertEqual(
+            ("huangque", "pexels", "pexels", "pexels", "pexels",
+             "pexels", "pexels", "pexels", "huangque"),
+            matrix._material_source_plan(9),
         )
 
     def test_never_six_clips(self):
@@ -4959,13 +4983,15 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
             )
 
     def test_first_clip_always_huangque(self):
-        for count in (3, 4, 5):
+        for count in (3, 4, 5, 8, 9):
             self.assertEqual("huangque", matrix._material_source_plan(count)[0])
 
     def test_last_clip_3_pexels_45_huangque(self):
         self.assertEqual("pexels", matrix._material_source_plan(3)[-1])
         self.assertEqual("huangque", matrix._material_source_plan(4)[-1])
         self.assertEqual("huangque", matrix._material_source_plan(5)[-1])
+        self.assertEqual("huangque", matrix._material_source_plan(8)[-1])
+        self.assertEqual("huangque", matrix._material_source_plan(9)[-1])
 
     # 9：BGM 始终来自黄雀
     def test_bgm_always_huangque(self):
