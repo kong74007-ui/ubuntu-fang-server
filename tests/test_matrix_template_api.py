@@ -4,6 +4,7 @@ import copy
 import hashlib
 import html
 import json
+import os
 import random
 import shutil
 import sqlite3
@@ -71,7 +72,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "bottom_text": "评论区留下关键词",
             "template_id": "full-overlay-bold",
         })
-        self.assertEqual(7.0, payload["duration"])
+        self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
         self.assertNotIn("font_family", payload)
         fonts = self.service.public_fonts()
@@ -153,6 +154,17 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 "bottom_text": "A" * 8,
                 "template_id": "full-overlay-bold",
             })
+
+    def test_reference_duration_is_between_8_and_15_seconds(self):
+        outcomes = set()
+        for index in range(2048):
+            value = matrix._reference_duration(
+                f"{index:032x}", "ref-01-fixture-01",
+            )
+            self.assertGreaterEqual(value, 8)
+            self.assertLessEqual(value, 15)
+            outcomes.add(value)
+        self.assertEqual({8, 9, 10, 11, 12, 13, 14, 15}, outcomes)
 
     def test_balanced_title_is_frozen_without_changing_source_copy(self):
         title = "想开店又怕养团队？1个人+AI员工也能运行一家门店"
@@ -5102,5 +5114,229 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         self.assertEqual("c" * 64, manifest["source_identity"])
         self.assertEqual("e" * 64, manifest["content_sha256"])
         self.assertNotEqual(manifest["source_identity"], manifest["content_sha256"])
+class UserMaterialsTests(unittest.TestCase):
+    """用户自带素材（provider=user）内测功能回归测试。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        (self.skill / "assets/templates").mkdir(parents=True)
+        font_root = self.skill / "assets/fonts"
+        font_root.mkdir()
+        bundled = []
+        for index, family in enumerate(sorted(matrix.BASE_FONT_FAMILIES)):
+            path = font_root / f"base-{index}.ttf"
+            path.write_bytes(family.encode("utf-8"))
+            bundled.append({
+                "family": family, "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            })
+        (font_root / "sources.json").write_text(
+            json.dumps({"fonts": bundled}), encoding="utf-8",
+        )
+        (self.skill / "scripts").mkdir()
+        templates = [{
+            "id": template_id, "name": f"模板 {index}",
+            "description": "测试模板", "tags": ["测试"], "layout": {}, "render": {},
+        } for index, template_id in enumerate(("full-overlay-bold", "poster-split"))]
+        (self.skill / "assets/templates/catalog.json").write_text(
+            json.dumps({"version": 1, "templates": templates}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (self.skill / "scripts/render_video.py").write_text("# fixture\n", encoding="utf-8")
+        self.service = matrix.MatrixTemplateService(
+            data_root=self.root / "data",
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            start_worker=False,
+        )
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.temp.cleanup()
+
+    def _start_server(self):
+        server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, "http://127.0.0.1:%d" % server.server_port
+
+    def test_user_asset_endpoint_requires_authorization(self):
+        server, thread, base = self._start_server()
+        try:
+            body = b"raw-bytes"
+            sha = hashlib.sha256(body).hexdigest()
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=body, method="POST",
+            )
+            req.add_header("X-HQ-Asset-Sha256", sha)
+            req.add_header("Content-Type", "image/jpeg")
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(req, timeout=3)
+            self.assertEqual(401, denied.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_endpoint_rejects_missing_or_invalid_sha(self):
+        server, thread, base = self._start_server()
+        try:
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=b"x", method="POST",
+            )
+            req.add_header("Authorization", "Bearer api-token")
+            req.add_header("Content-Type", "image/jpeg")
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                urllib.request.urlopen(req, timeout=3)
+            self.assertEqual(400, missing.exception.code)
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=b"x", method="POST",
+            )
+            req.add_header("Authorization", "Bearer api-token")
+            req.add_header("X-HQ-Asset-Sha256", "../not-a-sha256")
+            req.add_header("Content-Type", "image/jpeg")
+            with self.assertRaises(urllib.error.HTTPError) as invalid:
+                urllib.request.urlopen(req, timeout=3)
+            self.assertEqual(400, invalid.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_endpoint_rejects_unsupported_content_type(self):
+        server, thread, base = self._start_server()
+        try:
+            body = b"raw-bytes"
+            sha = hashlib.sha256(body).hexdigest()
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=body, method="POST",
+            )
+            req.add_header("Authorization", "Bearer api-token")
+            req.add_header("X-HQ-Asset-Sha256", sha)
+            req.add_header("Content-Type", "audio/mpeg")
+            with self.assertRaises(urllib.error.HTTPError) as unsupported:
+                urllib.request.urlopen(req, timeout=3)
+            self.assertEqual(400, unsupported.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_endpoint_stores_and_serves_file(self):
+        server, thread, base = self._start_server()
+        try:
+            body = b"\xff\xd8\xffuser-jpeg-payload"
+            sha = hashlib.sha256(body).hexdigest()
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=body, method="POST",
+            )
+            req.add_header("Authorization", "Bearer api-token")
+            req.add_header("X-HQ-Asset-Sha256", sha)
+            req.add_header("Content-Type", "image/jpeg")
+            with urllib.request.urlopen(req, timeout=3) as response:
+                result = json.load(response)
+            self.assertTrue(result["ok"])
+            self.assertEqual(sha, result["sha256"])
+            self.assertEqual(len(body), result["bytes"])
+            path = self.service.user_asset_path(sha)
+            self.assertIsNotNone(path)
+            self.assertEqual(sha + ".jpg", path.name)
+            self.assertEqual(body, path.read_bytes())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_endpoint_rejects_sha_mismatch_without_leaking_files(self):
+        server, thread, base = self._start_server()
+        try:
+            body = b"actual-bytes"
+            req = urllib.request.Request(
+                base + "/v1/user-assets", data=body, method="POST",
+            )
+            req.add_header("Authorization", "Bearer api-token")
+            req.add_header("X-HQ-Asset-Sha256", "f" * 64)
+            req.add_header("Content-Type", "image/jpeg")
+            with self.assertRaises(urllib.error.HTTPError) as mismatch:
+                urllib.request.urlopen(req, timeout=3)
+            self.assertEqual(400, mismatch.exception.code)
+            root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+            self.assertEqual([], list(root.glob("*")) if root.is_dir() else [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_endpoint_rejects_oversize(self):
+        server, thread, base = self._start_server()
+        try:
+            with mock.patch.object(matrix, "MAX_USER_ASSET_BYTES", 4):
+                body = b"12345"
+                sha = hashlib.sha256(body).hexdigest()
+                req = urllib.request.Request(
+                    base + "/v1/user-assets", data=body, method="POST",
+                )
+                req.add_header("Authorization", "Bearer api-token")
+                req.add_header("X-HQ-Asset-Sha256", sha)
+                req.add_header("Content-Type", "image/jpeg")
+                with self.assertRaises(urllib.error.HTTPError) as oversize:
+                    urllib.request.urlopen(req, timeout=3)
+                self.assertEqual(400, oversize.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_user_asset_path_rejects_invalid_sha(self):
+        self.assertIsNone(self.service.user_asset_path("../etc/passwd"))
+        self.assertIsNone(self.service.user_asset_path("abc"))
+        self.assertIsNone(self.service.user_asset_path("f" * 63))
+
+    def test_download_user_asset_reuses_local_file_and_validates_sha(self):
+        body = b"user-video-bytes"
+        sha = hashlib.sha256(body).hexdigest()
+        root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        root.mkdir(parents=True)
+        (root / (sha + ".mp4")).write_bytes(body)
+        target = self.root / "jobs" / "j1" / "assets"
+        target.mkdir(parents=True)
+        downloaded = self.service._download_user_asset(
+            {"sha256": sha, "provider": matrix.MATERIAL_PROVIDER_USER}, target,
+        )
+        self.assertEqual(sha + ".mp4", downloaded.name)
+        self.assertEqual(body, downloaded.read_bytes())
+
+    def test_download_user_asset_rejects_tampered_file(self):
+        sha = hashlib.sha256(b"expected-bytes").hexdigest()
+        root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        root.mkdir(parents=True)
+        (root / (sha + ".mp4")).write_bytes(b"tampered")
+        target = self.root / "jobs" / "j1" / "assets"
+        target.mkdir(parents=True)
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "校验失败"):
+            self.service._download_user_asset(
+                {"sha256": sha, "provider": matrix.MATERIAL_PROVIDER_USER}, target,
+            )
+
+    def test_cleanup_user_assets_removes_expired_and_keeps_recent(self):
+        root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        root.mkdir(parents=True)
+        now = int(time.time())
+        expired = root / ("e" * 64 + ".jpg")
+        recent = root / ("a" * 64 + ".png")
+        expired.write_bytes(b"old")
+        recent.write_bytes(b"new")
+        retention = self.service.retention_seconds
+        os.utime(expired, (now - retention - 60, now - retention - 60))
+        os.utime(recent, (now, now))
+        removed = self.service.cleanup_user_assets(now=now)
+        self.assertEqual(1, removed)
+        self.assertFalse(expired.exists())
+        self.assertTrue(recent.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
