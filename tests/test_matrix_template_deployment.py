@@ -25,7 +25,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('NINE_GRID_HYPERFRAMES_VERSION="0.8.33"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="937507be0acff2132c8e5dac3ad89590795cba17db65cb168588d9b0381d3a2e"', installer)
         self.assertIn('NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"', installer)
         self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
         self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
@@ -266,7 +266,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5",
+            "937507be0acff2132c8e5dac3ad89590795cba17db65cb168588d9b0381d3a2e",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -281,6 +281,10 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("font-size: 52px;", patch)
         self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
+        self.assertIn("max-width: 996px;", patch)
+        self.assertIn(".v06 .top1 { font-size: 86px;", patch)
+        self.assertIn(".v08 .top1 { font-size: 86px;", patch)
+        self.assertIn(".v15 .bottom2 { font-size: 82px;", patch)
         self.assertIn(
             '.v04 .bottom2 { font-size: 80px; font-weight: 900;', patch,
         )

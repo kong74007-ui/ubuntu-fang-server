@@ -1768,7 +1768,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v01 .top2 { font: 400 64px/1.15 "MaShan"; color: #f8f7ef; -webkit-text-stroke: 9px #789822; }',
                     '.v01 .top3 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 7px #111; }',
                     '.v01 .bottom1 { font: 400 56px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 7px #111; }',
-                    '.v01 .bottom2 { max-width: 900px; padding: 14px 26px; font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
+                    '.v01 .bottom2 { max-width: 996px; padding: 14px 26px; font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
                 ))
                 continue
             if variant == matrix.REFERENCE_FEATURED_VARIANT:
@@ -1819,9 +1819,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 ))
                 continue
             styles.extend((
-                f".{variant} .top1 {{ font-size: 80px; }}",
+                f".{variant} .top1 {{ font-size: {86 if index in (6, 8) else 80}px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
-                f".{variant} .bottom2 {{ font-size: {80 if index == 4 else 70}px; }}",
+                f".{variant} .bottom2 {{ font-size: {80 if index == 4 else 82 if index == 15 else 70}px; }}",
             ))
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
@@ -2055,7 +2055,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             )["semantic_layout"]["layers"]["bottom2"]["max_width_px"],
         )
         expected_widths = {
-            ("v01", "bottom2"): 848,
+            ("v01", "bottom2"): 944,
             ("v04", "top3"): 948,
             ("v05", "bottom2"): 862,
             ("v06", "bottom2"): 924,
@@ -2076,6 +2076,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             tuple(
                 self.service.reference_semantic_layouts["v05"][layer]["font_size_px"]
                 for layer in ("top1", "top2", "top3", "bottom2")
+            ),
+        )
+        self.assertEqual(
+            (86, 86, 82),
+            (
+                self.service.reference_semantic_layouts["v06"]["top1"][
+                    "font_size_px"
+                ],
+                self.service.reference_semantic_layouts["v08"]["top1"][
+                    "font_size_px"
+                ],
+                self.service.reference_semantic_layouts["v15"]["bottom2"][
+                    "font_size_px"
+                ],
             ),
         )
         for item in self.service.reference_templates.values():
@@ -3788,6 +3802,61 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                         reference["text"]["top1"]
                         + reference["text"]["top2"]
                         + reference["text"]["top3"],
+                    )
+                    self.assertEqual(bottom, reference["text"]["bottom2"])
+
+    def test_tight_reference_variants_accept_long_semantic_copy(self):
+        top = "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费"
+        bottom = "大健康是长期需求赛道 想入局的 评论区回复 勾兑"
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(
+                top, bottom,
+            ),
+            "top1_end": 11,
+            "top_break_after": [11, 17],
+            "bottom_break_after": [10, 15, 21],
+        }
+
+        def measured(value, metrics):
+            text = matrix._hide_reference_edge_punctuation(value)
+            size = int(metrics["font_size_px"])
+            glyphs = sum(0.35 if char.isspace() else 1 for char in text)
+            spacing = max(0, len(text) - 1) * size * float(
+                metrics.get("letter_spacing_em", 0.01)
+            )
+            return glyphs * size + spacing + 2 * int(
+                metrics.get("stroke_px") or 0
+            )
+
+        template_ids = {
+            item["variant"]: item["id"]
+            for item in self.service.reference_templates.values()
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=measured,
+        ):
+            for variant in ("v01", "v06", "v08", "v15"):
+                with self.subTest(variant=variant):
+                    payload = self.service.validate_payload({
+                        "top_text": top,
+                        "bottom_text": bottom,
+                        "template_id": template_ids[variant],
+                        "bgm": False,
+                        "semantic_layout": layout,
+                    })
+                    frozen = self.service._freeze_font_provenance(
+                        hashlib.sha256(variant.encode()).hexdigest()[:32],
+                        payload,
+                    )
+                    reference = frozen["_reference_template"]
+                    self.assertEqual(
+                        top,
+                        "".join(
+                            reference["text"][key]
+                            for key in ("top1", "top2", "top3")
+                        ),
                     )
                     self.assertEqual(bottom, reference["text"]["bottom2"])
 

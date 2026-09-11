@@ -513,6 +513,7 @@ REFERENCE_V01_STYLE_CONTRACT = {
     ),
     "bottom2": (
         'font:40074px/1.15"mashan"',
+        "max-width:996px",
         "background:#f5f4ee",
         "color:#426d24",
         "border-radius:22px",
