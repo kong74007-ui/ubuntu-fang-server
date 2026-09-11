@@ -67,6 +67,7 @@ JOB_REQUEUE_SECONDS = 0.25
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 # 用户自带素材（内测期新增）：走 provider="user"，文件在落盘时就按 sha256 存好。
 MATERIAL_PROVIDER_USER = "user"
+MATERIAL_POLICIES = frozenset({"shared", "owned_public"})
 USER_ASSET_DIRNAME = "user-assets"
 MAX_USER_ASSET_BYTES = 128 * 1024 * 1024
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -3531,10 +3532,16 @@ class MatrixTemplateService:
         bgm = raw.get("bgm", True)
         if not isinstance(bgm, bool):
             raise ValueError("bgm must be boolean")
+        material_policy = raw.get("material_policy", "shared")
+        if (
+            not isinstance(material_policy, str)
+            or material_policy not in MATERIAL_POLICIES
+        ):
+            raise ValueError("material_policy must be shared or owned_public")
         result = {
             "top_text": top, "bottom_text": bottom,
             "template_id": template_id, "duration": duration,
-            "bgm": bgm,
+            "bgm": bgm, "material_policy": material_policy,
         }
         if font_family and not hyperframes_template:
             result["font_family"] = font_family
@@ -3586,19 +3593,16 @@ class MatrixTemplateService:
         reference = payload.get("_reference_template")
         if isinstance(reference, dict):
             duration = reference.get("duration", duration)
-        return _required_visuals(duration)
+        calculated = int(math.ceil(float(duration) / 3.0))
+        template = self.reference_templates.get(str(payload.get("template_id") or ""))
+        minimum = int((template or {}).get("required_visuals") or 3)
+        maximum = int((template or {}).get("required_visuals_max") or 5)
+        return max(minimum, min(maximum, calculated))
 
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
         existing = self.store.get_by_request_id(request_id)
-        if (
-            existing is None
-            and self.enforce_library_readiness
-            and not (isinstance(raw, dict) and raw.get("user_materials"))
-        ):
-            # 用户自带素材时不依赖平台素材库与 Pexels，素材库不可用也应能接单。
-            self.require_library_ready()
         if existing is not None:
             stored_payload = json.loads(existing["payload"])
             stored_template_id = str(stored_payload.get("template_id") or "")
@@ -3609,11 +3613,23 @@ class MatrixTemplateService:
                 default_template_id=stored_template_id,
                 enforce_reference_layout=False,
             )
+            if (
+                "material_policy" not in stored_payload
+                and payload["material_policy"] == "shared"
+            ):
+                payload.pop("material_policy")
         else:
             payload = self.validate_payload(
                 raw, require_available_font=False,
                 require_reference_semantic_layout=True,
             )
+            self._validate_material_policy(payload)
+            if (
+                self.enforce_library_readiness
+                and payload["material_policy"] == "shared"
+                and not payload.get("user_materials")
+            ):
+                self.require_library_ready()
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
             freeze_payload=self._freeze_font_provenance,
@@ -3621,6 +3637,27 @@ class MatrixTemplateService:
         if created:
             self._enqueue(job["job_id"])
         return job
+
+    def _validate_material_policy(self, payload: dict) -> None:
+        materials = (
+            self._user_materials(payload)
+            if payload.get("user_materials") is not None else None
+        )
+        if payload.get("material_policy", "shared") != "owned_public":
+            return
+        if (
+            payload["bgm"]
+            and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+            and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
+        ):
+            raise MatrixTemplateError(
+                "owned_public 不允许使用共享背景音乐，请关闭 bgm"
+            )
+        if (
+            len(materials or []) < self.required_visuals(payload)
+            and not self.pexels_api_key
+        ):
+            raise MatrixTemplateError("owned_public 补充画面需要可用的 Pexels 素材库")
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
         payload["_material_selection_contract_version"] = (
@@ -4263,24 +4300,19 @@ class MatrixTemplateService:
         if not scenes:
             return []
         primary = self._pexels_search_query(job_id)
-        query_index = PEXELS_CHINA_QUERIES.index(primary)
         videos = []
         seen_video_ids = set()
-        for offset in range(min(3, len(PEXELS_CHINA_QUERIES))):
-            query = PEXELS_CHINA_QUERIES[(query_index + offset) % len(PEXELS_CHINA_QUERIES)]
-            for video in self._pexels_search(query).get("videos") or []:
-                if not isinstance(video, dict):
-                    continue
-                video_id = video.get("id")
-                if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id in seen_video_ids:
-                    continue
-                seen_video_ids.add(video_id)
-                file = self._pexels_file(video)
-                duration = video.get("duration")
-                if file is not None and isinstance(duration, (int, float)) and not isinstance(duration, bool):
-                    videos.append((video, file, float(duration), query))
-            if len(videos) >= len(scenes) * 4:
-                break
+        for video in self._pexels_search(primary).get("videos") or []:
+            if not isinstance(video, dict):
+                continue
+            video_id = video.get("id")
+            if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id in seen_video_ids:
+                continue
+            seen_video_ids.add(video_id)
+            file = self._pexels_file(video)
+            duration = video.get("duration")
+            if file is not None and isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                videos.append((video, file, float(duration), primary))
 
         used = {str(value).lower() for value in used_sha256 if SHA_RE.fullmatch(str(value).lower())}
         selected = []
@@ -4412,6 +4444,7 @@ class MatrixTemplateService:
         if reference_template:
             if any(
                 item.get("media_type") != "video"
+                and item.get("provider") != MATERIAL_PROVIDER_USER
                 for item in ordered[:count]
             ):
                 raise MatrixTemplateError("HyperFrames 模板需要不同的视频素材")
@@ -4429,7 +4462,10 @@ class MatrixTemplateService:
         if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
             clip_ids = []
             for scene, item in zip(scenes[:count], ordered[:count]):
-                if item.get("media_type") != "video":
+                if (
+                    item.get("media_type") != "video"
+                    or item.get("provider") == MATERIAL_PROVIDER_USER
+                ):
                     continue
                 clip_id = str(item.get("clip_id") or "").lower()
                 start = _bounded_float(
@@ -4539,15 +4575,55 @@ class MatrixTemplateService:
                 )
             user_selected = self._user_materials(payload)
             if user_selected is not None:
+                selected = user_selected
+                if (
+                    payload.get("material_policy", "shared") == "owned_public"
+                    and len(selected) < self.required_visuals(payload)
+                ):
+                    scenes, count, _reference = self._material_scenes(payload)
+                    used = (
+                        self.store.batch_used_visuals(batch_id)
+                        if batch_id else []
+                    )
+                    selected = selected + self._select_pexels_materials(
+                        scenes[len(selected):count], job_id,
+                        used_sha256=used + [
+                            item["sha256"] for item in selected
+                        ],
+                    )
+                    selected = self._validate_material_selection(
+                        payload, selected, contract_version,
+                    )
                 if batch_id:
                     self.store.reserve_batch_materials(
-                        batch_id, job_id, user_selected, contract_version,
+                        batch_id, job_id, selected, contract_version,
                     )
                 else:
                     self.store.reserve_job_materials(
-                        job_id, user_selected, contract_version,
+                        job_id, selected, contract_version,
                     )
-                return user_selected
+                return selected
+            if payload.get("material_policy", "shared") == "owned_public":
+                scenes, count, _reference = self._material_scenes(payload)
+                selected = self._select_pexels_materials(
+                    scenes[:count], job_id,
+                    used_sha256=(
+                        self.store.batch_used_visuals(batch_id)
+                        if batch_id else []
+                    ),
+                )
+                selected = self._validate_material_selection(
+                    payload, selected, contract_version,
+                )
+                if batch_id:
+                    self.store.reserve_batch_materials(
+                        batch_id, job_id, selected, contract_version,
+                    )
+                else:
+                    self.store.reserve_job_materials(
+                        job_id, selected, contract_version,
+                    )
+                return selected
             used = (
                 self.store.batch_used_visuals(batch_id) if batch_id else []
             )
@@ -4640,11 +4716,41 @@ class MatrixTemplateService:
             temporary.unlink(missing_ok=True)
         return target
 
+    @staticmethod
+    def _inspect_user_asset(source: Path, media_type: str) -> float:
+        if media_type == "image":
+            if source.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+                raise MatrixTemplateError("用户图片素材 MIME 不匹配")
+            try:
+                with Image.open(source) as image:
+                    image.verify()
+            except Exception as exc:
+                raise MatrixTemplateError("用户图片素材无法读取") from exc
+            return 0.0
+        if source.suffix.lower() not in {".mp4", ".mov"}:
+            raise MatrixTemplateError("用户视频素材 MIME 不匹配")
+        try:
+            probe = subprocess.run([
+                "ffprobe", "-v", "error", "-show_entries",
+                "format=duration:stream=codec_type", "-of", "json",
+                str(source),
+            ], check=True, capture_output=True, text=True, timeout=30)
+            media = json.loads(probe.stdout or "{}")
+            duration = float((media.get("format") or {}).get("duration") or 0)
+            if not any(
+                stream.get("codec_type") == "video"
+                for stream in media.get("streams") or []
+            ):
+                raise ValueError("missing video stream")
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+            raise MatrixTemplateError("用户视频素材无法读取") from exc
+        return duration
+
     def _user_materials(self, payload: dict) -> list[dict] | None:
-        """payload 自带用户素材时直接采用，跳过素材库与 Pexels。
+        """校验 payload 自带用户素材并绑定到最前面的画面位。
 
         payload["user_materials"] 形如 [{"sha256": "<64 hex>", "media_type": "image"|"video"}, ...]
-        数量必须等于该模板的画面位数量。
+        shared 数量必须填满画面位；owned_public 允许剩余画面由 Pexels 补齐。
         """
         raw = payload.get("user_materials")
         if not raw:
@@ -4652,7 +4758,8 @@ class MatrixTemplateService:
         if not isinstance(raw, list):
             raise MatrixTemplateError("用户素材清单格式无效")
         scenes, count, _reference = self._material_scenes(payload)
-        if len(raw) != count:
+        owned_public = payload.get("material_policy", "shared") == "owned_public"
+        if len(raw) > count or (not owned_public and len(raw) != count):
             raise MatrixTemplateError(
                 "用户素材数量与模板画面位不符（需要 %d 个）" % count
             )
@@ -4663,11 +4770,26 @@ class MatrixTemplateService:
             sha = str(item.get("sha256") or "").lower()
             if not SHA_RE.fullmatch(sha):
                 raise MatrixTemplateError("用户素材缺少有效校验值")
-            if self.user_asset_path(sha) is None:
+            source = self.user_asset_path(sha)
+            if source is None:
                 raise MatrixTemplateError("用户素材不存在或已过期，请重新上传")
             media_type = str(item.get("media_type") or "").strip().lower()
             if media_type not in {"image", "video"}:
                 raise MatrixTemplateError("用户素材只支持图片或视频")
+            clip_duration = float(scenes[index]["clip_duration_seconds"])
+            start = item.get("clip_start_seconds")
+            if media_type == "image":
+                if start is not None:
+                    raise MatrixTemplateError("图片素材不能设置 clip_start_seconds")
+                self._inspect_user_asset(source, media_type)
+                clip_start = 0.0
+            else:
+                source_duration = self._inspect_user_asset(source, media_type)
+                clip_start = _bounded_float(start if start is not None else 0, 0, source_duration)
+                if clip_start is None or clip_start + clip_duration > source_duration + 0.001:
+                    raise MatrixTemplateError(
+                        "视频素材入点超过可用时长，请调整 clip_start_seconds"
+                    )
             record = {
                 "sha256": sha,
                 "media_type": media_type,
@@ -4675,15 +4797,9 @@ class MatrixTemplateService:
                 "scene_id": scenes[index]["scene_id"],
                 "slot_index": index + 1,
                 "slot_count": count,
+                "clip_start_seconds": round(float(clip_start), 3),
+                "clip_duration_seconds": round(clip_duration, 3),
             }
-            start = item.get("clip_start_seconds")
-            if (
-                media_type == "video"
-                and isinstance(start, (int, float))
-                and not isinstance(start, bool)
-                and start >= 0
-            ):
-                record["clip_start_seconds"] = round(float(start), 3)
             records.append(record)
         return records
 
@@ -6044,6 +6160,53 @@ class MatrixTemplateService:
             raise MatrixTemplateError("模板成片音频或时长校验失败")
         return {"duration": round(duration, 3), "width": 1080, "height": 1920}
 
+    def _material_manifest(self, payload: dict, materials: list[dict]) -> list[dict]:
+        scenes, _count, _reference = self._material_scenes(payload)
+        scene_map = {scene["scene_id"]: scene for scene in scenes}
+        manifest = []
+        for index, item in enumerate(materials, 1):
+            provider = str(item.get("provider") or "")
+            source = (
+                "user" if provider == MATERIAL_PROVIDER_USER
+                else "pexels" if provider == "pexels"
+                else "shared"
+            )
+            scene = scene_map.get(str(item.get("scene_id") or ""), {})
+            record = {
+                "slot": index,
+                "scene_id": item.get("scene_id"),
+                "source": source,
+                "record_id": item.get("record_id"),
+                "media_type": item.get("media_type"),
+                "clip_start_seconds": float(item.get("clip_start_seconds") or 0),
+                "clip_duration_seconds": float(
+                    item.get("clip_duration_seconds")
+                    or scene.get("clip_duration_seconds") or 0
+                ),
+                "match_level": item.get("match_level"),
+            }
+            if source == "pexels":
+                record.update({
+                    "pexels_id": item.get("provider_video_id"),
+                    "content_sha256": item.get("content_sha256"),
+                    "source_identity": item.get("source_identity"),
+                    "provider_file_id": item.get("provider_file_id"),
+                    "provider_url": item.get("provider_url"),
+                    "contributor_name": item.get("contributor_name"),
+                    "contributor_url": item.get("contributor_url"),
+                    "search_query": item.get("search_query"),
+                })
+            else:
+                record["sha256"] = item.get("sha256")
+            if item.get("clip_id"):
+                record.update({
+                    "clip_id": item.get("clip_id"),
+                    "clip_slot_index": item.get("clip_slot_index"),
+                    "clip_slot_count": item.get("clip_slot_count"),
+                })
+            manifest.append(record)
+        return manifest
+
     def _execute(self, job_id: str) -> dict:
         row = self.store.get(job_id)
         payload = json.loads(row["payload"])
@@ -6140,33 +6303,7 @@ class MatrixTemplateService:
             **({
                 "material_clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
             } if material_contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION else {}),
-            "material_manifest": [{
-                "record_id": item.get("record_id"), "sha256": item.get("sha256"),
-                "content_sha256": (
-                    item.get("content_sha256")
-                    if item.get("provider") == "pexels" else item.get("sha256")
-                ),
-                "media_type": item.get("media_type"), "match_level": item.get("match_level"),
-                **({
-                    "provider": "pexels",
-                    "source_identity": item.get("source_identity"),
-                    "provider_video_id": item.get("provider_video_id"),
-                    "provider_file_id": item.get("provider_file_id"),
-                    "provider_url": item.get("provider_url"),
-                    "contributor_name": item.get("contributor_name"),
-                    "contributor_url": item.get("contributor_url"),
-                    "search_query": item.get("search_query"),
-                } if item.get("provider") == "pexels" else {
-                    "provider": "huangque",
-                }),
-                **({
-                    "clip_id": item.get("clip_id"),
-                    "clip_start_seconds": item.get("clip_start_seconds"),
-                    "clip_duration_seconds": item.get("clip_duration_seconds"),
-                    "clip_slot_index": item.get("clip_slot_index"),
-                    "clip_slot_count": item.get("clip_slot_count"),
-                } if item.get("clip_id") else {}),
-            } for item in materials],
+            "material_manifest": self._material_manifest(payload, materials),
             "editing_plan": editing_plan,
             **({
                 "bgm_mode": "bound",
@@ -6423,12 +6560,22 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
             if path == "/v1/preflight":
-                library = self.service.require_library_ready(force=True)
-                if self.service.workers_expected and not self.service.pexels_api_key:
-                    raise MatrixTemplateError("Pexels 素材库密钥未配置")
                 payload = self.service.validate_payload(
                     body, require_reference_semantic_layout=True,
                 )
+                self.service._validate_material_policy(payload)
+                if payload["material_policy"] == "owned_public":
+                    library = {
+                        "selection_contract_version": MATERIAL_SELECTION_CONTRACT_VERSION,
+                        "clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
+                    }
+                else:
+                    library = self.service.require_library_ready(force=True)
+                    if (
+                        self.service.workers_expected
+                        and not self.service.pexels_api_key
+                    ):
+                        raise MatrixTemplateError("Pexels 素材库密钥未配置")
                 self.send_json(200, {
                     "ok": True,
                     "payload": payload,

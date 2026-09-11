@@ -21,6 +21,16 @@ newer templates render with the separately locked HyperFrames `0.8.33` runtime.
 All HyperFrames templates share at most two concurrent render slots on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these public templates.
+
+Every new request carries a server-owned `material_policy`. `shared` keeps the
+existing authorized developer/tester routing across the Huangque library and
+Pexels. `owned_public` is the ordinary-customer policy: uploaded user assets
+are used first in order, every missing slot uses Pexels, and zero uploads use
+Pexels for every slot. The shared Huangque/Yuelei library is never queried.
+Shared-library BGM is rejected in
+that mode; template-bound BGM remains available. Missing user assets, Pexels,
+or an invalid policy fails before a job is admitted. Jobs created before this
+field existed replay with the legacy shared policy.
 HyperFrames templates accept batches of up to five outputs. Two renders occupy
 slots concurrently and additional accepted jobs wait for a slot. A persisted
 900-second deadline starts at database admission; render-slot waiting is capped
