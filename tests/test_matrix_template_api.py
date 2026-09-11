@@ -74,6 +74,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         })
         self.assertEqual(8.0, payload["duration"])
         self.assertTrue(payload["bgm"])
+        self.assertEqual("shared", payload["material_policy"])
         self.assertNotIn("font_family", payload)
         fonts = self.service.public_fonts()
         self.assertEqual({""} | matrix.BASE_FONT_FAMILIES, {
@@ -89,6 +90,35 @@ class MatrixTemplateApiTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 self.service.validate_payload(invalid)
+
+    def test_material_policy_rejects_unknown_values(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动",
+        }
+        for policy in ("private", "", True, ["shared"]):
+            with self.subTest(policy=policy), self.assertRaisesRegex(
+                ValueError, "material_policy"
+            ):
+                self.service.validate_payload(
+                    dict(body, material_policy=policy)
+                )
+
+    def test_old_job_without_material_policy_replays_as_shared(self):
+        body = {
+            "top_text": "旧任务策略兼容",
+            "bottom_text": "继续按共享素材回放",
+            "bgm": False,
+        }
+        legacy = self.service.validate_payload(body)
+        legacy.pop("material_policy")
+        accepted, _created = self.service.store.create(
+            "legacy-material-policy", legacy,
+            freeze_payload=self.service._freeze_font_provenance,
+        )
+
+        replay = self.service.submit(body, "legacy-material-policy")
+
+        self.assertEqual(accepted["job_id"], replay["job_id"])
 
     def test_catalog_rejects_missing_private_domain_layout(self):
         catalog_path = self.skill / "assets/templates/catalog.json"
@@ -4726,6 +4756,48 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 [item["clip_duration_seconds"] for item in scenes],
             )
 
+    def test_owned_public_bound_bgm_is_accepted_without_shared_library(self):
+        template_id = matrix.TRIPLE_STRIP_TEMPLATE_ID
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        user_root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        user_root.mkdir(parents=True)
+        user_materials = []
+        for index in range(self.configs[template_id]["required_visuals"]):
+            content = ("owned-bound-bgm-%d" % index).encode()
+            sha = hashlib.sha256(content).hexdigest()
+            (user_root / (sha + ".mp4")).write_bytes(content)
+            user_materials.append({
+                "sha256": sha, "media_type": "video",
+            })
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self.text_width,
+        ), mock.patch.object(
+            self.service, "_inspect_user_asset", return_value=30.0,
+        ), mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("bound BGM must not use shared library"),
+        ):
+            accepted = self.service.submit({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": template_id,
+                "semantic_layout": self.semantic(top, bottom),
+                "material_policy": "owned_public",
+                "user_materials": user_materials,
+                "bgm": True,
+            }, "owned-public-bound-bgm")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
+            )
+            selected = self.service._select_materials(
+                payload, accepted["job_id"]
+            )
+
+        self.assertEqual("pending", accepted["status"])
+        self.assertTrue(payload["_fixed_skill_template"]["bgm_enabled"])
+        self.assertEqual({"user"}, {item["provider"] for item in selected})
+
     def test_fixed_templates_split_bookends_library_and_middle_pexels(self):
         self.service.pexels_api_key = "configured-pexels-key"
         for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
@@ -5288,6 +5360,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         payload = self.service.validate_payload({
             "top_text": "大健康行业", "bottom_text": "评论交流", "bgm": True,
         })
+        self.assertEqual("shared", payload["material_policy"])
         library_scenes = []
         def fake_library(method, path, body):
             library_scenes.append(body.get("scenes") or [])
@@ -5601,8 +5674,13 @@ class UserMaterialsTests(unittest.TestCase):
             library_token="library-token",
             start_worker=False,
         )
+        self.inspect_patch = mock.patch.object(
+            self.service, "_inspect_user_asset", return_value=30.0,
+        )
+        self.inspect_patch.start()
 
     def tearDown(self):
+        self.inspect_patch.stop()
         self.service.shutdown()
         self.temp.cleanup()
 
@@ -5611,6 +5689,390 @@ class UserMaterialsTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server, thread, "http://127.0.0.1:%d" % server.server_port
+
+    def _store_user_asset(self, content: bytes, suffix: str = ".mp4") -> str:
+        sha = hashlib.sha256(content).hexdigest()
+        root = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        root.mkdir(parents=True, exist_ok=True)
+        (root / (sha + suffix)).write_bytes(content)
+        return sha
+
+    def test_owned_public_without_upload_uses_all_pexels_and_no_shared_library(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        body = {
+            "top_text": "普通用户素材策略",
+            "bottom_text": "没有素材时全部使用公网",
+            "material_policy": "owned_public",
+            "bgm": False,
+        }
+        selected = [{
+            "scene_id": "media_%02d" % index,
+            "record_id": "pexels-%d" % index,
+            "sha256": format(index, "064x"),
+            "media_type": "video", "provider": "pexels",
+            "clip_id": format(index + 100, "064x"),
+            "clip_start_seconds": 0.0,
+            "clip_duration_seconds": 8 / 3,
+            "clip_slot_index": 1, "clip_slot_count": 1,
+        } for index in range(1, 4)]
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("owned_public must not use library"),
+        ), mock.patch.object(
+            self.service, "_select_pexels_materials", return_value=selected,
+        ) as pexels:
+            accepted = self.service.submit(body, "owned-public-no-user")
+            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
+            result = self.service._select_materials(payload, accepted["job_id"])
+            replay = self.service.submit(body, "owned-public-no-user")
+            replay_result = self.service._select_materials(
+                payload, replay["job_id"],
+            )
+        self.assertEqual(3, len(result))
+        self.assertEqual(accepted["job_id"], replay["job_id"])
+        self.assertEqual(result, replay_result)
+        self.assertEqual({"pexels"}, {item["provider"] for item in result})
+        pexels.assert_called_once()
+
+    def test_owned_public_user_materials_must_exist_and_be_visual(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        nonvisual_sha = self._store_user_asset(b"owned-user-audio")
+        cases = (
+            ({"sha256": "f" * 64, "media_type": "video"}, "不存在"),
+            ({"sha256": nonvisual_sha, "media_type": "audio"}, "图片或视频"),
+        )
+        for index, (material, message) in enumerate(cases):
+            request_id = "owned-public-invalid-user-%d" % index
+            with self.subTest(material=material), self.assertRaisesRegex(
+                matrix.MatrixTemplateError, message
+            ):
+                self.service.submit({
+                    "top_text": "普通用户素材校验",
+                    "bottom_text": "素材必须存在且类型有效",
+                    "material_policy": "owned_public",
+                    "user_materials": [material],
+                    "bgm": False,
+                }, request_id)
+            self.assertIsNone(
+                self.service.store.get_by_request_id(request_id)
+            )
+
+    def test_owned_public_preflight_skips_shared_library(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        user_sha = self._store_user_asset(b"owned-preflight-video")
+        server, thread, base = self._start_server()
+        try:
+            body = json.dumps({
+                "top_text": "普通用户预检策略",
+                "bottom_text": "只检查自有和公共素材",
+                "material_policy": "owned_public",
+                "user_materials": [{
+                    "sha256": user_sha, "media_type": "video",
+                }],
+                "bgm": False,
+            }).encode()
+            request = urllib.request.Request(
+                base + "/v1/preflight", data=body, method="POST",
+                headers={"Authorization": "Bearer api-token"},
+            )
+            with mock.patch.object(
+                self.service, "_library_request",
+                side_effect=AssertionError("owned_public must not use library"),
+            ), urllib.request.build_opener(
+                urllib.request.ProxyHandler({})
+            ).open(request, timeout=3) as response:
+                result = json.load(response)
+            self.assertEqual("owned_public", result["payload"]["material_policy"])
+            self.assertEqual([], self.service.store.pending_ids())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_owned_public_partial_user_materials_fill_from_pexels_only(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        user_sha = self._store_user_asset(b"owned-user-image", ".jpg")
+        body = {
+            "top_text": "普通用户部分素材",
+            "bottom_text": "剩余画面使用公共素材",
+            "material_policy": "owned_public",
+            "duration": 10,
+            "user_materials": [{
+                "sha256": user_sha, "media_type": "image",
+            }],
+            "bgm": False,
+        }
+
+        def pexels(scenes, _job_id, used_sha256=()):
+            self.assertEqual(["media_02", "media_03", "media_04"], [
+                scene["scene_id"] for scene in scenes
+            ])
+            self.assertIn(user_sha, used_sha256)
+            return [{
+                "scene_id": scene["scene_id"],
+                "record_id": "pexels-%d" % index,
+                "sha256": format(index, "064x"),
+                "media_type": "video", "provider": "pexels",
+                "clip_id": format(index + 100, "064x"),
+                "clip_start_seconds": 0.0,
+                "clip_duration_seconds": scene["clip_duration_seconds"],
+                "clip_slot_index": 1, "clip_slot_count": 1,
+            } for index, scene in enumerate(scenes, 1)]
+
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("owned_public must not use library"),
+        ), mock.patch.object(
+            self.service, "_select_pexels_materials", side_effect=pexels,
+        ) as select_pexels:
+            accepted = self.service.submit(body, "owned-public-partial")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
+            )
+            selected = self.service._select_materials(
+                payload, accepted["job_id"]
+            )
+
+        self.assertEqual(1, select_pexels.call_count)
+        self.assertEqual(
+            ["user", "pexels", "pexels", "pexels"],
+            [item["provider"] for item in selected],
+        )
+        self.assertEqual(
+            ["media_01", "media_02", "media_03", "media_04"],
+            [item["scene_id"] for item in selected],
+        )
+
+    def test_three_user_materials_plus_ten_second_template_adds_one_pexels(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        materials = [{
+            "sha256": self._store_user_asset(
+                ("owned-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
+        body = {
+            "top_text": "十秒模板三份素材",
+            "bottom_text": "只补一个公网画面",
+            "material_policy": "owned_public",
+            "user_materials": materials,
+            "duration": 10,
+            "bgm": False,
+        }
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("owned_public must not use library"),
+        ), mock.patch.object(
+            self.service, "_select_pexels_materials",
+            return_value=[{
+                "scene_id": "media_04", "record_id": "pexels-4",
+                "sha256": "f" * 64, "media_type": "video",
+                "provider": "pexels", "clip_id": "e" * 64,
+                "clip_start_seconds": 0.0, "clip_duration_seconds": 2.5,
+                "clip_slot_index": 1, "clip_slot_count": 1,
+            }],
+        ) as pexels:
+            accepted = self.service.submit(body, "owned-public-three-plus-one")
+            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
+            selected = self.service._select_materials(payload, accepted["job_id"])
+        self.assertEqual(["user", "user", "user", "pexels"], [
+            item["provider"] for item in selected
+        ])
+        self.assertEqual(1, len(pexels.call_args.args[0]))
+
+    def test_owned_public_rejects_too_many_user_materials(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        materials = [{
+            "sha256": self._store_user_asset(
+                ("overflow-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(5)]
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "需要 4 个"):
+            self.service.submit({
+                "top_text": "十秒模板素材超限",
+                "bottom_text": "最多只能使用四个",
+                "duration": 10, "bgm": False,
+                "material_policy": "owned_public",
+                "user_materials": materials,
+            }, "owned-public-too-many")
+
+    def test_required_visuals_uses_duration_and_fixed_template_contracts(self):
+        self.service.reference_templates["ref-test"] = {
+            "required_visuals": 3, "required_visuals_max": 5,
+        }
+        self.assertEqual([3, 3, 4, 4, 5, 5], [
+            self.service.required_visuals({
+                "template_id": "ref-test", "duration": duration,
+            })
+            for duration in (8, 9, 10, 12, 13, 15)
+        ])
+        self.assertEqual(9, self.service.required_visuals({
+            "template_id": matrix.NINE_GRID_TEMPLATE_ID, "duration": 8,
+        }))
+        self.assertEqual(
+            matrix.FIXED_SKILL_TEMPLATE_CONFIGS[
+                matrix.TRIPLE_STRIP_TEMPLATE_ID
+            ]["required_visuals"],
+            self.service.required_visuals({
+                "template_id": matrix.TRIPLE_STRIP_TEMPLATE_ID,
+                "duration": 8,
+            }),
+        )
+
+    def test_owned_public_manifest_contains_only_user_and_pexels_sources(self):
+        payload = {
+            "template_id": "full-overlay-bold", "duration": 10,
+            "top_text": "素材清单", "bottom_text": "来源必须可审计",
+            "bgm": False, "material_policy": "owned_public",
+        }
+        materials = [{
+            "scene_id": "media_01", "sha256": "a" * 64,
+            "media_type": "image", "provider": "user",
+            "clip_start_seconds": 0.0, "clip_duration_seconds": 2.5,
+        }] + [{
+            "scene_id": "media_%02d" % index,
+            "record_id": "pexels-%d" % index,
+            "sha256": format(index, "064x"), "media_type": "video",
+            "provider": "pexels", "provider_video_id": 1000 + index,
+            "clip_start_seconds": float(index), "clip_duration_seconds": 2.5,
+        } for index in range(2, 5)]
+        manifest = self.service._material_manifest(payload, materials)
+        self.assertEqual([1, 2, 3, 4], [item["slot"] for item in manifest])
+        self.assertEqual(["user", "pexels", "pexels", "pexels"], [
+            item["source"] for item in manifest
+        ])
+        self.assertFalse({"shared", "library", "yuelei"} & {
+            item["source"] for item in manifest
+        })
+        self.assertEqual("a" * 64, manifest[0]["sha256"])
+        self.assertEqual(1002, manifest[1]["pexels_id"])
+
+    def test_pexels_fills_all_missing_slots_from_one_search(self):
+        scenes = [{
+            "scene_id": "media_%02d" % index,
+            "clip_duration_seconds": 2.5,
+        } for index in range(1, 5)]
+        videos = [{
+            "id": index, "duration": 20,
+            "video_files": [{
+                "id": index * 10, "file_type": "video/mp4",
+                "width": 1080, "height": 1920, "quality": "hd",
+                "link": "https://videos.pexels.com/%d.mp4" % index,
+            }],
+            "user": {"name": "creator", "url": "https://pexels.com/u"},
+            "url": "https://pexels.com/video/%d" % index,
+        } for index in range(1, 21)]
+        with mock.patch.object(
+            self.service, "_pexels_search", return_value={"videos": videos},
+        ) as search:
+            selected = self.service._select_pexels_materials(
+                scenes, "a" * 32,
+            )
+        self.assertEqual(4, len(selected))
+        search.assert_called_once()
+
+    def test_user_material_clip_and_media_validation(self):
+        image_sha = self._store_user_asset(b"image", ".jpg")
+        video_sha = self._store_user_asset(b"video", ".mp4")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "图片素材不能设置"):
+            self.service.submit({
+                "top_text": "图片不能设置入点", "bottom_text": "请直接使用图片",
+                "bgm": False, "material_policy": "owned_public",
+                "user_materials": [{
+                    "sha256": image_sha, "media_type": "image",
+                    "clip_start_seconds": 1,
+                }],
+            }, "owned-image-start")
+        with mock.patch.object(
+            self.service, "_inspect_user_asset", return_value=2.0,
+        ), self.assertRaisesRegex(matrix.MatrixTemplateError, "入点超过"):
+            self.service.submit({
+                "top_text": "视频入点越界", "bottom_text": "提交前明确拒绝",
+                "bgm": False, "material_policy": "owned_public",
+                "user_materials": [{
+                    "sha256": video_sha, "media_type": "video",
+                    "clip_start_seconds": 1,
+                }],
+            }, "owned-video-start")
+
+    def test_real_media_inspection_rejects_wrong_mime(self):
+        bad_image = self.service.data_root / "wrong.mp4"
+        bad_image.parent.mkdir(parents=True, exist_ok=True)
+        bad_image.write_bytes(b"not-a-video")
+        with self.assertRaisesRegex(matrix.MatrixTemplateError, "无法读取"):
+            matrix.MatrixTemplateService._inspect_user_asset(bad_image, "video")
+
+    def test_owned_public_rejects_shared_bgm_before_acceptance(self):
+        self.service.pexels_api_key = "test-pexels-key"
+        user_sha = self._store_user_asset(b"owned-user-video")
+        body = {
+            "top_text": "普通用户背景音乐",
+            "bottom_text": "禁止共享素材降级",
+            "material_policy": "owned_public",
+            "user_materials": [{
+                "sha256": user_sha, "media_type": "video",
+            }],
+            "bgm": True,
+        }
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("owned_public must not use library"),
+        ), self.assertRaisesRegex(matrix.MatrixTemplateError, "共享背景音乐"):
+            self.service.submit(body, "owned-public-bgm")
+        self.assertIsNone(
+            self.service.store.get_by_request_id("owned-public-bgm")
+        )
+
+    def test_owned_public_rejects_missing_pexels_before_acceptance(self):
+        user_sha = self._store_user_asset(b"owned-user-video")
+        body = {
+            "top_text": "普通用户公共素材",
+            "bottom_text": "公共素材不可用就拒绝",
+            "material_policy": "owned_public",
+            "user_materials": [{
+                "sha256": user_sha, "media_type": "video",
+            }],
+            "bgm": False,
+        }
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("owned_public must not use library"),
+        ), self.assertRaisesRegex(matrix.MatrixTemplateError, "Pexels"):
+            self.service.submit(body, "owned-public-no-pexels")
+        self.assertIsNone(
+            self.service.store.get_by_request_id("owned-public-no-pexels")
+        )
+
+    def test_shared_exact_user_materials_keep_existing_source_bypass(self):
+        materials = []
+        for index, media_type in enumerate(("video", "image", "video"), 1):
+            suffix = ".jpg" if media_type == "image" else ".mp4"
+            materials.append({
+                "sha256": self._store_user_asset(
+                    ("shared-user-%d" % index).encode(), suffix,
+                ),
+                "media_type": media_type,
+            })
+        payload = self.service.validate_payload({
+            "top_text": "开发测试共享策略",
+            "bottom_text": "完整自带素材保持兼容",
+            "user_materials": materials,
+            "bgm": False,
+        })
+        payload = self.service._freeze_font_provenance("a" * 32, payload)
+        with mock.patch.object(
+            self.service, "_library_request",
+            side_effect=AssertionError("exact user materials bypass library"),
+        ), mock.patch.object(
+            self.service, "_select_pexels_materials",
+            side_effect=AssertionError("exact user materials bypass Pexels"),
+        ):
+            selected = self.service._select_materials(payload, "a" * 32)
+        self.assertEqual("shared", payload["material_policy"])
+        self.assertEqual(["user", "user", "user"], [
+            item["provider"] for item in selected
+        ])
 
     def test_user_asset_endpoint_requires_authorization(self):
         server, thread, base = self._start_server()
