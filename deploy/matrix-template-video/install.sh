@@ -12,7 +12,7 @@ HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
-REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"
+REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"
 NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"
 NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"
 NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"
@@ -30,6 +30,7 @@ API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
 LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
 REFERENCE_LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-featured-layout.patch"
 REFERENCE_V04_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v04_preview.py"
+REFERENCE_V07_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v07_preview.py"
 NINE_GRID_ADAPTER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-nine-grid-template.py"
 NINE_GRID_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-runtime/package.json"
 NINE_GRID_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-runtime/package-lock.json"
@@ -84,7 +85,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -280,6 +281,9 @@ v10_top3_widths = [
 assert max(v10_top3_widths) <= 996, ("v10.top3", v10_top3_widths)
 PY
 python3 "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" \
+  --pack-root "${REFERENCE_PACK_ROOT}" \
+  --browser "${HYPERFRAMES_BROWSER}"
+python3 "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" \
   --pack-root "${REFERENCE_PACK_ROOT}" \
   --browser "${HYPERFRAMES_BROWSER}"
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
@@ -512,7 +516,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==2 and d.get("fixed_skill_hyperframes_version")=="0.8.33" and d.get("reference_top_layer_counts")=={"2":6,"3":11} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-pexels-middle-v1" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==2 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==2 and d.get("fixed_skill_hyperframes_version")=="0.8.33" and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("material_library_ready") is True and d.get("pexels_material_ready") is True and d.get("material_source_policy")=="huangque-bookends-pexels-middle-v1" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==2 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

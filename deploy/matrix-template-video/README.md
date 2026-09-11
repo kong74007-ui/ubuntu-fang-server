@@ -37,7 +37,7 @@ exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
-variants `v01`, `v04`, `v05`, `v09`, `v10`, `v12`, and `v16`, and installs pinned GSAP
+variants `v01`, `v04`, `v05`, `v07`, `v09`, `v10`, `v12`, and `v16`, and installs pinned GSAP
 `3.14.2` inside the release.
 It also sparse-checks out Skill commit
 `81da5e926aad0d2166845ee0b398282a21ab09e7`, adapts and validates the nine-grid
@@ -59,6 +59,16 @@ phrase-safe two-line preview, and fixes `top2`/`bottom1`/`bottom2` to authorized
 Smiley Sans Oblique at `68/70/70px`.
 Variant `v10` increases `top1` from `70px` to `85px` and `top3` from `54px`
 to `65px`; its authored Top3 example keeps complete phrases on two lines.
+Variant `v07` replaces its yellow-white-red three-line treatment with a
+red-cream and yellow-black five-layer layout: `top1` is deep red `#d4140d` with
+cream `#ffe9be` 13px outline at `118px`, `top2`/`top3` are yellow `#ffd51c`
+with black `#101010` outlines at `82px`/`51px`, `bottom1` moves into the top
+stack as a fourth information layer (deep red, cream outline, `57px`), and the
+bottom CTA stays deep red with a cream outline at `86px`. All five layers are
+`NotoSC` 900 with `-0.045em` letter spacing and `paint-order: stroke fill`,
+fully visible from frame zero. The service splits v07 top copy across
+`top1`/`top2`/`top3`/`bottom1` and keeps the CTA in `bottom2`; only v07 uses
+this four-top-layer path, every other variant keeps its existing layout.
 The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
 patch and the separate reference-typography patch have SHA-256 locks in
 `install.sh`, so a missing or changed patch fails before the active release is
