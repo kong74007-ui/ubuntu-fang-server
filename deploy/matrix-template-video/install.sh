@@ -20,6 +20,7 @@ NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d1296
 MOTION_V2_PACKAGE_SHA256="3f0d57a4c19af984134511451ca7acc402cab99d845107b5d316ed466466b65e"
 MOTION_V2_LOCK_SHA256="c727689682957da2372f900c1d9ea77cbc5a1cf407765959cc3b750fceb4945e"
 PUBLIC_PALETTE_APPLIER_SHA256="08c27f5b37ec3b8c8de1ebae64f8f13d0380d31691c9fcf9c9f75ba00c665392"
+REFERENCE_PALETTE_COMPAT_SHA256="65975d7968de338b745e4dcbff8d8207a7d5bc4f8492efe9ce80692dd3dc0080"
 DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_ROOT="/opt/huangque/matrix-template-video"
 SOURCE_LINK="${RUNTIME_ROOT}/source"
@@ -41,6 +42,7 @@ NINE_GRID_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/nine-grid-run
 MOTION_V2_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package.json"
 MOTION_V2_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package-lock.json"
 PUBLIC_PALETTE_APPLIER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/apply-public-template-palettes.py"
+REFERENCE_PALETTE_COMPAT_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify-reference-palette-compat.py"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -92,7 +94,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${PUBLIC_PALETTE_APPLIER_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${PUBLIC_PALETTE_APPLIER_SOURCE}" "${REFERENCE_PALETTE_COMPAT_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -299,6 +301,15 @@ if [[ "$(sha256sum "${PUBLIC_PALETTE_APPLIER_SOURCE}" | awk '{print $1}')" != "$
   echo "public palette applier hash mismatch" >&2; exit 1
 fi
 python3 "${PUBLIC_PALETTE_APPLIER_SOURCE}" --reference-root "${REFERENCE_PACK_ROOT}"
+# Post-injection compatibility gate: the service parses these layers at start;
+# fail here, before the release symlink is switched or the service restarted.
+if [[ "$(sha256sum "${REFERENCE_PALETTE_COMPAT_SOURCE}" | awk '{print $1}')" != "${REFERENCE_PALETTE_COMPAT_SHA256}" ]]; then
+  echo "reference palette compatibility checker hash mismatch" >&2; exit 1
+fi
+python3 "${REFERENCE_PALETTE_COMPAT_SOURCE}" \
+  --pack-root "${REFERENCE_PACK_ROOT}" \
+  --palette-version "${PUBLIC_TEMPLATE_PALETTE_VERSION}" \
+  --palette-count "${PUBLIC_TEMPLATE_PALETTE_COUNT}"
 REFERENCE_RUNTIME="${RELEASE}/reference-runtime"
 install -d -o root -g root -m 0755 "${REFERENCE_RUNTIME}"
 env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" install \
@@ -488,6 +499,7 @@ BUILD_ID="$(printf '%s\n' \
   "${NINE_GRID_PACKAGE_SHA256}" "${NINE_GRID_LOCK_SHA256}" \
   "${MOTION_V2_PACKAGE_SHA256}" "${MOTION_V2_LOCK_SHA256}" \
   "${PUBLIC_PALETTE_APPLIER_SHA256}" \
+  "${REFERENCE_PALETTE_COMPAT_SHA256}" \
   "${HYPERFRAMES_VERSION}" "${NINE_GRID_HYPERFRAMES_VERSION}" "${MOTION_V2_HYPERFRAMES_VERSION}" \
   "$(sha256sum "${GSAP_SOURCE}" | awk '{print $1}')" \
   "$(sha256sum "${NINE_GRID_ROOT}/index.html" | awk '{print $1}')" \

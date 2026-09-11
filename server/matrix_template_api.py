@@ -952,6 +952,67 @@ def _reference_css_layer_metrics(
     }
 
 
+def _reference_variant_has_layer(
+    index_html: str, variant: str, layer: str,
+) -> bool:
+    """True when the template's own CSS declares the layer for the variant.
+
+    The service and the installer's post-palette compatibility gate both use
+    this single predicate, so an injected overlay can never shadow detection.
+    """
+    return bool(re.search(
+        rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
+        index_html,
+    ))
+
+
+def _reference_variant_layer_plan(
+    index_html: str, variant: str,
+) -> tuple[int, list[str]]:
+    if variant == REFERENCE_V07_VARIANT:
+        return 4, ["top1", "top2", "top3", "bottom1"]
+    top_layer_count = 3 if _reference_variant_has_layer(
+        index_html, variant, "top3",
+    ) else 2
+    return top_layer_count, ["top1", "top2"] + (
+        ["top3"] if top_layer_count == 3 else []
+    )
+
+
+def reference_pack_layer_audit(index_html: str) -> dict:
+    """Re-parse the reference pack exactly like the service does.
+
+    Returns the template count, the top-layer-count histogram and every present
+    layer's parsed ``font_size_px``. Raises if any layer is missing or its size
+    cannot be parsed, so the installer can fail before switching the release.
+    """
+    histogram = {"2": 0, "3": 0, "4": 0}
+    font_sizes: dict[str, int] = {}
+    for index in range(1, REFERENCE_TEMPLATE_COUNT + 1):
+        variant = f"v{index:02d}"
+        if not all(
+            _reference_variant_has_layer(index_html, variant, layer)
+            for layer in ("top1", "top2")
+        ):
+            raise MatrixTemplateError(
+                "HyperFrames reference template top layer styles are incomplete"
+            )
+        top_layer_count, top_layers = _reference_variant_layer_plan(
+            index_html, variant,
+        )
+        histogram[str(top_layer_count)] += 1
+        for layer in top_layers + ["bottom2"]:
+            metrics = _reference_css_layer_metrics(
+                index_html, variant, layer, 2,
+            )
+            font_sizes[f"{variant}.{layer}"] = int(metrics["font_size_px"])
+    return {
+        "templates": REFERENCE_TEMPLATE_COUNT,
+        "top_layer_counts": histogram,
+        "font_sizes": font_sizes,
+    }
+
+
 def _font_selection(template_id: str, job_id: str,
                     private_families: set[str] | frozenset[str] = frozenset()) -> dict:
     options = list(FONT_VARIANTS.get(template_id) or FONT_VARIANTS["full-overlay-bold"])
@@ -2588,10 +2649,7 @@ class MatrixTemplateService:
             )
 
         def has_variant_layer(variant: str, layer: str) -> bool:
-            return bool(re.search(
-                rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
-                index_html,
-            ))
+            return _reference_variant_has_layer(index_html, variant, layer)
 
         def variant_layer_matches_contract(
             variant: str, layer: str, required: tuple[str, ...]
@@ -2631,10 +2689,9 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "HyperFrames reference template top layer styles are incomplete"
                 )
-            if variant == REFERENCE_V07_VARIANT:
-                top_layer_count = 4
-            else:
-                top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
+            top_layer_count, top_layers = _reference_variant_layer_plan(
+                index_html, variant,
+            )
             fixed_private_fonts = REFERENCE_FIXED_PRIVATE_FONTS.get(variant, {})
             for layer, font in fixed_private_fonts.items():
                 font_size_px = (
@@ -2702,12 +2759,6 @@ class MatrixTemplateService:
                     for layer, font in fixed_private_fonts.items()
                 },
             }
-            if variant == REFERENCE_V07_VARIANT:
-                top_layers = ["top1", "top2", "top3", "bottom1"]
-            else:
-                top_layers = ["top1", "top2"] + (
-                    ["top3"] if top_layer_count == 3 else []
-                )
             semantic_contract = {}
             for layer in top_layers + ["bottom2"]:
                 if variant == REFERENCE_V07_VARIANT:

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -356,6 +359,169 @@ class PaletteGateCompareTests(unittest.TestCase):
         before = [element("#top1", 0, {}, {"boxShadow": "rgb(0, 0, 0) 0px 10px 0px 0px"})]
         after = [element("#top1", 0, {}, {"boxShadow": "rgb(0, 0, 0) 0px 11px 0px 0px"})]
         self.assertTrue(self.gate.compare(before, after, "t"))
+
+
+GATE = ROOT / "scripts/verify-public-template-palettes.py"
+COMPAT = ROOT / "deploy/matrix-template-video/verify-reference-palette-compat.py"
+
+
+def load_compat():
+    spec = importlib.util.spec_from_file_location(
+        "verify_reference_palette_compat", COMPAT,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TOP3_VARIANTS = {1, 4, 5, 6, 7, 8, 10, 11, 12, 16, 17}
+REFERENCE_LAYERS = ("top1", "top2", "top3", "bottom1", "bottom2")
+
+
+def reference_fixture_html() -> str:
+    """Minimal reference-typography-17 index.html with production CSS structure."""
+    styles = [
+        "* { box-sizing: border-box; }",
+        ".top, .bottom { width: 100%; padding-left: 42px; padding-right: 42px; }",
+        ".top1, .top2, .top3, .bottom1, .bottom2 { max-width: 996px; letter-spacing: .01em; }",
+    ]
+    for index in range(1, 18):
+        variant = f"v{index:02d}"
+        if variant == "v07":
+            styles.extend((
+                ".v07 .top1 { font-size: 118px; }",
+                ".v07 .top2 { font-size: 82px; }",
+                ".v07 .top3 { font-size: 51px; }",
+                ".v07 .bottom1 { font-size: 57px; }",
+                ".v07 .bottom2 { font-size: 86px; }",
+            ))
+            continue
+        styles.extend((
+            f".{variant} .top1 {{ font-size: 80px; }}",
+            f".{variant} .top2 {{ font-size: 60px; }}",
+            f".{variant} .bottom2 {{ font-size: 70px; }}",
+        ))
+        if index in TOP3_VARIANTS:
+            styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
+    layers = "".join(
+        f'<div id="{layer}" class="{layer}"></div>'
+        for layer in REFERENCE_LAYERS
+    )
+    return (
+        '<html><head><style>\n' + "\n".join(styles) + "\n</style></head>"
+        '<body><div id="root"><section id="typography" class="clip" '
+        'data-start="0">' + layers + "</section></div></body></html>"
+    )
+
+
+def old_selector_overlay(css: str) -> str:
+    """Turn the current `#root[class~="vNN"] .layer` overlay back into the
+    pre-#186 `#root.vNN .layer` form that shadowed layer detection."""
+    return css.replace('[class~="', ".").replace('"] ', " ")
+
+
+class ReferencePaletteIntegrationTests(unittest.TestCase):
+    """Drive the REAL production parser against the palette-injected pack."""
+
+    def setUp(self):
+        self.applier = load_applier()
+        sys.path.insert(0, str(ROOT))
+        from server import matrix_template_api as matrix
+        self.matrix = matrix
+
+    def test_paletted_reference_pack_parses_in_production_parser(self):
+        html = self.applier.inject(reference_fixture_html(), "reference")
+        audit = self.matrix.reference_pack_layer_audit(html)
+        self.assertEqual(17, audit["templates"])
+        self.assertEqual({"2": 6, "3": 10, "4": 1}, audit["top_layer_counts"])
+        self.assertEqual(63, len(audit["font_sizes"]))
+        for key, size in audit["font_sizes"].items():
+            self.assertIsInstance(size, int)
+            self.assertTrue(8 <= size <= 240, key)
+
+    def test_two_layer_variants_do_not_gain_top3_from_overlay(self):
+        html = self.applier.inject(reference_fixture_html(), "reference")
+        for variant in ("v02", "v03", "v09", "v13", "v14", "v15"):
+            self.assertFalse(
+                self.matrix._reference_variant_has_layer(html, variant, "top3"),
+                variant,
+            )
+
+    def test_old_selector_overlay_reproduces_startup_failure(self):
+        html = reference_fixture_html()
+        block = old_selector_overlay(self.applier.style_block("reference"))
+        html = html.replace("</head>", block + "</head>", 1)
+        with self.assertRaisesRegex(
+            self.matrix.MatrixTemplateError, "font size is missing",
+        ):
+            self.matrix.reference_pack_layer_audit(html)
+
+
+class CompatibilityScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.applier = load_applier()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.pack = Path(self._tmp.name) / "reference-typography-17"
+        self.pack.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_pack(self, css_block: str) -> None:
+        html = reference_fixture_html().replace(
+            "</head>", css_block + "</head>", 1,
+        )
+        (self.pack / "index.html").write_text(html, encoding="utf-8")
+
+    def run_compat(self) -> int:
+        done = subprocess.run(
+            [sys.executable, str(COMPAT), "--pack-root", str(self.pack)],
+            check=False, capture_output=True, text=True, encoding="utf-8",
+        )
+        return done.returncode
+
+    def test_compat_script_passes_on_current_overlay(self):
+        self.write_pack(self.applier.style_block("reference"))
+        self.assertEqual(0, self.run_compat())
+
+    def test_compat_script_fails_on_old_selector_overlay(self):
+        self.write_pack(old_selector_overlay(self.applier.style_block("reference")))
+        self.assertEqual(1, self.run_compat())
+
+    def test_compat_script_fails_when_overlay_missing(self):
+        self.write_pack("")
+        self.assertEqual(1, self.run_compat())
+
+
+class InstallerPaletteGateTests(unittest.TestCase):
+    def setUp(self):
+        self.installer = (
+            ROOT / "deploy/matrix-template-video/install.sh"
+        ).read_text(encoding="utf-8")
+
+    def test_compat_checker_is_hash_locked_and_shipped(self):
+        self.assertIn(
+            'REFERENCE_PALETTE_COMPAT_SOURCE="${DEPLOY_ROOT}/deploy/'
+            'matrix-template-video/verify-reference-palette-compat.py"',
+            self.installer,
+        )
+        self.assertIn('"${REFERENCE_PALETTE_COMPAT_SOURCE}"', self.installer)
+        self.assertIn('REFERENCE_PALETTE_COMPAT_SHA256="', self.installer)
+        self.assertIn(
+            'sha256sum "${REFERENCE_PALETTE_COMPAT_SOURCE}"', self.installer,
+        )
+        self.assertIn('"${REFERENCE_PALETTE_COMPAT_SHA256}" \\', self.installer)
+
+    def test_compat_check_runs_after_injection_before_switch(self):
+        inject = self.installer.index(
+            'python3 "${PUBLIC_PALETTE_APPLIER_SOURCE}" --reference-root'
+        )
+        check = self.installer.index(
+            'python3 "${REFERENCE_PALETTE_COMPAT_SOURCE}" \\'
+        )
+        switch = self.installer.index('mv -Tf "${NEXT_LINK}" "${SOURCE_LINK}"')
+        self.assertLess(inject, check)
+        self.assertLess(check, switch)
 
 
 if __name__ == "__main__":
