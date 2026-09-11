@@ -1343,7 +1343,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 self.assertEqual(2, health["templates"])
                 self.assertEqual(5, health["max_batch_size"])
                 self.assertEqual(
-                    {"2": 0, "3": 0}, health["reference_top_layer_counts"]
+                    {"2": 0, "3": 0, "4": 0}, health["reference_top_layer_counts"]
                 )
                 self.assertEqual([], health["reference_fixed_private_fonts"])
                 self.assertEqual({
@@ -1631,6 +1631,15 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v05 .top3 { font: 900 68px/1.04 "NotoSC"; color: #fff8d9; -webkit-text-stroke: 9px #26394a; text-shadow: 7px 8px 0 #07111e; }',
                     '.v05 .bottom1 { font: 900 68px/1.05 "NotoSC"; color: #ffe000; -webkit-text-stroke: 9px #263e32; }',
                     '.v05 .bottom2 { max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
+                ))
+                continue
+            if variant == matrix.REFERENCE_V07_VARIANT:
+                styles.extend((
+                    '.v07 .top1 { font-family: "NotoSC"; font-size: 118px; font-weight: 900; letter-spacing: -0.045em; color: #d4140d; -webkit-text-stroke: 13px #ffe9be; paint-order: stroke fill; }',
+                    '.v07 .top2 { font-family: "NotoSC"; font-size: 82px; font-weight: 900; letter-spacing: -0.045em; color: #ffd51c; -webkit-text-stroke: 11px #101010; paint-order: stroke fill; }',
+                    '.v07 .top3 { font-family: "NotoSC"; font-size: 51px; font-weight: 900; letter-spacing: -0.045em; color: #ffd51c; -webkit-text-stroke: 8px #101010; paint-order: stroke fill; }',
+                    '.v07 .bottom1 { font-family: "NotoSC"; font-size: 57px; font-weight: 900; letter-spacing: -0.045em; color: #d4140d; -webkit-text-stroke: 9px #ffe9be; paint-order: stroke fill; }',
+                    '.v07 .bottom2 { font-family: "NotoSC"; font-size: 86px; font-weight: 900; letter-spacing: -0.045em; color: #d4140d; -webkit-text-stroke: 11px #ffe9be; paint-order: stroke fill; }',
                 ))
                 continue
             if index == 10:
@@ -1926,18 +1935,27 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             expected_layers = {"top1", "top2", "bottom2"}
             if item["text_layers"]["top"] == 3:
                 expected_layers.add("top3")
+            if item["variant"] == matrix.REFERENCE_V07_VARIANT:
+                expected_layers.update({"top3", "bottom1"})
             self.assertEqual(
                 expected_layers,
                 set(self.service.reference_semantic_layouts[item["variant"]]),
             )
         self.assertEqual(
             {
-                "v01", "v04", "v05", "v06", "v07", "v08",
+                "v01", "v04", "v05", "v06", "v08",
                 "v10", "v11", "v12", "v16", "v17",
             },
             {
                 item["variant"] for item in self.service.reference_templates.values()
                 if item["text_layers"]["top"] == 3
+            },
+        )
+        self.assertEqual(
+            {"v07"},
+            {
+                item["variant"] for item in self.service.reference_templates.values()
+                if item["text_layers"]["top"] == 4
             },
         )
         payload = self.service.validate_payload({
@@ -2323,6 +2341,118 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 "top1": "，开店。\n！持续增长？",
             })["top1"],
         )
+
+    def _v07_semantic_layout(self, top, bottom, top1_end):
+        breaks = [i for i, ch in enumerate(top) if ch in "，。！？；,.!?;"]
+        return {
+            "version": matrix.REFERENCE_SEMANTIC_LAYOUT_VERSION,
+            "model": "test-model",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": top1_end,
+            "top_break_after": breaks,
+            "bottom_break_after": [
+                i for i, ch in enumerate(bottom) if ch in "，。！？；,.!?;"
+            ],
+        }
+
+    @staticmethod
+    def _v07_fake_width(value, metrics):
+        text = matrix._hide_reference_edge_punctuation(value)
+        if not text:
+            return 0.0
+        return len(text) * float(metrics["font_size_px"]) * 0.8
+
+    def test_v07_semantic_layout_splits_five_layers(self):
+        top = (
+            "999元成为会员。全年免费喝茶。"
+            "女性成长/喝茶/商业思维/沙龙。链接1000位深圳湾沙龙主理人"
+        )
+        bottom = "感兴趣留下666"
+        top_breaks = [i for i, ch in enumerate(top) if ch == "。"]
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=self._v07_fake_width,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-07-fixture-07",
+                "semantic_layout": self._v07_semantic_layout(
+                    top, bottom, top_breaks[0]
+                ),
+                "bgm": False,
+            })
+            frozen = self.service._freeze_font_provenance("7" * 32, payload)
+        reference = frozen["_reference_template"]
+        self.assertEqual(4, reference["top_layer_count"])
+        text = reference["text"]
+        self.assertEqual(
+            top,
+            "".join(text[key] for key in ("top1", "top2", "top3", "bottom1")),
+        )
+        self.assertEqual(bottom, text["bottom2"])
+        self.assertNotEqual("", text["bottom1"])
+        display = reference["display_text"]
+        self.assertEqual("999元成为会员", display["top1"])
+        self.assertEqual("全年免费喝茶", display["top2"])
+        self.assertEqual("女性成长/喝茶/商业思维/沙龙", display["top3"])
+        self.assertEqual("链接1000位深圳湾沙龙主理人", display["bottom1"])
+        self.assertEqual("感兴趣留下666", display["bottom2"])
+        joined = "".join(text[key] for key in ("top1", "top2", "top3", "bottom1", "bottom2"))
+        for protected in ("999元", "1000位", "深圳湾", "主理人", "666"):
+            self.assertIn(protected, joined)
+
+    def test_v07_semantic_layout_allows_empty_bottom1_for_short_copy(self):
+        top = "深圳女性成长局，一起链接资源"
+        bottom = "回复同行"
+        top_breaks = [i for i, ch in enumerate(top) if ch in "，。！？；,.!?;"]
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=self._v07_fake_width,
+        ):
+            payload = self.service.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": "ref-07-fixture-07",
+                "semantic_layout": self._v07_semantic_layout(
+                    top, bottom, top_breaks[0]
+                ),
+                "bgm": False,
+            })
+            frozen = self.service._freeze_font_provenance("8" * 32, payload)
+        text = frozen["_reference_template"]["text"]
+        self.assertEqual(
+            top,
+            "".join(text[key] for key in ("top1", "top2", "top3", "bottom1")),
+        )
+        self.assertEqual(bottom, text["bottom2"])
+        self.assertEqual("", text["bottom1"])
+        self.assertEqual("", frozen["_reference_template"]["display_text"]["bottom1"])
+
+    def test_v07_semantic_layout_is_idempotent_per_request_id(self):
+        top = "999元成为会员。全年免费喝茶。女性成长/喝茶/商业思维/沙龙。链接1000位深圳湾沙龙主理人"
+        bottom = "感兴趣留下666"
+        top_breaks = [i for i, ch in enumerate(top) if ch == "。"]
+        raw = {
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": "ref-07-fixture-07",
+            "semantic_layout": self._v07_semantic_layout(
+                top, bottom, top_breaks[0]
+            ),
+            "bgm": False,
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width",
+            side_effect=self._v07_fake_width,
+        ):
+            first = self.service.submit(raw, "v07-idempotent-1")
+            second = self.service.submit(raw, "v07-idempotent-1")
+        self.assertEqual(first["job_id"], second["job_id"])
+        stored = json.loads(self.service.store.get(first["job_id"])["payload"])
+        text = stored["_reference_template"]["text"]
+        self.assertEqual("链接1000位深圳湾沙龙主理人", text["bottom1"])
+        self.assertEqual("感兴趣留下666", text["bottom2"])
 
     def test_two_layer_reference_template_moves_all_copy_out_of_top3(self):
         top = (

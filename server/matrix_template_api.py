@@ -133,6 +133,7 @@ NINE_GRID_BOTTOM_FONT = {
 }
 REFERENCE_FEATURED_VARIANT = "v05"
 REFERENCE_V01_VARIANT = "v01"
+REFERENCE_V07_VARIANT = "v07"
 REFERENCE_V01_STYLE_CONTRACT = {
     "top1": (
         'font:40070px/1.08"mashan"',
@@ -191,6 +192,53 @@ REFERENCE_FEATURED_STYLE_CONTRACT = {
         "background:#f4c900",
         "color:#26362d",
         "border-radius:28px",
+    ),
+}
+REFERENCE_V07_STYLE_CONTRACT = {
+    "top1": (
+        'font-family:"notosc"',
+        "font-size:118px",
+        "font-weight:900",
+        "letter-spacing:-0.045em",
+        "color:#d4140d",
+        "-webkit-text-stroke:13px#ffe9be",
+        "paint-order:strokefill",
+    ),
+    "top2": (
+        'font-family:"notosc"',
+        "font-size:82px",
+        "font-weight:900",
+        "letter-spacing:-0.045em",
+        "color:#ffd51c",
+        "-webkit-text-stroke:11px#101010",
+        "paint-order:strokefill",
+    ),
+    "top3": (
+        'font-family:"notosc"',
+        "font-size:51px",
+        "font-weight:900",
+        "letter-spacing:-0.045em",
+        "color:#ffd51c",
+        "-webkit-text-stroke:8px#101010",
+        "paint-order:strokefill",
+    ),
+    "bottom1": (
+        'font-family:"notosc"',
+        "font-size:57px",
+        "font-weight:900",
+        "letter-spacing:-0.045em",
+        "color:#d4140d",
+        "-webkit-text-stroke:9px#ffe9be",
+        "paint-order:strokefill",
+    ),
+    "bottom2": (
+        'font-family:"notosc"',
+        "font-size:86px",
+        "font-weight:900",
+        "letter-spacing:-0.045em",
+        "color:#d4140d",
+        "-webkit-text-stroke:11px#ffe9be",
+        "paint-order:strokefill",
     ),
 }
 REFERENCE_FONT_FILES = (
@@ -984,6 +1032,14 @@ _REFERENCE_TOP_GROUP_SIZES = {
         5: (2, 2, 1),
         6: (2, 2, 2),
     },
+    4: {
+        1: (1, 0, 0, 0),
+        2: (1, 1, 0, 0),
+        3: (1, 1, 1, 0),
+        4: (1, 1, 1, 1),
+        5: (1, 2, 1, 1),
+        6: (1, 2, 2, 1),
+    },
 }
 _REFERENCE_BOTTOM_GROUP_SIZES = {
     1: (0, 1),
@@ -1019,9 +1075,12 @@ def _reference_text_layout(
     top_groups = _pack_reference_lines(
         top_lines, _REFERENCE_TOP_GROUP_SIZES[top_layer_count]
     )
-    bottom_groups = _pack_reference_lines(
-        bottom_lines, _REFERENCE_BOTTOM_GROUP_SIZES
-    )
+    if top_layer_count == 4:
+        bottom_groups = [bottom_lines]
+    else:
+        bottom_groups = _pack_reference_lines(
+            bottom_lines, _REFERENCE_BOTTOM_GROUP_SIZES
+        )
     keys = ("top1", "top2", "top3", "bottom1", "bottom2")
     groups = top_groups + bottom_groups
     source_text = {
@@ -2159,7 +2218,10 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "HyperFrames reference template top layer styles are incomplete"
                 )
-            top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
+            if variant == REFERENCE_V07_VARIANT:
+                top_layer_count = 4
+            else:
+                top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
             fixed_private_fonts = REFERENCE_FIXED_PRIVATE_FONTS.get(variant, {})
             for layer, font in fixed_private_fonts.items():
                 font_size_px = (
@@ -2195,6 +2257,13 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "v01 HyperFrames template style contract changed"
                 )
+            if variant == REFERENCE_V07_VARIANT and not all(
+                variant_layer_matches_contract(variant, layer, required)
+                for layer, required in REFERENCE_V07_STYLE_CONTRACT.items()
+            ):
+                raise MatrixTemplateError(
+                    "v07 HyperFrames template style contract changed"
+                )
             record = {
                 "id": template_id,
                 "name": str(item.get("name") or template_id)[:40],
@@ -2203,7 +2272,10 @@ class MatrixTemplateService:
                 "engine": "hyperframes",
                 "font_mode": "template_locked",
                 "font_selectable": False,
-                "text_layers": {"top": top_layer_count, "bottom": 2},
+                "text_layers": {
+                    "top": top_layer_count,
+                    "bottom": 1 if variant == REFERENCE_V07_VARIANT else 2,
+                },
                 "duration_mode": "random_integer_7_15",
                 "required_visuals": 3,
                 "required_visuals_max": 5,
@@ -2217,17 +2289,24 @@ class MatrixTemplateService:
                     for layer, font in fixed_private_fonts.items()
                 },
             }
-            top_layers = ["top1", "top2"] + (
-                ["top3"] if top_layer_count == 3 else []
-            )
+            if variant == REFERENCE_V07_VARIANT:
+                top_layers = ["top1", "top2", "top3", "bottom1"]
+            else:
+                top_layers = ["top1", "top2"] + (
+                    ["top3"] if top_layer_count == 3 else []
+                )
             semantic_contract = {}
             for layer in top_layers + ["bottom2"]:
-                max_lines = (
-                    2 if top_layer_count == 3 or layer != "top2" else 4
-                )
+                if variant == REFERENCE_V07_VARIANT:
+                    max_lines = 2
+                elif layer == "bottom2":
+                    max_lines = 2
+                else:
+                    max_lines = (
+                        2 if top_layer_count == 3 or layer != "top2" else 4
+                    )
                 semantic_contract[layer] = _reference_css_layer_metrics(
-                    index_html, variant, layer,
-                    2 if layer == "bottom2" else max_lines,
+                    index_html, variant, layer, max_lines,
                 )
                 fixed = fixed_private_fonts.get(layer)
                 if fixed:
@@ -2764,7 +2843,85 @@ class MatrixTemplateService:
         top3_metrics = contract.get("top3")
         top3_start = len(top)
         top3_lines = []
-        if top3_metrics is None or top1_end >= len(top):
+        bottom1_start = len(top)
+        bottom1_lines = []
+        if variant == REFERENCE_V07_VARIANT:
+            bottom1_metrics = contract["bottom1"]
+            break_points = sorted(set(
+                [
+                    item + 1 for item in layout["top_break_after"]
+                    if top1_end <= item < len(top)
+                ] + [len(top)]
+            ))
+            candidates = []
+            for split2 in break_points:
+                for split3 in [
+                    item for item in break_points if split2 < item
+                ] + [len(top)]:
+                    try:
+                        top2_candidate = self._pack_reference_semantic_span(
+                            top, top1_end, split2,
+                            layout["top_break_after"], contract["top2"],
+                        )
+                        top3_candidate = self._pack_reference_semantic_span(
+                            top, split2, split3,
+                            layout["top_break_after"], contract["top3"],
+                        )
+                        bottom1_candidate = self._pack_reference_semantic_span(
+                            top, split3, len(top),
+                            layout["top_break_after"], bottom1_metrics,
+                        )
+                    except ValueError:
+                        continue
+                    total_lines = (
+                        len(top2_candidate) + len(top3_candidate)
+                        + len(bottom1_candidate)
+                    )
+                    top3_empty = not top3_candidate
+                    bottom1_empty = not bottom1_candidate
+                    widths = [
+                        self._reference_text_width(line, contract["top2"])
+                        / float(contract["top2"].get(
+                            "max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX,
+                        ))
+                        for line in top2_candidate
+                    ] + [
+                        self._reference_text_width(line, contract["top3"])
+                        / float(contract["top3"].get(
+                            "max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX,
+                        ))
+                        for line in top3_candidate
+                    ] + [
+                        self._reference_text_width(line, bottom1_metrics)
+                        / float(bottom1_metrics.get(
+                            "max_width_px", REFERENCE_TEXT_MAX_WIDTH_PX,
+                        ))
+                        for line in bottom1_candidate
+                    ]
+                    ideal = sum(widths) / max(1, len(widths))
+                    raggedness = sum((width - ideal) ** 2 for width in widths)
+                    semantic_penalty = 0
+                    if split2 < len(top) and top[split2 - 1] not in "，。！？；,.!?;":
+                        semantic_penalty += 1
+                    if split3 < len(top) and top[split3 - 1] not in "，。！？；,.!?;":
+                        semantic_penalty += 1
+                    candidates.append((
+                        total_lines, top3_empty, bottom1_empty,
+                        semantic_penalty, raggedness,
+                        split2, split3, top2_candidate, top3_candidate,
+                        bottom1_candidate,
+                    ))
+            if not candidates:
+                raise ValueError(
+                    "HyperFrames 文案无法在完整语义边界内排入模板"
+                )
+            (
+                _total_lines, _top3_empty, _bottom1_empty,
+                _semantic_penalty, _raggedness,
+                top3_start, bottom1_start, top2_lines, top3_lines,
+                bottom1_lines,
+            ) = min(candidates, key=lambda item: item[:5])
+        elif top3_metrics is None or top1_end >= len(top):
             top2_lines = self._pack_reference_semantic_span(
                 top, top1_end, len(top),
                 layout["top_break_after"], contract["top2"],
@@ -2826,14 +2983,15 @@ class MatrixTemplateService:
         source_text = {
             "top1": top[:top1_end],
             "top2": top[top1_end:top3_start],
-            "top3": top[top3_start:],
-            "bottom1": "", "bottom2": bottom,
+            "top3": top[top3_start:bottom1_start],
+            "bottom1": top[bottom1_start:],
+            "bottom2": bottom,
         }
         display_text = {
             "top1": "\n".join(map(_hide_reference_edge_punctuation, top1_lines)),
             "top2": "\n".join(map(_hide_reference_edge_punctuation, top2_lines)),
             "top3": "\n".join(map(_hide_reference_edge_punctuation, top3_lines)),
-            "bottom1": "",
+            "bottom1": "\n".join(map(_hide_reference_edge_punctuation, bottom1_lines)),
             "bottom2": "\n".join(map(_hide_reference_edge_punctuation, bottom2_lines)),
         }
         return source_text, display_text
@@ -3235,7 +3393,7 @@ class MatrixTemplateService:
                     1 for item in self.reference_templates.values()
                     if item["text_layers"]["top"] == layer_count
                 )
-                for layer_count in (2, 3)
+                for layer_count in (2, 3, 4)
             },
             "reference_fixed_private_fonts": sorted({
                 family

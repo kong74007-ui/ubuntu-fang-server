@@ -24,7 +24,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('NINE_GRID_HYPERFRAMES_VERSION="0.8.33"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"', installer)
         self.assertIn('NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"', installer)
         self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
         self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
@@ -75,7 +75,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("nine_grid_templates")==1', installer)
         self.assertIn('d.get("nine_grid_hyperframes_version")=="0.8.33"', installer)
-        self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":11}', installer)
+        self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1}', installer)
         self.assertIn('d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"]', installer)
         self.assertIn(
             'd.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"]',
@@ -221,7 +221,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "07cbd14b345363157901aff3f38cb6018fe6a79706d57b714ecca82363f329b9",
+            "90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -257,6 +257,16 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             '"top1": "我在深圳发起了共享办公\\n共享创业 OPC 自媒体平台"',
             patch,
         )
+        self.assertIn("font-size: 118px;", patch)
+        self.assertIn("color: #d4140d;", patch)
+        self.assertIn("-webkit-text-stroke: 13px #ffe9be;", patch)
+        self.assertIn("color: #ffd51c;", patch)
+        self.assertIn("-webkit-text-stroke: 11px #101010;", patch)
+        self.assertIn("font-size: 57px;", patch)
+        self.assertIn("font-size: 86px;", patch)
+        self.assertIn('if (vars.variant === "v07")', patch)
+        self.assertIn('"top1": "999元成为会员"', patch)
+        self.assertIn('"bottom1": "链接1000位深圳湾沙龙主理人"', patch)
         self.assertNotIn(".v02 .top1 {\n+", patch)
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
@@ -288,6 +298,82 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("--headless=new", source)
         self.assertIn("document.fonts.check", source)
         self.assertIn("getBoundingClientRect", source)
+
+    def test_v07_preview_browser_guard_rejects_visual_regressions(self):
+        path = ROOT / "deploy/matrix-template-video/verify_v07_preview.py"
+        spec = importlib.util.spec_from_file_location("verify_v07_preview", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def layer(color, size, stroke, left, right, top, bottom):
+            return {
+                "display": "block", "visibility": "visible",
+                "opacity": "1", "color": color, "fontSize": size,
+                "strokeColor": stroke,
+                "rect": {"left": left, "right": right,
+                         "top": top, "bottom": bottom},
+                "width": right - left, "height": bottom - top,
+            }
+
+        valid = {
+            "font_loaded": True,
+            "stage": {"left": 0, "right": 1080, "top": 0, "bottom": 1920},
+            "layers": {
+                "top1": layer("rgb(212, 20, 13)", "118px", "rgb(255, 233, 190)", 100, 980, 154, 300),
+                "top2": layer("rgb(255, 213, 28)", "82px", "rgb(16, 16, 16)", 200, 880, 320, 420),
+                "top3": layer("rgb(255, 213, 28)", "51px", "rgb(16, 16, 16)", 150, 930, 440, 510),
+                "bottom1": layer("rgb(212, 20, 13)", "57px", "rgb(255, 233, 190)", 180, 900, 530, 600),
+                "bottom2": layer("rgb(212, 20, 13)", "86px", "rgb(255, 233, 190)", 300, 780, 1400, 1500),
+            },
+        }
+        module.validate_report(valid)
+        invalid_cases = (
+            dict(valid, font_loaded=False),
+            dict(valid, layers={
+                **valid["layers"],
+                "top1": layer("rgb(212, 20, 13)", "104px", "rgb(255, 233, 190)", 100, 980, 154, 300),
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "top2": layer("rgb(255, 255, 255)", "82px", "rgb(16, 16, 16)", 200, 880, 320, 420),
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "top1": {**valid["layers"]["top1"], "display": "none"},
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "top1": {**valid["layers"]["top1"], "opacity": "0"},
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "top1": layer("rgb(212, 20, 13)", "118px", "rgb(255, 233, 190)", 20, 980, 154, 300),
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "top2": layer("rgb(255, 213, 28)", "82px", "rgb(16, 16, 16)", 200, 880, 290, 420),
+            }),
+            dict(valid, layers={
+                **valid["layers"],
+                "bottom2": layer("rgb(212, 20, 13)", "86px", "rgb(255, 233, 190)", 300, 780, 1400, 1660),
+            }),
+        )
+        for report in invalid_cases:
+            with self.subTest(report=report), self.assertRaises(RuntimeError):
+                module.validate_report(report)
+        source = path.read_text(encoding="utf-8")
+        self.assertIn("--headless=new", source)
+        self.assertIn("document.fonts.check", source)
+        self.assertIn("getBoundingClientRect", source)
+        self.assertIn('"v07"', source)
+
+    def test_installer_runs_v07_preview_guard(self):
+        installer = (
+            ROOT / "deploy/matrix-template-video/install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('REFERENCE_V07_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v07_preview.py"', installer)
+        self.assertIn('"${REFERENCE_V07_PREVIEW_CHECK_SOURCE}"', installer)
+        self.assertIn('python3 "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}"', installer)
 
     def test_installer_checks_v12_v16_target_copy_widths(self):
         installer = (
