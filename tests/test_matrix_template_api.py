@@ -1050,6 +1050,109 @@ class MatrixTemplateApiTests(unittest.TestCase):
             result["private_font_bundle_sha256"], persisted["private_font_bundle_sha256"]
         )
 
+    def test_old_pending_native_job_renders_after_public_catalog_removal(self):
+        payload = self.service.validate_payload({
+            "top_text": "旧任务继续完成",
+            "bottom_text": "新任务不再开放旧模板",
+            "template_id": "full-overlay-bold",
+            "bgm": False,
+        })
+        job, _created = self.service.store.create(
+            "legacy-upgrade-recovery", payload,
+            freeze_payload=self.service._freeze_font_provenance,
+        )
+        self.service.store.update(job["job_id"], "running")
+        renderer = self.skill / "scripts/render_video.py"
+        renderer.write_text(
+            """import json
+import sys
+from pathlib import Path
+
+project_path = Path(sys.argv[1])
+project = json.loads(project_path.read_text(encoding=\"utf-8\"))
+catalog = json.loads(
+    (Path(__file__).parents[1] / \"assets/templates/catalog.json\")
+    .read_text(encoding=\"utf-8\")
+)
+allowed = {item[\"id\"] for item in catalog[\"templates\"]}
+if project[\"layout\"][\"template_id\"] not in allowed:
+    raise SystemExit(9)
+output = project_path.parent / \"output/final.mp4\"
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
+""",
+            encoding="utf-8",
+        )
+        restarted = matrix.MatrixTemplateService(
+            data_root=self.service.data_root,
+            skill_root=self.skill,
+            library_url="http://127.0.0.1:8111",
+            library_token="library-token",
+            legacy_templates_enabled=False,
+            start_worker=False,
+        )
+        materials = [
+            {
+                "scene_id": "media_01", "sha256": "a" * 64,
+                "media_type": "video", "record_id": "legacy-video",
+                "match_level": "random", "clip_id": "e" * 64,
+                "clip_start_seconds": 0.5, "clip_duration_seconds": 2.667,
+                "clip_slot_index": 1, "clip_slot_count": 1,
+            },
+            {
+                "scene_id": "media_02", "sha256": "b" * 64,
+                "media_type": "image", "record_id": "legacy-image-1",
+                "match_level": "random",
+            },
+            {
+                "scene_id": "media_03", "sha256": "c" * 64,
+                "media_type": "image", "record_id": "legacy-image-2",
+                "match_level": "random",
+            },
+        ]
+        counter = iter(range(len(materials)))
+
+        def download(item, target, job_id=""):
+            suffix = ".mp4" if item["media_type"] == "video" else ".jpg"
+            path = target / (str(next(counter)) + suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"asset")
+            return path
+
+        try:
+            self.assertEqual([], restarted.catalog)
+            with self.assertRaisesRegex(ValueError, "请选择有效模板"):
+                restarted.validate_payload({
+                    "top_text": "不能新建旧模板",
+                    "bottom_text": "接单前直接拒绝",
+                    "template_id": "full-overlay-bold",
+                })
+            with mock.patch.object(
+                restarted, "_select_materials", return_value=materials,
+            ), mock.patch.object(
+                restarted, "_download", side_effect=download,
+            ), mock.patch.object(
+                restarted, "_reference_video_duration", return_value=10.0,
+            ), mock.patch.object(
+                restarted, "_probe",
+                return_value={"duration": 8.0, "width": 1080, "height": 1920},
+            ):
+                result = restarted._execute(job["job_id"])
+            project = json.loads(
+                (restarted.data_root / job["job_id"] / "project.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                "full-overlay-bold", project["layout"]["template_id"],
+            )
+            self.assertEqual("ffmpeg", result["engine"])
+            self.assertTrue(
+                (restarted.data_root / job["job_id"] / "output/published.mp4")
+                .is_file()
+            )
+        finally:
+            restarted.shutdown()
+
     def test_probe_failure_removes_unpublished_output(self):
         payload = self.service.validate_payload({
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
@@ -4364,6 +4467,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
+                legacy_templates_enabled=False,
                 start_worker=False,
             )
 
@@ -4486,11 +4590,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
         return len(display) * int(metrics["font_size_px"])
 
     def test_catalog_exposes_two_fixed_templates_after_existing_catalog(self):
-        self.assertEqual(4, len(self.service.catalog))
+        self.assertEqual(2, len(self.service.catalog))
         self.assertEqual(
             list(matrix.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in self.service.catalog[-2:]],
+            [item["id"] for item in self.service.catalog],
         )
+        self.assertEqual(
+            matrix.TRIPLE_STRIP_TEMPLATE_ID,
+            self.service.default_template_id,
+        )
+        self.assertNotIn("full-overlay-bold", self.service.templates)
+        self.assertNotIn("poster-split", self.service.templates)
         for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
             item = self.service.templates[template_id]
             config = self.configs[template_id]

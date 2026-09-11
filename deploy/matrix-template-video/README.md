@@ -5,8 +5,8 @@ Internal generation-server API for the `text-media-text` mode from the pinned
 up to five FFmpeg renders at a time, and uses the existing material-library
 tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
-The runtime exposes 22 templates: two generation-server-owned FFmpeg layouts,
-the 17-template `reference-typography-17` HyperFrames pack, the nine-grid
+The runtime exposes 20 templates: the 17-template
+`reference-typography-17` HyperFrames pack, the nine-grid
 template, and the fixed `triple-strip-shutter` / `yellow-banner-zoom` Skill
 templates. The 17 reference templates use three to five distinct video assets,
 keeping every selected material clip between two and three seconds. A
@@ -20,8 +20,7 @@ respectively. Reference templates render with HyperFrames `0.8.16`; the three
 newer templates render with the separately locked HyperFrames `0.8.33` runtime.
 All HyperFrames templates share at most two concurrent render slots on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
-template. Any request `font_family` is ignored for these 17 templates; the two
-FFmpeg layouts continue to support automatic or explicit font selection.
+template. Any request `font_family` is ignored for these public templates.
 HyperFrames templates accept batches of up to five outputs. Two renders occupy
 slots concurrently and additional accepted jobs wait for a slot. A persisted
 900-second deadline starts at database admission; render-slot waiting is capped
@@ -31,9 +30,10 @@ deadline, so accepted work cannot continue after the caller reports a timeout.
 
 The installer clones and verifies commit
 `243d5c168d9ab2d95daf04fef5c5e75924114eb8`, verifies and applies the
-generation-server-owned private-domain layout patch, restricts the runtime catalog
-to the two private-domain templates, atomically switches releases, and checks the
-exact runtime build id.
+generation-server-owned private-domain layout patch only to preserve rendering
+for already-frozen legacy jobs. Those two definitions are not loaded into the
+public catalog and cannot be selected by new submissions. The installer then
+atomically switches releases and checks the exact runtime build id.
 It separately sparse-checks out reference template commit
 `9040a24139372f14346816cf42a97271767a0777`, verifies the 17-entry manifest and
 four fixed OFL fonts, applies a hash-locked generation-server patch limited to
@@ -69,11 +69,12 @@ bottom CTA stays deep red with a cream outline at `86px`. All five layers are
 fully visible from frame zero. The service splits v07 top copy across
 `top1`/`top2`/`top3`/`bottom1` and keeps the CTA in `bottom2`; only v07 uses
 this four-top-layer path, every other variant keeps its existing layout.
-The private-domain patch adds `full-overlay-bold` and `poster-split`; both that
-patch and the separate reference-typography patch have SHA-256 locks in
-`install.sh`, so a missing or changed patch fails before the active release is
-switched. The public Skill repository remains unchanged until the generation
-server contract is accepted and the same change is deliberately upstreamed.
+The private-domain patch retains recovery-only render definitions for
+`full-overlay-bold` and `poster-split`; both that patch and the separate
+reference-typography patch have SHA-256 locks in `install.sh`, so a missing
+or changed patch fails before the active release is switched. The public Skill
+repository remains unchanged until the generation-server contract is accepted
+and the same change is deliberately upstreamed.
 
 ```bash
 sudo bash deploy/matrix-template-video/install.sh
@@ -101,7 +102,9 @@ instead of starting an unsafe five-worker service.
 
 ## Typography variants
 
-- The pinned public Skill supplies its four baseline OFL families; the server-owned patch adds the two private-domain layout definitions without changing the upstream repository.
+- The pinned public Skill supplies its four baseline OFL families. The
+  server-owned patch keeps two legacy layout definitions solely for frozen-job
+  recovery; they are absent from `/v1/templates` and rejected for new jobs.
 - Up to ten project-authorized fonts may be provisioned privately under `/var/lib/huangque-matrix-template/private-fonts`; font binaries are never committed to Git.
 - Copy `private-fonts.manifest.example.json` to that directory as `sources.json` together with the matching font files. The service accepts only the ten named families, requires `authorized: true`, rejects symlinks and unsafe filenames, and verifies every SHA-256 at startup.
 - Selection, selected file SHA-256 values, and the complete private-bundle fingerprint are frozen in the SQLite job payload in the same transaction that creates the job. Recovery and retries consume only this frozen provenance and fail closed if a selected file changes.

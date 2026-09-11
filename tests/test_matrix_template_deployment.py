@@ -74,7 +74,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
-        self.assertIn('d.get("templates")==22', installer)
+        self.assertIn('d.get("templates")==20', installer)
         self.assertIn('d.get("hyperframes_templates")==17', installer)
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("nine_grid_templates")==1', installer)
