@@ -4343,6 +4343,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
+                legacy_templates_enabled=False,
                 start_worker=False,
             )
 
@@ -4465,11 +4466,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
         return len(display) * int(metrics["font_size_px"])
 
     def test_catalog_exposes_two_fixed_templates_after_existing_catalog(self):
-        self.assertEqual(4, len(self.service.catalog))
+        self.assertEqual(2, len(self.service.catalog))
         self.assertEqual(
             list(matrix.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in self.service.catalog[-2:]],
+            [item["id"] for item in self.service.catalog],
         )
+        self.assertEqual(
+            matrix.TRIPLE_STRIP_TEMPLATE_ID,
+            self.service.default_template_id,
+        )
+        self.assertNotIn("full-overlay-bold", self.service.templates)
+        self.assertNotIn("poster-split", self.service.templates)
         for template_id in matrix.FIXED_SKILL_TEMPLATE_IDS:
             item = self.service.templates[template_id]
             config = self.configs[template_id]

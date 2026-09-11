@@ -2132,6 +2132,7 @@ class MatrixTemplateService:
                  hyperframes_total_timeout_seconds: int = DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS,
                  hyperframes_slot_timeout_seconds: int = DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS,
                  concurrency: int = 1,
+                 legacy_templates_enabled: bool = True,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
                  delivery_grace_seconds: int = DEFAULT_DELIVERY_GRACE_SECONDS,
@@ -2143,6 +2144,7 @@ class MatrixTemplateService:
         self.library_url = library_url.rstrip("/")
         self.library_token = library_token
         self.pexels_api_key = str(pexels_api_key or "").strip()
+        self.legacy_templates_enabled = bool(legacy_templates_enabled)
         parsed_library = urlsplit(self.library_url)
         if (
             parsed_library.scheme != "http"
@@ -2248,7 +2250,9 @@ class MatrixTemplateService:
         self.cleanup_worker = None
         self.workers_expected = start_worker
         self.enforce_library_readiness = bool(start_worker)
-        self.catalog = self._load_catalog()
+        self.catalog = (
+            self._load_catalog() if self.legacy_templates_enabled else []
+        )
         if self.reference_skill_root is not None:
             self.catalog.extend(self._load_reference_catalog())
         if self.nine_grid_root is not None:
@@ -2256,6 +2260,9 @@ class MatrixTemplateService:
         for template_id in FIXED_SKILL_TEMPLATE_IDS:
             if template_id in self.fixed_skill_roots:
                 self.catalog.append(self._load_fixed_skill_template(template_id))
+        if not self.catalog:
+            raise MatrixTemplateError("no public matrix templates are available")
+        self.default_template_id = self.catalog[0]["id"]
         self.templates = {item["id"]: item for item in self.catalog}
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()
@@ -3425,7 +3432,7 @@ class MatrixTemplateService:
 
     def validate_payload(self, raw: dict, *, require_available_font: bool = True,
                          allowed_template_ids=None,
-                         default_template_id: str = "full-overlay-bold",
+                         default_template_id: str | None = None,
                          enforce_reference_layout: bool = True,
                          require_reference_semantic_layout: bool = False) -> dict:
         if not isinstance(raw, dict):
@@ -3436,7 +3443,11 @@ class MatrixTemplateService:
             raise ValueError("顶部标题需要 2-60 个字符")
         if not 2 <= len(bottom) <= 80:
             raise ValueError("底部行动文案需要 2-80 个字符")
-        template_id = str(raw.get("template_id") or default_template_id)
+        template_id = str(
+            raw.get("template_id")
+            or default_template_id
+            or self.default_template_id
+        )
         allowed_templates = (
             set(self.templates) if allowed_template_ids is None
             else set(allowed_template_ids)
@@ -6131,7 +6142,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/templates":
             self.send_json(200, {
                 "templates": self.service.catalog,
-                "default_template": "full-overlay-bold",
+                "default_template": self.service.default_template_id,
                 "fonts": self.service.public_fonts(),
                 "default_font": "",
                 "max_batch_size": MAX_BATCH_SIZE,
@@ -6263,6 +6274,7 @@ def main() -> None:
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
         pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
+        legacy_templates_enabled=False,
         python=os.environ.get("MATRIX_TEMPLATE_PYTHON", sys.executable),
         private_font_root=Path(os.environ.get(
             "MATRIX_TEMPLATE_PRIVATE_FONT_ROOT",
