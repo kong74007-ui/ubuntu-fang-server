@@ -5174,11 +5174,15 @@ class FixedSkillTemplateTests(unittest.TestCase):
                         matrix.subprocess, "Popen", return_value=Process(),
                     ) as popen, mock.patch.object(
                         self.service, "_validate_reference_visual_coverage",
-                    ):
+                    ) as visual_coverage:
                         values = self.service._render_fixed_skill_template(
                             payload, template_id.replace("-", "")[:32].ljust(32, "2"),
                             materials, paths, deadline_at=time.time() + 60,
                         )
+                    if template_id in matrix.MOTION_V2_TEMPLATE_IDS:
+                        visual_coverage.assert_not_called()
+                    else:
+                        visual_coverage.assert_called_once()
                     self.assertEqual(config["required_visuals"], len(prepared))
                     self.assertEqual(
                         list(zip(config["slot_frames"], durations)),

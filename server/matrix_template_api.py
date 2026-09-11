@@ -6067,9 +6067,10 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
-            self._validate_reference_visual_coverage(
-                output, timeout_seconds=min(120.0, remaining),
-            )
+            if template_id not in MOTION_V2_TEMPLATE_IDS:
+                self._validate_reference_visual_coverage(
+                    output, timeout_seconds=min(120.0, remaining),
+                )
         finally:
             self.hyperframes_slots.release()
         return {
