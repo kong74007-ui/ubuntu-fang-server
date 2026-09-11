@@ -144,11 +144,13 @@ clips and never produces a sixth clip. Pexels requests use a fixed Chinese
 scene-query bank with `locale=zh-CN`, `orientation=portrait`, and `size=medium`.
 Pexels does not expose a capture-country field, so this is a China-oriented
 best-effort search policy rather than a country guarantee. It does not inspect
-frames or use AI matching. Configure the credential only in
-`/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Search responses
-are cached for 24 hours to respect provider limits. Completed job provenance
-includes the Pexels video/file ids, contributor and source URLs, query, stable
-source identity, and downloaded content SHA-256 for attribution and audit.
+frames or use AI matching. To enable Pexels, configure the optional credential
+only in `/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Without
+that file or key, every visual slot uses the approved Huangque library. Search
+responses are cached for 24 hours to respect provider limits. Completed job
+provenance includes the Pexels video/file ids, contributor and source URLs,
+query, stable source identity, and downloaded content SHA-256 for attribution
+and audit.
 
 Matrix template jobs request `selection_mode=round_robin` for every Huangque
 visual and BGM scene. Copy relevance does not affect Huangque ranking. The

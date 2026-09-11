@@ -4803,6 +4803,167 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 ],
             )
 
+    def test_production_without_pexels_uses_library_for_every_slot(self):
+        def version(command, **_kwargs):
+            value = (
+                "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
+                else "0.8.33"
+            )
+            return SimpleNamespace(returncode=0, stdout=value + "\n", stderr="")
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=version):
+            production = matrix.MatrixTemplateService(
+                data_root=self.root / "production-no-pexels-data",
+                skill_root=self.skill,
+                triple_strip_root=self.template_roots[
+                    matrix.TRIPLE_STRIP_TEMPLATE_ID
+                ],
+                yellow_banner_root=self.template_roots[
+                    matrix.YELLOW_BANNER_TEMPLATE_ID
+                ],
+                fan_whip_root=self.template_roots[matrix.FAN_WHIP_TEMPLATE_ID],
+                brush_panel_root=self.template_roots[
+                    matrix.BRUSH_PANEL_TEMPLATE_ID
+                ],
+                nine_grid_hyperframes_cli=self.cli,
+                motion_v2_hyperframes_cli=self.motion_v2_cli,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                pexels_api_key="",
+                concurrency=5,
+                legacy_templates_enabled=False,
+                start_worker=True,
+            )
+
+        library_scene_groups = []
+        selected = []
+
+        def library_request(method, path, body=None, *, timeout=30):
+            if method == "GET" and path == "/v1/ping":
+                return {
+                    "ok": True, "records": 10,
+                    "selection_contract_version": 2,
+                    "clip_contract_version": 3,
+                }
+            self.assertEqual(("POST", "/v1/select"), (method, path))
+            scenes = body["scenes"]
+            library_scene_groups.append([scene["scene_id"] for scene in scenes])
+            materials = []
+            for index, scene in enumerate(scenes, 1):
+                identity = hashlib.sha256(
+                    (body["selection_id"] + ":" + scene["scene_id"]).encode()
+                ).hexdigest()
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "record_id": "library-" + scene["scene_id"],
+                    "sha256": identity,
+                    "media_type": "video",
+                    "provider": "huangque",
+                    "match_level": "random",
+                    "clip_id": hashlib.sha256(
+                        (identity + ":clip").encode()
+                    ).hexdigest(),
+                    "clip_start_seconds": float(index),
+                    "clip_duration_seconds": scene["clip_duration_seconds"],
+                    "clip_slot_index": 1,
+                    "clip_slot_count": 1,
+                })
+            return {
+                "materials": materials,
+                "selection_contract_version": 2,
+                "clip_contract_version": 3,
+            }
+
+        def execute(job_id):
+            row = production.store.get(job_id)
+            payload = json.loads(row["payload"])
+            selected.extend(production._select_materials_once(payload, job_id))
+            return {"file_url": f"/v1/files/{job_id}.mp4"}
+
+        server = matrix.build_server("127.0.0.1", 0, production, "api-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def post(path, body, request_id=""):
+            headers = {
+                "Authorization": "Bearer api-token",
+                "Content-Type": "application/json",
+            }
+            if request_id:
+                headers["X-Request-Id"] = request_id
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d%s" % (server.server_port, path),
+                data=json.dumps(body).encode("utf-8"),
+                method="POST", headers=headers,
+            )
+            try:
+                return urllib.request.urlopen(request, timeout=3)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                self.fail(f"POST {path} returned HTTP {exc.code}: {detail}")
+
+        body = {
+            "top_text": "创业，提效",
+            "bottom_text": "评论，获取",
+            "template_id": matrix.FAN_WHIP_TEMPLATE_ID,
+            "semantic_layout": self.semantic(
+                "创业，提效", "评论，获取",
+            ),
+            "bgm": False,
+        }
+        try:
+            with mock.patch.object(
+                production, "_library_request", side_effect=library_request,
+            ), mock.patch.object(
+                production, "_select_pexels_materials",
+                side_effect=AssertionError("Pexels must not be called"),
+            ) as pexels, mock.patch.object(
+                production, "_execute", side_effect=execute,
+            ), mock.patch.object(
+                production, "_reference_text_width", side_effect=self.text_width,
+            ):
+                health = production.health()
+                self.assertTrue(health["ok"])
+                self.assertTrue(health["material_library_ready"])
+                self.assertFalse(health["pexels_material_ready"])
+                self.assertTrue(health["pexels_material_optional"])
+                self.assertEqual(5, health["worker_count"])
+
+                with post("/v1/preflight", body) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertTrue(json.load(response)["ok"])
+                with post(
+                    "/v1/jobs", body, "production-no-pexels-job",
+                ) as response:
+                    self.assertEqual(202, response.status)
+                    job = json.load(response)
+
+                deadline = time.time() + 3
+                while time.time() < deadline:
+                    row = production.store.get(job["job_id"])
+                    if row["status"] == "completed":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual("completed", row["status"])
+                self.assertEqual(
+                    self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"],
+                    len(selected),
+                )
+                self.assertEqual({"huangque"}, {
+                    item["provider"] for item in selected
+                })
+                self.assertEqual(
+                    [[item["scene_id"] for item in selected]],
+                    library_scene_groups,
+                )
+                pexels.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            production.shutdown()
+
     def test_fixed_template_rejects_legacy_three_second_slot_receipt(self):
         template_id = matrix.TRIPLE_STRIP_TEMPLATE_ID
         config = self.configs[template_id]
@@ -5300,15 +5461,21 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
             health = self.service.health()
         self.assertNotIn("test-pexels-key", json.dumps(health, ensure_ascii=False))
 
-    # 20：安装器在修改服务前检查 pexels.env
-    def test_installer_requires_pexels_env(self):
+    # 20：Pexels 配置可选，但存在时必须通过权限和内容检查
+    def test_installer_accepts_only_safe_optional_pexels_env(self):
         install = (Path(__file__).resolve().parents[1]
                    / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn("PEXELS_ENV_FILE", install)
+        self.assertIn('if [[ -e "${PEXELS_ENV_FILE}" ]]', install)
         self.assertIn("root:admin", install)
         self.assertIn("640", install)
         self.assertIn("PEXELS_API_KEY", install)
         self.assertLess(install.index("PEXELS_ENV_FILE"), install.index("systemctl"))
+        unit = (Path(__file__).resolve().parents[1]
+                / "deploy/systemd/huangque-matrix-template.service").read_text(
+                    encoding="utf-8",
+                )
+        self.assertIn("EnvironmentFile=-/etc/huangque/pexels.env", unit)
 
     # 21：部署健康门禁检查新字段
     def test_health_gate_fields(self):
@@ -5317,6 +5484,7 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         }):
             health = self.service.health()
         self.assertIs(health["pexels_material_ready"], True)
+        self.assertIs(health["pexels_material_optional"], True)
         self.assertEqual(
             "huangque-bookends-extra-middle-pexels-v2",
             health["material_source_policy"],

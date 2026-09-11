@@ -4161,9 +4161,7 @@ class MatrixTemplateService:
             worker_alive and cleanup_alive and not worker_degraded
         )
         pexels_ready = bool(self.pexels_api_key)
-        ready = workers_ready and library["ready"] and (
-            pexels_ready or not self.workers_expected
-        )
+        ready = workers_ready and library["ready"]
         return {
             "ok": ready,
             "worker_alive": worker_alive,
@@ -4173,6 +4171,7 @@ class MatrixTemplateService:
             "degraded_jobs": degraded_job_count,
             "material_library_ready": library["ready"],
             "pexels_material_ready": pexels_ready,
+            "pexels_material_optional": True,
             "material_source_policy": "huangque-bookends-extra-middle-pexels-v2",
             "material_selection_contract_version": library[
                 "selection_contract_version"
@@ -6804,8 +6803,6 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if path == "/v1/preflight":
                 library = self.service.require_library_ready(force=True)
-                if self.service.workers_expected and not self.service.pexels_api_key:
-                    raise MatrixTemplateError("Pexels 素材库密钥未配置")
                 payload = self.service.validate_payload(
                     body, require_reference_semantic_layout=True,
                 )
