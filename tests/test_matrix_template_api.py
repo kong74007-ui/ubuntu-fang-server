@@ -545,7 +545,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         service._library_readiness_cache = (float("inf"), {
             "ready": True,
             "selection_contract_version": 2,
-            "clip_contract_version": 2,
+            "clip_contract_version": 3,
         })
         active = 0
         peak = 0
@@ -738,7 +738,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
                 })
             return {
                 "selection_contract_version": 2,
-                "clip_contract_version": 2,
+                "clip_contract_version": 3,
                 "materials": materials,
             }
 
@@ -887,7 +887,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
         with mock.patch.object(
             self.service, "_library_request", return_value={
                 "selection_contract_version": 2,
-                "clip_contract_version": 2,
+                "clip_contract_version": 3,
                 "materials": legacy_materials,
             },
         ), self.assertRaisesRegex(
@@ -1065,7 +1065,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             [item["record_id"] for item in result["material_manifest"]],
         )
         self.assertEqual(2, result["material_selection_contract_version"])
-        self.assertEqual(2, result["material_clip_contract_version"])
+        self.assertEqual(3, result["material_clip_contract_version"])
         self.assertEqual("e" * 64, result["material_manifest"][0]["clip_id"])
         self.assertEqual(1.25, result["material_manifest"][0]["clip_start_seconds"])
         self.assertTrue((self.service.data_root / job["job_id"] / "output/published.mp4").is_file())
@@ -1467,7 +1467,7 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
             "ok": True,
             "records": 1,
             "selection_contract_version": 2,
-            "clip_contract_version": 2,
+            "clip_contract_version": 3,
         })
         server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1522,7 +1522,7 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
             self.assertEqual((14.9, 5), (
                 preflight["duration"], preflight["required_visuals"]))
             self.assertEqual(2, preflight["material_selection_contract_version"])
-            self.assertEqual(2, preflight["material_clip_contract_version"])
+            self.assertEqual(3, preflight["material_clip_contract_version"])
             self.assertEqual([], self.service.store.pending_ids())
             self.assertEqual(0, self.service.jobs.qsize())
             with self.assertRaises(urllib.error.HTTPError) as too_long:
@@ -1575,7 +1575,7 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
                     "ok": True,
                     "records": 10,
                     "selection_contract_version": 2,
-                    "clip_contract_version": 1,
+                    "clip_contract_version": 2,
                 }).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1598,7 +1598,7 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
         health = self.service.health()
         self.assertFalse(health["ok"])
         self.assertFalse(health["material_library_ready"])
-        self.assertEqual(1, health["material_clip_contract_version"])
+        self.assertEqual(2, health["material_clip_contract_version"])
 
         server = matrix.build_server(
             "127.0.0.1", 0, self.service, "api-token",
@@ -1611,7 +1611,6 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
                 data=json.dumps({
                     "top_text": "素材服务版本检查",
                     "bottom_text": "评论区获取资料",
-                    "template_id": matrix.TRIPLE_STRIP_TEMPLATE_ID,
                 }).encode("utf-8"),
                 method="POST",
                 headers={"Authorization": "Bearer api-token"},
@@ -2738,7 +2737,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             captured.update(body)
             return {
                 "selection_contract_version": 2,
-                "clip_contract_version": 2,
+                "clip_contract_version": 3,
                 "materials": [{
                     "scene_id": f"media_{index:02d}",
                     "sha256": format(index, "064x"),
@@ -4093,14 +4092,24 @@ class NineGridTemplateTests(unittest.TestCase):
         self._write_nine_grid_fixture(self.nine_grid)
         self.cli = self.root / "hyperframes-0.8.33"
         self.cli.write_bytes(b"cli")
+        self.motion_v2_cli = self.root / "hyperframes-0.8.34"
+        self.motion_v2_cli.write_bytes(b"cli")
         self.browser = self.root / "chrome"
         self.browser.write_bytes(b"browser")
         self.bgm_hash_patch = mock.patch.object(
             matrix, "NINE_GRID_BOUND_BGM_SHA256", self.bgm_hash,
         )
         self.bgm_hash_patch.start()
-        version = SimpleNamespace(returncode=0, stdout="0.8.33\n", stderr="")
-        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+        def version(command, **_kwargs):
+            value = (
+                "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
+                else "0.8.33"
+            )
+            return SimpleNamespace(
+                returncode=0, stdout=value + "\n", stderr="",
+            )
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=version):
             self.service = matrix.MatrixTemplateService(
                 data_root=self.root / "data",
                 skill_root=self.skill,
@@ -4325,7 +4334,7 @@ class NineGridTemplateTests(unittest.TestCase):
         response = {
             "materials": library_materials,
             "selection_contract_version": 2,
-            "clip_contract_version": 2,
+            "clip_contract_version": 3,
         }
         with mock.patch.object(
             self.service, "_library_request", return_value=response,
@@ -4470,6 +4479,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
         )
         self.cli = self.root / "hyperframes-0.8.33"
         self.cli.write_bytes(b"cli")
+        self.motion_v2_cli = self.root / "hyperframes-0.8.34"
+        self.motion_v2_cli.write_bytes(b"cli")
         self.browser = self.root / "chrome"
         self.browser.write_bytes(b"browser")
         self.configs = copy.deepcopy(matrix.FIXED_SKILL_TEMPLATE_CONFIGS)
@@ -4482,8 +4493,16 @@ class FixedSkillTemplateTests(unittest.TestCase):
             matrix, "FIXED_SKILL_TEMPLATE_CONFIGS", self.configs,
         )
         self.config_patch.start()
-        version = SimpleNamespace(returncode=0, stdout="0.8.33\n", stderr="")
-        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+        def version(command, **_kwargs):
+            value = (
+                "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
+                else "0.8.33"
+            )
+            return SimpleNamespace(
+                returncode=0, stdout=value + "\n", stderr="",
+            )
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=version):
             self.service = matrix.MatrixTemplateService(
                 data_root=self.root / "data",
                 skill_root=self.skill,
@@ -4493,7 +4512,14 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 yellow_banner_root=self.template_roots[
                     matrix.YELLOW_BANNER_TEMPLATE_ID
                 ],
+                fan_whip_root=self.template_roots[
+                    matrix.FAN_WHIP_TEMPLATE_ID
+                ],
+                brush_panel_root=self.template_roots[
+                    matrix.BRUSH_PANEL_TEMPLATE_ID
+                ],
                 nine_grid_hyperframes_cli=self.cli,
+                motion_v2_hyperframes_cli=self.motion_v2_cli,
                 hyperframes_browser=self.browser,
                 library_url="http://127.0.0.1:8111",
                 library_token="library-token",
@@ -4508,10 +4534,10 @@ class FixedSkillTemplateTests(unittest.TestCase):
 
     def _write_template_fixture(self, template_id: str, root: Path) -> None:
         config = self.configs[template_id]
-        (root / "assets/audio").mkdir(parents=True)
         (root / "assets/fonts").mkdir(parents=True)
         (root / "assets/vendor").mkdir(parents=True)
         audio = root / config["bgm_path"]
+        audio.parent.mkdir(parents=True, exist_ok=True)
         audio.write_bytes((template_id + "-bgm").encode("ascii"))
         config["bgm_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
         for filename in config["font_files"].values():
@@ -4522,33 +4548,39 @@ class FixedSkillTemplateTests(unittest.TestCase):
             (root / "assets/vendor" / filename).write_text(
                 "window.fixture=true;", encoding="utf-8",
             )
-        fields = (
+        fields = tuple(config.get("expected_fields") or (
             ("title", "subtitle", "ctaLine1", "ctaLine2")
             if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID else
             ("title", "subtitle1", "subtitle2", "sourceLabel", "body", "cta")
-        )
+        ))
+        variable_ids = fields + tuple(config.get("extra_variable_ids", ()))
         schema = html.escape(json.dumps([
             {"id": field, "type": "string", "default": field}
-            for field in fields
+            for field in variable_ids
         ]), quote=True)
         text_nodes = "".join(
             f'<p id="{field}" data-var-text="{field}">{field}</p>'
             for field in fields
         )
         grading = (
-            "" if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID else
             '<video data-color-grading="{}"></video>' * 2
+            if template_id == matrix.YELLOW_BANNER_TEMPLATE_ID else ""
         )
+        composition_id = config.get("composition_id", template_id)
+        audio_id = config.get("audio_id", "bound-bgm")
         (root / "index.html").write_text(
             f'<html data-composition-variables="{schema}"><head></head><body>'
-            f'<div id="root" data-composition-id="{template_id}">'
-            f'{grading}{text_nodes}<audio id="bound-bgm" data-volume="1" '
+            f'<div id="root" data-composition-id="{composition_id}">'
+            f'{grading}{text_nodes}<audio id="{audio_id}" data-volume="1" '
             f'src="{config["bgm_path"]}"></audio></div></body></html>',
             encoding="utf-8",
         )
         package = {
             "scripts": {
-                name: f"npx --yes hyperframes@0.8.33 {command}"
+                name: (
+                    "npx --yes hyperframes@"
+                    f'{config.get("hyperframes_version", "0.8.33")} {command}'
+                )
                 for name, command in (
                     ("dev", "preview"), ("check", "check"),
                     ("render", "render"), ("publish", "publish"),
@@ -4558,7 +4590,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
         (root / "package.json").write_text(
             json.dumps(package), encoding="utf-8",
         )
-        (root / "hyperframes.json").write_text("{}\n", encoding="utf-8")
+        for relative in config.get("required_files", ()):
+            path = root.joinpath(*str(relative).split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text("{}\n", encoding="utf-8")
+        if template_id in {
+            matrix.TRIPLE_STRIP_TEMPLATE_ID,
+            matrix.YELLOW_BANNER_TEMPLATE_ID,
+        }:
+            (root / "hyperframes.json").write_text(
+                "{}\n", encoding="utf-8",
+            )
         if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
             (root / "index.motion.json").write_text("{}\n", encoding="utf-8")
             compositions = root / "compositions"
@@ -4576,7 +4619,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 "duration": 17.6, "openingSlots": 3, "mainSlots": 5,
                 "cutFrames": [0, 117, 199, 281, 363, 445, 528],
             }
-        else:
+        elif template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
             manifest = {
                 "id": template_id, "version": 1, "renderer": "hyperframes",
                 "hyperframesVersion": "0.8.33",
@@ -4584,7 +4627,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 "duration": 302 / 30, "frames": 302, "mediaSlots": 3,
                 "cutFrames": [0, 86, 183, 302],
             }
-        manifest["boundBgm"] = {
+        else:
+            manifest = {
+                "id": template_id, "renderer": "hyperframes",
+                "width": 1080, "height": 1920, "fps": 30,
+                "duration": config["duration"], "frames": config["frames"],
+                "media": {
+                    "requiredDistinctVideos": config["required_visuals"],
+                    "minimumPreparedDuration": config["slot_frames"][0] / 30,
+                    "paths": list(config["media_paths"]),
+                },
+            }
+        manifest[config.get("bgm_manifest_key", "boundBgm")] = {
             "path": config["bgm_path"],
             "sha256": config["bgm_sha256"],
             "duration": config["bgm_duration"],
@@ -4619,8 +4673,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
         display = matrix._hide_reference_edge_punctuation(value)
         return len(display) * int(metrics["font_size_px"])
 
-    def test_catalog_exposes_two_fixed_templates_after_existing_catalog(self):
-        self.assertEqual(2, len(self.service.catalog))
+    def test_catalog_exposes_four_fixed_templates_after_existing_catalog(self):
+        self.assertEqual(4, len(self.service.catalog))
         self.assertEqual(
             list(matrix.FIXED_SKILL_TEMPLATE_IDS),
             [item["id"] for item in self.service.catalog],
@@ -4639,6 +4693,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
             self.assertEqual(config["required_visuals"], item["required_visuals"])
             self.assertTrue(item["bgm_optional"])
             self.assertEqual("bound", item["bgm_mode"])
+        health = self.service.health()
+        self.assertEqual(
+            sorted(matrix.FIXED_SKILL_TEMPLATE_IDS),
+            health["fixed_skill_templates"],
+        )
+        self.assertEqual(4, health["fixed_skill_template_count"])
+        self.assertEqual("mixed", health["fixed_skill_hyperframes_version"])
+        self.assertEqual(
+            {"0.8.33": 2, "0.8.34": 2},
+            health["fixed_skill_hyperframes_versions"],
+        )
 
     def test_shared_sixty_eighty_copy_contract_preserves_source_text(self):
         top = "创业团队，" * 12
@@ -4746,7 +4811,13 @@ class FixedSkillTemplateTests(unittest.TestCase):
             durations = [
                 round(frames / 30.0, 6) for frames in config["slot_frames"]
             ]
-            plan = matrix._material_source_plan(count)
+            plan = matrix._material_source_plan(
+                count,
+                include_middle_library=(
+                    template_id in matrix.MOTION_V2_TEMPLATE_IDS
+                ),
+                seed="d" * 32,
+            )
             library_indexes = [
                 index for index, source in enumerate(plan)
                 if source == "huangque"
@@ -4773,7 +4844,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
             response = {
                 "materials": library_materials,
                 "selection_contract_version": 2,
-                "clip_contract_version": 2,
+                "clip_contract_version": 3,
             }
             with self.subTest(template_id=template_id), mock.patch.object(
                 self.service, "_library_request", return_value=response,
@@ -4803,6 +4874,167 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 ],
             )
 
+    def test_production_without_pexels_uses_library_for_every_slot(self):
+        def version(command, **_kwargs):
+            value = (
+                "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
+                else "0.8.33"
+            )
+            return SimpleNamespace(returncode=0, stdout=value + "\n", stderr="")
+
+        with mock.patch.object(matrix.subprocess, "run", side_effect=version):
+            production = matrix.MatrixTemplateService(
+                data_root=self.root / "production-no-pexels-data",
+                skill_root=self.skill,
+                triple_strip_root=self.template_roots[
+                    matrix.TRIPLE_STRIP_TEMPLATE_ID
+                ],
+                yellow_banner_root=self.template_roots[
+                    matrix.YELLOW_BANNER_TEMPLATE_ID
+                ],
+                fan_whip_root=self.template_roots[matrix.FAN_WHIP_TEMPLATE_ID],
+                brush_panel_root=self.template_roots[
+                    matrix.BRUSH_PANEL_TEMPLATE_ID
+                ],
+                nine_grid_hyperframes_cli=self.cli,
+                motion_v2_hyperframes_cli=self.motion_v2_cli,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                pexels_api_key="",
+                concurrency=5,
+                legacy_templates_enabled=False,
+                start_worker=True,
+            )
+
+        library_scene_groups = []
+        selected = []
+
+        def library_request(method, path, body=None, *, timeout=30):
+            if method == "GET" and path == "/v1/ping":
+                return {
+                    "ok": True, "records": 10,
+                    "selection_contract_version": 2,
+                    "clip_contract_version": 3,
+                }
+            self.assertEqual(("POST", "/v1/select"), (method, path))
+            scenes = body["scenes"]
+            library_scene_groups.append([scene["scene_id"] for scene in scenes])
+            materials = []
+            for index, scene in enumerate(scenes, 1):
+                identity = hashlib.sha256(
+                    (body["selection_id"] + ":" + scene["scene_id"]).encode()
+                ).hexdigest()
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "record_id": "library-" + scene["scene_id"],
+                    "sha256": identity,
+                    "media_type": "video",
+                    "provider": "huangque",
+                    "match_level": "random",
+                    "clip_id": hashlib.sha256(
+                        (identity + ":clip").encode()
+                    ).hexdigest(),
+                    "clip_start_seconds": float(index),
+                    "clip_duration_seconds": scene["clip_duration_seconds"],
+                    "clip_slot_index": 1,
+                    "clip_slot_count": 1,
+                })
+            return {
+                "materials": materials,
+                "selection_contract_version": 2,
+                "clip_contract_version": 3,
+            }
+
+        def execute(job_id):
+            row = production.store.get(job_id)
+            payload = json.loads(row["payload"])
+            selected.extend(production._select_materials_once(payload, job_id))
+            return {"file_url": f"/v1/files/{job_id}.mp4"}
+
+        server = matrix.build_server("127.0.0.1", 0, production, "api-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def post(path, body, request_id=""):
+            headers = {
+                "Authorization": "Bearer api-token",
+                "Content-Type": "application/json",
+            }
+            if request_id:
+                headers["X-Request-Id"] = request_id
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d%s" % (server.server_port, path),
+                data=json.dumps(body).encode("utf-8"),
+                method="POST", headers=headers,
+            )
+            try:
+                return urllib.request.urlopen(request, timeout=3)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                self.fail(f"POST {path} returned HTTP {exc.code}: {detail}")
+
+        body = {
+            "top_text": "创业，提效",
+            "bottom_text": "评论，获取",
+            "template_id": matrix.FAN_WHIP_TEMPLATE_ID,
+            "semantic_layout": self.semantic(
+                "创业，提效", "评论，获取",
+            ),
+            "bgm": False,
+        }
+        try:
+            with mock.patch.object(
+                production, "_library_request", side_effect=library_request,
+            ), mock.patch.object(
+                production, "_select_pexels_materials",
+                side_effect=AssertionError("Pexels must not be called"),
+            ) as pexels, mock.patch.object(
+                production, "_execute", side_effect=execute,
+            ), mock.patch.object(
+                production, "_reference_text_width", side_effect=self.text_width,
+            ):
+                health = production.health()
+                self.assertTrue(health["ok"])
+                self.assertTrue(health["material_library_ready"])
+                self.assertFalse(health["pexels_material_ready"])
+                self.assertTrue(health["pexels_material_optional"])
+                self.assertEqual(5, health["worker_count"])
+
+                with post("/v1/preflight", body) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertTrue(json.load(response)["ok"])
+                with post(
+                    "/v1/jobs", body, "production-no-pexels-job",
+                ) as response:
+                    self.assertEqual(202, response.status)
+                    job = json.load(response)
+
+                deadline = time.time() + 3
+                while time.time() < deadline:
+                    row = production.store.get(job["job_id"])
+                    if row["status"] == "completed":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual("completed", row["status"])
+                self.assertEqual(
+                    self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"],
+                    len(selected),
+                )
+                self.assertEqual({"huangque"}, {
+                    item["provider"] for item in selected
+                })
+                self.assertEqual(
+                    [[item["scene_id"] for item in selected]],
+                    library_scene_groups,
+                )
+                pexels.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            production.shutdown()
+
     def test_fixed_template_rejects_legacy_three_second_slot_receipt(self):
         template_id = matrix.TRIPLE_STRIP_TEMPLATE_ID
         config = self.configs[template_id]
@@ -4825,7 +5057,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
         response = {
             "materials": materials,
             "selection_contract_version": 2,
-            "clip_contract_version": 2,
+            "clip_contract_version": 3,
         }
 
         with mock.patch.object(
@@ -4852,6 +5084,38 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 source, destination, 1.0, 117, 640,
                 deadline_at=time.time() + 30,
             )
+
+    def test_fan_whip_stills_are_generated_from_prepared_job_videos(self):
+        workdir = self.root / "fan-stills"
+        source = workdir / "assets/media/01-aspect-fixed.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"prepared-video")
+        config = {
+            "still_frames": ((
+                "assets/media/01-aspect-fixed.mp4",
+                "assets/media/01-aspect-fixed.jpg",
+                0.5,
+            ),),
+        }
+        captured = {}
+
+        def run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"jpeg" * 300)
+            return 0, b"", b""
+
+        with mock.patch.object(
+            self.service, "_run_tracked_process", side_effect=run,
+        ):
+            self.service._prepare_fixed_skill_stills(
+                workdir, config, deadline_at=time.time() + 30,
+            )
+
+        target = workdir / "assets/media/01-aspect-fixed.jpg"
+        self.assertTrue(target.is_file())
+        self.assertEqual("0.5", captured["command"][
+            captured["command"].index("-ss") + 1
+        ])
 
     def test_render_stages_frozen_fields_media_and_optional_bgm(self):
         class Process:
@@ -4904,6 +5168,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     with mock.patch.object(
                         self.service, "_prepare_fixed_skill_clip",
                         side_effect=prepare,
+                    ), mock.patch.object(
+                        self.service, "_prepare_fixed_skill_stills",
                     ), mock.patch.object(
                         matrix.subprocess, "Popen", return_value=Process(),
                     ) as popen, mock.patch.object(
@@ -5041,6 +5307,29 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
     def test_never_six_clips(self):
         with self.assertRaises(matrix.MatrixTemplateError):
             matrix._material_source_plan(6)
+
+    def test_motion_v2_source_plan_adds_one_stable_middle_library_slot(self):
+        for count in (5, 7):
+            seen_middle = set()
+            for index in range(64):
+                seed = format(index, "032x")
+                first = matrix._material_source_plan(
+                    count, include_middle_library=True, seed=seed,
+                )
+                second = matrix._material_source_plan(
+                    count, include_middle_library=True, seed=seed,
+                )
+                library_indexes = [
+                    slot for slot, source in enumerate(first)
+                    if source == "huangque"
+                ]
+                self.assertEqual(first, second)
+                self.assertEqual(3, len(library_indexes))
+                self.assertEqual([0, count - 1], [
+                    library_indexes[0], library_indexes[-1],
+                ])
+                seen_middle.add(library_indexes[1])
+            self.assertEqual(set(range(1, count - 1)), seen_middle)
         self.assertLessEqual(matrix._required_visuals(15.0), 5)
         self.assertGreaterEqual(matrix._required_visuals(7.0), 3)
 
@@ -5239,30 +5528,37 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
     # 19：密钥不进入结果与日志
     def test_key_not_in_result_or_logs(self):
         with mock.patch.object(self.service, "require_library_ready", return_value={
-            "ready": True, "selection_contract_version": 2, "clip_contract_version": 2,
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 3,
         }):
             health = self.service.health()
         self.assertNotIn("test-pexels-key", json.dumps(health, ensure_ascii=False))
 
-    # 20：安装器在修改服务前检查 pexels.env
-    def test_installer_requires_pexels_env(self):
+    # 20：Pexels 配置可选，但存在时必须通过权限和内容检查
+    def test_installer_accepts_only_safe_optional_pexels_env(self):
         install = (Path(__file__).resolve().parents[1]
                    / "deploy/matrix-template-video/install.sh").read_text(encoding="utf-8")
         self.assertIn("PEXELS_ENV_FILE", install)
+        self.assertIn('if [[ -e "${PEXELS_ENV_FILE}" ]]', install)
         self.assertIn("root:admin", install)
         self.assertIn("640", install)
         self.assertIn("PEXELS_API_KEY", install)
         self.assertLess(install.index("PEXELS_ENV_FILE"), install.index("systemctl"))
+        unit = (Path(__file__).resolve().parents[1]
+                / "deploy/systemd/huangque-matrix-template.service").read_text(
+                    encoding="utf-8",
+                )
+        self.assertIn("EnvironmentFile=-/etc/huangque/pexels.env", unit)
 
     # 21：部署健康门禁检查新字段
     def test_health_gate_fields(self):
         with mock.patch.object(self.service, "require_library_ready", return_value={
-            "ready": True, "selection_contract_version": 2, "clip_contract_version": 2,
+            "ready": True, "selection_contract_version": 2, "clip_contract_version": 3,
         }):
             health = self.service.health()
         self.assertIs(health["pexels_material_ready"], True)
+        self.assertIs(health["pexels_material_optional"], True)
         self.assertEqual(
-            "huangque-bookends-pexels-middle-v1",
+            "huangque-bookends-extra-middle-pexels-v2",
             health["material_source_policy"],
         )
 

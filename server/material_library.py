@@ -47,7 +47,7 @@ SHA256_FIELDS = ("sha256", "SHA256")
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 20_000
 SELECTION_CONTRACT_VERSION = 2
-CLIP_CONTRACT_VERSION = 2
+CLIP_CONTRACT_VERSION = 3
 MAX_MATERIAL_DURATION_SECONDS = 30 * 60
 MAX_CLIP_SLOTS_PER_SOURCE = 600
 MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
@@ -78,7 +78,7 @@ ROUND_ROBIN_RECENT_GROUP_PENALTY = (
     + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
 )
 MIN_CLIP_SECONDS = 2.0
-MAX_CLIP_SECONDS = 4.0
+MAX_CLIP_SECONDS = 5.0
 CLIP_SLOT_SECONDS = 3.0
 CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -244,18 +244,18 @@ def _clip_duration(value: Any) -> float | None:
     if value in (None, ""):
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("clip_duration_seconds must be between 2 and 4")
+        raise ValueError("clip_duration_seconds must be between 2 and 5")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
-            "clip_duration_seconds must be between 2 and 4"
+            "clip_duration_seconds must be between 2 and 5"
         ) from exc
     if (
         not math.isfinite(parsed)
         or not MIN_CLIP_SECONDS <= parsed <= MAX_CLIP_SECONDS
     ):
-        raise ValueError("clip_duration_seconds must be between 2 and 4")
+        raise ValueError("clip_duration_seconds must be between 2 and 5")
     return round(parsed, 6)
 
 

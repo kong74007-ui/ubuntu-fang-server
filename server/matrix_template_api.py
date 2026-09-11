@@ -36,10 +36,10 @@ MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
 MATERIAL_SELECTION_CONTRACT_VERSION = 2
-MATERIAL_CLIP_CONTRACT_VERSION = 2
+MATERIAL_CLIP_CONTRACT_VERSION = 3
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
-MAX_MATERIAL_CLIP_DURATION_SECONDS = 4.0
+MAX_MATERIAL_CLIP_DURATION_SECONDS = 5.0
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
@@ -139,10 +139,17 @@ NINE_GRID_BOTTOM_FONT = {
     "height": 250, "line_height": 1.12, "max_lines": 4,
 }
 FIXED_SKILL_HYPERFRAMES_VERSION = "0.8.33"
+MOTION_V2_HYPERFRAMES_VERSION = "0.8.34"
 TRIPLE_STRIP_TEMPLATE_ID = "triple-strip-shutter"
 YELLOW_BANNER_TEMPLATE_ID = "yellow-banner-zoom"
+FAN_WHIP_TEMPLATE_ID = "fan-whip-static"
+BRUSH_PANEL_TEMPLATE_ID = "brush-panel-transitions"
+MOTION_V2_TEMPLATE_IDS = (
+    FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID,
+)
 FIXED_SKILL_TEMPLATE_IDS = (
     TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
+    *MOTION_V2_TEMPLATE_IDS,
 )
 FIXED_SKILL_TEMPLATE_CONFIGS = {
     TRIPLE_STRIP_TEMPLATE_ID: {
@@ -287,6 +294,192 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "maximum": 45, "minimum": 30, "width": 882,
                 "height": 90, "line_height": 1.1, "max_lines": 1,
                 "stroke_px": 6,
+            },
+        },
+    },
+    FAN_WHIP_TEMPLATE_ID: {
+        "name": "三屏旋展甩切·红黄粗体",
+        "description": "三屏旋展、扇形卡片与甩切动效，红黄粗体常驻",
+        "variant": "fan-whip",
+        "version": 1,
+        "manifest_version": None,
+        "hyperframes_version": MOTION_V2_HYPERFRAMES_VERSION,
+        "composition_id": "main",
+        "duration": 377 / 30,
+        "frames": 377,
+        "required_visuals": 5,
+        "slot_frames": (120, 120, 120, 120, 120),
+        "slot_heights": (1920, 1920, 1920, 1920, 1920),
+        "media_paths": (
+            "assets/media/01-aspect-fixed.mp4",
+            "assets/media/02-aspect-fixed.mp4",
+            "assets/media/03-aspect-fixed.mp4",
+            "assets/media/04-aspect-fixed.mp4",
+            "assets/media/05.mp4",
+        ),
+        "bgm_path": "assets/media/reference-bgm.m4a",
+        "bgm_sha256": (
+            "95183944e0c5f63e583c52686bff3a57d94fa078c22eee10fd5749026c5fdae8"
+        ),
+        "bgm_duration": 12.538776,
+        "bgm_manifest_key": "referenceAudio",
+        "audio_id": "reference-bgm",
+        "font_files": {"Noto Sans SC": "NotoSansSC-Variable.ttf"},
+        "expected_fields": ("title", "subtitle", "body", "cta"),
+        "extra_variable_ids": (),
+        "required_files": (
+            "hyperframes.json", "index.motion.json",
+            "assets/vendor/gsap.min.js",
+        ),
+        "still_frames": (
+            (
+                "assets/media/01-aspect-fixed.mp4",
+                "assets/media/01-aspect-fixed.jpg", 0.5,
+            ),
+            (
+                "assets/media/02-aspect-fixed.mp4",
+                "assets/media/02-aspect-fixed.jpg", 0.5,
+            ),
+            (
+                "assets/media/03-aspect-fixed.mp4",
+                "assets/media/03-aspect-fixed.jpg", 0.5,
+            ),
+        ),
+        "semantic": {
+            "top1": {
+                "family": "Noto Sans SC", "font_size_px": 54,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 11,
+                "letter_spacing_em": -0.025,
+            },
+            "top2": {
+                "family": "Noto Sans SC", "font_size_px": 46,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 4,
+                "letter_spacing_em": -0.025,
+            },
+            "top3": {
+                "family": "Noto Sans SC", "font_size_px": 38,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 4,
+                "letter_spacing_em": -0.025,
+            },
+            "bottom2": {
+                "family": "Noto Sans SC", "font_size_px": 42,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 4, "stroke_px": 10,
+                "letter_spacing_em": -0.025,
+            },
+        },
+        "field_specs": {
+            "title": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 96, "minimum": 54, "width": 996,
+                "height": 216, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 11, "letter_spacing_em": -0.025,
+            },
+            "subtitle": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 82, "minimum": 46, "width": 996,
+                "height": 184, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 4, "letter_spacing_em": -0.025,
+            },
+            "body": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 62, "minimum": 38, "width": 996,
+                "height": 140, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 4, "letter_spacing_em": -0.025,
+            },
+            "cta": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 86, "minimum": 42, "width": 996,
+                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "stroke_px": 10, "letter_spacing_em": -0.025,
+            },
+        },
+    },
+    BRUSH_PANEL_TEMPLATE_ID: {
+        "name": "横屏笔刷分片·上下黑底",
+        "description": "横屏素材居中，笔刷、分片与几何窗口连续切换",
+        "variant": "brush-panel",
+        "version": 1,
+        "manifest_version": None,
+        "hyperframes_version": MOTION_V2_HYPERFRAMES_VERSION,
+        "composition_id": BRUSH_PANEL_TEMPLATE_ID,
+        "duration": 15.133333,
+        "frames": 454,
+        "required_visuals": 7,
+        "slot_frames": (150, 150, 150, 150, 150, 150, 150),
+        "slot_heights": (1920, 1920, 1920, 1920, 1920, 1920, 1920),
+        "media_paths": (
+            "assets/media/00.mp4", "assets/media/01.mp4",
+            "assets/media/02.mp4", "assets/media/03.mp4",
+            "assets/media/04.mp4", "assets/media/05.mp4",
+            "assets/media/06.mp4",
+        ),
+        "bgm_path": "assets/media/reference-bgm.m4a",
+        "bgm_sha256": (
+            "f3327c91050b6b77c95ffde4d5aeb3926ec447bb4de2d7a45a77acdeba74c4ea"
+        ),
+        "bgm_duration": 15.116009,
+        "bgm_manifest_key": "referenceAudio",
+        "audio_id": "bound-bgm",
+        "font_files": {"Noto Sans SC": "NotoSansSC-Variable.ttf"},
+        "expected_fields": ("title", "subtitle", "body", "cta"),
+        "extra_variable_ids": tuple(f"media{index}" for index in range(8)),
+        "required_files": (
+            "index.motion.json", "assets/vendor/gsap.min.js",
+        ),
+        "semantic": {
+            "top1": {
+                "family": "Noto Sans SC", "font_size_px": 54,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 11,
+                "letter_spacing_em": -0.025,
+            },
+            "top2": {
+                "family": "Noto Sans SC", "font_size_px": 46,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 4,
+                "letter_spacing_em": -0.025,
+            },
+            "top3": {
+                "family": "Noto Sans SC", "font_size_px": 38,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 2, "stroke_px": 4,
+                "letter_spacing_em": -0.025,
+            },
+            "bottom2": {
+                "family": "Noto Sans SC", "font_size_px": 42,
+                "font_weight": 900, "max_width_px": 996,
+                "max_lines": 4, "stroke_px": 10,
+                "letter_spacing_em": -0.025,
+            },
+        },
+        "field_specs": {
+            "title": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 96, "minimum": 54, "width": 996,
+                "height": 216, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 11, "letter_spacing_em": -0.025,
+            },
+            "subtitle": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 82, "minimum": 46, "width": 996,
+                "height": 184, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 4, "letter_spacing_em": -0.025,
+            },
+            "body": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 62, "minimum": 38, "width": 996,
+                "height": 140, "line_height": 1.12, "max_lines": 2,
+                "stroke_px": 4, "letter_spacing_em": -0.025,
+            },
+            "cta": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 86, "minimum": 42, "width": 996,
+                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "stroke_px": 10, "letter_spacing_em": -0.025,
             },
         },
     },
@@ -911,13 +1104,32 @@ def _required_visuals(duration: float) -> int:
     return count
 
 
-def _material_source_plan(count: int) -> tuple[str, ...]:
+def _material_source_plan(
+    count: int, *, include_middle_library: bool = False, seed: str = "",
+) -> tuple[str, ...]:
     """Return the source assigned to each visible clip.
 
     Three-clip outputs keep the opening clip in the approved Huangque library.
     Four-, five-, eight- and nine-clip outputs keep both bookends there. All
     middle clips are supplied by the Pexels China-oriented search pool.
     """
+    if include_middle_library:
+        if count < 5:
+            raise MatrixTemplateError(
+                "三段黄雀素材规则至少需要 5 个画面位"
+            )
+        plan = ["pexels"] * count
+        plan[0] = plan[-1] = "huangque"
+        middle = 1 + (
+            int.from_bytes(
+                hashlib.sha256(
+                    f"matrix-middle-library:{seed}:{count}".encode("utf-8")
+                ).digest()[:4],
+                "big",
+            ) % (count - 2)
+        )
+        plan[middle] = "huangque"
+        return tuple(plan)
     if count == 3:
         return ("huangque", "pexels", "pexels")
     if count in {4, 5, 8, 9}:
@@ -2130,8 +2342,11 @@ class MatrixTemplateService:
                  nine_grid_root: Path | None = None,
                  triple_strip_root: Path | None = None,
                  yellow_banner_root: Path | None = None,
+                 fan_whip_root: Path | None = None,
+                 brush_panel_root: Path | None = None,
                  hyperframes_cli: Path | None = None,
                  nine_grid_hyperframes_cli: Path | None = None,
+                 motion_v2_hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
                  hyperframes_concurrency: int = DEFAULT_HYPERFRAMES_CONCURRENCY,
@@ -2191,6 +2406,8 @@ class MatrixTemplateService:
             for template_id, root in (
                 (TRIPLE_STRIP_TEMPLATE_ID, triple_strip_root),
                 (YELLOW_BANNER_TEMPLATE_ID, yellow_banner_root),
+                (FAN_WHIP_TEMPLATE_ID, fan_whip_root),
+                (BRUSH_PANEL_TEMPLATE_ID, brush_panel_root),
             )
             if root is not None
         }
@@ -2204,6 +2421,10 @@ class MatrixTemplateService:
         self.nine_grid_hyperframes_cli = (
             nine_grid_hyperframes_cli.resolve()
             if nine_grid_hyperframes_cli else None
+        )
+        self.motion_v2_hyperframes_cli = (
+            motion_v2_hyperframes_cli.resolve()
+            if motion_v2_hyperframes_cli else None
         )
         self.hyperframes_gsap = hyperframes_gsap.resolve() if hyperframes_gsap else None
         self.hyperframes_browser = (
@@ -2746,22 +2967,30 @@ class MatrixTemplateService:
 
     def _load_fixed_skill_template(self, template_id: str) -> dict:
         config = FIXED_SKILL_TEMPLATE_CONFIGS[template_id]
+        hyperframes_version = str(
+            config.get(
+                "hyperframes_version", FIXED_SKILL_HYPERFRAMES_VERSION,
+            )
+        )
         root = self.fixed_skill_roots[template_id]
         if root.is_symlink() or not root.is_dir():
             raise MatrixTemplateError("fixed Skill template root is unavailable")
         required = {
-            "index.html", "template.json", "package.json", "hyperframes.json",
+            "index.html", "template.json", "package.json",
             str(config["bgm_path"]),
             *(f"assets/fonts/{filename}" for filename in config["font_files"].values()),
+            *config.get("required_files", ()),
         }
         if template_id == TRIPLE_STRIP_TEMPLATE_ID:
             required.update({
-                "index.motion.json", "assets/vendor/gsap.min.js",
+                "hyperframes.json", "index.motion.json",
+                "assets/vendor/gsap.min.js",
                 "compositions/opening.html",
                 *(f"compositions/main-{index:02d}.html" for index in range(1, 6)),
             })
-        else:
+        elif template_id == YELLOW_BANNER_TEMPLATE_ID:
             required.update({
+                "hyperframes.json",
                 "assets/vendor/gsap.min.js",
                 "assets/vendor/yellow-banner-motion.js",
             })
@@ -2771,10 +3000,16 @@ class MatrixTemplateService:
                 raise MatrixTemplateError("fixed Skill template is incomplete")
 
         manifest = _read_json(root / "template.json")
-        binding = manifest.get("boundBgm")
+        manifest_version = config.get("manifest_version", config["version"])
+        binding = manifest.get(
+            str(config.get("bgm_manifest_key", "boundBgm"))
+        )
         if (
             manifest.get("id") != template_id
-            or manifest.get("version") != config["version"]
+            or (
+                manifest_version is not None
+                and manifest.get("version") != manifest_version
+            )
             or manifest.get("renderer") != "hyperframes"
             or manifest.get("width") != 1080
             or manifest.get("height") != 1920
@@ -2796,7 +3031,7 @@ class MatrixTemplateService:
             ):
                 raise MatrixTemplateError("triple-strip timing contract changed")
             expected_fields = ("title", "subtitle", "ctaLine1", "ctaLine2")
-        else:
+        elif template_id == YELLOW_BANNER_TEMPLATE_ID:
             if (
                 manifest.get("hyperframesVersion")
                     != FIXED_SKILL_HYPERFRAMES_VERSION
@@ -2808,25 +3043,44 @@ class MatrixTemplateService:
             expected_fields = (
                 "title", "subtitle1", "subtitle2", "sourceLabel", "body", "cta",
             )
+        else:
+            media = manifest.get("media")
+            if (
+                manifest.get("frames") != config["frames"]
+                or not isinstance(media, dict)
+                or media.get("requiredDistinctVideos")
+                    != config["required_visuals"]
+                or media.get("minimumPreparedDuration")
+                    != config["slot_frames"][0] / 30
+                or media.get("paths") != list(config["media_paths"])
+            ):
+                raise MatrixTemplateError(
+                    "motion v2 template timing contract changed"
+                )
+            expected_fields = tuple(config["expected_fields"])
         package = _read_json(root / "package.json")
         scripts = package.get("scripts")
         if (
             not isinstance(scripts, dict)
             or any(
-                f"hyperframes@{FIXED_SKILL_HYPERFRAMES_VERSION}" not in str(scripts.get(name) or "")
+                f"hyperframes@{hyperframes_version}"
+                    not in str(scripts.get(name) or "")
                 for name in ("dev", "check", "render", "publish")
             )
         ):
             raise MatrixTemplateError("fixed Skill HyperFrames version changed")
         index_html = (root / "index.html").read_text(encoding="utf-8")
+        composition_id = str(config.get("composition_id", template_id))
+        audio_id = str(config.get("audio_id", "bound-bgm"))
         if (
-            index_html.count(f'data-composition-id="{template_id}"') != 1
+            index_html.count(f'data-composition-id="{composition_id}"') != 1
             or any(
                 index_html.count(f'data-var-text="{field}"') != 1
                 for field in expected_fields
             )
             or not re.search(
-                r'<audio\b[^>]*\bid="bound-bgm"[^>]*\bdata-volume="1"',
+                rf'<audio\b[^>]*\bid="{re.escape(audio_id)}"'
+                r'[^>]*\bdata-volume="1"',
                 index_html,
             )
         ):
@@ -2843,19 +3097,22 @@ class MatrixTemplateService:
                 "family": family, "file": filename, "path": path,
                 "sha256": _file_sha256(path),
             }
-        if (
-            self.nine_grid_hyperframes_cli is None
-            or self.nine_grid_hyperframes_cli.is_symlink()
-            or not self.nine_grid_hyperframes_cli.is_file()
-        ):
-            raise MatrixTemplateError("HyperFrames 0.8.33 CLI is unavailable")
+        cli = (
+            self.motion_v2_hyperframes_cli
+            if hyperframes_version == MOTION_V2_HYPERFRAMES_VERSION
+            else self.nine_grid_hyperframes_cli
+        )
+        if cli is None or cli.is_symlink() or not cli.is_file():
+            raise MatrixTemplateError(
+                f"HyperFrames {hyperframes_version} CLI is unavailable"
+            )
         version = subprocess.run(
-            [str(self.nine_grid_hyperframes_cli), "--version"],
+            [str(cli), "--version"],
             check=False, capture_output=True, text=True, timeout=15,
         )
         if (
             version.returncode
-            or version.stdout.strip() != FIXED_SKILL_HYPERFRAMES_VERSION
+            or version.stdout.strip() != hyperframes_version
         ):
             raise MatrixTemplateError("fixed Skill HyperFrames CLI version mismatch")
         semantic = config["semantic"]
@@ -2890,7 +3147,10 @@ class MatrixTemplateService:
             "fixed_duration_seconds": config["duration"],
             "required_visuals": config["required_visuals"],
             "required_visuals_max": config["required_visuals"],
-            "clip_duration_range_seconds": [3.0, 3.0],
+            "clip_duration_range_seconds": [
+                min(config["slot_frames"]) / 30,
+                max(config["slot_frames"]) / 30,
+            ],
             "bgm_mode": "bound",
             "bgm_optional": True,
             "semantic_layout": public_semantic,
@@ -3183,7 +3443,7 @@ class MatrixTemplateService:
                 "ctaLine1": "\n".join(bottom_lines[:split]),
                 "ctaLine2": "\n".join(bottom_lines[split:]),
             }
-        else:
+        elif template_id == YELLOW_BANNER_TEMPLATE_ID:
             fields = {
                 "title": display_text["top1"],
                 "subtitle1": display_text["top2"],
@@ -3191,6 +3451,13 @@ class MatrixTemplateService:
                 "sourceLabel": "",
                 "body": "\n".join(bottom_lines[:-1]),
                 "cta": bottom_lines[-1],
+            }
+        else:
+            fields = {
+                "title": display_text["top1"],
+                "subtitle": display_text["top2"],
+                "body": display_text["top3"],
+                "cta": "\n".join(bottom_lines),
             }
         if not fields["title"]:
             raise ValueError("顶部标题无法在完整语义边界内排入模板")
@@ -3695,7 +3962,9 @@ class MatrixTemplateService:
                 "template_id": template_id,
                 "version": config["version"],
                 "engine": "hyperframes",
-                "hyperframes_version": FIXED_SKILL_HYPERFRAMES_VERSION,
+                "hyperframes_version": str(config.get(
+                    "hyperframes_version", FIXED_SKILL_HYPERFRAMES_VERSION,
+                )),
                 "duration": config["duration"],
                 "frames": config["frames"],
                 "required_visuals": config["required_visuals"],
@@ -3929,9 +4198,7 @@ class MatrixTemplateService:
             worker_alive and cleanup_alive and not worker_degraded
         )
         pexels_ready = bool(self.pexels_api_key)
-        ready = workers_ready and library["ready"] and (
-            pexels_ready or not self.workers_expected
-        )
+        ready = workers_ready and library["ready"]
         return {
             "ok": ready,
             "worker_alive": worker_alive,
@@ -3941,7 +4208,8 @@ class MatrixTemplateService:
             "degraded_jobs": degraded_job_count,
             "material_library_ready": library["ready"],
             "pexels_material_ready": pexels_ready,
-            "material_source_policy": "huangque-bookends-pexels-middle-v1",
+            "pexels_material_optional": True,
+            "material_source_policy": "huangque-bookends-extra-middle-pexels-v2",
             "material_selection_contract_version": library[
                 "selection_contract_version"
             ],
@@ -3963,9 +4231,39 @@ class MatrixTemplateService:
             "fixed_skill_templates": sorted(self.fixed_skill_templates),
             "fixed_skill_template_count": len(self.fixed_skill_templates),
             "fixed_skill_hyperframes_version": (
-                FIXED_SKILL_HYPERFRAMES_VERSION
+                (
+                    "mixed"
+                    if any(
+                        template_id in MOTION_V2_TEMPLATE_IDS
+                        for template_id in self.fixed_skill_templates
+                    ) and any(
+                        template_id not in MOTION_V2_TEMPLATE_IDS
+                        for template_id in self.fixed_skill_templates
+                    )
+                    else (
+                        MOTION_V2_HYPERFRAMES_VERSION
+                        if any(
+                            template_id in MOTION_V2_TEMPLATE_IDS
+                            for template_id in self.fixed_skill_templates
+                        )
+                        else FIXED_SKILL_HYPERFRAMES_VERSION
+                    )
+                )
                 if self.fixed_skill_templates else ""
             ),
+            "fixed_skill_hyperframes_versions": {
+                version: sum(
+                    1 for template_id in self.fixed_skill_templates
+                    if str(FIXED_SKILL_TEMPLATE_CONFIGS[template_id].get(
+                        "hyperframes_version",
+                        FIXED_SKILL_HYPERFRAMES_VERSION,
+                    )) == version
+                )
+                for version in (
+                    FIXED_SKILL_HYPERFRAMES_VERSION,
+                    MOTION_V2_HYPERFRAMES_VERSION,
+                )
+            },
             "reference_top_layer_counts": {
                 str(layer_count): sum(
                     1 for item in self.reference_templates.values()
@@ -4518,7 +4816,13 @@ class MatrixTemplateService:
             )
         visual_scenes = scenes[:count]
         bgm_scenes = scenes[count:]
-        source_plan = _material_source_plan(count)
+        source_plan = _material_source_plan(
+            count,
+            include_middle_library=(
+                payload.get("template_id") in MOTION_V2_TEMPLATE_IDS
+            ),
+            seed=job_id,
+        )
         own_scenes = [
             scene for scene, source in zip(visual_scenes, source_plan)
             if source == "huangque"
@@ -5382,15 +5686,22 @@ class MatrixTemplateService:
             schema = json.loads(html.unescape(matches[0].group(2)))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise MatrixTemplateError("固定 Skill 模板变量声明无效") from exc
+        expected_variable_ids = set(fields) | set(
+            FIXED_SKILL_TEMPLATE_CONFIGS[template_id].get(
+                "extra_variable_ids", (),
+            )
+        )
         if (
             not isinstance(schema, list)
-            or {str(item.get("id") or "") for item in schema} != set(fields)
+            or {str(item.get("id") or "") for item in schema}
+                != expected_variable_ids
         ):
             raise MatrixTemplateError("固定 Skill 模板文字字段发生变化")
         for item in schema:
             field = str(item["id"])
-            item["default"] = fields[field]
-            item["maxLength"] = 200
+            if field in fields:
+                item["default"] = fields[field]
+                item["maxLength"] = 200
         replacement = 'data-composition-variables="' + html.escape(
             json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
             quote=True,
@@ -5426,6 +5737,15 @@ class MatrixTemplateService:
 #body{{font-size:{sizes["body"]}px!important;line-height:1.15625!important}}
 #cta{{font-size:{sizes["cta"]}px!important;line-height:1.1!important}}
 </style>'''
+        elif template_id in MOTION_V2_TEMPLATE_IDS:
+            style = f'''<style id="matrix-fixed-skill-copy">
+[data-var-text]:empty{{display:none!important}}
+#title,#subtitle,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+#title{{font-size:{sizes["title"]}px!important;line-height:1.12!important}}
+#subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.12!important}}
+#body{{font-size:{sizes["body"]}px!important;line-height:1.12!important}}
+#cta{{font-size:{sizes["cta"]}px!important;line-height:1.16!important}}
+</style>'''
         else:
             raise MatrixTemplateError("固定 Skill 模板 ID 无效")
         if result.count("</head>") != 1:
@@ -5433,11 +5753,13 @@ class MatrixTemplateService:
         return result.replace("</head>", style + "\n</head>", 1)
 
     @staticmethod
-    def _rewrite_fixed_skill_bgm(index_html: str, enabled: bool) -> str:
+    def _rewrite_fixed_skill_bgm(
+        index_html: str, enabled: bool, audio_id: str = "bound-bgm",
+    ) -> str:
         if not isinstance(enabled, bool):
             raise MatrixTemplateError("固定 Skill 模板背景音乐参数无效")
         pattern = re.compile(
-            r'<audio\b(?=[^>]*\bid="bound-bgm")[^>]*>'
+            rf'<audio\b(?=[^>]*\bid="{re.escape(audio_id)}")[^>]*>'
         )
         matches = list(pattern.finditer(index_html))
         if len(matches) != 1:
@@ -5513,6 +5835,51 @@ class MatrixTemplateService:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _prepare_fixed_skill_stills(
+        self, workdir: Path, config: dict, *, deadline_at: float,
+    ) -> None:
+        for source_relative, target_relative, at_seconds in config.get(
+            "still_frames", ()
+        ):
+            source = workdir.joinpath(*str(source_relative).split("/"))
+            target = workdir.joinpath(*str(target_relative).split("/"))
+            remaining = deadline_at - time.time()
+            if (
+                not source.is_file()
+                or not math.isfinite(float(at_seconds))
+                or float(at_seconds) < 0
+                or remaining <= 0
+            ):
+                raise MatrixTemplateError(
+                    "固定 Skill 模板抽帧参数无效"
+                )
+            temporary = target.with_name("." + target.name + ".part.jpg")
+            temporary.unlink(missing_ok=True)
+            command = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-nostdin", "-y", "-ss",
+                _format_reference_seconds(float(at_seconds)),
+                "-i", str(source), "-frames:v", "1", "-q:v", "2",
+                str(temporary),
+            ]
+            try:
+                returncode, _stdout, _stderr = self._run_tracked_process(
+                    command,
+                    timeout_seconds=max(1.0, min(30.0, remaining)),
+                    timeout_error="固定 Skill 模板抽帧超时",
+                )
+                if (
+                    returncode
+                    or not temporary.is_file()
+                    or temporary.stat().st_size < 1024
+                ):
+                    raise MatrixTemplateError(
+                        "固定 Skill 模板抽帧失败"
+                    )
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
     def _render_fixed_skill_template(
         self, payload: dict, job_id: str,
         materials: list[dict], paths: list[Path],
@@ -5520,6 +5887,14 @@ class MatrixTemplateService:
     ) -> dict:
         template_id = payload["template_id"]
         config = FIXED_SKILL_TEMPLATE_CONFIGS.get(template_id)
+        hyperframes_version = str((config or {}).get(
+            "hyperframes_version", FIXED_SKILL_HYPERFRAMES_VERSION,
+        ))
+        cli = (
+            self.motion_v2_hyperframes_cli
+            if hyperframes_version == MOTION_V2_HYPERFRAMES_VERSION
+            else self.nine_grid_hyperframes_cli
+        )
         frozen = payload.get("_fixed_skill_template")
         text = frozen.get("text") if isinstance(frozen, dict) else None
         root = self.fixed_skill_roots.get(template_id)
@@ -5529,7 +5904,7 @@ class MatrixTemplateService:
             or frozen.get("template_id") != template_id
             or frozen.get("version") != config["version"]
             or frozen.get("hyperframes_version")
-                != FIXED_SKILL_HYPERFRAMES_VERSION
+                != hyperframes_version
             or abs(float(frozen.get("duration") or 0) - config["duration"]) > 1e-9
             or frozen.get("frames") != config["frames"]
             or frozen.get("required_visuals") != config["required_visuals"]
@@ -5538,7 +5913,7 @@ class MatrixTemplateService:
             or not isinstance(text, dict)
             or root is None
             or template_id not in self.fixed_skill_templates
-            or self.nine_grid_hyperframes_cli is None
+            or cli is None
             or len(paths) != config["required_visuals"]
             or len(materials) != config["required_visuals"]
             or any(item.get("media_type") != "video" for item in materials)
@@ -5593,6 +5968,7 @@ class MatrixTemplateService:
         )
         index_html = self._rewrite_fixed_skill_bgm(
             index_html, bool(payload["bgm"]),
+            str(config.get("audio_id", "bound-bgm")),
         )
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
@@ -5607,7 +5983,7 @@ class MatrixTemplateService:
         runtime_home.mkdir(parents=True, exist_ok=True)
         cache_home.mkdir(parents=True, exist_ok=True)
         command = [
-            str(self.nine_grid_hyperframes_cli), "render", str(workdir),
+            str(cli), "render", str(workdir),
             "--output", str(output), "--quality", "high", "--workers", "1",
             "--fps", "30", "--sdr", "--no-browser-gpu",
             "--strict-variables", "--variables-file", str(variables_path),
@@ -5648,6 +6024,9 @@ class MatrixTemplateService:
             ):
                 item["clip_start_seconds"] = actual_start
                 item["clip_duration_seconds"] = actual_duration
+            self._prepare_fixed_skill_stills(
+                workdir, config, deadline_at=deadline_at,
+            )
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -6571,11 +6950,6 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 else:
                     library = self.service.require_library_ready(force=True)
-                    if (
-                        self.service.workers_expected
-                        and not self.service.pexels_api_key
-                    ):
-                        raise MatrixTemplateError("Pexels 素材库密钥未配置")
                 self.send_json(200, {
                     "ok": True,
                     "payload": payload,
@@ -6639,6 +7013,12 @@ def main() -> None:
     yellow_banner_root_value = os.environ.get(
         "MATRIX_TEMPLATE_YELLOW_BANNER_ROOT", ""
     ).strip()
+    fan_whip_root_value = os.environ.get(
+        "MATRIX_TEMPLATE_FAN_WHIP_ROOT", ""
+    ).strip()
+    brush_panel_root_value = os.environ.get(
+        "MATRIX_TEMPLATE_BRUSH_PANEL_ROOT", ""
+    ).strip()
     service = MatrixTemplateService(
         data_root=Path(os.environ.get("MATRIX_TEMPLATE_DATA_ROOT", "/var/lib/huangque-matrix-template")),
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
@@ -6659,6 +7039,12 @@ def main() -> None:
         yellow_banner_root=(
             Path(yellow_banner_root_value) if yellow_banner_root_value else None
         ),
+        fan_whip_root=(
+            Path(fan_whip_root_value) if fan_whip_root_value else None
+        ),
+        brush_panel_root=(
+            Path(brush_panel_root_value) if brush_panel_root_value else None
+        ),
         hyperframes_cli=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_CLI", "/usr/local/bin/hyperframes"
         )),
@@ -6666,6 +7052,11 @@ def main() -> None:
             "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI",
             "/opt/huangque/matrix-template-video/source/"
             "nine-grid-runtime/node_modules/.bin/hyperframes",
+        )),
+        motion_v2_hyperframes_cli=Path(os.environ.get(
+            "MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI",
+            "/opt/huangque/matrix-template-video/source/"
+            "motion-v2-runtime/hyperframes",
         )),
         hyperframes_gsap=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_GSAP",

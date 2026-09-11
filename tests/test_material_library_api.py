@@ -71,7 +71,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
         self.assertEqual("development", payload["build_id"])
         self.assertTrue(payload["usage_state_ready"])
         self.assertEqual(2, payload["selection_contract_version"])
-        self.assertEqual(2, payload["clip_contract_version"])
+        self.assertEqual(3, payload["clip_contract_version"])
         self.assertNotIn(str(self.root), json.dumps(payload))
 
     def test_authenticated_ping_validates_the_runtime_token(self):
@@ -98,7 +98,7 @@ class MaterialLibraryApiTests(unittest.TestCase):
         self.assertEqual(self.sha, payload["materials"][0]["sha256"])
         self.assertEqual("random", payload["selection_mode"])
         self.assertEqual(2, payload["selection_contract_version"])
-        self.assertEqual(2, payload["clip_contract_version"])
+        self.assertEqual(3, payload["clip_contract_version"])
         serialized = json.dumps(payload)
         self.assertNotIn("relative_path", serialized)
         self.assertNotIn(str(self.root), serialized)

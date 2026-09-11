@@ -1,0 +1,11 @@
+{
+  "name": "huangque-matrix-motion-v2-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "dependencies": {
+    "hyperframes": "0.8.34"
+  }
+}

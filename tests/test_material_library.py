@@ -191,10 +191,10 @@ class MaterialLibraryTests(unittest.TestCase):
         library = self.library()
 
         for value in (
-            True, "2.5", 1.99, 4.01, float("nan"), 10 ** 400,
+            True, "2.5", 1.99, 5.01, float("nan"), 10 ** 400,
         ):
             with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError, "between 2 and 4",
+                ValueError, "between 2 and 5",
             ):
                 library.select([{
                     "scene_id": "s1", "media_type": "video",
@@ -220,6 +220,19 @@ class MaterialLibraryTests(unittest.TestCase):
             + selected["clip_duration_seconds"],
             4.1,
         )
+
+    def test_five_second_motion_clip_requires_source_plus_safety_margin(self):
+        self.add("five-seconds-exact", media=".mp4", 时长秒=5.0)
+        expected = self.add("five-seconds-safe", media=".mp4", 时长秒=5.2)
+
+        result = self.library().select([{
+            "scene_id": "brush-slot", "media_type": "video",
+            "clip_duration_seconds": 5.0,
+        }], seed="brush-slot")
+
+        selected = result["materials"][0]
+        self.assertEqual(expected, selected["sha256"])
+        self.assertEqual(5.0, selected["clip_duration_seconds"])
 
     def test_source_minimum_must_cover_clip_and_safety_margin(self):
         self.add("video", media=".mp4", 时长秒=10.0)

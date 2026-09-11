@@ -5,19 +5,25 @@ Internal generation-server API for the `text-media-text` mode from the pinned
 up to five FFmpeg renders at a time, and uses the existing material-library
 tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
-The runtime exposes 20 templates: the 17-template
+The runtime exposes 22 templates: the 17-template
 `reference-typography-17` HyperFrames pack, the nine-grid
-template, and the fixed `triple-strip-shutter` / `yellow-banner-zoom` Skill
+template, and four fixed motion templates:
+`triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`, and
+`brush-panel-transitions`.
 templates. The 17 reference templates use three to five distinct video assets,
 keeping every selected material clip between two and three seconds. A
 three-clip reference output takes its
 opening clip from the approved Huangque library and its two remaining clips
 from the Pexels China-oriented search pool. Four- and five-clip outputs take
 their opening and closing clips from Huangque and all middle clips from Pexels.
-The nine-grid and two fixed Skill templates use only the approved Huangque
-library. They retain nine, eight, and three distinct selected video records,
-respectively. Reference templates render with HyperFrames `0.8.16`; the three
-newer templates render with the separately locked HyperFrames `0.8.33` runtime.
+Nine-grid and triple-strip keep Huangque bookends and use Pexels for middle
+slots. Yellow-banner uses Huangque for its first slot and Pexels for the other
+two. Fan-whip and brush-panel use Huangque for the first, last, and one
+job-stable middle slot; all remaining slots use Pexels. Without a configured
+Pexels key, every slot falls back to the approved Huangque library. Reference
+templates render with HyperFrames `0.8.16`; the first three motion templates
+use the locked `0.8.33` runtime and the two new templates use a separate
+lockfile-pinned `0.8.34` runtime.
 All HyperFrames templates share at most two concurrent render slots on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these public templates.
@@ -50,10 +56,10 @@ four fixed OFL fonts, applies a hash-locked generation-server patch limited to
 variants `v01`, `v04`, `v05`, `v07`, `v09`, `v10`, `v12`, and `v16`, and installs pinned GSAP
 `3.14.2` inside the release.
 It also sparse-checks out Skill commit
-`81da5e926aad0d2166845ee0b398282a21ab09e7`, adapts and validates the nine-grid
-template, validates both fixed-template preparation suites and their bound
-audio, and installs one lockfile-pinned HyperFrames `0.8.33` runtime shared by
-those three templates.
+`2a2db5877728dcf4987f85973cfba38bb80f45a2`, adapts and validates the
+nine-grid template, validates all four fixed-template source contracts and
+their bound audio, and installs lockfile-pinned HyperFrames `0.8.33` and
+`0.8.34` runtimes.
 Variant `v01` keeps its green-outlined handwritten treatment while its five
 locked text layers increase from `68/62/50/54/72px` to
 `70/64/52/56/74px`. Variant `v05` keeps the approved Noto Sans SC 900 block
@@ -82,9 +88,9 @@ this four-top-layer path, every other variant keeps its existing layout.
 The private-domain patch retains recovery-only render definitions for
 `full-overlay-bold` and `poster-split`; both that patch and the separate
 reference-typography patch have SHA-256 locks in `install.sh`, so a missing
-or changed patch fails before the active release is switched. The public Skill
-repository remains unchanged until the generation-server contract is accepted
-and the same change is deliberately upstreamed.
+or changed patch fails before the active release is switched. The two new
+motion templates are consumed only from the pinned public Skill commit above;
+customer footage is not bundled.
 
 ```bash
 sudo bash deploy/matrix-template-video/install.sh
@@ -96,13 +102,13 @@ Python must provide Pillow (`Image`, `ImageDraw`, and `ImageFont`); the installe
 verifies it before switching releases.
 
 Deploy the material-library service before this renderer. Tunnel readiness
-requires selection contract v2 and clip contract v2, and every newly admitted
+requires selection contract v2 and clip contract v3, and every newly admitted
 template job fails closed if either version or any clip field is missing.
 
 For this upgrade, deploy in this order: material-library service, generation-side
 tunnel readiness check, matrix-template renderer, then the main-site compatibility
 layer. Do not activate the renderer while the remote library still reports clip
-contract v1; health and preflight must fail closed before any job is admitted.
+contract v2; health and preflight must fail closed before any job is admitted.
 
 The production installer sets `MATRIX_TEMPLATE_CONCURRENCY=5`, requires at
 least 4 vCPU and 7 GiB RAM, and configures the service for 400% CPU and 6 GiB
@@ -148,11 +154,13 @@ clips and never produces a sixth clip. Pexels requests use a fixed Chinese
 scene-query bank with `locale=zh-CN`, `orientation=portrait`, and `size=medium`.
 Pexels does not expose a capture-country field, so this is a China-oriented
 best-effort search policy rather than a country guarantee. It does not inspect
-frames or use AI matching. Configure the credential only in
-`/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Search responses
-are cached for 24 hours to respect provider limits. Completed job provenance
-includes the Pexels video/file ids, contributor and source URLs, query, stable
-source identity, and downloaded content SHA-256 for attribution and audit.
+frames or use AI matching. To enable Pexels, configure the optional credential
+only in `/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Without
+that file or key, every visual slot uses the approved Huangque library. Search
+responses are cached for 24 hours to respect provider limits. Completed job
+provenance includes the Pexels video/file ids, contributor and source URLs,
+query, stable source identity, and downloaded content SHA-256 for attribution
+and audit.
 
 Matrix template jobs request `selection_mode=round_robin` for every Huangque
 visual and BGM scene. Copy relevance does not affect Huangque ranking. The
