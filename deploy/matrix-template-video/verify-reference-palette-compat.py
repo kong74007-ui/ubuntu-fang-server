@@ -4,6 +4,9 @@
 Runs the same production parsing the service uses (``reference_pack_layer_audit``)
 so an overlay that shadows layer detection fails HERE, before the release
 symlink is switched or the service restarted, instead of crashing at startup.
+
+The expected palette version / count are read from the production module and the
+applier itself (never from the shell), so no undefined shell variable can creep in.
 """
 
 from __future__ import annotations
@@ -17,19 +20,16 @@ from pathlib import Path
 
 EXPECTED_TEMPLATES = 17
 EXPECTED_TOP_LAYER_COUNTS = {"2": 6, "3": 10, "4": 1}
-STYLE_ID = "matrix-public-template-palettes-v1"
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[1]
 
 
-def _load_matrix_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "server" / "matrix_template_api.py"
-    spec = importlib.util.spec_from_file_location(
-        "matrix_template_api_compat", module_path,
-    )
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot load {module_path}")
+        raise SystemExit(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -37,18 +37,37 @@ def _load_matrix_module():
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pack-root", type=Path, required=True)
-    parser.add_argument("--palette-version", default="reference-palettes-v1")
-    parser.add_argument("--palette-count", type=int, default=20)
     args = parser.parse_args()
     index_path = args.pack_root / "index.html"
     if not index_path.is_file():
         print("reference pack index.html is missing", file=sys.stderr)
         return 1
     index_html = index_path.read_text(encoding="utf-8")
-    if f'id="{STYLE_ID}"' not in index_html:
+
+    applier = _load(HERE / "apply-public-template-palettes.py", "palette_applier")
+    matrix = _load(
+        REPO_ROOT / "server" / "matrix_template_api.py", "matrix_template_api_compat",
+    )
+    if f'id="{applier.STYLE_ID}"' not in index_html:
         print("palette overlay is missing from reference pack", file=sys.stderr)
         return 1
-    matrix = _load_matrix_module()
+    palette_version = getattr(matrix, "PUBLIC_TEMPLATE_PALETTE_VERSION", "")
+    palette_count = getattr(matrix, "PUBLIC_TEMPLATE_PALETTE_COUNT", None)
+    if (
+        not isinstance(palette_version, str) or not palette_version
+        or not isinstance(palette_count, int) or isinstance(palette_count, bool)
+        or palette_count <= 0
+    ):
+        print("public template palette constants are invalid", file=sys.stderr)
+        return 1
+    if len(applier.PALETTES) != palette_count:
+        print(
+            f"applier defines {len(applier.PALETTES)} palettes but the service "
+            f"advertises {palette_count}",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         audit = matrix.reference_pack_layer_audit(index_html)
     except Exception as exc:  # noqa: BLE001 - report and fail the install
@@ -68,8 +87,8 @@ def main() -> int:
             return 1
     print(json.dumps({
         "ok": True,
-        "palette_version": args.palette_version,
-        "palette_count": args.palette_count,
+        "palette_version": palette_version,
+        "palette_count": palette_count,
         "templates": audit["templates"],
         "top_layer_counts": audit["top_layer_counts"],
         "font_sizes": len(audit["font_sizes"]),

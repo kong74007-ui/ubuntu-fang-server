@@ -517,7 +517,7 @@ class InstallerPaletteGateTests(unittest.TestCase):
             'python3 "${PUBLIC_PALETTE_APPLIER_SOURCE}" --reference-root'
         )
         check = self.installer.index(
-            'python3 "${REFERENCE_PALETTE_COMPAT_SOURCE}" \\'
+            'python3 "${REFERENCE_PALETTE_COMPAT_SOURCE}" --pack-root'
         )
         switch = self.installer.index('mv -Tf "${NEXT_LINK}" "${SOURCE_LINK}"')
         self.assertLess(inject, check)
