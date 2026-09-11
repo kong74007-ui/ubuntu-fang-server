@@ -150,8 +150,14 @@ TRIPLE_STRIP_CSS = """/* 19 triple-strip-shutter · 三横屏开场·光栅快�
 .underline .slash {
   background-color: #f2e1ff;
 }
+.underline .slash:last-child {
+  background-color: #61ac4c;
+}
 .chevron path {
   stroke: #61ac4c;
+}
+.chevron path:not([fill="none"]) {
+  fill: #61ac4c;
 }"""
 
 YELLOW_BANNER_CSS = """/* 20 yellow-banner-zoom · 黄条标题·变幅冲击 */
@@ -185,7 +191,7 @@ TEMPLATE_CSS = {
 REQUIRED_SELECTORS = {
     "reference": [f'id="{layer}"' for layer in REFERENCE_LAYERS],
     "nine-grid": ['id="headline"', 'id="tagline"'],
-    "triple-strip": ['class="title"', 'class="subtitle"', 'class="footer-text"'],
+    "triple-strip": ['class="title"', 'class="subtitle"', 'class="footer-text"', 'class="underline"', 'class="chevron"'],
     "yellow-banner": ['class="banner"', 'id="title"', 'class="subtitle"', 'id="body"'],
 }
 

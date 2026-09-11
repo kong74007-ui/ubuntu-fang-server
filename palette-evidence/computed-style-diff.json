@@ -2418,6 +2418,50 @@
       "template": "triple-strip",
       "elements": [
         {
+          "tag": {},
+          "changed": {
+            "stroke": [
+              "rgb(66, 216, 255)",
+              "rgb(97, 172, 76)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": {},
+          "changed": {
+            "stroke": [
+              "rgb(66, 216, 255)",
+              "rgb(97, 172, 76)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": {},
+          "changed": {
+            "fill": [
+              "rgb(35, 213, 255)",
+              "rgb(97, 172, 76)"
+            ],
+            "stroke": [
+              "rgb(66, 216, 255)",
+              "rgb(97, 172, 76)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": {},
+          "changed": {
+            "stroke": [
+              "rgb(66, 216, 255)",
+              "rgb(97, 172, 76)"
+            ]
+          },
+          "violations": []
+        },
+        {
           "tag": "title",
           "changed": {
             "color": [
@@ -2443,6 +2487,46 @@
             "textShadow": [
               "rgb(237, 83, 197) -4px -3px 0px, rgb(38, 201, 255) 5px 5px 0px, rgb(11, 113, 174) 11px 9px 0px",
               "rgb(97, 172, 76) -4px -3px 0px, rgb(242, 225, 255) 5px 5px 0px, rgb(16, 24, 32) 11px 9px 0px"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "line",
+          "changed": {
+            "backgroundColor": [
+              "rgb(86, 221, 255)",
+              "rgb(97, 172, 76)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "slash",
+          "changed": {
+            "backgroundColor": [
+              "rgb(54, 191, 242)",
+              "rgb(242, 225, 255)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "slash",
+          "changed": {
+            "backgroundColor": [
+              "rgb(54, 191, 242)",
+              "rgb(242, 225, 255)"
+            ]
+          },
+          "violations": []
+        },
+        {
+          "tag": "slash",
+          "changed": {
+            "backgroundColor": [
+              "rgb(77, 99, 236)",
+              "rgb(97, 172, 76)"
             ]
           },
           "violations": []

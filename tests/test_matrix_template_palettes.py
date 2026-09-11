@@ -82,7 +82,16 @@ def fixture(kind: str) -> str:
     if kind == "nine-grid":
         return '<html><head></head><body><div id="headline">a</div><div id="tagline">b</div></body></html>'
     if kind == "triple-strip":
-        return '<html><head></head><body><p class="title"></p><p class="subtitle"></p><p class="footer-text"></p></body></html>'
+        return (
+            '<html><head></head><body>'
+            '<p class="title"></p><p class="subtitle"></p>'
+            '<p class="footer-text"></p>'
+            '<div class="underline"><span class="line"></span>'
+            '<span class="slash"></span></div>'
+            '<div class="chevron"><svg><path fill="none"></path>'
+            '<path fill="#23d5ff"></path></svg></div>'
+            '</body></html>'
+        )
     return '<html><head></head><body><div class="banner"><h1 id="title"></h1></div><p class="subtitle"></p><p id="body"></p></body></html>'
 
 
@@ -200,6 +209,22 @@ class PublicTemplatePaletteApplyTests(unittest.TestCase):
         self.assertIn(
             "background-color: rgba(16, 24, 32, 0.42);", banner
         )
+
+    def test_triple_strip_decorations_have_no_old_colors_left(self):
+        triple = self.module.style_block("triple-strip")
+        # The base template's :last-child slash and the filled chevron keep
+        # their old blue unless these higher-specificity rules exist.
+        self.assertIn(
+            ".underline .slash:last-child {\n  background-color: #61ac4c;\n}",
+            triple,
+        )
+        self.assertIn(
+            '.chevron path:not([fill="none"]) {\n  fill: #61ac4c;\n}',
+            triple,
+        )
+        self.assertNotIn("#4d63ec", triple)
+        self.assertNotIn("#23d5ff", triple)
+        self.assertNotIn("#42d8ff", triple)
 
 
 if __name__ == "__main__":
