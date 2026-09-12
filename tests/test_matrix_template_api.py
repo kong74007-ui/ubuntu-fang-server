@@ -5861,6 +5861,10 @@ class UserMaterialsTests(unittest.TestCase):
             self.assertIn(
                 user_materials[0]["sha256"], request_body["used_sha256"],
             )
+            self.assertEqual(
+                "matrix-template:" + accepted_holder["job_id"] + ":bgm",
+                request_body["selection_id"],
+            )
             return {
                 "materials": [{
                     "scene_id": "bgm", "record_id": "library-bgm",
@@ -5871,10 +5875,12 @@ class UserMaterialsTests(unittest.TestCase):
                 "clip_contract_version": 3,
             }
 
+        accepted_holder = {}
         with mock.patch.object(
             self.service, "_library_request", side_effect=library,
         ) as library_request:
             accepted = self.service.submit(body, "owned-public-bgm")
+            accepted_holder["job_id"] = accepted["job_id"]
             payload = json.loads(
                 self.service.store.get(accepted["job_id"])["payload"]
             )
@@ -5886,6 +5892,139 @@ class UserMaterialsTests(unittest.TestCase):
         self.assertEqual(
             ["user", "user", "user", "huangque"],
             [item["provider"] for item in selected],
+        )
+        self.assertEqual("bgm", selected[-1]["scene_id"])
+
+    def test_owned_public_partial_materials_plus_bgm_use_distinct_selection_ids(self):
+        # #8633 回归：同一任务先补画面再补 BGM，素材库把 selection_id 当唯一
+        # 收据键，两次同 key 会撞「selection_id request conflict」。
+        user_sha = self._store_user_asset(b"owned-partial-bgm", ".mp4")
+        body = {
+            "top_text": "普通用户部分素材配乐",
+            "bottom_text": "画面与音乐各选一次",
+            "material_policy": "owned_public",
+            "duration": 10,
+            "user_materials": [{
+                "sha256": user_sha, "media_type": "video",
+            }],
+            "bgm": True,
+        }
+        selection_ids = []
+
+        def library(method, path, request_body=None, *, timeout=30):
+            self.assertEqual(("POST", "/v1/select"), (method, path))
+            selection_ids.append(request_body["selection_id"])
+            materials = []
+            for index, scene in enumerate(request_body["scenes"], 1):
+                sha = hashlib.sha256(
+                    (request_body["selection_id"] + ":" + scene["scene_id"])
+                    .encode()
+                ).hexdigest()
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "record_id": "library-%d" % index,
+                    "sha256": sha,
+                    "media_type": (
+                        "bgm" if scene["scene_id"] == "bgm" else "video"
+                    ),
+                    "provider": "huangque",
+                    "clip_id": (
+                        None if scene["scene_id"] == "bgm"
+                        else hashlib.sha256((sha + ":clip").encode()).hexdigest()
+                    ),
+                    "clip_start_seconds": 0.0,
+                    "clip_duration_seconds": (
+                        0.0 if scene["scene_id"] == "bgm"
+                        else scene["clip_duration_seconds"]
+                    ),
+                    "clip_slot_index": 1, "clip_slot_count": 1,
+                })
+            return {
+                "materials": materials,
+                "selection_contract_version": 2,
+                "clip_contract_version": 3,
+            }
+
+        with mock.patch.object(
+            self.service, "_library_request", side_effect=library,
+        ):
+            accepted = self.service.submit(body, "owned-public-partial-bgm")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
+            )
+            selected = self.service._select_materials(
+                payload, accepted["job_id"],
+            )
+
+        self.assertEqual(2, len(selection_ids))
+        self.assertEqual(
+            "matrix-template:" + accepted["job_id"], selection_ids[0],
+        )
+        self.assertEqual(
+            "matrix-template:" + accepted["job_id"] + ":bgm", selection_ids[1],
+        )
+        self.assertEqual(
+            ["user", "huangque", "huangque", "huangque", "huangque"],
+            [item["provider"] for item in selected],
+        )
+        self.assertEqual("bgm", selected[-1]["scene_id"])
+
+    def test_owned_public_without_upload_selects_bgm_in_one_request(self):
+        body = {
+            "top_text": "普通用户无素材配乐",
+            "bottom_text": "画面与音乐一次选全",
+            "material_policy": "owned_public",
+            "bgm": True,
+        }
+        requested_scenes = []
+
+        def library(method, path, request_body=None, *, timeout=30):
+            self.assertEqual(("POST", "/v1/select"), (method, path))
+            requested_scenes.append(
+                [scene["scene_id"] for scene in request_body["scenes"]]
+            )
+            materials = []
+            for index, scene in enumerate(request_body["scenes"], 1):
+                materials.append({
+                    "scene_id": scene["scene_id"],
+                    "record_id": "library-%d" % index,
+                    "sha256": format(index, "064x"),
+                    "media_type": (
+                        "bgm" if scene["scene_id"] == "bgm" else "video"
+                    ),
+                    "provider": "huangque",
+                    "clip_id": (
+                        None if scene["scene_id"] == "bgm"
+                        else format(index + 100, "064x")
+                    ),
+                    "clip_start_seconds": 0.0,
+                    "clip_duration_seconds": (
+                        0.0 if scene["scene_id"] == "bgm"
+                        else scene["clip_duration_seconds"]
+                    ),
+                    "clip_slot_index": 1, "clip_slot_count": 1,
+                })
+            return {
+                "materials": materials,
+                "selection_contract_version": 2,
+                "clip_contract_version": 3,
+            }
+
+        with mock.patch.object(
+            self.service, "_library_request", side_effect=library,
+        ):
+            accepted = self.service.submit(body, "owned-public-no-user-bgm")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
+            )
+            selected = self.service._select_materials(
+                payload, accepted["job_id"],
+            )
+
+        self.assertEqual(1, len(requested_scenes))
+        self.assertEqual(
+            ["media_01", "media_02", "media_03", "bgm"],
+            requested_scenes[0],
         )
         self.assertEqual("bgm", selected[-1]["scene_id"])
 

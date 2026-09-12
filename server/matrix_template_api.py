@@ -4736,7 +4736,10 @@ class MatrixTemplateService:
                     not in FIXED_SKILL_TEMPLATE_CONFIGS
                 ):
                     # 自带画面素材时，从素材库随机路由一条背景音乐
-                    # （绑定音乐模板不走这里，沿用模板包内的固定音乐）
+                    # （绑定音乐模板不走这里，沿用模板包内的固定音乐）。
+                    # selection_id 带 :bgm 后缀：素材库把 selection_id 当唯一
+                    # 收据键，与补画面那次同 key 会撞「request conflict」
+                    # （#8633 实锤：先补画面再补 BGM，同 key 场景不同 → 409）。
                     scenes, count, _reference = self._material_scenes(payload)
                     used = (
                         self.store.batch_used_visuals(batch_id)
@@ -4750,7 +4753,7 @@ class MatrixTemplateService:
                             item["sha256"] for item in selected
                         ],
                         "selection_mode": "round_robin",
-                        "selection_id": "matrix-template:" + job_id,
+                        "selection_id": "matrix-template:" + job_id + ":bgm",
                     })
                     if (
                         contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
@@ -4777,14 +4780,14 @@ class MatrixTemplateService:
                 return selected
             if payload.get("material_policy", "shared") == "owned_public":
                 # 素材库优先（2026-09-12 老板定调）：owned_public 无本人素材时
-                # 全部画面位由本地素材库供给，不再走 Pexels 公网。
+                # 全部画面位（含 BGM 位）一次由本地素材库供给，不再走 Pexels 公网。
                 scenes, count, _reference = self._material_scenes(payload)
                 used = (
                     self.store.batch_used_visuals(batch_id)
                     if batch_id else []
                 )
                 result = self._library_request("POST", "/v1/select", {
-                    "scenes": scenes[:count],
+                    "scenes": scenes,
                     "orientation": "portrait",
                     "seed": job_id,
                     "used_sha256": list(used),
