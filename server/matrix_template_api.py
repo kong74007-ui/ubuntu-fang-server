@@ -1207,11 +1207,15 @@ def _material_source_plan(
 
     include_middle_library / seed 保留在签名里仅为兼容既有调用方，已不参与决策。
     """
-    if include_middle_library and count < 5:
-        raise MatrixTemplateError(
-            "三段黄雀素材规则至少需要 5 个画面位"
-        )
-    if count not in {3, 4, 5, 8, 9}:
+    # 校验规则与原实现逐条保持一致，只改「素材从哪来」这一件事。
+    # 注意：固定 Skill / motion-v2 模板（include_middle_library=True）原本只要求
+    # count >= 5，**没有上界** —— 6、7 格是合法的，别在这里加 {3,4,5,8,9} 的白名单。
+    if include_middle_library:
+        if count < 5:
+            raise MatrixTemplateError(
+                "三段黄雀素材规则至少需要 5 个画面位"
+            )
+    elif count not in {3, 4, 5, 8, 9}:
         raise MatrixTemplateError("模板素材片段数量必须在 3 到 5（或九宫格 9 / 三横屏 8）之间")
     return ("huangque",) * count
 
