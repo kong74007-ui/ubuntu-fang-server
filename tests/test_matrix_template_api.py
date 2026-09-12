@@ -1768,7 +1768,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     '.v01 .top2 { font: 400 64px/1.15 "MaShan"; color: #f8f7ef; -webkit-text-stroke: 9px #789822; }',
                     '.v01 .top3 { font-size: 52px; font-weight: 900; color: #fff; -webkit-text-stroke: 7px #111; }',
                     '.v01 .bottom1 { font: 400 56px/1.05 "MaShan"; color: #fff; -webkit-text-stroke: 7px #111; }',
-                    '.v01 .bottom2 { max-width: 900px; padding: 14px 26px; font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
+                    '.v01 .bottom2 { max-width: 996px; padding: 14px 26px; font: 400 74px/1.15 "MaShan"; background: #f5f4ee; color: #426d24; border-radius: 22px; }',
                 ))
                 continue
             if variant == matrix.REFERENCE_FEATURED_VARIANT:
@@ -1819,9 +1819,9 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 ))
                 continue
             styles.extend((
-                f".{variant} .top1 {{ font-size: 80px; }}",
+                f".{variant} .top1 {{ font-size: {86 if index in (6, 8) else 80}px; }}",
                 f".{variant} .top2 {{ font-size: 60px; }}",
-                f".{variant} .bottom2 {{ font-size: {80 if index == 4 else 70}px; }}",
+                f".{variant} .bottom2 {{ font-size: {80 if index == 4 else 82 if index == 15 else 70}px; }}",
             ))
             if index in top3_variants:
                 styles.append(f".{variant} .top3 {{ font-size: 50px; }}")
@@ -2055,7 +2055,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             )["semantic_layout"]["layers"]["bottom2"]["max_width_px"],
         )
         expected_widths = {
-            ("v01", "bottom2"): 848,
+            ("v01", "bottom2"): 944,
             ("v04", "top3"): 948,
             ("v05", "bottom2"): 862,
             ("v06", "bottom2"): 924,
@@ -2076,6 +2076,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             tuple(
                 self.service.reference_semantic_layouts["v05"][layer]["font_size_px"]
                 for layer in ("top1", "top2", "top3", "bottom2")
+            ),
+        )
+        self.assertEqual(
+            (86, 86, 82),
+            (
+                self.service.reference_semantic_layouts["v06"]["top1"][
+                    "font_size_px"
+                ],
+                self.service.reference_semantic_layouts["v08"]["top1"][
+                    "font_size_px"
+                ],
+                self.service.reference_semantic_layouts["v15"]["bottom2"][
+                    "font_size_px"
+                ],
             ),
         )
         for item in self.service.reference_templates.values():
@@ -2378,6 +2392,77 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertNotIn("组团\n队", matrix._balanced_title(
             "以前开店要组团队盯店熬到凌晨", 12, 3
         ))
+
+    def test_v09_bottom_layout_is_unchanged(self):
+        """锁定 v09 底部现有断句行为（本次修复不修改断句与排版）。"""
+        source, display = matrix._reference_text_layout(
+            "在成都高新区", "社交破圈｜认知提升｜彼此赋能", 2,
+        )
+        self.assertEqual(
+            "社交破圈｜认知提升｜彼此赋能",
+            source["bottom1"] + source["bottom2"],
+            "分行不得增删字符",
+        )
+        self.assertEqual(
+            ["社交破圈｜认知", "提升｜彼此赋能"],
+            [line for line in (display["bottom1"], display["bottom2"]) if line],
+        )
+
+    def test_v09_short_bottom_stays_single_line(self):
+        _source, display = matrix._reference_text_layout(
+            "在成都高新区", "彼此赋能", 2,
+        )
+        self.assertEqual("", display["bottom1"])
+        self.assertEqual("彼此赋能", display["bottom2"])
+
+    def test_reference_bottom_layout_acceptance_matrix(self):
+        """分隔符 / 无分隔符 / 带标点 / 接近上限 四类文案的排版验收。"""
+        samples = (
+            "社交破圈｜认知提升｜彼此赋能",
+            "想了解的评论区回复勾兑",
+            "大健康是长期需求，想入局的回复勾兑",
+            "社交破圈｜认知提升｜彼此赋能｜资源共享｜长期成长",
+        )
+        for text in samples:
+            with self.subTest(text=text):
+                source, display = matrix._reference_text_layout(
+                    "在成都高新区", text, 2,
+                )
+                self.assertEqual(
+                    text,
+                    source["bottom1"] + source["bottom2"],
+                    "分行不得增删字符",
+                )
+                lines = [
+                    line
+                    for line in (display["bottom1"], display["bottom2"])
+                    if line
+                ]
+                self.assertTrue(lines, text)
+                for line in lines:
+                    # ｜ 与句读不得孤立在行首/行尾
+                    self.assertFalse(line.startswith("｜"), line)
+                    self.assertFalse(line.endswith("｜"), line)
+                    self.assertNotIn(line[0], "，。！？；：、,.!?;:", line)
+                    # 不溢出宽度预算
+                    self.assertLessEqual(matrix._visual_width(line), 15, line)
+                    # 不得出现 1~2 个字的孤字行（仅当确实分了多行时）
+                    if len(lines) > 1:
+                        self.assertGreaterEqual(matrix._visual_width(line), 2.0, line)
+
+    def test_separator_copy_keeps_current_break_points(self):
+        """锁定 ｜ 文案的现有断点，确保后续改动不会无意间改掉它。"""
+        source, display = matrix._reference_text_layout(
+            "在成都高新区", "一起成长｜一起赚钱｜一起变美", 2,
+        )
+        self.assertEqual(
+            "一起成长｜一起赚钱｜一起变美",
+            source["bottom1"] + source["bottom2"],
+        )
+        self.assertEqual(
+            ["一起成长｜一起", "赚钱｜一起变美"],
+            [line for line in (display["bottom1"], display["bottom2"]) if line],
+        )
 
     def test_semantic_layers_preserve_english_and_mixed_spacing(self):
         samples = [
@@ -3848,6 +3933,61 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     )
                     self.assertEqual(bottom, reference["text"]["bottom2"])
 
+    def test_tight_reference_variants_accept_long_semantic_copy(self):
+        top = "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费"
+        bottom = "大健康是长期需求赛道 想入局的 评论区回复 勾兑"
+        layout = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": matrix._reference_semantic_source_sha256(
+                top, bottom,
+            ),
+            "top1_end": 11,
+            "top_break_after": [11, 17],
+            "bottom_break_after": [10, 15, 21],
+        }
+
+        def measured(value, metrics):
+            text = matrix._hide_reference_edge_punctuation(value)
+            size = int(metrics["font_size_px"])
+            glyphs = sum(0.35 if char.isspace() else 1 for char in text)
+            spacing = max(0, len(text) - 1) * size * float(
+                metrics.get("letter_spacing_em", 0.01)
+            )
+            return glyphs * size + spacing + 2 * int(
+                metrics.get("stroke_px") or 0
+            )
+
+        template_ids = {
+            item["variant"]: item["id"]
+            for item in self.service.reference_templates.values()
+        }
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=measured,
+        ):
+            for variant in ("v01", "v06", "v08", "v15"):
+                with self.subTest(variant=variant):
+                    payload = self.service.validate_payload({
+                        "top_text": top,
+                        "bottom_text": bottom,
+                        "template_id": template_ids[variant],
+                        "bgm": False,
+                        "semantic_layout": layout,
+                    })
+                    frozen = self.service._freeze_font_provenance(
+                        hashlib.sha256(variant.encode()).hexdigest()[:32],
+                        payload,
+                    )
+                    reference = frozen["_reference_template"]
+                    self.assertEqual(
+                        top,
+                        "".join(
+                            reference["text"][key]
+                            for key in ("top1", "top2", "top3")
+                        ),
+                    )
+                    self.assertEqual(bottom, reference["text"]["bottom2"])
+
     def test_semantic_number_tokens_match_all_supported_forms(self):
         for value, phrase in (
             ("团队8个人", "8个人"),
@@ -4184,6 +4324,15 @@ class NineGridTemplateTests(unittest.TestCase):
         self.bgm_hash_patch.stop()
         self.temp.cleanup()
 
+    def test_generated_text_never_shrinks_below_fifty_pixels(self):
+        for spec in (matrix.NINE_GRID_TOP_FONT, matrix.NINE_GRID_BOTTOM_FONT):
+            self.assertGreaterEqual(spec["minimum"], 50)
+            self.assertGreaterEqual(spec["maximum"], spec["minimum"])
+            self.assertGreaterEqual(
+                spec["height"] + 0.001,
+                spec["minimum"] * spec["line_height"] * spec["max_lines"],
+            )
+
     def _write_nine_grid_fixture(self, root: Path) -> None:
         (root / "assets/audio").mkdir(parents=True)
         (root / "assets/fonts").mkdir(parents=True)
@@ -4245,7 +4394,7 @@ class NineGridTemplateTests(unittest.TestCase):
             "text_layout": {
                 "mode": "semantic-then-width",
                 "semantic_layout_required": True,
-                "top_max_lines": 4, "bottom_max_lines": 4,
+                "top_max_lines": 4, "bottom_max_lines": 10,
                 "hide_edge_punctuation": True, "truncate": False,
             },
             "bgm": {
@@ -4602,6 +4751,25 @@ class FixedSkillTemplateTests(unittest.TestCase):
         self.config_patch.stop()
         self.temp.cleanup()
 
+    def test_generated_text_never_shrinks_below_fifty_pixels(self):
+        for template_id, config in self.configs.items():
+            with self.subTest(template_id=template_id):
+                self.assertTrue(all(
+                    item["font_size_px"] >= 50
+                    for item in config["semantic"].values()
+                ))
+                for field, spec in config["field_specs"].items():
+                    with self.subTest(field=field):
+                        self.assertGreaterEqual(spec["minimum"], 50)
+                        self.assertGreaterEqual(
+                            spec["maximum"], spec["minimum"],
+                        )
+                        self.assertGreaterEqual(
+                            spec["height"] + 0.001,
+                            spec["minimum"] * spec["line_height"]
+                            * spec["max_lines"],
+                        )
+
     def _write_template_fixture(self, template_id: str, root: Path) -> None:
         config = self.configs[template_id]
         (root / "assets/fonts").mkdir(parents=True)
@@ -4741,7 +4909,14 @@ class FixedSkillTemplateTests(unittest.TestCase):
     @staticmethod
     def text_width(value: str, metrics: dict) -> float:
         display = matrix._hide_reference_edge_punctuation(value)
-        return len(display) * int(metrics["font_size_px"])
+        size = int(metrics["font_size_px"])
+        spacing = max(0, len(display) - 1) * size * float(
+            metrics.get("letter_spacing_em", 0)
+        )
+        return (
+            len(display) * size + spacing
+            + 2 * int(metrics.get("stroke_px") or 0)
+        )
 
     def test_catalog_exposes_four_fixed_templates_after_existing_catalog(self):
         self.assertEqual(4, len(self.service.catalog))
@@ -4801,6 +4976,29 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     self.assertEqual(
                         bottom, contract["text"]["source"]["bottom_text"],
                     )
+                    self.assertTrue(all(
+                        size >= 50
+                        for size in contract["text"]["font_size_px"].values()
+                    ))
+                    for field, spec in self.configs[template_id][
+                        "field_specs"
+                    ].items():
+                        self.assertLessEqual(
+                            len([
+                                line for line in contract["text"]["display"][
+                                    field
+                                ].splitlines() if line
+                            ]),
+                            spec["max_lines"],
+                        )
+                    if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
+                        self.assertEqual(
+                            [5, 5],
+                            [
+                                len(contract["text"]["display"][field].splitlines())
+                                for field in ("ctaLine1", "ctaLine2")
+                            ],
+                        )
                     self.assertFalse(contract["bgm_enabled"])
                     self.assertEqual(
                         self.configs[template_id]["duration"],
@@ -5282,11 +5480,15 @@ class FixedSkillTemplateTests(unittest.TestCase):
                         matrix.subprocess, "Popen", return_value=Process(),
                     ) as popen, mock.patch.object(
                         self.service, "_validate_reference_visual_coverage",
-                    ):
+                    ) as visual_coverage:
                         values = self.service._render_fixed_skill_template(
                             payload, template_id.replace("-", "")[:32].ljust(32, "2"),
                             materials, paths, deadline_at=time.time() + 60,
                         )
+                    if template_id in matrix.MOTION_V2_TEMPLATE_IDS:
+                        visual_coverage.assert_not_called()
+                    else:
+                        visual_coverage.assert_called_once()
                     self.assertEqual(config["required_visuals"], len(prepared))
                     self.assertEqual(
                         list(zip(config["slot_frames"], durations)),
@@ -5305,9 +5507,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     )
                     self.assertIn('data-volume="0"', index_html)
                     self.assertIn('id="matrix-fixed-skill-copy"', index_html)
-                    if template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
+                    if template_id == matrix.TRIPLE_STRIP_TEMPLATE_ID:
+                        self.assertIn(
+                            ".title-box{top:8%!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".subtitle-box{top:424px!important;"
+                            "height:315px!important}", index_html,
+                        )
+                        self.assertIn(
+                            "bottom:15%!important;height:558px!important",
+                            index_html,
+                        )
+                    elif template_id == matrix.YELLOW_BANNER_TEMPLATE_ID:
                         self.assertNotIn("data-color-grading=", index_html)
                         self.assertIn("filter:blur(14px)", index_html)
+                        self.assertIn(".banner{top:8%!important}", index_html)
+                        self.assertIn(
+                            ".body-panel{top:1250px!important;"
+                            "height:260px!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".footer{top:auto!important;"
+                            "bottom:15%!important}", index_html,
+                        )
+                    else:
+                        self.assertIn(
+                            ".top,#copy-top{top:8%!important}", index_html,
+                        )
+                        self.assertIn(
+                            "#cta{bottom:15%!important}", index_html,
+                        )
 
 
 class PexelsMaterialRoutingTests(unittest.TestCase):

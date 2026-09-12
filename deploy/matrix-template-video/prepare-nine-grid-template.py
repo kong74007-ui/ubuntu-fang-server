@@ -13,9 +13,9 @@ from pathlib import Path
 TEMPLATE_ID = "nine-grid-reveal"
 STYLE_ID = "matrix-nine-grid-copy-layout"
 OVERRIDE_STYLE = f"""<style id="{STYLE_ID}">
-#headline{{left:54px;right:54px;top:154px;height:auto;min-height:116px;max-height:340px;gap:8px;text-align:center;font-size:var(--top-font-size,82px);line-height:1.08}}
+#headline{{left:54px;right:54px;top:8%;height:auto;min-height:116px;max-height:340px;gap:8px;text-align:center;font-size:var(--top-font-size,82px);line-height:1.08}}
 #top-text{{display:block;max-width:800px;white-space:pre;overflow-wrap:normal;word-break:keep-all;letter-spacing:0}}
-#tagline{{left:55px;right:55px;top:auto;bottom:220px;height:auto;max-height:250px;display:block;text-align:center;white-space:pre;overflow-wrap:normal;word-break:keep-all;font-size:var(--bottom-font-size,58px);line-height:1.12;letter-spacing:0}}
+#tagline{{left:55px;right:55px;top:auto;bottom:15%;height:auto;max-height:560px;display:block;text-align:center;white-space:pre;overflow-wrap:normal;word-break:keep-all;font-size:var(--bottom-font-size,58px);line-height:1.12;letter-spacing:0}}
 #main-video1{{will-change:filter}}
 </style>"""
 
@@ -71,7 +71,7 @@ def adapt(root: Path) -> None:
         "mode": "semantic-then-width",
         "semantic_layout_required": True,
         "top_max_lines": 4,
-        "bottom_max_lines": 4,
+        "bottom_max_lines": 10,
         "hide_edge_punctuation": True,
         "truncate": False,
     }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import hashlib
 import hmac
@@ -37,10 +38,15 @@ MAX_WAITING_JOBS = 20
 MAX_BATCH_SIZE = 5
 MATERIAL_SELECTION_CONTRACT_VERSION = 2
 MATERIAL_CLIP_CONTRACT_VERSION = 3
+PUBLIC_TEMPLATE_PALETTE_VERSION = "reference-palettes-v2"
+PUBLIC_TEMPLATE_PALETTE_COUNT = 20
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 5.0
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
+# 素材并行下载的并发数（2026-09-12）：素材请求互相独立，串行下一个等一个是纯浪费。
+MATERIAL_DOWNLOAD_WORKERS = max(1, min(16, int(os.environ.get(
+    "MATRIX_TEMPLATE_DOWNLOAD_WORKERS", "6"))))
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
 PEXELS_SEARCH_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -130,13 +136,13 @@ NINE_GRID_BOUND_BGM_SHA256 = (
 )
 NINE_GRID_TOP_FONT = {
     "file": "NotoSerifSC-Variable.ttf", "weight": 900,
-    "maximum": 82, "minimum": 46, "width": 800,
+    "maximum": 82, "minimum": 50, "width": 800,
     "height": 340, "line_height": 1.08, "max_lines": 4,
 }
 NINE_GRID_BOTTOM_FONT = {
     "file": "NotoSansSC-Variable.ttf", "weight": 900,
-    "maximum": 58, "minimum": 40, "width": 930,
-    "height": 250, "line_height": 1.12, "max_lines": 4,
+    "maximum": 58, "minimum": 50, "width": 930,
+    "height": 560, "line_height": 1.12, "max_lines": 10,
 }
 FIXED_SKILL_HYPERFRAMES_VERSION = "0.8.33"
 MOTION_V2_HYPERFRAMES_VERSION = "0.8.34"
@@ -182,15 +188,15 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.065,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 738,
-                "max_lines": 3, "stroke_px": 4,
+                "max_lines": 6, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 26,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 750, "max_width_px": 620,
-                "max_lines": 4, "stroke_px": 4,
+                "max_lines": 10, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -203,20 +209,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 78, "minimum": 38, "width": 738,
-                "height": 135, "line_height": 1.05, "max_lines": 3,
+                "maximum": 78, "minimum": 50, "width": 738,
+                "height": 315, "line_height": 1.05, "max_lines": 6,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "ctaLine1": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 69, "minimum": 26, "width": 620,
-                "height": 94, "line_height": 1.1, "max_lines": 2,
+                "maximum": 69, "minimum": 50, "width": 620,
+                "height": 275, "line_height": 1.1, "max_lines": 5,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "ctaLine2": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 69, "minimum": 26, "width": 620,
-                "height": 94, "line_height": 1.1, "max_lines": 2,
+                "maximum": 69, "minimum": 50, "width": 620,
+                "height": 275, "line_height": 1.1, "max_lines": 5,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
         },
@@ -251,19 +257,19 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "max_lines": 2,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 900,
                 "max_lines": 2, "stroke_px": 9,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 900,
                 "max_lines": 2, "stroke_px": 9,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 32,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 750, "max_width_px": 787,
-                "max_lines": 4,
+                "max_lines": 5,
             },
         },
         "field_specs": {
@@ -274,24 +280,24 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle1": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 63, "minimum": 38, "width": 900,
-                "height": 78, "line_height": 1.0, "max_lines": 2,
+                "maximum": 63, "minimum": 50, "width": 900,
+                "height": 100, "line_height": 1.0, "max_lines": 2,
                 "stroke_px": 9,
             },
             "subtitle2": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 63, "minimum": 38, "width": 900,
-                "height": 78, "line_height": 1.0, "max_lines": 2,
+                "maximum": 63, "minimum": 50, "width": 900,
+                "height": 100, "line_height": 1.0, "max_lines": 2,
                 "stroke_px": 9,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 750,
-                "maximum": 48, "minimum": 32, "width": 787,
-                "height": 173, "line_height": 1.15625, "max_lines": 3,
+                "maximum": 50, "minimum": 50, "width": 787,
+                "height": 230, "line_height": 1.15, "max_lines": 4,
             },
             "cta": {
                 "family": "Noto Serif SC", "weight": 700,
-                "maximum": 45, "minimum": 30, "width": 882,
+                "maximum": 50, "minimum": 50, "width": 882,
                 "height": 90, "line_height": 1.1, "max_lines": 1,
                 "stroke_px": 6,
             },
@@ -353,21 +359,21 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.025,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 46,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 42,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
-                "max_lines": 4, "stroke_px": 10,
+                "max_lines": 5, "stroke_px": 10,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -380,20 +386,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 82, "minimum": 46, "width": 996,
+                "maximum": 82, "minimum": 50, "width": 996,
                 "height": 184, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 62, "minimum": 38, "width": 996,
+                "maximum": 62, "minimum": 50, "width": 996,
                 "height": 140, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "cta": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 86, "minimum": 42, "width": 996,
-                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "maximum": 86, "minimum": 50, "width": 996,
+                "height": 290, "line_height": 1.16, "max_lines": 5,
                 "stroke_px": 10, "letter_spacing_em": -0.025,
             },
         },
@@ -438,21 +444,21 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "letter_spacing_em": -0.025,
             },
             "top2": {
-                "family": "Noto Sans SC", "font_size_px": 46,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "top3": {
-                "family": "Noto Sans SC", "font_size_px": 38,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
                 "max_lines": 2, "stroke_px": 4,
                 "letter_spacing_em": -0.025,
             },
             "bottom2": {
-                "family": "Noto Sans SC", "font_size_px": 42,
+                "family": "Noto Sans SC", "font_size_px": 50,
                 "font_weight": 900, "max_width_px": 996,
-                "max_lines": 4, "stroke_px": 10,
+                "max_lines": 5, "stroke_px": 10,
                 "letter_spacing_em": -0.025,
             },
         },
@@ -465,20 +471,20 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
             },
             "subtitle": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 82, "minimum": 46, "width": 996,
+                "maximum": 82, "minimum": 50, "width": 996,
                 "height": 184, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "body": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 62, "minimum": 38, "width": 996,
+                "maximum": 62, "minimum": 50, "width": 996,
                 "height": 140, "line_height": 1.12, "max_lines": 2,
                 "stroke_px": 4, "letter_spacing_em": -0.025,
             },
             "cta": {
                 "family": "Noto Sans SC", "weight": 900,
-                "maximum": 86, "minimum": 42, "width": 996,
-                "height": 220, "line_height": 1.16, "max_lines": 4,
+                "maximum": 86, "minimum": 50, "width": 996,
+                "height": 290, "line_height": 1.16, "max_lines": 5,
                 "stroke_px": 10, "letter_spacing_em": -0.025,
             },
         },
@@ -511,6 +517,7 @@ REFERENCE_V01_STYLE_CONTRACT = {
     ),
     "bottom2": (
         'font:40074px/1.15"mashan"',
+        "max-width:996px",
         "background:#f5f4ee",
         "color:#426d24",
         "border-radius:22px",
@@ -626,6 +633,10 @@ REFERENCE_BGM_SOURCE_RE = re.compile(
     r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
+# Pexels 的 duration 是**整数秒的元数据**，而渲染校验用 ffprobe 读**真实时长**；
+# 真实值可能比元数据少最多 1 秒。取素材时若只留 0.1 秒余量，起点一旦落在尾部就会
+# 偶发「固定 Skill 模板素材时长不足」（2026-09-12 定位，两次失败都在这条路径上）。
+PEXELS_METADATA_DURATION_SLACK_SECONDS = 1.0
 REFERENCE_MIN_SEGMENT_SECONDS = 2.0
 REFERENCE_MAX_SEGMENT_SECONDS = 3.0
 REFERENCE_VIDEO_IDS = ("videoA", "videoB", "videoC", "videoD", "videoE")
@@ -947,6 +958,67 @@ def _reference_css_layer_metrics(
         "letter_spacing_em": letter_spacing,
         "max_width_px": int(max_width),
         "max_lines": int(max_lines),
+    }
+
+
+def _reference_variant_has_layer(
+    index_html: str, variant: str, layer: str,
+) -> bool:
+    """True when the template's own CSS declares the layer for the variant.
+
+    The service and the installer's post-palette compatibility gate both use
+    this single predicate, so an injected overlay can never shadow detection.
+    """
+    return bool(re.search(
+        rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
+        index_html,
+    ))
+
+
+def _reference_variant_layer_plan(
+    index_html: str, variant: str,
+) -> tuple[int, list[str]]:
+    if variant == REFERENCE_V07_VARIANT:
+        return 4, ["top1", "top2", "top3", "bottom1"]
+    top_layer_count = 3 if _reference_variant_has_layer(
+        index_html, variant, "top3",
+    ) else 2
+    return top_layer_count, ["top1", "top2"] + (
+        ["top3"] if top_layer_count == 3 else []
+    )
+
+
+def reference_pack_layer_audit(index_html: str) -> dict:
+    """Re-parse the reference pack exactly like the service does.
+
+    Returns the template count, the top-layer-count histogram and every present
+    layer's parsed ``font_size_px``. Raises if any layer is missing or its size
+    cannot be parsed, so the installer can fail before switching the release.
+    """
+    histogram = {"2": 0, "3": 0, "4": 0}
+    font_sizes: dict[str, int] = {}
+    for index in range(1, REFERENCE_TEMPLATE_COUNT + 1):
+        variant = f"v{index:02d}"
+        if not all(
+            _reference_variant_has_layer(index_html, variant, layer)
+            for layer in ("top1", "top2")
+        ):
+            raise MatrixTemplateError(
+                "HyperFrames reference template top layer styles are incomplete"
+            )
+        top_layer_count, top_layers = _reference_variant_layer_plan(
+            index_html, variant,
+        )
+        histogram[str(top_layer_count)] += 1
+        for layer in top_layers + ["bottom2"]:
+            metrics = _reference_css_layer_metrics(
+                index_html, variant, layer, 2,
+            )
+            font_sizes[f"{variant}.{layer}"] = int(metrics["font_size_px"])
+    return {
+        "templates": REFERENCE_TEMPLATE_COUNT,
+        "top_layer_counts": histogram,
+        "font_sizes": font_sizes,
     }
 
 
@@ -2586,10 +2658,7 @@ class MatrixTemplateService:
             )
 
         def has_variant_layer(variant: str, layer: str) -> bool:
-            return bool(re.search(
-                rf"\.{re.escape(variant)}\s+\.{re.escape(layer)}\s*(?:,|\{{)",
-                index_html,
-            ))
+            return _reference_variant_has_layer(index_html, variant, layer)
 
         def variant_layer_matches_contract(
             variant: str, layer: str, required: tuple[str, ...]
@@ -2629,10 +2698,9 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "HyperFrames reference template top layer styles are incomplete"
                 )
-            if variant == REFERENCE_V07_VARIANT:
-                top_layer_count = 4
-            else:
-                top_layer_count = 3 if has_variant_layer(variant, "top3") else 2
+            top_layer_count, top_layers = _reference_variant_layer_plan(
+                index_html, variant,
+            )
             fixed_private_fonts = REFERENCE_FIXED_PRIVATE_FONTS.get(variant, {})
             for layer, font in fixed_private_fonts.items():
                 font_size_px = (
@@ -2700,12 +2768,6 @@ class MatrixTemplateService:
                     for layer, font in fixed_private_fonts.items()
                 },
             }
-            if variant == REFERENCE_V07_VARIANT:
-                top_layers = ["top1", "top2", "top3", "bottom1"]
-            else:
-                top_layers = ["top1", "top2"] + (
-                    ["top3"] if top_layer_count == 3 else []
-                )
             semantic_contract = {}
             for layer in top_layers + ["bottom2"]:
                 if variant == REFERENCE_V07_VARIANT:
@@ -2828,7 +2890,7 @@ class MatrixTemplateService:
             or layout.get("mode") != "semantic-then-width"
             or layout.get("semantic_layout_required") is not True
             or layout.get("top_max_lines") != 4
-            or layout.get("bottom_max_lines") != 4
+            or layout.get("bottom_max_lines") != 10
             or layout.get("hide_edge_punctuation") is not True
             or layout.get("truncate") is not False
         ):
@@ -3436,7 +3498,7 @@ class MatrixTemplateService:
         if not bottom_lines:
             raise ValueError("底部行动文案无法在完整语义边界内排入模板")
         if template_id == TRIPLE_STRIP_TEMPLATE_ID:
-            split = min(2, max(1, math.ceil(len(bottom_lines) / 2)))
+            split = max(1, math.ceil(len(bottom_lines) / 2))
             fields = {
                 "title": display_text["top1"],
                 "subtitle": display_text["top2"],
@@ -4280,6 +4342,8 @@ class MatrixTemplateService:
                 item["variant"] for item in self.reference_templates.values()
                 if item.get("semantic_layout")
             ),
+            "public_template_palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
+            "public_template_palette_count": PUBLIC_TEMPLATE_PALETTE_COUNT,
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,
@@ -4621,7 +4685,10 @@ class MatrixTemplateService:
                 source_id = hashlib.sha256(
                     f"pexels:video:{video['id']}:file:{file.get('id')}".encode("utf-8")
                 ).hexdigest()
-                if source_id in used or source_duration + 0.001 < required_duration + 0.1:
+                if source_id in used or source_duration + 0.001 < (
+                    required_duration + REFERENCE_MEDIA_SAFETY_SECONDS
+                    + PEXELS_METADATA_DURATION_SLACK_SECONDS
+                ):
                     continue
                 eligible.append((video, file, source_duration, query, source_id))
             if not eligible:
@@ -4630,7 +4697,9 @@ class MatrixTemplateService:
                 f"{job_id}:{scene['scene_id']}:{position}:{item[4]}".encode("utf-8")
             ).hexdigest())
             video, file, source_duration, query, source_id = ranked[0]
-            max_start = max(0.0, source_duration - required_duration - 0.1)
+            max_start = max(0.0, source_duration - required_duration
+                           - REFERENCE_MEDIA_SAFETY_SECONDS
+                           - PEXELS_METADATA_DURATION_SLACK_SECONDS)
             start_digest = hashlib.sha256(
                 f"{job_id}:{scene['scene_id']}:{source_id}:start".encode("utf-8")
             ).digest()
@@ -5773,6 +5842,11 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#ctaLine1,#ctaLine2{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+.title-box{{top:8%!important}}
+.underline{{top:376px!important}}
+.subtitle-box{{top:424px!important;height:315px!important}}
+.footer{{top:auto!important;bottom:15%!important;height:558px!important}}
+.footer-row{{height:275px!important}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1!important}}
 #subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.05!important}}
 #ctaLine1{{font-size:{sizes["ctaLine1"]}px!important;line-height:1.1!important}}
@@ -5789,17 +5863,23 @@ class MatrixTemplateService:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty,#sourceLabel:empty,.body-panel:has(#body:empty),.footer:has(#cta:empty){{display:none!important}}
 .background{{filter:blur(14px)!important;transform:scale(1.08)!important}}
+.banner{{top:8%!important}}
+.subtitles{{top:313px!important;height:200px!important}}
+.body-panel{{top:1250px!important;height:260px!important}}
+.footer{{top:auto!important;bottom:15%!important}}
 #title,#subtitle1,#subtitle2,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1.05!important}}
 #subtitle1{{font-size:{sizes["subtitle1"]}px!important;line-height:1!important}}
 #subtitle2{{font-size:{sizes["subtitle2"]}px!important;line-height:1!important}}
-#body{{font-size:{sizes["body"]}px!important;line-height:1.15625!important}}
+#body{{font-size:{sizes["body"]}px!important;line-height:1.15!important}}
 #cta{{font-size:{sizes["cta"]}px!important;line-height:1.1!important}}
 </style>'''
         elif template_id in MOTION_V2_TEMPLATE_IDS:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+.top,#copy-top{{top:8%!important}}
+#cta{{bottom:15%!important}}
 #title{{font-size:{sizes["title"]}px!important;line-height:1.12!important}}
 #subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.12!important}}
 #body{{font-size:{sizes["body"]}px!important;line-height:1.12!important}}
@@ -6128,9 +6208,10 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
-            self._validate_reference_visual_coverage(
-                output, timeout_seconds=min(120.0, remaining),
-            )
+            if template_id not in MOTION_V2_TEMPLATE_IDS:
+                self._validate_reference_visual_coverage(
+                    output, timeout_seconds=min(120.0, remaining),
+                )
         finally:
             self.hyperframes_slots.release()
         return {
@@ -6654,6 +6735,7 @@ class MatrixTemplateService:
         return manifest
 
     def _execute(self, job_id: str) -> dict:
+        _t0 = time.monotonic()
         row = self.store.get(job_id)
         payload = json.loads(row["payload"])
         root = self.data_root / job_id
@@ -6661,7 +6743,27 @@ class MatrixTemplateService:
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
-        paths = [self._download(item, assets, job_id) for item in materials]
+        _t_sel = time.monotonic() - _t0
+        # 素材并行下载（2026-09-12）：这些请求互相独立，串行下一个等一个是纯浪费。
+        # 实测固定 Skill 模板卡在这一步 90~160 秒 —— 期间机器 CPU 全程为 0、
+        # chrome/ffmpeg 都没起，纯粹在等网络；而真正渲染只要 44~80 秒。
+        # 也就是说「出片 3 分钟」里有 2/3 是排队等素材，不是算得慢。
+        # pool.map 保序，异常照常抛出；_download 各自写独立文件、Pexels 缓存自带锁。
+        def _fetch(item):
+            return self._download(item, assets, job_id)
+
+        if len(materials) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(materials), MATERIAL_DOWNLOAD_WORKERS)
+            ) as _pool:
+                paths = list(_pool.map(_fetch, materials))
+        else:
+            paths = [_fetch(item) for item in materials]
+        # 分段耗时（2026-09-12）：出片慢要先分清是"等素材"还是"渲染算得慢"。
+        # 渲染时长 = 任务总时长 − 选素材 − 下载（总时长在 job 记录里）。
+        print("[matrix-template] 分段 选素材%.1fs 下载%.1fs 模板=%s 素材%d格"
+              % (_t_sel, time.monotonic() - _t0 - _t_sel,
+                 payload.get("template_id"), len(materials)), flush=True)
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         nine_grid_template = payload["template_id"] == NINE_GRID_TEMPLATE_ID
@@ -6893,7 +6995,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/templates":
             self.send_json(200, {
-                "templates": self.service.catalog,
+                "templates": [
+                    {**item, "palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION}
+                    for item in self.service.catalog
+                ],
                 "default_template": self.service.default_template_id,
                 "fonts": self.service.public_fonts(),
                 "default_font": "",

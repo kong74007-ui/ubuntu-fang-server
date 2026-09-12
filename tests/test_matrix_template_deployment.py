@@ -25,8 +25,8 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('NINE_GRID_HYPERFRAMES_VERSION="0.8.33"', installer)
         self.assertIn('GSAP_VERSION="3.14.2"', installer)
         self.assertIn('LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"', installer)
-        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5"', installer)
-        self.assertIn('NINE_GRID_ADAPTER_SHA256="b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd"', installer)
+        self.assertIn('REFERENCE_LAYOUT_PATCH_SHA256="d3be213c1dec22309c5a500f6813b9bf20fac21f83219a12d32da0ca7d37dc03"', installer)
+        self.assertIn('NINE_GRID_ADAPTER_SHA256="7623d6d9e954af95096e077f91c626bc9d856549257c2e42c0d8e83ef326a395"', installer)
         self.assertIn('NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"', installer)
         self.assertIn('NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"', installer)
         self.assertIn(
@@ -186,7 +186,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
     def test_nine_grid_adapter_rewrites_copy_and_fullscreen_contract(self):
         path = ROOT / "deploy/matrix-template-video/prepare-nine-grid-template.py"
         self.assertEqual(
-            "b0b60138b6d51d8b1fa672f9552dae1fbc3c96e387de2a072e6cf7eb655b75cd",
+            "7623d6d9e954af95096e077f91c626bc9d856549257c2e42c0d8e83ef326a395",
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         spec = importlib.util.spec_from_file_location(
@@ -254,6 +254,11 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
             self.assertIn('data-var-text="top_text"', index)
             self.assertIn('data-var-text="bottom_text"', index)
             self.assertIn('id="matrix-nine-grid-copy-layout"', index)
+            self.assertIn("#headline{left:54px;right:54px;top:8%;", index)
+            self.assertIn(
+                "#tagline{left:55px;right:55px;top:auto;bottom:15%;",
+                index,
+            )
             self.assertEqual(3, index.count('data-media-start="0"'))
             self.assertNotIn("data-color-grading", index)
             self.assertNotIn("--hf-color-grading-blur", index)
@@ -266,7 +271,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         patch = patch_path.read_text(encoding="utf-8")
         self.assertEqual(
-            "90454262ac629a38554a2b0155eab498c7d117289d8f2d5c4c001c526d18b5e5",
+            "d3be213c1dec22309c5a500f6813b9bf20fac21f83219a12d32da0ca7d37dc03",
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
         )
         self.assertIn(
@@ -281,6 +286,10 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("font-size: 52px;", patch)
         self.assertIn('font: 400 56px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 74px/1.15 "MaShan";', patch)
+        self.assertIn("max-width: 996px;", patch)
+        self.assertIn(".v06 .top1 { font-size: 86px;", patch)
+        self.assertIn(".v08 .top1 { font-size: 86px;", patch)
+        self.assertIn(".v15 .bottom2 { font-size: 82px;", patch)
         self.assertIn(
             '.v04 .bottom2 { font-size: 80px; font-weight: 900;', patch,
         )
@@ -290,6 +299,9 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         )
         self.assertIn("#root .top { top: 8%; }", patch)
         self.assertIn('font: 400 88px/1.08 "MaShan";', patch)
+        self.assertIn('.v09 .top2 { font-size: 62px;', patch)
+        self.assertIn('font: 400 72px/1.05 "MaShan";', patch)
+        self.assertIn('font: 400 78px/1.05 "MaShan";', patch)
         self.assertIn('font: 400 85px/1.02 "XiaoWei";', patch)
         self.assertIn('font-size: 65px; font-weight: 800;', patch)
         self.assertIn(
