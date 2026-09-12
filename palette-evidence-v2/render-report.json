@@ -1,0 +1,102 @@
+{
+  "manifest": "/tmp/pipeline_manifest.json",
+  "rendered": [
+    {
+      "template": "ref-06-guangzhou-yellow-button",
+      "phase": "before",
+      "file": "v06-before.mp4",
+      "duration": 13.0,
+      "size": 200936,
+      "keyframes": [
+        "v06-before-k0.png",
+        "v06-before-k1.png",
+        "v06-before-k2.png"
+      ]
+    },
+    {
+      "template": "ref-06-guangzhou-yellow-button",
+      "phase": "after",
+      "file": "v06-after.mp4",
+      "duration": 13.0,
+      "size": 222253,
+      "keyframes": [
+        "v06-after-k0.png",
+        "v06-after-k1.png",
+        "v06-after-k2.png"
+      ]
+    },
+    {
+      "template": "ref-09-urumqi-soft-brush",
+      "phase": "before",
+      "file": "v09-before.mp4",
+      "duration": 9.0,
+      "size": 233396,
+      "keyframes": [
+        "v09-before-k0.png",
+        "v09-before-k1.png",
+        "v09-before-k2.png"
+      ]
+    },
+    {
+      "template": "ref-09-urumqi-soft-brush",
+      "phase": "after",
+      "file": "v09-after.mp4",
+      "duration": 9.0,
+      "size": 267427,
+      "keyframes": [
+        "v09-after-k0.png",
+        "v09-after-k1.png",
+        "v09-after-k2.png"
+      ]
+    },
+    {
+      "template": "ref-14-karamay-green",
+      "phase": "before",
+      "file": "v14-before.mp4",
+      "duration": 10.0,
+      "size": 154308,
+      "keyframes": [
+        "v14-before-k0.png",
+        "v14-before-k1.png",
+        "v14-before-k2.png"
+      ]
+    },
+    {
+      "template": "ref-14-karamay-green",
+      "phase": "after",
+      "file": "v14-after.mp4",
+      "duration": 10.0,
+      "size": 164341,
+      "keyframes": [
+        "v14-after-k0.png",
+        "v14-after-k1.png",
+        "v14-after-k2.png"
+      ]
+    },
+    {
+      "template": "ref-17-shenzhen-yellow-red",
+      "phase": "before",
+      "file": "v17-before.mp4",
+      "duration": 10.0,
+      "size": 206523,
+      "keyframes": [
+        "v17-before-k0.png",
+        "v17-before-k1.png",
+        "v17-before-k2.png"
+      ]
+    },
+    {
+      "template": "ref-17-shenzhen-yellow-red",
+      "phase": "after",
+      "file": "v17-after.mp4",
+      "duration": 10.0,
+      "size": 282577,
+      "keyframes": [
+        "v17-after-k0.png",
+        "v17-after-k1.png",
+        "v17-after-k2.png"
+      ]
+    }
+  ],
+  "failed": []
+}

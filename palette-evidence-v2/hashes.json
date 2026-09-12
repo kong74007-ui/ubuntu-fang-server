@@ -1,0 +1,84 @@
+{
+  "head_sha": "487851363f369f40f1e31b97730d25b421db285b",
+  "base_sha": "029fd5e0f7a50d8d2e31ce082fffebb6d2f7e0cc",
+  "packs": {
+    "before": {
+      "overlay": "matrix-public-template-palettes-v1",
+      "reference_index_sha256": "721ec3a7b4b31b38c8ab36447b946d722c4623f185e3d89581330a9c5834885e"
+    },
+    "after": {
+      "overlay": "matrix-public-template-palettes-v2",
+      "reference_index_sha256": "d98fec09b243b1ef4a2b1935bb9bdc80094c0e578e59b7e9de304119ea55dc39"
+    }
+  },
+  "input": {
+    "manifest_before_sha256": "894b61477d3a05e9cf8b4d4abe31c26fd70c209e8ae21885679958bea0ca604c",
+    "manifest_after_sha256": "40bd61cae9b9a70b5cd369c1275414b15d13f75577237a1c8f951210c6642e11",
+    "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
+    "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
+    "semantic_layout": {
+      "version": 1,
+      "model": "gpt-4.1-mini",
+      "source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+      "top1_end": 11,
+      "top_break_after": [
+        11,
+        17
+      ],
+      "bottom_break_after": [
+        10,
+        15,
+        21
+      ]
+    },
+    "payload_source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+    "accept_raw_input_sha256": "c98ec19f2c31c1c7f627c0655aab989bf47ca0116b03fca1369b3f38f6a342d6"
+  },
+  "render": {
+    "hyperframes": "0.8.16",
+    "browser": "/usr/bin/google-chrome-stable",
+    "quality": "draft",
+    "workers": 1
+  },
+  "scripts": {
+    "pipeline_manifest.py": "9ca5c53926554c605c21373aaddeaa51e341cd6b91a81da5e380585c6a676f47",
+    "render_evidence.py": "4e9db69067b50814b8f6dc0154c32a5ca43fe829713e120e55ce84fed28ee17b"
+  },
+  "outputs": {
+    "mp4": {
+      "v06-after.mp4": "ad87663cda7700c0d7e16adb88df844c89655d60b1386cdad0b8914d1cc0de57",
+      "v06-before.mp4": "99e02f66135e0dee1a3e305d1baabc33bebe5384b60c96b4b68400156b9572fe",
+      "v09-before.mp4": "7231752e0589b644b96f9a06a70bb6c6fc63c59bfcb75cfc8f57cc68010898d4",
+      "v14-after.mp4": "519cb53d58c1229cca60f31fdeabd5c4296c1211a6cea5706283f4d0938b3b7b",
+      "v14-before.mp4": "ce366dd5c2f4a310dcda583352405576a51909393f0c73e6c3f82f23b89f5fde",
+      "v17-after.mp4": "579231dce25b9610775d92256ef131961864fdaf6ea2a36c2da75f895656f735",
+      "v17-before.mp4": "fa47c9ea85c6ebfb1bf1b04bc56ee300721da92510fe23314a4bf3425d29c2fa"
+    },
+    "frames": {
+      "v06-after-k0.png": "99a5dbbb6aaef497a6e060acba1d72a6baa3df3873f3b8f9a8fa808cc3435d2d",
+      "v06-after-k1.png": "04874873beca1b823336ea450ec8cab2790f9d3f9d564e74a96c148d68e6e4f7",
+      "v06-after-k2.png": "46a9f334c206bdeb6427233800995c11421d6d6bed9728e271cc46b2f4b68985",
+      "v06-before-k0.png": "45ce35e47002e69307ac151043d7aaff4e827264de48ce0dc543cc08bf2b7716",
+      "v06-before-k1.png": "e50466d9219c542b0fd2ce4650f3b07ffa2d025ec327ab8926623df575d91841",
+      "v06-before-k2.png": "857e593aee437952dbf30ff88211eed7b557db3ef2a29481378e0a15006dbb4a",
+      "v09-before-k0.png": "343306f7ed64f0ba946dbb5f28e079b4f5d676e8da4b75e4979d9c86848a132b",
+      "v09-before-k1.png": "7f56f64c3755ac344f499ac45aacfbed303ec0cda0aecab3f18528fc4287f4f1",
+      "v09-before-k2.png": "83ddde41f599dbcdadc3058819d861aa919801b84d5ded70fa71d1ab9a965ab1",
+      "v14-after-k0.png": "d99b08aa88380f98458ecc7a41792f8e09674a1ece80cd00a9c33cbdc030c00c",
+      "v14-after-k1.png": "76343091897f9d79221a7b3f68261860cb245ad35d610d80e5ead4b8ce083fd0",
+      "v14-after-k2.png": "cc84d6b0b774ae9d3d673184b7fe5419ba330310e01c43603026b18441e22d28",
+      "v14-before-k0.png": "4fae2fb688dcea01a99283747ed6c26e8ce5e310601edd5f08915183160eadb1",
+      "v14-before-k1.png": "9c003341d7c9bf6ddede5d624c7a5dcf500a27561b50504bf80084f1975e27ba",
+      "v14-before-k2.png": "02d74fa21a25fb6c97e5eb3aa07485cba0e9f5dd40172d1c14444197530889f0",
+      "v17-after-k0.png": "23ba9002bef23c95d6bd813e3d7745583cbee4dd9903d2bd6aaf7da4317d4d26",
+      "v17-after-k1.png": "399fb406a9099ff175316338bc8f9ccda997143a3bea836e2ffcb508ea5458ad",
+      "v17-after-k2.png": "6101bd706d71b3a1aa894e6866b591a4634311ea0d781022772efa7e333ce59a",
+      "v17-before-k0.png": "aa5dc97e2ce2d8a72feac8284b17548d79d58c16169e9f2a794436b03c0f4506",
+      "v17-before-k1.png": "5ec28e09420daab991fef91d3b474fd5844a0ba87967f80dc50097c10682e6de",
+      "v17-before-k2.png": "2a6bf53ab411db5be7aff0b7616f59fa9986ae4b58e21caf7b11010fbc7211fb"
+    },
+    "OVERVIEW-1-before-after.png": "0a8c5995c26510995afc285cbe9cc77aa76c050924c7681165c0bae93a064cdb",
+    "OVERVIEW-2-keyframes-after.png": "65a54436f44cd3871a7d72a84e43756ddc41e1d26b57e0e46965861995e7a8c4",
+    "render-report.json": "8f38e8328dfccf7c099ec6c69b8abd53b7e9bb9d7d7ac6dc7c57e1f79ce8c6d3"
+  }
+}
