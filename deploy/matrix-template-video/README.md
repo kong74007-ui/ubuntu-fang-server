@@ -9,18 +9,16 @@ The runtime exposes 22 templates: the 17-template
 `reference-typography-17` HyperFrames pack, the nine-grid
 template, and four fixed motion templates:
 `triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`, and
-`brush-panel-transitions`.
-templates. The 17 reference templates use three to five distinct video assets,
-keeping every selected material clip between two and three seconds. A
-three-clip reference output takes its
-opening clip from the approved Huangque library and its two remaining clips
-from the Pexels China-oriented search pool. Four- and five-clip outputs take
-their opening and closing clips from Huangque and all middle clips from Pexels.
-Nine-grid and triple-strip keep Huangque bookends and use Pexels for middle
-slots. Yellow-banner uses Huangque for its first slot and Pexels for the other
-two. Fan-whip and brush-panel use Huangque for the first, last, and one
-job-stable middle slot; all remaining slots use Pexels. Without a configured
-Pexels key, every slot falls back to the approved Huangque library. Reference
+`brush-panel-transitions`. The 17 reference templates use three to five
+distinct video assets, keeping every selected material clip between two and
+three seconds. Every
+visual slot of every template — reference, nine-grid, and the four fixed
+templates — is supplied by the local Huangque material library (Huangque
+library plus public library, 816 records) over the tunnel at `127.0.0.1:8111`.
+The Pexels public-network path was removed on 2026-09-12 (boss decision: no
+more public-network material sourcing); the old `_download_pexels` code remains
+only to finish already-frozen legacy jobs.
+Reference
 templates render with HyperFrames `0.8.16`; the first three motion templates
 use the locked `0.8.33` runtime and the two new templates use a separate
 lockfile-pinned `0.8.34` runtime.
@@ -29,12 +27,11 @@ Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these public templates.
 
 Every new request carries a server-owned `material_policy`. `shared` keeps the
-existing authorized developer/tester routing across the Huangque library and
-Pexels. `owned_public` is the ordinary-customer policy: uploaded user assets
-are used first in order, every missing slot uses Pexels, and zero uploads use
-Pexels for every slot. The shared Huangque/Yuelei library is never queried.
-Shared-library BGM is rejected in
-that mode; template-bound BGM remains available. Missing user assets, Pexels,
+existing authorized developer/tester routing across the Huangque library.
+`owned_public` is the ordinary-customer policy: uploaded user assets are used
+first in order, and every remaining slot — visuals and BGM alike — is filled
+from the local material library. Zero uploads use the library for every slot.
+Template-bound BGM remains available for bound templates. Missing user assets
 or an invalid policy fails before a job is admitted. Jobs created before this
 field existed replay with the legacy shared policy.
 HyperFrames templates accept batches of up to five outputs. Two renders occupy
@@ -147,25 +144,17 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 `MATRIX_TEMPLATE_DELIVERY_GRACE_SECONDS`, `MATRIX_TEMPLATE_CLEANUP_INTERVAL_SECONDS`,
 `MATRIX_TEMPLATE_CLEANUP_BATCH_SIZE`, and `MATRIX_TEMPLATE_DISK_HIGH_WATER_PERCENT`.
 
-## Hybrid material routing and batch diversity
+## Material routing and batch diversity
 
 Output duration is frozen between 7 and 15 seconds. It produces three to five
-clips and never produces a sixth clip. Pexels requests use a fixed Chinese
-scene-query bank with `locale=zh-CN`, `orientation=portrait`, and `size=medium`.
-Pexels does not expose a capture-country field, so this is a China-oriented
-best-effort search policy rather than a country guarantee. It does not inspect
-frames or use AI matching. To enable Pexels, configure the optional credential
-only in `/etc/huangque/pexels.env` as `PEXELS_API_KEY`; never commit it. Without
-that file or key, every visual slot uses the approved Huangque library. Search
-responses are cached for 24 hours to respect provider limits. Completed job
-provenance includes the Pexels video/file ids, contributor and source URLs,
-query, stable source identity, and downloaded content SHA-256 for attribution
-and audit.
+clips and never produces a sixth clip. All visuals and BGM come from the local
+Huangque material library; there is no Pexels credential and no public-network
+search path anymore (2026-09-12). Completed job provenance includes the library
+record ids and downloaded content SHA-256 for attribution and audit.
 
 Matrix template jobs request `selection_mode=round_robin` for every Huangque
-visual and BGM scene. Copy relevance does not affect Huangque ranking. The
-Pexels middle-clip pool uses a stable job seed over the China-oriented search
-response and also ignores the customer copy. Source-scene and exact-asset
+visual and BGM scene. Copy relevance does not affect Huangque ranking.
+Source-scene and exact-asset
 cooldowns rotate healthy Huangque assets before count and stable-seed
 tie-breaking. The Huangque material library persists selection counts and clip
 windows before returning and verifies selected files against the approved

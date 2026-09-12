@@ -28,7 +28,6 @@ RELEASES_DIR="${RUNTIME_ROOT}/releases"
 STATE_ROOT="/var/lib/huangque-matrix-template"
 PRIVATE_FONT_ROOT="${STATE_ROOT}/private-fonts"
 ENV_FILE="/etc/huangque/matrix-template.env"
-PEXELS_ENV_FILE="/etc/huangque/pexels.env"
 UNIT_SOURCE="${DEPLOY_ROOT}/deploy/systemd/huangque-matrix-template.service"
 UNIT_TARGET="/etc/systemd/system/huangque-matrix-template.service"
 API_SOURCE="${DEPLOY_ROOT}/server/matrix_template_api.py"
@@ -101,15 +100,6 @@ for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFER
 done
 if [[ ! -f /etc/huangque/pixelle-material-library.env || -L /etc/huangque/pixelle-material-library.env ]]; then
   echo "material library client environment is missing" >&2; exit 2
-fi
-if [[ -e "${PEXELS_ENV_FILE}" ]] && {
-  [[ ! -f "${PEXELS_ENV_FILE}" ]] || [[ -L "${PEXELS_ENV_FILE}" ]] ||
-  [[ "$(stat -c '%U:%G' "${PEXELS_ENV_FILE}")" != "root:admin" ]] ||
-  [[ "$(stat -c '%a' "${PEXELS_ENV_FILE}")" != "640" ]] ||
-  ! grep -Eq '^PEXELS_API_KEY=[A-Za-z0-9_-]+$' "${PEXELS_ENV_FILE}";
-}; then
-  echo "${PEXELS_ENV_FILE}, when present, must contain PEXELS_API_KEY and be root:admin mode 640" >&2
-  exit 2
 fi
 source "${ROLLBACK_LIB}"
 systemctl is-active --quiet "${SERVICE}" && WAS_ACTIVE=1 || true
@@ -629,7 +619,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and type(d.get("pexels_material_ready")) is bool and d.get("pexels_material_optional") is True and d.get("material_source_policy")=="huangque-bookends-extra-middle-pexels-v2" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

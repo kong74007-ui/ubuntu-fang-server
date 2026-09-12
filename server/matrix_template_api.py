@@ -51,11 +51,7 @@ MATERIAL_DOWNLOAD_WORKERS = max(1, min(16, int(os.environ.get(
 # 占了「渲染 82 秒」里的一大半。它们互相独立 —— 并行切（2026-09-12）。
 SLOT_CUT_WORKERS = max(1, min(8, int(os.environ.get(
     "MATRIX_TEMPLATE_SLOT_CUT_WORKERS", "4"))))
-PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
-PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
-PEXELS_SEARCH_RESPONSE_BYTES = 4 * 1024 * 1024
-PEXELS_SEARCH_PER_PAGE = 80
-# Pexels 素材下载：单次尝试的总时长上限 + 重试次数（2026-09-12）。
+# 素材下载：单次尝试的总时长上限 + 重试次数（2026-09-12）。
 # timeout=180 只管「每次读」，一个卡死或细水长流的连接能烧掉 180~313 秒再失败，
 # 整条任务跟着报废（实测 fang 的出口只有 128 KB/s、节点约 1 MB/s 且会间歇卡死）。
 # 卡顿多是连接级的 —— 换个连接通常就恢复，所以按「单次限时 + 重试」来，而不是死等。
@@ -63,11 +59,6 @@ PEXELS_DOWNLOAD_ATTEMPT_SECONDS = max(10, min(180, int(os.environ.get(
     "MATRIX_TEMPLATE_PEXELS_ATTEMPT_SECONDS", "45"))))
 PEXELS_DOWNLOAD_ATTEMPTS = max(1, min(5, int(os.environ.get(
     "MATRIX_TEMPLATE_PEXELS_ATTEMPTS", "3"))))
-PEXELS_CHINA_QUERIES = (
-    "中国城市生活", "中国商务团队", "中国女性聚会", "中国办公室",
-    "中国创业者", "中国社交活动", "中国健康生活", "中国商业交流",
-    "中国餐厅聚会", "中国都市女性",
-)
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 NINE_GRID_PREPARE_CLIP_TIMEOUT_SECONDS = 120
@@ -645,10 +636,6 @@ REFERENCE_BGM_SOURCE_RE = re.compile(
     r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
-# Pexels 的 duration 是**整数秒的元数据**，而渲染校验用 ffprobe 读**真实时长**；
-# 真实值可能比元数据少最多 1 秒。取素材时若只留 0.1 秒余量，起点一旦落在尾部就会
-# 偶发「固定 Skill 模板素材时长不足」（2026-09-12 定位，两次失败都在这条路径上）。
-PEXELS_METADATA_DURATION_SLACK_SECONDS = 1.0
 REFERENCE_MIN_SEGMENT_SECONDS = 2.0
 REFERENCE_MAX_SEGMENT_SECONDS = 3.0
 REFERENCE_VIDEO_IDS = ("videoA", "videoB", "videoC", "videoD", "videoE")
@@ -1201,9 +1188,6 @@ def _material_source_plan(
 
     公共素材库本身就是从 Pexels 预下载回来的（索引里 `来源平台` = Pexels），
     风格一致，所以中间格改吃本地库不改变观感，只是不再等公网。
-
-    Pexels 仍然保留给 material_policy=owned_public 的任务 —— 那条路径直接调
-    _select_pexels_materials()，不经过本函数。
 
     include_middle_library / seed 保留在签名里仅为兼容既有调用方，已不参与决策。
     """
@@ -2334,7 +2318,7 @@ class JobStore:
         """原子持久化冻结选择中某片段的内容哈希；已有不同哈希时 fail closed。"""
         digest = str(content_sha256 or "").lower()
         if not SHA_RE.fullmatch(digest):
-            raise MatrixTemplateError("Pexels 内容哈希无效")
+            raise MatrixTemplateError("素材内容哈希无效")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -2350,7 +2334,7 @@ class JobStore:
                 existing = str(item.get("content_sha256") or "").lower()
                 if existing:
                     if existing != digest:
-                        raise MatrixTemplateError("Pexels 素材文件发生变化")
+                        raise MatrixTemplateError("素材文件发生变化")
                     return False
                 item["content_sha256"] = digest
                 db.execute(
@@ -2416,7 +2400,6 @@ class JobStore:
 class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str, python: str = sys.executable,
-                 pexels_api_key: str = "",
                  private_font_root: Path | None = None,
                  reference_skill_root: Path | None = None,
                  nine_grid_root: Path | None = None,
@@ -2444,7 +2427,6 @@ class MatrixTemplateService:
         self.skill_root = skill_root.resolve()
         self.library_url = library_url.rstrip("/")
         self.library_token = library_token
-        self.pexels_api_key = str(pexels_api_key or "").strip()
         self.legacy_templates_enabled = bool(legacy_templates_enabled)
         parsed_library = urlsplit(self.library_url)
         if (
@@ -2531,7 +2513,6 @@ class MatrixTemplateService:
         if not 1 <= self.disk_high_water_percent <= 100:
             raise MatrixTemplateError("disk high-water percent must be between 1 and 100")
         self.store = JobStore(self.data_root / "jobs.db")
-        self.pexels_cache_root = self.data_root / ".pexels-search-cache"
         # Recovery may legitimately contain one formerly-running job plus the
         # full waiting allowance. Admission is bounded transactionally in DB;
         # the in-memory recovery queue must not impose a second, smaller cap.
@@ -2546,7 +2527,6 @@ class MatrixTemplateService:
         self.process_lock = threading.Lock()
         self.file_lock = threading.Lock()
         self.batch_material_lock = threading.Lock()
-        self.pexels_cache_lock = threading.Lock()
         self.library_readiness_lock = threading.Lock()
         self._library_readiness_cache: tuple[float, dict] | None = None
         self.active_downloads: set[str] = set()
@@ -3963,8 +3943,7 @@ class MatrixTemplateService:
             self._validate_material_policy(payload)
             if (
                 self.enforce_library_readiness
-                and payload["material_policy"] == "shared"
-                and not payload.get("user_materials")
+                and payload["material_policy"] in ("shared", "owned_public")
             ):
                 self.require_library_ready()
         job, created = self.store.create(
@@ -3976,17 +3955,11 @@ class MatrixTemplateService:
         return job
 
     def _validate_material_policy(self, payload: dict) -> None:
-        materials = (
-            self._user_materials(payload)
-            if payload.get("user_materials") is not None else None
-        )
-        if payload.get("material_policy", "shared") != "owned_public":
-            return
-        if (
-            len(materials or []) < self.required_visuals(payload)
-            and not self.pexels_api_key
-        ):
-            raise MatrixTemplateError("owned_public 补充画面需要可用的 Pexels 素材库")
+        # 素材策略（2026-09-12 定稿）：shared / owned_public 的剩余画面位与 BGM
+        # 一律由本地素材库供给，不再走 Pexels 公网（老板定调「不再走公网拉素材」，
+        # #8629/#8631 公网抖动实锤）。这里保留用户素材本身的提交时预校验
+        # （存在性 / 媒体类型 / 数量），素材库就绪性在 create 入口统一把关。
+        self._user_materials(payload)
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
         payload["_material_selection_contract_version"] = (
@@ -4259,7 +4232,6 @@ class MatrixTemplateService:
         workers_ready = not self.workers_expected or (
             worker_alive and cleanup_alive and not worker_degraded
         )
-        pexels_ready = bool(self.pexels_api_key)
         ready = workers_ready and library["ready"]
         return {
             "ok": ready,
@@ -4269,9 +4241,7 @@ class MatrixTemplateService:
             "worker_degraded": worker_degraded,
             "degraded_jobs": degraded_job_count,
             "material_library_ready": library["ready"],
-            "pexels_material_ready": pexels_ready,
-            "pexels_material_optional": True,
-            "material_source_policy": "huangque-bookends-extra-middle-pexels-v2",
+            "material_source_policy": "huangque-library-only",
             "material_selection_contract_version": library[
                 "selection_contract_version"
             ],
@@ -4560,181 +4530,6 @@ class MatrixTemplateService:
             raise MatrixTemplateError("素材选择契约版本无效")
         return int(value)
 
-    @staticmethod
-    def _pexels_search_query(job_id: str) -> str:
-        digest = hashlib.sha256(("pexels-china-query:" + job_id).encode("utf-8")).digest()
-        return PEXELS_CHINA_QUERIES[int.from_bytes(digest[:2], "big") % len(PEXELS_CHINA_QUERIES)]
-
-    def _pexels_search(self, query: str) -> dict:
-        if not self.pexels_api_key:
-            raise MatrixTemplateError("Pexels 素材库密钥未配置")
-        parameters = {
-            "query": query,
-            "orientation": "portrait",
-            "size": "medium",
-            "locale": "zh-CN",
-            "page": 1,
-            "per_page": PEXELS_SEARCH_PER_PAGE,
-        }
-        canonical = json.dumps(parameters, ensure_ascii=False, sort_keys=True)
-        cache_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        cache_path = self.pexels_cache_root / (cache_key + ".json")
-        with self.pexels_cache_lock:
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if (
-                    isinstance(cached, dict)
-                    and time.time() - float(cached.get("fetched_at", 0))
-                    < PEXELS_SEARCH_CACHE_SECONDS
-                    and isinstance(cached.get("response"), dict)
-                ):
-                    return cached["response"]
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                pass
-
-            request = urllib.request.Request(
-                PEXELS_API_URL + "?" + urlencode(parameters),
-                headers={
-                    "Authorization": self.pexels_api_key,
-                    "Accept": "application/json",
-                    "User-Agent": "HuangqueMatrixTemplate/1.0",
-                },
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    raw = response.read(PEXELS_SEARCH_RESPONSE_BYTES + 1)
-            except urllib.error.HTTPError as exc:
-                if exc.code == 401:
-                    detail = "Pexels 素材库密钥无效"
-                elif exc.code == 429:
-                    detail = "Pexels 素材库调用额度已用完"
-                else:
-                    detail = "Pexels 素材库暂不可用"
-                raise MatrixTemplateError(detail) from exc
-            except (urllib.error.URLError, TimeoutError) as exc:
-                raise MatrixTemplateError("Pexels 素材库暂不可用") from exc
-            if len(raw) > PEXELS_SEARCH_RESPONSE_BYTES:
-                raise MatrixTemplateError("Pexels 素材库响应过大")
-            try:
-                result = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise MatrixTemplateError("Pexels 素材库响应无效") from exc
-            if not isinstance(result, dict) or not isinstance(result.get("videos"), list):
-                raise MatrixTemplateError("Pexels 素材库响应无效")
-            self.pexels_cache_root.mkdir(parents=True, exist_ok=True)
-            temporary = cache_path.with_name(cache_path.name + "." + uuid.uuid4().hex + ".part")
-            try:
-                temporary.write_text(json.dumps({
-                    "fetched_at": time.time(), "response": result,
-                }, ensure_ascii=False), encoding="utf-8")
-                os.replace(temporary, cache_path)
-            finally:
-                temporary.unlink(missing_ok=True)
-            return result
-
-    @staticmethod
-    def _pexels_file(video: dict) -> dict | None:
-        candidates = []
-        for item in video.get("video_files") or []:
-            if not isinstance(item, dict) or item.get("file_type") != "video/mp4":
-                continue
-            width, height = item.get("width"), item.get("height")
-            parsed = urlsplit(str(item.get("link") or ""))
-            if (
-                isinstance(width, bool) or not isinstance(width, int)
-                or isinstance(height, bool) or not isinstance(height, int)
-                or width < 360 or height <= width
-                or parsed.scheme != "https" or not parsed.hostname
-                or parsed.username or parsed.password or parsed.fragment
-            ):
-                continue
-            candidates.append(item)
-        return min(candidates, key=lambda item: (
-            0 if item.get("quality") == "hd" else 1,
-            abs(int(item["width"]) - 1080),
-            -int(item["width"]) * int(item["height"]),
-            int(item.get("id") or 0),
-        ), default=None)
-
-    def _select_pexels_materials(
-        self, scenes: list[dict], job_id: str, used_sha256=(),
-    ) -> list[dict]:
-        if not scenes:
-            return []
-        primary = self._pexels_search_query(job_id)
-        videos = []
-        seen_video_ids = set()
-        for video in self._pexels_search(primary).get("videos") or []:
-            if not isinstance(video, dict):
-                continue
-            video_id = video.get("id")
-            if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id in seen_video_ids:
-                continue
-            seen_video_ids.add(video_id)
-            file = self._pexels_file(video)
-            duration = video.get("duration")
-            if file is not None and isinstance(duration, (int, float)) and not isinstance(duration, bool):
-                videos.append((video, file, float(duration), primary))
-
-        used = {str(value).lower() for value in used_sha256 if SHA_RE.fullmatch(str(value).lower())}
-        selected = []
-        for position, scene in enumerate(scenes):
-            required_duration = float(scene["clip_duration_seconds"])
-            eligible = []
-            for video, file, source_duration, query in videos:
-                source_id = hashlib.sha256(
-                    f"pexels:video:{video['id']}:file:{file.get('id')}".encode("utf-8")
-                ).hexdigest()
-                if source_id in used or source_duration + 0.001 < (
-                    required_duration + REFERENCE_MEDIA_SAFETY_SECONDS
-                    + PEXELS_METADATA_DURATION_SLACK_SECONDS
-                ):
-                    continue
-                eligible.append((video, file, source_duration, query, source_id))
-            if not eligible:
-                raise MatrixTemplateError("Pexels 中国场景素材不足")
-            ranked = sorted(eligible, key=lambda item: hashlib.sha256(
-                f"{job_id}:{scene['scene_id']}:{position}:{item[4]}".encode("utf-8")
-            ).hexdigest())
-            video, file, source_duration, query, source_id = ranked[0]
-            max_start = max(0.0, source_duration - required_duration
-                           - REFERENCE_MEDIA_SAFETY_SECONDS
-                           - PEXELS_METADATA_DURATION_SLACK_SECONDS)
-            start_digest = hashlib.sha256(
-                f"{job_id}:{scene['scene_id']}:{source_id}:start".encode("utf-8")
-            ).digest()
-            fraction = int.from_bytes(start_digest[:4], "big") / float(0xFFFFFFFF)
-            start = round(fraction * max_start, 3)
-            clip_id = hashlib.sha256(
-                f"{source_id}:clip:{start:.3f}:{required_duration:.3f}".encode("utf-8")
-            ).hexdigest()
-            contributor = video.get("user") if isinstance(video.get("user"), dict) else {}
-            selected.append({
-                "scene_id": scene["scene_id"],
-                "record_id": f"pexels-video-{video['id']}",
-                "sha256": source_id,
-                "source_identity": source_id,
-                "media_type": "video",
-                "match_level": "pexels_china_query",
-                "orientation": "portrait",
-                "orientation_match": "same",
-                "clip_id": clip_id,
-                "clip_start_seconds": start,
-                "clip_duration_seconds": required_duration,
-                "clip_slot_index": 1,
-                "clip_slot_count": 1,
-                "provider": "pexels",
-                "provider_video_id": video["id"],
-                "provider_file_id": file.get("id"),
-                "provider_url": str(video.get("url") or ""),
-                "contributor_name": str(contributor.get("name") or ""),
-                "contributor_url": str(contributor.get("url") or ""),
-                "source_url": str(file["link"]),
-                "search_query": query,
-            })
-            used.add(source_id)
-        return selected
-
     def _material_scenes(self, payload: dict) -> tuple[list[dict], int, bool]:
         nine_grid_template = payload.get("template_id") == NINE_GRID_TEMPLATE_ID
         fixed_skill_template = (
@@ -4771,7 +4566,7 @@ class MatrixTemplateService:
             ),
             "media_type": (
                 "video"
-                if index == 1 or reference_template or self.pexels_api_key
+                if index == 1 or reference_template
                 else "visual"
             ),
             "clip_duration_seconds": clip_durations[index - 1],
@@ -4868,67 +4663,20 @@ class MatrixTemplateService:
                                used_sha256=()) -> list[dict]:
         scenes, count, _reference_template = self._material_scenes(payload)
         contract_version = self._material_contract_version(payload)
-        if not self.pexels_api_key:
-            result = self._library_request("POST", "/v1/select", {
-                "scenes": scenes, "orientation": "portrait", "seed": job_id,
-                "used_sha256": list(used_sha256),
-                "selection_mode": "round_robin",
-                "selection_id": "matrix-template:" + job_id,
-            })
-            if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION and (
-                result.get("selection_contract_version") != MATERIAL_SELECTION_CONTRACT_VERSION
-                or result.get("clip_contract_version") != MATERIAL_CLIP_CONTRACT_VERSION
-            ):
-                raise MatrixTemplateError("素材库切片能力版本不兼容")
-            return self._validate_material_selection(
-                payload, result.get("materials") or [], contract_version,
-            )
-        visual_scenes = scenes[:count]
-        bgm_scenes = scenes[count:]
-        source_plan = _material_source_plan(
-            count,
-            include_middle_library=(
-                payload.get("template_id") in MOTION_V2_TEMPLATE_IDS
-            ),
-            seed=job_id,
-        )
-        own_scenes = [
-            scene for scene, source in zip(visual_scenes, source_plan)
-            if source == "huangque"
-        ] + bgm_scenes
-        pexels_scenes = [
-            scene for scene, source in zip(visual_scenes, source_plan)
-            if source == "pexels"
-        ]
-        pexels = self._select_pexels_materials(
-            pexels_scenes, job_id, used_sha256=used_sha256,
-        )
+        # 素材一律由本地素材库供给（2026-09-12 老板定调：不再走 Pexels 公网）。
         result = self._library_request("POST", "/v1/select", {
-            "scenes": own_scenes, "orientation": "portrait", "seed": job_id,
+            "scenes": scenes, "orientation": "portrait", "seed": job_id,
             "used_sha256": list(used_sha256),
             "selection_mode": "round_robin",
             "selection_id": "matrix-template:" + job_id,
         })
-        if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION:
-            selection_version = result.get("selection_contract_version")
-            clip_version = result.get("clip_contract_version")
-            if (
-                isinstance(selection_version, bool)
-                or not isinstance(selection_version, int)
-                or selection_version != MATERIAL_SELECTION_CONTRACT_VERSION
-                or isinstance(clip_version, bool)
-                or not isinstance(clip_version, int)
-                or clip_version != MATERIAL_CLIP_CONTRACT_VERSION
-            ):
-                raise MatrixTemplateError("素材库切片能力版本不兼容")
-        own_values = result.get("materials") or []
-        by_scene = {
-            str(item.get("scene_id") or ""): item
-            for item in own_values + pexels if isinstance(item, dict)
-        }
-        values = [by_scene.get(scene["scene_id"]) for scene in scenes]
+        if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION and (
+            result.get("selection_contract_version") != MATERIAL_SELECTION_CONTRACT_VERSION
+            or result.get("clip_contract_version") != MATERIAL_CLIP_CONTRACT_VERSION
+        ):
+            raise MatrixTemplateError("素材库切片能力版本不兼容")
         return self._validate_material_selection(
-            payload, values, contract_version,
+            payload, result.get("materials") or [], contract_version,
         )
 
     def _select_materials(self, payload: dict, job_id: str) -> list[dict]:
@@ -4953,17 +4701,34 @@ class MatrixTemplateService:
                     payload.get("material_policy", "shared") == "owned_public"
                     and len(selected) < self.required_visuals(payload)
                 ):
+                    # 素材库优先（2026-09-12 老板定调）：剩余画面位改从本地
+                    # 素材库补选，不再走 Pexels 公网（公网抖动导致 #8631）。
                     scenes, count, _reference = self._material_scenes(payload)
                     used = (
                         self.store.batch_used_visuals(batch_id)
                         if batch_id else []
                     )
-                    selected = selected + self._select_pexels_materials(
-                        scenes[len(selected):count], job_id,
-                        used_sha256=used + [
+                    result = self._library_request("POST", "/v1/select", {
+                        "scenes": scenes[len(selected):count],
+                        "orientation": "portrait",
+                        "seed": job_id,
+                        "used_sha256": used + [
                             item["sha256"] for item in selected
                         ],
-                    )
+                        "selection_mode": "round_robin",
+                        "selection_id": "matrix-template:" + job_id,
+                    })
+                    if (
+                        contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
+                        and (
+                            result.get("selection_contract_version")
+                            != MATERIAL_SELECTION_CONTRACT_VERSION
+                            or result.get("clip_contract_version")
+                            != MATERIAL_CLIP_CONTRACT_VERSION
+                        )
+                    ):
+                        raise MatrixTemplateError("素材库切片能力版本不兼容")
+                    selected = selected + (result.get("materials") or [])
                 if (
                     payload["bgm"]
                     and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
@@ -5011,14 +4776,32 @@ class MatrixTemplateService:
                     )
                 return selected
             if payload.get("material_policy", "shared") == "owned_public":
+                # 素材库优先（2026-09-12 老板定调）：owned_public 无本人素材时
+                # 全部画面位由本地素材库供给，不再走 Pexels 公网。
                 scenes, count, _reference = self._material_scenes(payload)
-                selected = self._select_pexels_materials(
-                    scenes[:count], job_id,
-                    used_sha256=(
-                        self.store.batch_used_visuals(batch_id)
-                        if batch_id else []
-                    ),
+                used = (
+                    self.store.batch_used_visuals(batch_id)
+                    if batch_id else []
                 )
+                result = self._library_request("POST", "/v1/select", {
+                    "scenes": scenes[:count],
+                    "orientation": "portrait",
+                    "seed": job_id,
+                    "used_sha256": list(used),
+                    "selection_mode": "round_robin",
+                    "selection_id": "matrix-template:" + job_id,
+                })
+                if (
+                    contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
+                    and (
+                        result.get("selection_contract_version")
+                        != MATERIAL_SELECTION_CONTRACT_VERSION
+                        or result.get("clip_contract_version")
+                        != MATERIAL_CLIP_CONTRACT_VERSION
+                    )
+                ):
+                    raise MatrixTemplateError("素材库切片能力版本不兼容")
+                selected = result.get("materials") or []
                 selected = self._validate_material_selection(
                     payload, selected, contract_version,
                 )
@@ -5157,7 +4940,7 @@ class MatrixTemplateService:
         """校验 payload 自带用户素材并绑定到最前面的画面位。
 
         payload["user_materials"] 形如 [{"sha256": "<64 hex>", "media_type": "image"|"video"}, ...]
-        shared 数量必须填满画面位；owned_public 允许剩余画面由 Pexels 补齐。
+        shared 数量必须填满画面位；owned_public 允许剩余画面由素材库补齐。
         """
         raw = payload.get("user_materials")
         if not raw:
@@ -5266,7 +5049,7 @@ class MatrixTemplateService:
                 not SHA_RE.fullmatch(frozen)
                 or not hmac.compare_digest(frozen, content_sha256)
             ):
-                raise MatrixTemplateError("Pexels 素材文件发生变化")
+                raise MatrixTemplateError("素材文件发生变化")
             # 先以 CAS 持久化内容哈希，成功后再原子替换最终文件，
             # 避免「下载完成但数据库未写入」的崩溃窗口。
             if job_id and item.get("scene_id"):
@@ -7126,13 +6909,7 @@ class Handler(BaseHTTPRequestHandler):
                     body, require_reference_semantic_layout=True,
                 )
                 self.service._validate_material_policy(payload)
-                if payload["material_policy"] == "owned_public":
-                    library = {
-                        "selection_contract_version": MATERIAL_SELECTION_CONTRACT_VERSION,
-                        "clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
-                    }
-                else:
-                    library = self.service.require_library_ready(force=True)
+                library = self.service.require_library_ready(force=True)
                 self.send_json(200, {
                     "ok": True,
                     "payload": payload,
@@ -7207,7 +6984,6 @@ def main() -> None:
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
-        pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
         legacy_templates_enabled=False,
         python=os.environ.get("MATRIX_TEMPLATE_PYTHON", sys.executable),
         private_font_root=Path(os.environ.get(
