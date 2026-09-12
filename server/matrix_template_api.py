@@ -3983,14 +3983,6 @@ class MatrixTemplateService:
         if payload.get("material_policy", "shared") != "owned_public":
             return
         if (
-            payload["bgm"]
-            and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
-            and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
-        ):
-            raise MatrixTemplateError(
-                "owned_public 不允许使用共享背景音乐，请关闭 bgm"
-            )
-        if (
             len(materials or []) < self.required_visuals(payload)
             and not self.pexels_api_key
         ):
@@ -4972,9 +4964,43 @@ class MatrixTemplateService:
                             item["sha256"] for item in selected
                         ],
                     )
-                    selected = self._validate_material_selection(
-                        payload, selected, contract_version,
+                if (
+                    payload["bgm"]
+                    and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+                    and payload.get("template_id")
+                    not in FIXED_SKILL_TEMPLATE_CONFIGS
+                ):
+                    # 自带画面素材时，从素材库随机路由一条背景音乐
+                    # （绑定音乐模板不走这里，沿用模板包内的固定音乐）
+                    scenes, count, _reference = self._material_scenes(payload)
+                    used = (
+                        self.store.batch_used_visuals(batch_id)
+                        if batch_id else []
                     )
+                    result = self._library_request("POST", "/v1/select", {
+                        "scenes": scenes[count:],
+                        "orientation": "portrait",
+                        "seed": job_id,
+                        "used_sha256": used + [
+                            item["sha256"] for item in selected
+                        ],
+                        "selection_mode": "round_robin",
+                        "selection_id": "matrix-template:" + job_id,
+                    })
+                    if (
+                        contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
+                        and (
+                            result.get("selection_contract_version")
+                            != MATERIAL_SELECTION_CONTRACT_VERSION
+                            or result.get("clip_contract_version")
+                            != MATERIAL_CLIP_CONTRACT_VERSION
+                        )
+                    ):
+                        raise MatrixTemplateError("素材库切片能力版本不兼容")
+                    selected = selected + (result.get("materials") or [])
+                selected = self._validate_material_selection(
+                    payload, selected, contract_version,
+                )
                 if batch_id:
                     self.store.reserve_batch_materials(
                         batch_id, job_id, selected, contract_version,
