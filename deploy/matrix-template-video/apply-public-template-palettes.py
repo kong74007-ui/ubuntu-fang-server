@@ -9,7 +9,7 @@ the nine-grid adapter have produced the four real template entry points:
 * ``triple-strip-shutter/index.html``
 * ``yellow-banner-zoom/index.html``
 
-It only ever injects a single ``<style id="matrix-public-template-palettes-v1">``
+It only ever injects a single ``<style id="matrix-public-template-palettes-v2">``
 block before ``</head>``. It never rewrites the upstream CSS, the DOM copy, or
 any layout property. Every target selector is verified to exist first, and the
 written file is re-read to prove the palette colors landed and that no banned
@@ -24,8 +24,8 @@ import sys
 from pathlib import Path
 
 
-PALETTE_VERSION = "matrix-public-template-palettes-v1"
-STYLE_ID = "matrix-public-template-palettes-v1"
+PALETTE_VERSION = "matrix-public-template-palettes-v2"
+STYLE_ID = "matrix-public-template-palettes-v2"
 OUTLINE = "#080808"
 
 # role -> which layers use it, for the 17 reference variants.
@@ -37,6 +37,9 @@ REFERENCE_LAYER_ROLES = {
     "bottom2": "c1",
 }
 REFERENCE_LAYERS = ("top1", "top2", "top3", "bottom1", "bottom2")
+# The generic C1/C3 role map flattened these variants to one near-white tone.
+# Preserve their upstream color hierarchy instead of injecting an overlay.
+REFERENCE_ORIGINAL_COLOR_VARIANTS = frozenset({"v06", "v14", "v17"})
 REFERENCE_BACKGROUND_LAYERS = {
     "v01": ("bottom2",),
     "v03": ("bottom1",),
@@ -102,6 +105,8 @@ def _hex(value: str) -> str:
 def build_reference_css() -> str:
     blocks = []
     for template_id, name, _kind, variant, c1, c2, c3 in palette_by_kind("reference"):
+        if variant in REFERENCE_ORIGINAL_COLOR_VARIANTS:
+            continue
         colors = {"c1": _hex(c1), "c2": _hex(c2), "c3": _hex(c3)}
         groups: dict[str, list[str]] = {"c1": [], "c3": []}
         for layer in REFERENCE_LAYERS:
@@ -237,6 +242,8 @@ def inject(index_html: str, kind: str) -> str:
 def expected_colors(kind: str) -> set[str]:
     colors = {OUTLINE}
     for _tid, _name, _kind, variant, c1, c2, c3 in palette_by_kind(kind):
+        if kind == "reference" and variant in REFERENCE_ORIGINAL_COLOR_VARIANTS:
+            continue
         colors.add(_hex(c1))
         colors.add(_hex(c3))
         if kind != "reference" or variant in REFERENCE_BACKGROUND_LAYERS:
