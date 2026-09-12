@@ -1,0 +1,98 @@
+{
+  "ref-06-guangzhou-yellow-button": {
+    "before": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后",
+        "top3": "客户还会不会继续消费",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 13,
+      "variant": "v06"
+    },
+    "after": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后",
+        "top3": "客户还会不会继续消费",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 13,
+      "variant": "v06"
+    }
+  },
+  "ref-09-urumqi-soft-brush": {
+    "before": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后 客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 9,
+      "variant": "v09"
+    },
+    "after": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后 客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 9,
+      "variant": "v09"
+    }
+  },
+  "ref-14-karamay-green": {
+    "before": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后 客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 10,
+      "variant": "v14"
+    },
+    "after": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后 客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 10,
+      "variant": "v14"
+    }
+  },
+  "ref-17-shenzhen-yellow-red": {
+    "before": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后\n客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 10,
+      "variant": "v17"
+    },
+    "after": {
+      "display": {
+        "top1": "选赛道别只看谁现在最火",
+        "top2": "要看三年后\n客户还会不会继续消费",
+        "top3": "",
+        "bottom1": "",
+        "bottom2": "大健康是长期需求赛道\n想入局的 评论区回复 勾兑"
+      },
+      "duration": 10,
+      "variant": "v17"
+    }
+  }
+}

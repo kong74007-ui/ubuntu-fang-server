@@ -1,0 +1,86 @@
+{
+ "ref-06-guangzhou-yellow-button": {
+  "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
+  "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
+  "template_id": "ref-06-guangzhou-yellow-button",
+  "bgm": true,
+  "semantic_layout": {
+   "version": 1,
+   "model": "gpt-4.1-mini",
+   "source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+   "top1_end": 11,
+   "top_break_after": [
+    11,
+    17
+   ],
+   "bottom_break_after": [
+    10,
+    15,
+    21
+   ]
+  }
+ },
+ "ref-09-urumqi-soft-brush": {
+  "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
+  "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
+  "template_id": "ref-09-urumqi-soft-brush",
+  "bgm": true,
+  "semantic_layout": {
+   "version": 1,
+   "model": "gpt-4.1-mini",
+   "source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+   "top1_end": 11,
+   "top_break_after": [
+    11,
+    17
+   ],
+   "bottom_break_after": [
+    10,
+    15,
+    21
+   ]
+  }
+ },
+ "ref-14-karamay-green": {
+  "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
+  "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
+  "template_id": "ref-14-karamay-green",
+  "bgm": true,
+  "semantic_layout": {
+   "version": 1,
+   "model": "gpt-4.1-mini",
+   "source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+   "top1_end": 11,
+   "top_break_after": [
+    11,
+    17
+   ],
+   "bottom_break_after": [
+    10,
+    15,
+    21
+   ]
+  }
+ },
+ "ref-17-shenzhen-yellow-red": {
+  "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
+  "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
+  "template_id": "ref-17-shenzhen-yellow-red",
+  "bgm": true,
+  "semantic_layout": {
+   "version": 1,
+   "model": "gpt-4.1-mini",
+   "source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+   "top1_end": 11,
+   "top_break_after": [
+    11,
+    17
+   ],
+   "bottom_break_after": [
+    10,
+    15,
+    21
+   ]
+  }
+ }
+}

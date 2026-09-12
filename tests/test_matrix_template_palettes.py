@@ -143,6 +143,52 @@ class PublicTemplatePaletteDataTests(unittest.TestCase):
     def test_outline_is_fixed_dark(self):
         self.assertEqual("#080808", self.module.OUTLINE)
 
+    def test_three_visually_flattened_variants_keep_original_colors(self):
+        self.assertEqual(
+            frozenset({"v06", "v14", "v17"}),
+            self.module.REFERENCE_ORIGINAL_COLOR_VARIANTS,
+        )
+
+    def test_palette_version_is_v2_everywhere(self):
+        server = (ROOT / "server/matrix_template_api.py").read_text(encoding="utf-8")
+        install = (ROOT / "deploy/matrix-template-video/install.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'PUBLIC_TEMPLATE_PALETTE_VERSION = "reference-palettes-v2"', server,
+        )
+        self.assertIn(
+            'PUBLIC_TEMPLATE_PALETTE_COUNT = 20', server,
+        )
+        self.assertIn('d.get("public_template_palette_version")=="reference-palettes-v2"', install)
+        self.assertNotIn("reference-palettes-v1", install)
+        self.assertEqual("matrix-public-template-palettes-v2", self.module.PALETTE_VERSION)
+        self.assertEqual("matrix-public-template-palettes-v2", self.module.STYLE_ID)
+
+    def test_reference_patch_enlarges_v09_auxiliary_layers(self):
+        """v09 只放大辅助层与底部层；top1 保持当前 88px。
+
+        top1 的语义跨度内没有断点、只能排一行，88px 已经贴着 996px 宽度上限，
+        再放大就会被服务端判为「无法在完整语义边界内排入模板」（HTTP 400）。
+        方案兑底顺序也要求「最低不得低于当前字号」，因此 top1 保持 88px。
+        """
+        patch = (
+            ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
+        ).read_text(encoding="utf-8")
+        for expected in (
+            '.v09 .top1 { font: 400 88px/1.08 "MaShan"',
+            ".v09 .top2 { font-size: 62px;",
+            '.v09 .bottom1 { font: 400 72px/1.05 "MaShan"',
+            '.v09 .bottom2 { font: 400 78px/1.05 "MaShan"',
+        ):
+            self.assertIn(expected, patch)
+        # 旧的小字号必须作为被删行出现（即确实被替换掉了）
+        self.assertIn('-      .v09 .top2 { font-size: 50px;', patch)
+        self.assertIn('-      .v09 .bottom1 { font: 400 60px/1.05 "MaShan"', patch)
+        self.assertIn('-      .v09 .bottom2 { font: 400 66px/1.05 "MaShan"', patch)
+        # top1 保持当前 88px，不得再被放大
+        self.assertNotIn('+      .v09 .top1 { font: 400 100px', patch)
+
 
 class PublicTemplatePaletteApplyTests(unittest.TestCase):
     def setUp(self):
@@ -237,6 +283,11 @@ class PublicTemplatePaletteApplyTests(unittest.TestCase):
                     f"overlay shadows {variant} {layer} detection",
                 )
         self.assertIn('#root[class~="v02"] .top3', reference)
+
+    def test_reference_overlay_does_not_override_rolled_back_variants(self):
+        reference = self.module.style_block("reference")
+        for variant in ("v06", "v14", "v17"):
+            self.assertNotIn(f'#root[class~="{variant}"]', reference)
 
     def test_triple_strip_decorations_have_no_old_colors_left(self):
         triple = self.module.style_block("triple-strip")
@@ -414,6 +465,42 @@ def reference_fixture_html() -> str:
     )
 
 
+# 上游模板 v06/v14/v17 的原始字色/描边声明（逐字取自参考包），
+# 用于证明「跳过通用覆盖」后原来的色彩层级仍然可见。
+UPSTREAM_COLOR_RULES = {
+    "v06": (
+        '.v06 .top1 { font-size: 86px; font-weight: 900; color: #fff; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }',
+        '.v06 .top2 { font-size: 76px; font-weight: 900; color: #fff; -webkit-text-stroke: 10px #111; paint-order: stroke fill; }',
+        '.v06 .top3 { font-size: 60px; font-weight: 900; color: #fffbdc; -webkit-text-stroke: 8px #333; paint-order: stroke fill; }',
+        '.v06 .bottom1 { font-size: 68px; font-weight: 900; color: #ffe326; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }',
+        '.v06 .bottom2 { display: inline-block; border-radius: 28px; background: #ffd51a; color: #090909; font-size: 76px; font-weight: 900; }',
+    ),
+    "v14": (
+        '.v14 .top1 { font: 400 72px/1.08 "MaShan"; color: #fff0b0; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }',
+        '.v14 .top2 { font-size: 50px; font-weight: 800; color: #a8e4a2; -webkit-text-stroke: 5px #315a31; paint-order: stroke fill; }',
+        '.v14 .bottom1 { font: 400 60px/1.05 "MaShan"; color: #a5e993; -webkit-text-stroke: 7px #315a31; paint-order: stroke fill; }',
+        '.v14 .bottom2 { font: 400 64px/1.05 "MaShan"; color: #fff2ac; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }',
+    ),
+    "v17": (
+        '.v17 .top1 { font-size: 74px; font-weight: 900; color: #ffdb16; -webkit-text-stroke: 10px #111; paint-order: stroke fill; }',
+        '.v17 .top2 { font-size: 64px; font-weight: 900; color: #fff; -webkit-text-stroke: 8px #d80c0c; paint-order: stroke fill; }',
+        '.v17 .top3 { font-size: 118px; font-weight: 900; color: #ffdb16; -webkit-text-stroke: 13px #111; paint-order: stroke fill; }',
+        '.v17 .bottom1 { font-size: 54px; font-weight: 900; color: #ffdb16; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }',
+        '.v17 .bottom2 { font-size: 84px; font-weight: 900; color: #fff; -webkit-text-stroke: 10px #d80c0c; paint-order: stroke fill; }',
+    ),
+}
+
+
+def upstream_color_fixture() -> str:
+    """Reference pack fixture carrying the real v06/v14/v17 upstream colours."""
+    html = reference_fixture_html()
+    extra = "\n".join(
+        rule for variant in ("v06", "v14", "v17")
+        for rule in UPSTREAM_COLOR_RULES[variant]
+    )
+    return html.replace("</style>", extra + "</style>", 1)
+
+
 def old_selector_overlay(css: str) -> str:
     """Turn the current `#root[class~="vNN"] .layer` overlay back into the
     pre-#186 `#root.vNN .layer` form that shadowed layer detection."""
@@ -446,6 +533,27 @@ class ReferencePaletteIntegrationTests(unittest.TestCase):
                 self.matrix._reference_variant_has_layer(html, variant, "top3"),
                 variant,
             )
+
+    def test_rolled_back_variants_keep_two_visible_colors(self):
+        """v06/v14/v17 不得被通用覆盖压平成单一近白色。"""
+        html = self.applier.inject(upstream_color_fixture(), "reference")
+        block = self.applier.style_block("reference")
+        for variant in ("v06", "v14", "v17"):
+            # 覆盖块不得给这三个变体写任何颜色
+            self.assertNotIn(f'#root[class~="{variant}"]', block)
+            # 上游自身的颜色层级仍在，且至少两级不同色
+            colors = set(
+                re.findall(
+                    rf"\.{variant} \.(?:top1|top2|top3|bottom1|bottom2) "
+                    r"\{[^}]*color:\s*(#[0-9a-fA-F]{3,6})",
+                    html,
+                )
+            )
+            self.assertGreaterEqual(
+                len({value.lower() for value in colors}), 2, variant,
+            )
+        # 对照组：其他变体仍然被覆盖
+        self.assertIn('#root[class~="v02"]', block)
 
     def test_old_selector_overlay_reproduces_startup_failure(self):
         html = reference_fixture_html()
