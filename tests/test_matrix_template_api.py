@@ -5777,6 +5777,54 @@ class UserMaterialsTests(unittest.TestCase):
             }),
         )
 
+    def test_reference_duration_capped_by_shortest_user_video(self):
+        # #8635 回归：参考模板随机 8-15 秒，本人视频最短板决定上界。
+        sha = self._store_user_asset(b"short-user-video", ".mp4")
+        payload = {
+            "user_materials": [{"sha256": sha, "media_type": "video"}],
+        }
+        with mock.patch.object(
+            self.service, "_inspect_user_asset", return_value=3.0,
+        ):
+            # 3 秒素材：15 秒抽签每格 3.0 秒放不下，封顶到 14（每格 2.8）。
+            self.assertEqual(
+                14, self.service._reference_duration_with_user_materials(
+                    15, payload,
+                ),
+            )
+            # 本来就短于封顶值时保持不变。
+            self.assertEqual(
+                8, self.service._reference_duration_with_user_materials(
+                    8, payload,
+                ),
+            )
+            # 没有视频素材或只有图片时不封顶（图片由节点转视频，时长=成片时长）。
+            self.assertEqual(
+                15, self.service._reference_duration_with_user_materials(
+                    15, {"user_materials": []},
+                ),
+            )
+            self.assertEqual(
+                15, self.service._reference_duration_with_user_materials(
+                    15, {"user_materials": [
+                        {"sha256": sha, "media_type": "image"},
+                    ]},
+                ),
+            )
+
+    def test_reference_duration_rejects_too_short_user_video(self):
+        sha = self._store_user_asset(b"too-short-video", ".mp4")
+        payload = {
+            "user_materials": [{"sha256": sha, "media_type": "video"}],
+        }
+        with mock.patch.object(
+            self.service, "_inspect_user_asset", return_value=2.7,
+        ):
+            with self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "时长不足",
+            ):
+                self.service._reference_duration_with_user_materials(8, payload)
+
     def test_owned_public_manifest_contains_only_user_and_pexels_sources(self):
         payload = {
             "template_id": "full-overlay-bold", "duration": 10,

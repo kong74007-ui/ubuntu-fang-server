@@ -3916,6 +3916,42 @@ class MatrixTemplateService:
         maximum = int((template or {}).get("required_visuals_max") or 5)
         return max(minimum, min(maximum, calculated))
 
+    def _reference_visual_count(
+        self, duration: float, minimum: int = 3, maximum: int = 5,
+    ) -> int:
+        calculated = int(math.ceil(float(duration) / 3.0))
+        return max(minimum, min(maximum, calculated))
+
+    def _reference_duration_with_user_materials(
+        self, nominal: int, payload: dict, *, minimum: int = 3, maximum: int = 5,
+    ) -> int:
+        """参考模板随机时长按本人视频素材最短板封顶（#8635）。"""
+        durations = []
+        for item in payload.get("user_materials") or []:
+            if not isinstance(item, dict) or item.get("media_type") != "video":
+                continue
+            source = self.user_asset_path(str(item.get("sha256") or ""))
+            if source is None:
+                raise MatrixTemplateError("用户素材不存在或已过期，请重新上传")
+            durations.append(self._inspect_user_asset(source, "video"))
+        if not durations:
+            return nominal
+        for candidate in range(min(int(nominal), 15), 7, -1):
+            count = self._reference_visual_count(candidate, minimum, maximum)
+            segment = float(candidate) / count
+            if all(
+                float(value) - REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
+                >= segment
+                for value in durations
+            ):
+                return candidate
+        shortest = min(durations)
+        needed = 8.0 / 3.0 + REFERENCE_MEDIA_SAFETY_SECONDS
+        raise MatrixTemplateError(
+            "本人视频素材时长不足：最短只有 %.1f 秒，"
+            "该模板每段画面至少需要 %.1f 秒" % (shortest, needed)
+        )
+
     def submit(self, raw: dict, request_id: str) -> dict:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
@@ -4126,6 +4162,16 @@ class MatrixTemplateService:
                     payload["top_text"], payload["bottom_text"], top_layer_count
                 )
             reference_duration = _reference_duration(job_id, template_id)
+            if payload.get("user_materials"):
+                # 本人视频素材最短板决定时间轴上界（#8635 实锤）：参考模板随机
+                # 8-15 秒，抽到长时长后每格画面要 3 秒，顾客的 3 秒素材连
+                # 0.1 秒安全余量都留不出，渲染必挂。这里按最短本人视频时长
+                # 把随机时长往下封顶；8 秒都放不下就在入队前明确拒绝。
+                reference_duration = self._reference_duration_with_user_materials(
+                    reference_duration, payload,
+                    minimum=int((template or {}).get("required_visuals") or 3),
+                    maximum=int((template or {}).get("required_visuals_max") or 5),
+                )
             payload["_reference_template"] = {
                 "pack_id": REFERENCE_PACK_ID,
                 "engine": "hyperframes",
