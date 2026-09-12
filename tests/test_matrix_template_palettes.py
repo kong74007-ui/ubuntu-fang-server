@@ -165,19 +165,29 @@ class PublicTemplatePaletteDataTests(unittest.TestCase):
         self.assertEqual("matrix-public-template-palettes-v2", self.module.PALETTE_VERSION)
         self.assertEqual("matrix-public-template-palettes-v2", self.module.STYLE_ID)
 
-    def test_reference_patch_enlarges_v09_four_layers(self):
+    def test_reference_patch_enlarges_v09_auxiliary_layers(self):
+        """v09 只放大辅助层与底部层；top1 保持当前 88px。
+
+        top1 的语义跨度内没有断点、只能排一行，88px 已经贴着 996px 宽度上限，
+        再放大就会被服务端判为「无法在完整语义边界内排入模板」（HTTP 400）。
+        方案兑底顺序也要求「最低不得低于当前字号」，因此 top1 保持 88px。
+        """
         patch = (
             ROOT / "deploy/matrix-template-video/reference-featured-layout.patch"
         ).read_text(encoding="utf-8")
         for expected in (
-            '.v09 .top1 { font: 400 100px/1.08 "MaShan"',
+            '.v09 .top1 { font: 400 88px/1.08 "MaShan"',
             ".v09 .top2 { font-size: 62px;",
             '.v09 .bottom1 { font: 400 72px/1.05 "MaShan"',
             '.v09 .bottom2 { font: 400 78px/1.05 "MaShan"',
         ):
             self.assertIn(expected, patch)
-        # 旧的小字号不得再作为新增行出现
-        self.assertNotIn('.v09 .top1 { font: 400 88px/1.08 "MaShan"', patch)
+        # 旧的小字号必须作为被删行出现（即确实被替换掉了）
+        self.assertIn('-      .v09 .top2 { font-size: 50px;', patch)
+        self.assertIn('-      .v09 .bottom1 { font: 400 60px/1.05 "MaShan"', patch)
+        self.assertIn('-      .v09 .bottom2 { font: 400 66px/1.05 "MaShan"', patch)
+        # top1 保持当前 88px，不得再被放大
+        self.assertNotIn('+      .v09 .top1 { font: 400 100px', patch)
 
 
 class PublicTemplatePaletteApplyTests(unittest.TestCase):

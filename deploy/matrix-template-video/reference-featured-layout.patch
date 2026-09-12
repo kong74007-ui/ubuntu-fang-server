@@ -119,7 +119,7 @@ index b724cf8..1187291 100644
        /* 09：米黄手写标题，薄荷绿说明 */
 -      .v09 .top1 { font: 400 78px/1.08 "MaShan"; color: #fff0a8; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
 +      .v09 .top { top: 116px; }
-+      .v09 .top1 { font: 400 100px/1.08 "MaShan"; color: #fff0a8; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
++      .v09 .top1 { font: 400 88px/1.08 "MaShan"; color: #fff0a8; -webkit-text-stroke: 9px #111; paint-order: stroke fill; }
 -      .v09 .top2 { font-size: 50px; font-weight: 700; color: #baf0bd; -webkit-text-stroke: 5px #234629; paint-order: stroke fill; }
 -      .v09 .bottom1 { font: 400 60px/1.05 "MaShan"; color: #a5ed7a; -webkit-text-stroke: 7px #234629; paint-order: stroke fill; }
 -      .v09 .bottom2 { font: 400 66px/1.05 "MaShan"; color: #fff0a8; -webkit-text-stroke: 8px #111; paint-order: stroke fill; }

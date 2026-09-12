@@ -1,19 +1,22 @@
 {
-  "head_sha": "487851363f369f40f1e31b97730d25b421db285b",
+  "head_sha": "05955c689c367f24ff7b74e1c1611c76c41ddccb",
   "base_sha": "029fd5e0f7a50d8d2e31ce082fffebb6d2f7e0cc",
   "packs": {
     "before": {
       "overlay": "matrix-public-template-palettes-v1",
+      "v09_sizes": "88/50/60/66",
       "reference_index_sha256": "721ec3a7b4b31b38c8ab36447b946d722c4623f185e3d89581330a9c5834885e"
     },
     "after": {
       "overlay": "matrix-public-template-palettes-v2",
-      "reference_index_sha256": "d98fec09b243b1ef4a2b1935bb9bdc80094c0e578e59b7e9de304119ea55dc39"
+      "v09_sizes": "88/62/72/78",
+      "reference_index_sha256": "0a2b8dfc3db36ffcd119d7d7063963c3399dd2969b36ef4960e8e3977ee21410"
     }
   },
   "input": {
+    "accept_raw_input_sha256": "c98ec19f2c31c1c7f627c0655aab989bf47ca0116b03fca1369b3f38f6a342d6",
     "manifest_before_sha256": "894b61477d3a05e9cf8b4d4abe31c26fd70c209e8ae21885679958bea0ca604c",
-    "manifest_after_sha256": "40bd61cae9b9a70b5cd369c1275414b15d13f75577237a1c8f951210c6642e11",
+    "manifest_after_sha256": "a3605f6e7e3e67705b0811f3c425ff772f2e667590c88cdeeebda13b6aaa2c0c",
     "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
     "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
     "semantic_layout": {
@@ -31,14 +34,19 @@
         21
       ]
     },
-    "payload_source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
-    "accept_raw_input_sha256": "c98ec19f2c31c1c7f627c0655aab989bf47ca0116b03fca1369b3f38f6a342d6"
+    "payload_source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1"
   },
   "render": {
     "hyperframes": "0.8.16",
     "browser": "/usr/bin/google-chrome-stable",
     "quality": "draft",
-    "workers": 1
+    "workers": 1,
+    "canvas": "1080x1920",
+    "keyframe_ratios": [
+      0.15,
+      0.5,
+      0.85
+    ]
   },
   "scripts": {
     "pipeline_manifest.py": "9ca5c53926554c605c21373aaddeaa51e341cd6b91a81da5e380585c6a676f47",
@@ -48,6 +56,7 @@
     "mp4": {
       "v06-after.mp4": "ad87663cda7700c0d7e16adb88df844c89655d60b1386cdad0b8914d1cc0de57",
       "v06-before.mp4": "99e02f66135e0dee1a3e305d1baabc33bebe5384b60c96b4b68400156b9572fe",
+      "v09-after.mp4": "07af4493730e2f4e68d0e6390f18054f9f7a7dd28502a5ecb4f163b599b5659a",
       "v09-before.mp4": "7231752e0589b644b96f9a06a70bb6c6fc63c59bfcb75cfc8f57cc68010898d4",
       "v14-after.mp4": "519cb53d58c1229cca60f31fdeabd5c4296c1211a6cea5706283f4d0938b3b7b",
       "v14-before.mp4": "ce366dd5c2f4a310dcda583352405576a51909393f0c73e6c3f82f23b89f5fde",
@@ -61,6 +70,9 @@
       "v06-before-k0.png": "45ce35e47002e69307ac151043d7aaff4e827264de48ce0dc543cc08bf2b7716",
       "v06-before-k1.png": "e50466d9219c542b0fd2ce4650f3b07ffa2d025ec327ab8926623df575d91841",
       "v06-before-k2.png": "857e593aee437952dbf30ff88211eed7b557db3ef2a29481378e0a15006dbb4a",
+      "v09-after-k0.png": "b49b4e854ed2d4cabd17ec809c0f30936e5372e6393395dc69f11cf1cab9469b",
+      "v09-after-k1.png": "dc9fd9e5b8e3b3e89c866f1862332e7699472c5115a97b35e2db21f05812a8e1",
+      "v09-after-k2.png": "480034de2302594778ff4d241db04691a508aeede9fde5d19aaa18b5b0ac5cdb",
       "v09-before-k0.png": "343306f7ed64f0ba946dbb5f28e079b4f5d676e8da4b75e4979d9c86848a132b",
       "v09-before-k1.png": "7f56f64c3755ac344f499ac45aacfbed303ec0cda0aecab3f18528fc4287f4f1",
       "v09-before-k2.png": "83ddde41f599dbcdadc3058819d861aa919801b84d5ded70fa71d1ab9a965ab1",
@@ -77,8 +89,8 @@
       "v17-before-k1.png": "5ec28e09420daab991fef91d3b474fd5844a0ba87967f80dc50097c10682e6de",
       "v17-before-k2.png": "2a6bf53ab411db5be7aff0b7616f59fa9986ae4b58e21caf7b11010fbc7211fb"
     },
-    "OVERVIEW-1-before-after.png": "0a8c5995c26510995afc285cbe9cc77aa76c050924c7681165c0bae93a064cdb",
-    "OVERVIEW-2-keyframes-after.png": "65a54436f44cd3871a7d72a84e43756ddc41e1d26b57e0e46965861995e7a8c4",
-    "render-report.json": "8f38e8328dfccf7c099ec6c69b8abd53b7e9bb9d7d7ac6dc7c57e1f79ce8c6d3"
+    "OVERVIEW-1-before-after.png": "015461bd34364d5a407ea587ca7ec646a8d0b5f5570d208e74a730c9c167106a",
+    "OVERVIEW-2-keyframes-after.png": "b9801dbd05b855079b0e78ce6703c35d38117620b8a63410afbc0401e58105fe",
+    "render-report.json": "2106636c9cfd1a16b8b2bb3cc4bd982df648dc3360eac371619a067e4f1a9fe5"
   }
 }
