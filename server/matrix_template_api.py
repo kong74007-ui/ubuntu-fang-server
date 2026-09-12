@@ -6668,6 +6668,7 @@ class MatrixTemplateService:
         return manifest
 
     def _execute(self, job_id: str) -> dict:
+        _t0 = time.monotonic()
         row = self.store.get(job_id)
         payload = json.loads(row["payload"])
         root = self.data_root / job_id
@@ -6675,6 +6676,7 @@ class MatrixTemplateService:
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
+        _t_sel = time.monotonic() - _t0
         # 素材并行下载（2026-09-12）：这些请求互相独立，串行下一个等一个是纯浪费。
         # 实测固定 Skill 模板卡在这一步 90~160 秒 —— 期间机器 CPU 全程为 0、
         # chrome/ffmpeg 都没起，纯粹在等网络；而真正渲染只要 44~80 秒。
@@ -6690,6 +6692,11 @@ class MatrixTemplateService:
                 paths = list(_pool.map(_fetch, materials))
         else:
             paths = [_fetch(item) for item in materials]
+        # 分段耗时（2026-09-12）：出片慢要先分清是"等素材"还是"渲染算得慢"。
+        # 渲染时长 = 任务总时长 − 选素材 − 下载（总时长在 job 记录里）。
+        print("[matrix-template] 分段 选素材%.1fs 下载%.1fs 模板=%s 素材%d格"
+              % (_t_sel, time.monotonic() - _t0 - _t_sel,
+                 payload.get("template_id"), len(materials)), flush=True)
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         nine_grid_template = payload["template_id"] == NINE_GRID_TEMPLATE_ID
