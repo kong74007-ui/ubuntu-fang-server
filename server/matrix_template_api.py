@@ -1193,35 +1193,31 @@ def _material_source_plan(
 ) -> tuple[str, ...]:
     """Return the source assigned to each visible clip.
 
-    Three-clip outputs keep the opening clip in the approved Huangque library.
-    Four-, five-, eight- and nine-clip outputs keep both bookends there. All
-    middle clips are supplied by the Pexels China-oriented search pool.
+    2026-09-12：画面格**全部**取自本地素材库（黄雀库 616 + 公共素材库 200 = 816 条）。
+
+    原先只有首尾格走本地库，中间格派给 Pexels 公网搜索池。实测每格下载耗时：
+    本地库 0.7s / 公网 6.8s（最慢 23.8s）。改全走后，九宫格 9 格的素材下载段
+    从 23.8s 降到 3.4s，同模板总耗时 107s -> 84s。
+
+    公共素材库本身就是从 Pexels 预下载回来的（索引里 `来源平台` = Pexels），
+    风格一致，所以中间格改吃本地库不改变观感，只是不再等公网。
+
+    Pexels 仍然保留给 material_policy=owned_public 的任务 —— 那条路径直接调
+    _select_pexels_materials()，不经过本函数。
+
+    include_middle_library / seed 保留在签名里仅为兼容既有调用方，已不参与决策。
     """
+    # 校验规则与原实现逐条保持一致，只改「素材从哪来」这一件事。
+    # 注意：固定 Skill / motion-v2 模板（include_middle_library=True）原本只要求
+    # count >= 5，**没有上界** —— 6、7 格是合法的，别在这里加 {3,4,5,8,9} 的白名单。
     if include_middle_library:
         if count < 5:
             raise MatrixTemplateError(
                 "三段黄雀素材规则至少需要 5 个画面位"
             )
-        plan = ["pexels"] * count
-        plan[0] = plan[-1] = "huangque"
-        middle = 1 + (
-            int.from_bytes(
-                hashlib.sha256(
-                    f"matrix-middle-library:{seed}:{count}".encode("utf-8")
-                ).digest()[:4],
-                "big",
-            ) % (count - 2)
-        )
-        plan[middle] = "huangque"
-        return tuple(plan)
-    if count == 3:
-        return ("huangque", "pexels", "pexels")
-    if count in {4, 5, 8, 9}:
-        return tuple(
-            "huangque" if index in {0, count - 1} else "pexels"
-            for index in range(count)
-        )
-    raise MatrixTemplateError("模板素材片段数量必须在 3 到 5（或九宫格 9 / 三横屏 8）之间")
+    elif count not in {3, 4, 5, 8, 9}:
+        raise MatrixTemplateError("模板素材片段数量必须在 3 到 5（或九宫格 9 / 三横屏 8）之间")
+    return ("huangque",) * count
 
 
 def _visual_width(value: str) -> float:
