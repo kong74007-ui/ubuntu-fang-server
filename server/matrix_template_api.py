@@ -5547,6 +5547,61 @@ class MatrixTemplateService:
             raise MatrixTemplateError("HyperFrames 模板素材时长不足")
         return duration
 
+    @staticmethod
+    def _ffmpeg_orientation_input_args(
+        path: Path, expected_orientation: str,
+    ) -> list[str]:
+        expected = str(expected_orientation or "").strip().lower()
+        if expected not in {"landscape", "portrait"}:
+            return []
+        try:
+            result = subprocess.run([
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0", "-show_streams",
+                "-of", "json", str(path),
+            ], check=False, capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                return []
+            data = json.loads(result.stdout)
+            video = next(
+                item for item in (data.get("streams") or [])
+                if item.get("codec_type") == "video"
+            )
+            width = int(video.get("width") or 0)
+            height = int(video.get("height") or 0)
+            if width <= 0 or height <= 0 or width == height:
+                return []
+            rotation = None
+            for side_data in video.get("side_data_list") or []:
+                if not isinstance(side_data, dict):
+                    continue
+                try:
+                    rotation = float(side_data.get("rotation"))
+                except (TypeError, ValueError):
+                    continue
+                break
+            if rotation is None:
+                try:
+                    rotation = float((video.get("tags") or {}).get("rotate"))
+                except (AttributeError, TypeError, ValueError):
+                    rotation = 0.0
+        except (
+            OSError, subprocess.SubprocessError, json.JSONDecodeError,
+            KeyError, StopIteration, TypeError, ValueError,
+        ):
+            return []
+
+        if not math.isfinite(rotation):
+            return []
+        quarter_turn = int(round(abs(rotation))) % 180 == 90
+        display_width, display_height = (
+            (height, width) if quarter_turn else (width, height)
+        )
+        expects_landscape = expected == "landscape"
+        encoded_matches = (width > height) == expects_landscape
+        display_matches = (display_width > display_height) == expects_landscape
+        return ["-noautorotate"] if encoded_matches and not display_matches else []
+
     def _validate_reference_visual_coverage(
         self, output: Path, timeout_seconds: float = 120
     ) -> None:
@@ -5610,7 +5665,7 @@ class MatrixTemplateService:
 
     def _prepare_nine_grid_clip(
         self, source: Path, destination: Path, start: float,
-        *, deadline_at: float,
+        *, expected_orientation: str = "", deadline_at: float,
     ) -> None:
         if (
             not source.is_file()
@@ -5637,8 +5692,12 @@ class MatrixTemplateService:
             f"tpad=stop_mode=clone:stop_duration={tail:.6f},"
             "format=yuv420p"
         )
+        orientation_args = self._ffmpeg_orientation_input_args(
+            source, expected_orientation,
+        )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            *orientation_args,
             "-ss", _format_reference_seconds(float(start)), "-i", str(source),
             "-map", "0:v:0", "-an", "-vf", video_filter,
             "-t", f"{encoded:.6f}", "-c:v", "libx264", "-preset", "fast",
@@ -5858,7 +5917,8 @@ class MatrixTemplateService:
 
     def _prepare_fixed_skill_clip(
         self, source: Path, destination: Path, start: float,
-        frames: int, height: int, *, deadline_at: float,
+        frames: int, height: int, *, expected_orientation: str = "",
+        deadline_at: float,
     ) -> float:
         if (
             not source.is_file()
@@ -5886,8 +5946,12 @@ class MatrixTemplateService:
             f"scale=1080:{height}:force_original_aspect_ratio=increase,"
             f"crop=1080:{height},setsar=1,fps=30,format=yuv420p"
         )
+        orientation_args = self._ffmpeg_orientation_input_args(
+            source, expected_orientation,
+        )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            *orientation_args,
             "-ss", _format_reference_seconds(actual_start), "-i", str(source),
             "-map", "0:v:0", "-an", "-vf", video_filter,
             "-frames:v", str(frames), "-c:v", "libx264", "-preset", "fast",
@@ -6088,8 +6152,8 @@ class MatrixTemplateService:
         self._acquire_hyperframes_slot(deadline_at)
         actual_starts = []
         try:
-            for source, start, frames, height, relative in zip(
-                paths, selected_starts, config["slot_frames"],
+            for item, source, start, frames, height, relative in zip(
+                materials, paths, selected_starts, config["slot_frames"],
                 config["slot_heights"], config["media_paths"],
             ):
                 if self.stop_event.is_set():
@@ -6097,6 +6161,7 @@ class MatrixTemplateService:
                 actual_starts.append(self._prepare_fixed_skill_clip(
                     source, workdir.joinpath(*str(relative).split("/")),
                     float(start), int(frames), int(height),
+                    expected_orientation=str(item.get("orientation") or ""),
                     deadline_at=deadline_at,
                 ))
             for item, actual_start, actual_duration in zip(
@@ -6283,14 +6348,16 @@ class MatrixTemplateService:
             options["start_new_session"] = True
         self._acquire_hyperframes_slot(deadline_at)
         try:
-            for index, (source, start) in enumerate(
-                zip(paths, selected_starts), 1,
+            for index, (item, source, start) in enumerate(
+                zip(materials, paths, selected_starts), 1,
             ):
                 if self.stop_event.is_set():
                     raise MatrixTemplateError("模板成片服务正在停止")
                 self._prepare_nine_grid_clip(
                     source, workdir / f"assets/input/video-{index}.mp4",
-                    float(start), deadline_at=deadline_at,
+                    float(start),
+                    expected_orientation=str(item.get("orientation") or ""),
+                    deadline_at=deadline_at,
                 )
             remaining = deadline_at - time.time()
             if remaining <= 0:

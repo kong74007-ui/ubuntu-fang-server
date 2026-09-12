@@ -3236,6 +3236,63 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                 self.service._reference_video_duration(self.root / "video.mp4"),
             )
 
+    def test_orientation_probe_ignores_only_conflicting_rotation_metadata(self):
+        rotated_landscape_encoding = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "streams": [{
+                    "codec_type": "video", "width": 1920, "height": 1080,
+                    "tags": {"rotate": "90"},
+                    "side_data_list": [{"rotation": -90}],
+                }],
+            }),
+        )
+        with mock.patch.object(
+            matrix.subprocess, "run", return_value=rotated_landscape_encoding,
+        ) as probe:
+            self.assertEqual(
+                ["-noautorotate"],
+                self.service._ffmpeg_orientation_input_args(
+                    self.root / "bad-metadata.mov", "landscape",
+                ),
+            )
+            self.assertEqual(
+                [],
+                self.service._ffmpeg_orientation_input_args(
+                    self.root / "normal-rotated-portrait.mov", "portrait",
+                ),
+            )
+            command = probe.call_args_list[0].args[0]
+            self.assertEqual(
+                ["-select_streams", "v:0", "-show_streams"],
+                command[command.index("-select_streams"):command.index("-of")],
+            )
+
+        rotated_portrait_encoding = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "streams": [{
+                    "codec_type": "video", "width": 1080, "height": 1920,
+                    "tags": {"rotate": "90"},
+                }],
+            }),
+        )
+        with mock.patch.object(
+            matrix.subprocess, "run", return_value=rotated_portrait_encoding,
+        ):
+            self.assertEqual(
+                ["-noautorotate"],
+                self.service._ffmpeg_orientation_input_args(
+                    self.root / "bad-portrait-metadata.mov", "portrait",
+                ),
+            )
+            self.assertEqual(
+                [],
+                self.service._ffmpeg_orientation_input_args(
+                    self.root / "normal-rotated-landscape.mov", "landscape",
+                ),
+            )
+
     def test_reference_render_uses_locked_variables_and_local_gsap(self):
         payload = self.service.validate_payload({
             "top_text": "深圳AI创业者活动",
@@ -4517,12 +4574,18 @@ class NineGridTemplateTests(unittest.TestCase):
             self.service, "_run_tracked_process", side_effect=run,
         ), mock.patch.object(
             self.service, "_reference_video_duration", return_value=3.233,
+        ), mock.patch.object(
+            self.service, "_ffmpeg_orientation_input_args",
+            return_value=["-noautorotate"],
         ):
             self.service._prepare_nine_grid_clip(
-                source, destination, 12.5, deadline_at=time.time() + 30,
+                source, destination, 12.5,
+                expected_orientation="landscape",
+                deadline_at=time.time() + 30,
             )
 
         command = captured["command"]
+        self.assertLess(command.index("-noautorotate"), command.index("-i"))
         self.assertEqual("12.5", command[command.index("-ss") + 1])
         self.assertEqual("3.233333", command[command.index("-t") + 1])
         self.assertIn(
@@ -4553,6 +4616,7 @@ class NineGridTemplateTests(unittest.TestCase):
             "record_id": f"record-{index}",
             "sha256": format(index, "064x"),
             "media_type": "video",
+            "orientation": "landscape" if index == 2 else "portrait",
             "match_level": "random",
             "clip_id": format(index + 100, "064x"),
             "clip_start_seconds": float(index),
@@ -4568,10 +4632,12 @@ class NineGridTemplateTests(unittest.TestCase):
         prepared = []
         captured = {}
 
-        def prepare(source, destination, start, **_kwargs):
+        def prepare(source, destination, start, **kwargs):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"prepared" * 256)
-            prepared.append((source, destination, start))
+            prepared.append((
+                source, destination, start, kwargs["expected_orientation"],
+            ))
 
         class Process:
             returncode = 0
@@ -4598,6 +4664,10 @@ class NineGridTemplateTests(unittest.TestCase):
             )
 
         self.assertEqual(9, len(prepared))
+        self.assertEqual(
+            ["portrait", "landscape"] + ["portrait"] * 7,
+            [item[3] for item in prepared],
+        )
         self.assertEqual(str(self.cli.resolve()), captured["command"][0])
         self.assertEqual("assets/input/video-1.mp4", variables["main1"])
         self.assertEqual("assets/input/video-5.mp4", variables["main2"])
@@ -5315,6 +5385,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
             captured["command"].index("-ss") + 1
         ])
 
+    def test_fixed_clip_applies_orientation_override_before_input(self):
+        source = self.root / "bad-rotation-source.mov"
+        source.write_bytes(b"source")
+        destination = self.root / "fixed-output.mp4"
+        captured = {}
+
+        def run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"prepared" * 256)
+            return 0, b"", b""
+
+        with mock.patch.object(
+            self.service, "_reference_video_duration",
+            side_effect=[20.0, 117 / 30],
+        ), mock.patch.object(
+            self.service, "_ffmpeg_orientation_input_args",
+            return_value=["-noautorotate"],
+        ) as orientation, mock.patch.object(
+            self.service, "_run_tracked_process", side_effect=run,
+        ):
+            self.service._prepare_fixed_skill_clip(
+                source, destination, 11.104, 117, 1920,
+                expected_orientation="landscape",
+                deadline_at=time.time() + 30,
+            )
+
+        command = captured["command"]
+        orientation.assert_called_once_with(source, "landscape")
+        self.assertLess(command.index("-noautorotate"), command.index("-i"))
+        self.assertTrue(destination.is_file())
+
     def test_render_stages_frozen_fields_media_and_optional_bgm(self):
         class Process:
             returncode = 0
@@ -5348,6 +5449,9 @@ class FixedSkillTemplateTests(unittest.TestCase):
                         "scene_id": f"media_{index:02d}",
                         "sha256": format(index, "064x"),
                         "media_type": "video",
+                        "orientation": (
+                            "landscape" if index == 2 else "portrait"
+                        ),
                         "clip_start_seconds": float(index),
                         "clip_duration_seconds": durations[index - 1],
                     } for index in range(1, config["required_visuals"] + 1)]
@@ -5359,7 +5463,11 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     prepared = []
 
                     def prepare(source, destination, start, frames, height,
-                                *, deadline_at):
+                                *, expected_orientation, deadline_at):
+                        self.assertEqual(
+                            "landscape" if start == 2.0 else "portrait",
+                            expected_orientation,
+                        )
                         prepared.append((destination, start, frames, height))
                         return float(start)
 
