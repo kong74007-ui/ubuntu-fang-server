@@ -2393,6 +2393,66 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "以前开店要组团队盯店熬到凌晨", 12, 3
         ))
 
+    def test_v09_bottom_splits_at_separator_without_orphan_tail(self):
+        """v09 底部必须按完整短语在 ｜ 处分行，不得拆词、不得留孤字尾行。"""
+        _source, display = matrix._reference_text_layout(
+            "在成都高新区", "社交破圈｜认知提升｜彼此赋能", 2,
+        )
+        self.assertEqual("社交破圈｜认知提升", display["bottom1"])
+        self.assertEqual("彼此赋能", display["bottom2"])
+        self.assertNotIn("彼此赋\n能", display["bottom1"] + display["bottom2"])
+
+    def test_v09_short_bottom_stays_single_line(self):
+        _source, display = matrix._reference_text_layout(
+            "在成都高新区", "彼此赋能", 2,
+        )
+        self.assertEqual("", display["bottom1"])
+        self.assertEqual("彼此赋能", display["bottom2"])
+
+    def test_reference_bottom_layout_acceptance_matrix(self):
+        """分隔符 / 无分隔符 / 带标点 / 接近上限 四类文案的排版验收。"""
+        samples = (
+            "社交破圈｜认知提升｜彼此赋能",
+            "想了解的评论区回复勾兑",
+            "大健康是长期需求，想入局的回复勾兑",
+            "社交破圈｜认知提升｜彼此赋能｜资源共享｜长期成长",
+        )
+        for text in samples:
+            with self.subTest(text=text):
+                source, display = matrix._reference_text_layout(
+                    "在成都高新区", text, 2,
+                )
+                self.assertEqual(
+                    text,
+                    source["bottom1"] + source["bottom2"],
+                    "分行不得增删字符",
+                )
+                lines = [
+                    line
+                    for line in (display["bottom1"], display["bottom2"])
+                    if line
+                ]
+                self.assertTrue(lines, text)
+                for line in lines:
+                    # ｜ 与句读不得孤立在行首/行尾
+                    self.assertFalse(line.startswith("｜"), line)
+                    self.assertFalse(line.endswith("｜"), line)
+                    self.assertNotIn(line[0], "，。！？；：、,.!?;:", line)
+                    # 不溢出宽度预算
+                    self.assertLessEqual(matrix._visual_width(line), 15, line)
+                    # 不得出现 1~2 个字的孤字行（仅当确实分了多行时）
+                    if len(lines) > 1:
+                        self.assertGreaterEqual(matrix._visual_width(line), 2.0, line)
+
+    def test_separator_breaks_are_preferred_and_never_start_a_line(self):
+        text = "社交破圈｜认知提升｜彼此赋能"
+        for index, char in enumerate(text):
+            if char != "｜":
+                continue
+            self.assertIsNone(matrix._semantic_break_penalty(text, index))
+            self.assertIsNotNone(matrix._semantic_break_penalty(text, index + 1))
+            self.assertLess(matrix._semantic_break_penalty(text, index + 1), 0)
+
     def test_semantic_layers_preserve_english_and_mixed_spacing(self):
         samples = [
             "OpenAI, Codex, Agent workflow.",
