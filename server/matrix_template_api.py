@@ -47,10 +47,22 @@ MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
 # 素材并行下载的并发数（2026-09-12）：素材请求互相独立，串行下一个等一个是纯浪费。
 MATERIAL_DOWNLOAD_WORKERS = max(1, min(16, int(os.environ.get(
     "MATRIX_TEMPLATE_DOWNLOAD_WORKERS", "6"))))
+# 固定 Skill 模板每格素材要切一次片（libx264 重编码，每格几秒）。原来 8 格串行跑，
+# 占了「渲染 82 秒」里的一大半。它们互相独立 —— 并行切（2026-09-12）。
+SLOT_CUT_WORKERS = max(1, min(8, int(os.environ.get(
+    "MATRIX_TEMPLATE_SLOT_CUT_WORKERS", "4"))))
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
 PEXELS_SEARCH_RESPONSE_BYTES = 4 * 1024 * 1024
 PEXELS_SEARCH_PER_PAGE = 80
+# Pexels 素材下载：单次尝试的总时长上限 + 重试次数（2026-09-12）。
+# timeout=180 只管「每次读」，一个卡死或细水长流的连接能烧掉 180~313 秒再失败，
+# 整条任务跟着报废（实测 fang 的出口只有 128 KB/s、节点约 1 MB/s 且会间歇卡死）。
+# 卡顿多是连接级的 —— 换个连接通常就恢复，所以按「单次限时 + 重试」来，而不是死等。
+PEXELS_DOWNLOAD_ATTEMPT_SECONDS = max(10, min(180, int(os.environ.get(
+    "MATRIX_TEMPLATE_PEXELS_ATTEMPT_SECONDS", "45"))))
+PEXELS_DOWNLOAD_ATTEMPTS = max(1, min(5, int(os.environ.get(
+    "MATRIX_TEMPLATE_PEXELS_ATTEMPTS", "3"))))
 PEXELS_CHINA_QUERIES = (
     "中国城市生活", "中国商务团队", "中国女性聚会", "中国办公室",
     "中国创业者", "中国社交活动", "中国健康生活", "中国商业交流",
@@ -5193,21 +5205,39 @@ class MatrixTemplateService:
         digest = hashlib.sha256()
         total = 0
         try:
-            try:
-                with urllib.request.urlopen(request, timeout=180) as response:
-                    if response.headers.get_content_type() != "video/mp4":
-                        raise MatrixTemplateError("Pexels 素材文件类型不受支持")
-                    with temporary.open("wb") as handle:
-                        while chunk := response.read(1024 * 1024):
-                            total += len(chunk)
-                            if total > MAX_ASSET_BYTES:
-                                raise MatrixTemplateError("Pexels 素材文件过大")
-                            digest.update(chunk)
-                            handle.write(chunk)
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-                raise MatrixTemplateError("Pexels 素材文件读取失败") from exc
-            if not total:
-                raise MatrixTemplateError("Pexels 素材文件为空")
+            # 单次限时 + 重试：卡住的连接不再烧 180 秒然后整条任务报废。
+            for _attempt in range(1, PEXELS_DOWNLOAD_ATTEMPTS + 1):
+                digest = hashlib.sha256()
+                total = 0
+                _started = time.monotonic()
+                try:
+                    try:
+                        with urllib.request.urlopen(
+                            request, timeout=PEXELS_DOWNLOAD_ATTEMPT_SECONDS,
+                        ) as response:
+                            if response.headers.get_content_type() != "video/mp4":
+                                raise MatrixTemplateError("Pexels 素材文件类型不受支持")
+                            with temporary.open("wb") as handle:
+                                while chunk := response.read(1024 * 1024):
+                                    if (time.monotonic() - _started
+                                            > PEXELS_DOWNLOAD_ATTEMPT_SECONDS):
+                                        raise TimeoutError("Pexels 素材下载超时")
+                                    total += len(chunk)
+                                    if total > MAX_ASSET_BYTES:
+                                        raise MatrixTemplateError("Pexels 素材文件过大")
+                                    digest.update(chunk)
+                                    handle.write(chunk)
+                    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+                        raise MatrixTemplateError("Pexels 素材文件读取失败") from exc
+                    if not total:
+                        raise MatrixTemplateError("Pexels 素材文件为空")
+                    break
+                except MatrixTemplateError as exc:
+                    if _attempt >= PEXELS_DOWNLOAD_ATTEMPTS:
+                        raise
+                    print("[matrix-template] Pexels 下载第%d次失败（%.1fs），换连接重试：%s"
+                          % (_attempt, time.monotonic() - _started, str(exc)[:60]),
+                          flush=True)
             content_sha256 = digest.hexdigest()
             frozen = str(item.get("content_sha256") or "").lower()
             if frozen and (
@@ -6088,17 +6118,32 @@ class MatrixTemplateService:
         self._acquire_hyperframes_slot(deadline_at)
         actual_starts = []
         try:
-            for source, start, frames, height, relative in zip(
+            # 切片并行（2026-09-12）：每格要跑一次 libx264 重编码，原来 8 格串行 ——
+            # 实测这一大段占了「渲染 82 秒」里的主要部分。它们互相独立，并行切。
+            # pool.map 保序（结果按下标对回槽位），异常照常抛出；
+            # _run_tracked_process 自带 process_lock，并发安全。
+            _slots = list(zip(
                 paths, selected_starts, config["slot_frames"],
                 config["slot_heights"], config["media_paths"],
-            ):
+            ))
+
+            def _cut_slot(slot):
+                source, start, frames, height, relative = slot
                 if self.stop_event.is_set():
                     raise MatrixTemplateError("模板成片服务正在停止")
-                actual_starts.append(self._prepare_fixed_skill_clip(
+                return self._prepare_fixed_skill_clip(
                     source, workdir.joinpath(*str(relative).split("/")),
                     float(start), int(frames), int(height),
                     deadline_at=deadline_at,
-                ))
+                )
+
+            if len(_slots) > 1:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(len(_slots), SLOT_CUT_WORKERS)
+                ) as _cut_pool:
+                    actual_starts = list(_cut_pool.map(_cut_slot, _slots))
+            else:
+                actual_starts = [_cut_slot(slot) for slot in _slots]
             for item, actual_start, actual_duration in zip(
                 materials, actual_starts, expected_durations,
             ):
@@ -6683,7 +6728,18 @@ class MatrixTemplateService:
         # 也就是说「出片 3 分钟」里有 2/3 是排队等素材，不是算得慢。
         # pool.map 保序，异常照常抛出；_download 各自写独立文件、Pexels 缓存自带锁。
         def _fetch(item):
-            return self._download(item, assets, job_id)
+            # 每格下载计时（2026-09-12）：下载总量波动极大（14s~265s），要分清是
+            # Pexels 还是黄雀库、是哪一格拖的 —— 只看总量查不下去。
+            _t = time.monotonic()
+            _p = str(item.get("provider") or item.get("source") or "?")
+            try:
+                out = self._download(item, assets, job_id)
+            except Exception:
+                print("[matrix-template] 下载失败 %s 用了%.1fs" % (_p, time.monotonic() - _t),
+                      flush=True)
+                raise
+            print("[matrix-template] 下载 %-8s %.1fs" % (_p, time.monotonic() - _t), flush=True)
+            return out
 
         if len(materials) > 1:
             with concurrent.futures.ThreadPoolExecutor(
