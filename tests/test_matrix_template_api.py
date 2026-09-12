@@ -4458,7 +4458,7 @@ class NineGridTemplateTests(unittest.TestCase):
             {3.0}, {item["clip_duration_seconds"] for item in scenes},
         )
 
-    def test_nine_grid_splits_bookends_library_and_middle_pexels(self):
+    def test_nine_grid_uses_library_for_every_slot(self):
         payload = {
             "top_text": "九宫格标题", "bottom_text": "评论区获取资料",
             "template_id": matrix.NINE_GRID_TEMPLATE_ID,
@@ -4478,8 +4478,8 @@ class NineGridTemplateTests(unittest.TestCase):
                 "clip_slot_index": 1, "clip_slot_count": 1,
             }
 
-        library_materials = [material(1), material(9)]
-        pexels_materials = [material(index) for index in range(2, 9)]
+        library_materials = [material(index) for index in range(1, 10)]
+        pexels_materials = []
         response = {
             "materials": library_materials,
             "selection_contract_version": 2,
@@ -4499,8 +4499,8 @@ class NineGridTemplateTests(unittest.TestCase):
             [f"media_{index:02d}" for index in range(1, 10)],
             [item["scene_id"] for item in selected],
         )
-        self.assertEqual(2, len(library.call_args.args[2]["scenes"]))
-        self.assertEqual(7, len(pexels.call_args.args[0]))
+        self.assertEqual(9, len(library.call_args.args[2]["scenes"]))
+        self.assertEqual(0, len(pexels.call_args.args[0]))
 
     def test_prepare_clip_freezes_selected_window_and_adds_hidden_tail(self):
         source = self.root / "source.mp4"
@@ -5511,36 +5511,23 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         return _Resp()
 
     # 1-8：来源顺序与片段数量
-    def test_source_plan_bookends_library_middle_pexels(self):
-        self.assertEqual(
-            ("huangque", "pexels", "pexels"), matrix._material_source_plan(3),
-        )
-        self.assertEqual(
-            ("huangque", "pexels", "pexels", "huangque"),
-            matrix._material_source_plan(4),
-        )
-        self.assertEqual(
-            ("huangque", "pexels", "pexels", "pexels", "huangque"),
-            matrix._material_source_plan(5),
-        )
-        self.assertEqual(
-            ("huangque", "pexels", "pexels", "pexels", "pexels",
-             "pexels", "pexels", "huangque"),
-            matrix._material_source_plan(8),
-        )
-        self.assertEqual(
-            ("huangque", "pexels", "pexels", "pexels", "pexels",
-             "pexels", "pexels", "pexels", "huangque"),
-            matrix._material_source_plan(9),
-        )
+    def test_source_plan_all_local_library(self):
+        # 2026-09-12：画面格全部走本地素材库。
+        # 原先首尾格走本地库、中间格走 Pexels 公网搜索池；实测每格公网 6.8s /
+        # 本地 0.7s，且公共素材库本身就是 Pexels 预下载回来的，风格一致。
+        for count in (3, 4, 5, 8, 9):
+            self.assertEqual(
+                ("huangque",) * count, matrix._material_source_plan(count),
+            )
 
     def test_never_six_clips(self):
         with self.assertRaises(matrix.MatrixTemplateError):
             matrix._material_source_plan(6)
 
-    def test_motion_v2_source_plan_adds_one_stable_middle_library_slot(self):
+    def test_motion_v2_source_plan_all_local_library(self):
+        # 2026-09-12：固定 Skill / motion-v2 模板同样全走本地库；
+        # 计划仍必须是确定性的（同一 seed 两次调用结果一致）。
         for count in (5, 7):
-            seen_middle = set()
             for index in range(64):
                 seed = format(index, "032x")
                 first = matrix._material_source_plan(
@@ -5549,17 +5536,8 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
                 second = matrix._material_source_plan(
                     count, include_middle_library=True, seed=seed,
                 )
-                library_indexes = [
-                    slot for slot, source in enumerate(first)
-                    if source == "huangque"
-                ]
                 self.assertEqual(first, second)
-                self.assertEqual(3, len(library_indexes))
-                self.assertEqual([0, count - 1], [
-                    library_indexes[0], library_indexes[-1],
-                ])
-                seen_middle.add(library_indexes[1])
-            self.assertEqual(set(range(1, count - 1)), seen_middle)
+                self.assertEqual(("huangque",) * count, first)
         self.assertLessEqual(matrix._required_visuals(15.0), 5)
         self.assertGreaterEqual(matrix._required_visuals(7.0), 3)
 
@@ -5577,12 +5555,12 @@ class PexelsMaterialRoutingTests(unittest.TestCase):
         for count in (3, 4, 5, 8, 9):
             self.assertEqual("huangque", matrix._material_source_plan(count)[0])
 
-    def test_last_clip_3_pexels_45_huangque(self):
-        self.assertEqual("pexels", matrix._material_source_plan(3)[-1])
-        self.assertEqual("huangque", matrix._material_source_plan(4)[-1])
-        self.assertEqual("huangque", matrix._material_source_plan(5)[-1])
-        self.assertEqual("huangque", matrix._material_source_plan(8)[-1])
-        self.assertEqual("huangque", matrix._material_source_plan(9)[-1])
+    def test_last_clip_always_huangque(self):
+        # 2026-09-12：3 格模板的末格原先走 Pexels，现同样走本地库。
+        for count in (3, 4, 5, 8, 9):
+            self.assertEqual(
+                "huangque", matrix._material_source_plan(count)[-1],
+            )
 
     # 9：BGM 始终来自黄雀
     def test_bgm_always_huangque(self):
