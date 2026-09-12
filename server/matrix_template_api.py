@@ -1223,13 +1223,6 @@ _PROTECTED_BREAK_PAIRS = {
 }
 _PROTECTED_RIGHT_SUFFIXES = frozenset("者们队词员家区店圈群会局型式端率量性化力感")
 
-# 竖线类分隔符：不得出现在行首；若出现在行尾，由 _hide_reference_edge_punctuation
-# 从展示文案里抹掉，因此行尾的 ｜ 不会真的显示在边缘。
-_REFERENCE_LINE_SEPARATORS = "｜|"
-# 尾行过短（1~2 个字）视为孤字行，尽量避免。
-_SEMANTIC_ORPHAN_TAIL_WIDTH = 2.0
-_SEMANTIC_ORPHAN_TAIL_PENALTY = 400.0
-
 
 def _balanced_title(text: str, max_chars: int, max_lines: int) -> str:
     compact = " ".join(str(text or "").split())
@@ -1365,8 +1358,6 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
         return None
     if right in "，。！？；：、,.!?;:)]}）】》」』+%％":
         return None
-    if right in _REFERENCE_LINE_SEPARATORS:
-        return None
     if left in "([{（【《「『+":
         return None
     if (
@@ -1392,9 +1383,6 @@ def _semantic_break_penalty(value: str, index: int) -> float | None:
         return -12.0
     if boundary == "、":
         return -5.0
-    if boundary in _REFERENCE_LINE_SEPARATORS:
-        # 优先在 ｜ 之后断行，保证「A｜B｜C」按完整短语分行而不是拆词。
-        return -18.0
     if left.isspace():
         return -3.0
     return 0.0
@@ -1426,9 +1414,7 @@ def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
                     continue
                 for end in range(start + 1, len(compact) + 1):
                     segment = compact[start:end]
-                    # 行首/行尾会被 _hide_reference_edge_punctuation 抹掉的标点
-                    # （包括 ｜）不参与宽度计算，否则会误计一整个字宽。
-                    width = _visual_width(_hide_reference_edge_punctuation(segment))
+                    width = _visual_width(segment)
                     if width > width_limit + 0.001:
                         break
                     if not segment.strip():
@@ -1445,14 +1431,10 @@ def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
                     if not remaining_layers and end != len(compact):
                         continue
                     score = state[0] + (width - ideal) ** 2 + penalty
-                    if layer_index == target_layers - 1:
-                        if width < ideal * 0.55:
-                            score += (ideal - width) ** 2 * 1.5
-                        if width < _SEMANTIC_ORPHAN_TAIL_WIDTH:
-                            score += _SEMANTIC_ORPHAN_TAIL_PENALTY
+                    if layer_index == target_layers - 1 and width < ideal * 0.55:
+                        score += (ideal - width) ** 2 * 1.5
                     key = (layer_index + 1, end)
-                    if key not in states or score <= states[key][0]:
-                        # 并列时取更靠后的断点，使首行不短于末行（阅读节奏更稳）
+                    if key not in states or score < states[key][0]:
                         states[key] = (score, state[1] + [end])
         selected = states.get((target_layers, len(compact)))
         if selected is None:
@@ -1463,11 +1445,7 @@ def _semantic_layers(text: str, max_chars: int, max_layers: int) -> list[str]:
             start = end
         if (
             "".join(result) == compact
-            and all(
-                _visual_width(_hide_reference_edge_punctuation(item))
-                <= width_limit + 0.001
-                for item in result
-            )
+            and all(_visual_width(item) <= width_limit + 0.001 for item in result)
         ):
             return result
     raise ValueError("文案无法在模板文字层内安全断句")

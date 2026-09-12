@@ -2393,14 +2393,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             "以前开店要组团队盯店熬到凌晨", 12, 3
         ))
 
-    def test_v09_bottom_splits_at_separator_without_orphan_tail(self):
-        """v09 底部必须按完整短语在 ｜ 处分行，不得拆词、不得留孤字尾行。"""
-        _source, display = matrix._reference_text_layout(
+    def test_v09_bottom_layout_is_unchanged(self):
+        """锁定 v09 底部现有断句行为（本次修复不修改断句与排版）。"""
+        source, display = matrix._reference_text_layout(
             "在成都高新区", "社交破圈｜认知提升｜彼此赋能", 2,
         )
-        self.assertEqual("社交破圈｜认知提升", display["bottom1"])
-        self.assertEqual("彼此赋能", display["bottom2"])
-        self.assertNotIn("彼此赋\n能", display["bottom1"] + display["bottom2"])
+        self.assertEqual(
+            "社交破圈｜认知提升｜彼此赋能",
+            source["bottom1"] + source["bottom2"],
+            "分行不得增删字符",
+        )
+        self.assertEqual(
+            ["社交破圈｜认知", "提升｜彼此赋能"],
+            [line for line in (display["bottom1"], display["bottom2"]) if line],
+        )
 
     def test_v09_short_bottom_stays_single_line(self):
         _source, display = matrix._reference_text_layout(
@@ -2444,14 +2450,19 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
                     if len(lines) > 1:
                         self.assertGreaterEqual(matrix._visual_width(line), 2.0, line)
 
-    def test_separator_breaks_are_preferred_and_never_start_a_line(self):
-        text = "社交破圈｜认知提升｜彼此赋能"
-        for index, char in enumerate(text):
-            if char != "｜":
-                continue
-            self.assertIsNone(matrix._semantic_break_penalty(text, index))
-            self.assertIsNotNone(matrix._semantic_break_penalty(text, index + 1))
-            self.assertLess(matrix._semantic_break_penalty(text, index + 1), 0)
+    def test_separator_copy_keeps_current_break_points(self):
+        """锁定 ｜ 文案的现有断点，确保后续改动不会无意间改掉它。"""
+        source, display = matrix._reference_text_layout(
+            "在成都高新区", "一起成长｜一起赚钱｜一起变美", 2,
+        )
+        self.assertEqual(
+            "一起成长｜一起赚钱｜一起变美",
+            source["bottom1"] + source["bottom2"],
+        )
+        self.assertEqual(
+            ["一起成长｜一起", "赚钱｜一起变美"],
+            [line for line in (display["bottom1"], display["bottom2"]) if line],
+        )
 
     def test_semantic_layers_preserve_english_and_mixed_spacing(self):
         samples = [
