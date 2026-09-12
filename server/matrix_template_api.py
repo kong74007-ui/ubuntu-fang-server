@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import hashlib
 import hmac
@@ -43,6 +44,9 @@ MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 5.0
 MATERIAL_LIBRARY_READINESS_TTL_SECONDS = 5.0
+# 素材并行下载的并发数（2026-09-12）：素材请求互相独立，串行下一个等一个是纯浪费。
+MATERIAL_DOWNLOAD_WORKERS = max(1, min(16, int(os.environ.get(
+    "MATRIX_TEMPLATE_DOWNLOAD_WORKERS", "6"))))
 PEXELS_API_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_SEARCH_CACHE_SECONDS = 24 * 60 * 60
 PEXELS_SEARCH_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -629,6 +633,10 @@ REFERENCE_BGM_SOURCE_RE = re.compile(
     r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
 REFERENCE_MEDIA_SAFETY_SECONDS = 0.1
+# Pexels 的 duration 是**整数秒的元数据**，而渲染校验用 ffprobe 读**真实时长**；
+# 真实值可能比元数据少最多 1 秒。取素材时若只留 0.1 秒余量，起点一旦落在尾部就会
+# 偶发「固定 Skill 模板素材时长不足」（2026-09-12 定位，两次失败都在这条路径上）。
+PEXELS_METADATA_DURATION_SLACK_SECONDS = 1.0
 REFERENCE_MIN_SEGMENT_SECONDS = 2.0
 REFERENCE_MAX_SEGMENT_SECONDS = 3.0
 REFERENCE_VIDEO_IDS = ("videoA", "videoB", "videoC", "videoD", "videoE")
@@ -4677,7 +4685,10 @@ class MatrixTemplateService:
                 source_id = hashlib.sha256(
                     f"pexels:video:{video['id']}:file:{file.get('id')}".encode("utf-8")
                 ).hexdigest()
-                if source_id in used or source_duration + 0.001 < required_duration + 0.1:
+                if source_id in used or source_duration + 0.001 < (
+                    required_duration + REFERENCE_MEDIA_SAFETY_SECONDS
+                    + PEXELS_METADATA_DURATION_SLACK_SECONDS
+                ):
                     continue
                 eligible.append((video, file, source_duration, query, source_id))
             if not eligible:
@@ -4686,7 +4697,9 @@ class MatrixTemplateService:
                 f"{job_id}:{scene['scene_id']}:{position}:{item[4]}".encode("utf-8")
             ).hexdigest())
             video, file, source_duration, query, source_id = ranked[0]
-            max_start = max(0.0, source_duration - required_duration - 0.1)
+            max_start = max(0.0, source_duration - required_duration
+                           - REFERENCE_MEDIA_SAFETY_SECONDS
+                           - PEXELS_METADATA_DURATION_SLACK_SECONDS)
             start_digest = hashlib.sha256(
                 f"{job_id}:{scene['scene_id']}:{source_id}:start".encode("utf-8")
             ).digest()
@@ -6662,7 +6675,21 @@ class MatrixTemplateService:
         assets = root / "assets/library"
         assets.mkdir(parents=True, exist_ok=True)
         materials = self._select_materials(payload, job_id)
-        paths = [self._download(item, assets, job_id) for item in materials]
+        # 素材并行下载（2026-09-12）：这些请求互相独立，串行下一个等一个是纯浪费。
+        # 实测固定 Skill 模板卡在这一步 90~160 秒 —— 期间机器 CPU 全程为 0、
+        # chrome/ffmpeg 都没起，纯粹在等网络；而真正渲染只要 44~80 秒。
+        # 也就是说「出片 3 分钟」里有 2/3 是排队等素材，不是算得慢。
+        # pool.map 保序，异常照常抛出；_download 各自写独立文件、Pexels 缓存自带锁。
+        def _fetch(item):
+            return self._download(item, assets, job_id)
+
+        if len(materials) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(materials), MATERIAL_DOWNLOAD_WORKERS)
+            ) as _pool:
+                paths = list(_pool.map(_fetch, materials))
+        else:
+            paths = [_fetch(item) for item in materials]
         provenance = payload["_font_provenance"]
         reference_template = payload["template_id"] in self.reference_templates
         nine_grid_template = payload["template_id"] == NINE_GRID_TEMPLATE_ID
