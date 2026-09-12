@@ -1,5 +1,4 @@
 {
-  "head_sha": "05955c689c367f24ff7b74e1c1611c76c41ddccb",
   "base_sha": "029fd5e0f7a50d8d2e31ce082fffebb6d2f7e0cc",
   "packs": {
     "before": {
@@ -16,7 +15,6 @@
   "input": {
     "accept_raw_input_sha256": "c98ec19f2c31c1c7f627c0655aab989bf47ca0116b03fca1369b3f38f6a342d6",
     "manifest_before_sha256": "894b61477d3a05e9cf8b4d4abe31c26fd70c209e8ae21885679958bea0ca604c",
-    "manifest_after_sha256": "a3605f6e7e3e67705b0811f3c425ff772f2e667590c88cdeeebda13b6aaa2c0c",
     "top_text": "选赛道别只看谁现在最火 要看三年后 客户还会不会继续消费",
     "bottom_text": "大健康是长期需求赛道 想入局的 评论区回复 勾兑",
     "semantic_layout": {
@@ -34,7 +32,8 @@
         21
       ]
     },
-    "payload_source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1"
+    "payload_source_sha256": "89f75f1c37103c3ff3a4fb3a632034b6a4833e6d945d05cd762abd96f49a8dd1",
+    "manifest_before_after_sha256": "a3605f6e7e3e67705b0811f3c425ff772f2e667590c88cdeeebda13b6aaa2c0c"
   },
   "render": {
     "hyperframes": "0.8.16",
@@ -92,5 +91,8 @@
     "OVERVIEW-1-before-after.png": "015461bd34364d5a407ea587ca7ec646a8d0b5f5570d208e74a730c9c167106a",
     "OVERVIEW-2-keyframes-after.png": "b9801dbd05b855079b0e78ce6703c35d38117620b8a63410afbc0401e58105fe",
     "render-report.json": "2106636c9cfd1a16b8b2bb3cc4bd982df648dc3360eac371619a067e4f1a9fe5"
-  }
+  },
+  "code_sha": "4543019a6ec357f4b61331fed78b35c363b477ea",
+  "head_sha": "4543019a6ec357f4b61331fed78b35c363b477ea",
+  "evidence_note": "hashes.json 由紧随其后的提交收录；code_sha 即产出本批 MP4/关键帧的代码提交。"
 }

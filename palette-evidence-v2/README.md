@@ -57,8 +57,8 @@ python3 palette-evidence-v2/tools/render_evidence.py /tmp/pipeline_manifest.json
 ## 5. 目录内容
 
 ```
-manifest-before.json           生产包（palette v1）的链路产物
-manifest-after.json            候选包（palette v2）的链路产物
+manifest-before.json           生产包（palette v1）的链路产物（生产链路原样输出）
+manifest-before-after.json     两套包在同一份 payload 上的 display_text 对照（含 before==after 校验）
 render-report.json             8 次渲染的时长/大小/关键帧清单
 v0*.variables.json             每个模板实际喂给 HyperFrames 的变量（= display_text）
 OVERVIEW-1-before-after.png    4 模板 before|after（中段帧）
