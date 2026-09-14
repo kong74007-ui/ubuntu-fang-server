@@ -62,6 +62,7 @@ PEXELS_DOWNLOAD_ATTEMPTS = max(1, min(5, int(os.environ.get(
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 NINE_GRID_PREPARE_CLIP_TIMEOUT_SECONDS = 120
+NINE_GRID_PREP_ENCODERS = frozenset({"libx264", "h264_nvenc"})
 DEFAULT_HYPERFRAMES_CONCURRENCY = 2
 DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS = 900
 DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS = 600
@@ -2412,6 +2413,7 @@ class MatrixTemplateService:
                  motion_v2_hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
+                 nine_grid_prep_encoder: str = "libx264",
                  hyperframes_concurrency: int = DEFAULT_HYPERFRAMES_CONCURRENCY,
                  hyperframes_total_timeout_seconds: int = DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS,
                  hyperframes_slot_timeout_seconds: int = DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS,
@@ -2492,6 +2494,11 @@ class MatrixTemplateService:
         self.hyperframes_browser = (
             hyperframes_browser.resolve() if hyperframes_browser else None
         )
+        self.nine_grid_prep_encoder = str(nine_grid_prep_encoder).strip().lower()
+        if self.nine_grid_prep_encoder not in NINE_GRID_PREP_ENCODERS:
+            raise MatrixTemplateError(
+                "nine-grid prep encoder must be libx264 or h264_nvenc"
+            )
         self.hyperframes_concurrency = int(hyperframes_concurrency)
         if not 1 <= self.hyperframes_concurrency <= 2:
             raise MatrixTemplateError("HyperFrames concurrency must be between 1 and 2")
@@ -4361,6 +4368,7 @@ class MatrixTemplateService:
             "public_template_palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
             "public_template_palette_count": PUBLIC_TEMPLATE_PALETTE_COUNT,
             "hyperframes_concurrency": self.hyperframes_concurrency,
+            "nine_grid_prep_encoder": self.nine_grid_prep_encoder,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
             "hyperframes_slot_timeout_seconds": self.hyperframes_slot_timeout_seconds,
         }
@@ -5521,12 +5529,17 @@ class MatrixTemplateService:
             f"tpad=stop_mode=clone:stop_duration={tail:.6f},"
             "format=yuv420p"
         )
+        encoder_args = (
+            ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18"]
+            if self.nine_grid_prep_encoder == "h264_nvenc"
+            else ["-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                  "-threads", "2"]
+        )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-ss", _format_reference_seconds(float(start)), "-i", str(source),
             "-map", "0:v:0", "-an", "-vf", video_filter,
-            "-t", f"{encoded:.6f}", "-c:v", "libx264", "-preset", "fast",
-            "-crf", "18", "-pix_fmt", "yuv420p", "-threads", "2",
+            "-t", f"{encoded:.6f}", *encoder_args, "-pix_fmt", "yuv420p",
             "-color_primaries", "bt709", "-color_trc", "bt709",
             "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-movflags", "+faststart", str(temporary),
@@ -7073,6 +7086,9 @@ def main() -> None:
         hyperframes_browser=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER", "/usr/bin/google-chrome-stable"
         )),
+        nine_grid_prep_encoder=os.environ.get(
+            "MATRIX_TEMPLATE_NINE_GRID_PREP_ENCODER", "libx264",
+        ),
         hyperframes_concurrency=int(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY",
             str(DEFAULT_HYPERFRAMES_CONCURRENCY),

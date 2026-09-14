@@ -4373,6 +4373,9 @@ class NineGridTemplateTests(unittest.TestCase):
 
     def test_catalog_and_payload_use_shared_copy_contract(self):
         self.assertEqual(3, len(self.service.catalog))
+        self.assertEqual(
+            "libx264", self.service.health()["nine_grid_prep_encoder"],
+        )
         template = self.service.catalog[-1]
         self.assertEqual(matrix.NINE_GRID_TEMPLATE_ID, template["id"])
         self.assertEqual("fixed_12", template["duration_mode"])
@@ -4404,6 +4407,27 @@ class NineGridTemplateTests(unittest.TestCase):
             frozen["_font_provenance"]["selection"]["variant"],
         )
         self.assertTrue(frozen["_nine_grid_template"]["bgm_enabled"])
+
+    def test_invalid_nine_grid_prep_encoder_fails_closed(self):
+        with mock.patch.object(
+            matrix.subprocess, "run",
+            return_value=SimpleNamespace(
+                returncode=0, stdout="0.8.33\n", stderr="",
+            ),
+        ), self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "nine-grid prep encoder",
+        ):
+            matrix.MatrixTemplateService(
+                data_root=self.root / "invalid-encoder-data",
+                skill_root=self.skill,
+                nine_grid_root=self.nine_grid,
+                nine_grid_hyperframes_cli=self.cli,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                nine_grid_prep_encoder="invalid",
+                start_worker=False,
+            )
 
     def test_bgm_false_is_frozen_and_rewrites_bound_track_to_silence(self):
         top = "九宫格标题"
@@ -4527,6 +4551,36 @@ class NineGridTemplateTests(unittest.TestCase):
             "tpad=stop_mode=clone:stop_duration=0.233333",
             command[command.index("-vf") + 1],
         )
+        self.assertEqual("libx264", command[command.index("-c:v") + 1])
+        self.assertEqual("2", command[command.index("-threads") + 1])
+        self.assertTrue(destination.is_file())
+
+    def test_prepare_clip_can_use_nvenc(self):
+        source = self.root / "source.mp4"
+        source.write_bytes(b"source")
+        destination = self.root / "prepared.mp4"
+        captured = {}
+        self.service.nine_grid_prep_encoder = "h264_nvenc"
+
+        def run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"prepared" * 256)
+            return 0, b"", b""
+
+        with mock.patch.object(
+            self.service, "_run_tracked_process", side_effect=run,
+        ), mock.patch.object(
+            self.service, "_reference_video_duration", return_value=3.233,
+        ):
+            self.service._prepare_nine_grid_clip(
+                source, destination, 0.0, deadline_at=time.time() + 30,
+            )
+
+        command = captured["command"]
+        self.assertEqual("h264_nvenc", command[command.index("-c:v") + 1])
+        self.assertEqual("p5", command[command.index("-preset") + 1])
+        self.assertEqual("18", command[command.index("-cq") + 1])
+        self.assertNotIn("-threads", command)
         self.assertTrue(destination.is_file())
 
     def test_render_uses_nine_clips_bound_bgm_and_pinned_cli(self):
