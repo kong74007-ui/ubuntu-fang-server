@@ -1,5 +1,27 @@
 # Matrix template video service
 
+## Restricted public-material selection
+
+The authenticated main-site caller may freeze `material_scope=public_only` for
+accounts restricted to their own uploads plus approved public-library media.
+The generator does not determine account eligibility; the main site owns that
+authorization decision. Requests without this field retain existing behavior.
+
+Restricted library selection excludes non-public hashes and verifies every
+selected library asset, including BGM and frozen-selection replay, against the
+local whitelist. User uploads retain the existing validated user-asset path.
+Missing, unreadable or empty whitelists fail restricted selection. Keep the
+existing private whitelist at `/etc/huangque/matrix-template-public-materials.json`
+or set `MATRIX_TEMPLATE_PUBLIC_MATERIALS`; do not commit its contents. Its format
+is `{"version":1,"materials":[{"sha256":"<64 lowercase hex characters>"}]}`.
+Library enumeration caches only hashes and record counts for up to 30 minutes
+under the service data directory, with a final whitelist check on selected media.
+
+This implementation was recovered from the existing Fang worker before the HDR
+release, so deploying repository main preserves the existing account restriction.
+Run `python -m unittest tests.test_matrix_public_material_scope` for regression
+coverage of restriction, upload supplementation, BGM and replay behavior.
+
 ## HDR color preservation
 
 HDR video sources tagged BT.2020 HLG or PQ are prepared as 10-bit HEVC clips,

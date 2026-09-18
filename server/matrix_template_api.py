@@ -78,6 +78,14 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 # 用户自带素材（内测期新增）：走 provider="user"，文件在落盘时就按 sha256 存好。
 MATERIAL_PROVIDER_USER = "user"
 MATERIAL_POLICIES = frozenset({"shared", "owned_public"})
+# 素材范围（2026-09-17 一次性邀请码账号限制）：public_only 只允许公网素材。
+MATERIAL_SCOPES = frozenset({"public_only"})
+MATERIAL_SCOPE_PUBLIC_ONLY = "public_only"
+DEFAULT_PUBLIC_MATERIALS_PATH = "/etc/huangque/matrix-template-public-materials.json"
+PUBLIC_MATERIALS_MAX_AGE_SECONDS = 1800
+PUBLIC_MATERIALS_ENUM_SLOTS = 20
+PUBLIC_MATERIALS_ENUM_MAX_ROUNDS = 40
+PUBLIC_MATERIALS_STATE_DIRNAME = ".public-material-scope"
 USER_ASSET_DIRNAME = "user-assets"
 MAX_USER_ASSET_BYTES = 128 * 1024 * 1024
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -2400,7 +2408,9 @@ class JobStore:
 
 class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
-                 library_token: str, python: str = sys.executable,
+                 library_token: str,
+                 public_materials_path: Path | None = None,
+                 python: str = sys.executable,
                  private_font_root: Path | None = None,
                  reference_skill_root: Path | None = None,
                  nine_grid_root: Path | None = None,
@@ -2429,6 +2439,16 @@ class MatrixTemplateService:
         self.skill_root = skill_root.resolve()
         self.library_url = library_url.rstrip("/")
         self.library_token = library_token
+        self.public_materials_path = Path(
+            public_materials_path
+            or os.environ.get("MATRIX_TEMPLATE_PUBLIC_MATERIALS")
+            or DEFAULT_PUBLIC_MATERIALS_PATH
+        )
+        self._public_materials_lock = threading.Lock()
+        self._public_materials_cache: set[str] = set()
+        self._public_materials_stamp: tuple[int, int] | None = None
+        self._library_snapshot_lock = threading.Lock()
+        self._library_snapshot_cache: dict | None = None
         self.legacy_templates_enabled = bool(legacy_templates_enabled)
         parsed_library = urlsplit(self.library_url)
         if (
@@ -3862,11 +3882,21 @@ class MatrixTemplateService:
             or material_policy not in MATERIAL_POLICIES
         ):
             raise ValueError("material_policy must be shared or owned_public")
+        # 素材范围（2026-09-17）：public_only = 仅公网素材（一次性邀请码账号）；
+        # 其余请求不带该字段，路径与历史完全一致。
+        material_scope = raw.get("material_scope")
+        if material_scope is not None and (
+            not isinstance(material_scope, str)
+            or material_scope not in MATERIAL_SCOPES
+        ):
+            raise ValueError("material_scope must be public_only")
         result = {
             "top_text": top, "bottom_text": bottom,
             "template_id": template_id, "duration": duration,
             "bgm": bgm, "material_policy": material_policy,
         }
+        if material_scope is not None:
+            result["material_scope"] = material_scope
         if font_family and not hyperframes_template:
             result["font_family"] = font_family
         if normalized_semantic_layout is not None:
@@ -3978,6 +4008,10 @@ class MatrixTemplateService:
                 and payload["material_policy"] == "shared"
             ):
                 payload.pop("material_policy")
+            # 老任务（存储无 material_scope）重复提交时保持历史行为，
+            # 不因重试请求带上新字段而改写素材范围语义。
+            if "material_scope" not in stored_payload:
+                payload.pop("material_scope", None)
         else:
             payload = self.validate_payload(
                 raw, require_available_font=False,
@@ -4578,6 +4612,266 @@ class MatrixTemplateService:
             raise MatrixTemplateError("素材库切片能力暂不可用")
         return result
 
+    # ---- 素材范围：公网素材白名单（2026-09-17 一次性邀请码账号限制） ----
+    #
+    # 背景：一次性邀请码注册的账号只能用公网素材（如 Pixabay 批次），绝不
+    # 能使用公司素材（飞书群聊导入等）。素材库 API 只能"整库选材 + 按
+    # sha256 排除"，因此受限任务的做法是：把「全库快照 − 公网白名单」整体
+    # 传入 used_sha256 排除，让素材库只会从公网白名单里选；选完再按白名单
+    # 逐条复核（双保险），任何一条不在白名单内都明确报错、绝不混入。
+    #
+    # 公网白名单文件（JSON）由运营维护，格式：
+    #   {"version": 1, "materials": [{"sha256": "<64位小写hex>", ...}, ...]}
+    # 路径默认 /etc/huangque/matrix-template-public-materials.json，可用
+    # MATRIX_TEMPLATE_PUBLIC_MATERIALS 覆盖。白名单缺失/为空时受限任务
+    # 直接明确报错（宁可不出片，不放行公司素材）。
+
+    def _load_public_materials(self) -> set:
+        """公网素材白名单 sha256 集合；文件变更自动重载，异常按空集处理。"""
+        path = self.public_materials_path
+        try:
+            stat = path.stat()
+        except OSError:
+            with self._public_materials_lock:
+                self._public_materials_cache = set()
+                self._public_materials_stamp = None
+            return set()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        with self._public_materials_lock:
+            if stamp == self._public_materials_stamp:
+                return set(self._public_materials_cache)
+            sha_set: set = set()
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    raw_items = data.get("materials")
+                    if raw_items is None:
+                        raw_items = data.get("sha256")
+                else:
+                    raw_items = data
+                for item in raw_items or []:
+                    value = item.get("sha256") if isinstance(item, dict) else item
+                    sha = str(value or "").strip().lower()
+                    if SHA_RE.fullmatch(sha):
+                        sha_set.add(sha)
+            except (OSError, ValueError, TypeError):
+                # 解析失败不缓存（下次重读）；当次按空集处理，受限任务明确报错。
+                self._public_materials_cache = set()
+                self._public_materials_stamp = None
+                return set()
+            self._public_materials_cache = sha_set
+            self._public_materials_stamp = stamp
+            return set(sha_set)
+
+    def _library_health_records(self):
+        try:
+            health = self._library_request("GET", "/health", timeout=5)
+        except MatrixTemplateError:
+            return None
+        records = health.get("records") if isinstance(health, dict) else None
+        if isinstance(records, bool) or not isinstance(records, int):
+            return None
+        return records
+
+    def _library_snapshot_path(self) -> Path:
+        return (
+            self.data_root / PUBLIC_MATERIALS_STATE_DIRNAME
+            / "library-sha-snapshot.json"
+        )
+
+    def _load_library_snapshot(self):
+        try:
+            data = json.loads(
+                self._library_snapshot_path().read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("sha256"), list):
+            return None
+        shas = sorted({
+            str(item).strip().lower()
+            for item in data["sha256"]
+            if SHA_RE.fullmatch(str(item).strip().lower())
+        })
+        if not shas:
+            return None
+        try:
+            generated_at = float(data.get("generated_at"))
+        except (TypeError, ValueError):
+            return None
+        records = data.get("library_records")
+        if isinstance(records, bool) or not isinstance(records, int):
+            records = None
+        return {
+            "generated_at": generated_at,
+            "library_records": records,
+            "sha256": shas,
+        }
+
+    def _save_library_snapshot(self, shas: list, records) -> None:
+        path = self._library_snapshot_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            body = json.dumps({
+                "version": 1,
+                "generated_at": time.time(),
+                "library_records": records,
+                "sha256": shas,
+            }, ensure_ascii=False)
+            temporary = path.with_name("." + path.name + ".tmp")
+            temporary.write_text(body + "\n", encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            pass
+
+    def _enumerate_library_sha(self) -> set:
+        """只读枚举素材库当前全部可用素材的 sha256（semantic 模式，不改库数据）。
+
+        与素材库的"整库选材 + 排除"契约配套：每批请求 20 个画面位，把已选
+        出的 sha 传入 used_sha256 继续选，直到素材库报告无剩余候选。每批是
+        短请求；遭遇候选不足时批大小减半重试，直到剩 1 位仍失败才判定枚举完。
+        """
+        used: set = set()
+        batch = PUBLIC_MATERIALS_ENUM_SLOTS
+        for _round in range(PUBLIC_MATERIALS_ENUM_MAX_ROUNDS):
+            scenes = [
+                {
+                    "scene_id": "public-scope-%02d" % index,
+                    "query": "素材",
+                    "purpose": "公网素材范围校验",
+                    "media_type": "visual",
+                    "clip_duration_seconds": 3,
+                }
+                for index in range(1, batch + 1)
+            ]
+            try:
+                result = self._library_request("POST", "/v1/select", {
+                    "scenes": scenes,
+                    "orientation": "portrait",
+                    "seed": "public-material-scope-enumerate",
+                    "used_sha256": sorted(used),
+                    "selection_mode": "semantic",
+                }, timeout=180)
+            except MatrixTemplateError as exc:
+                if "no unique approved material" in str(exc):
+                    if batch > 1:
+                        batch = max(1, batch // 2)
+                        continue
+                    break
+                raise
+            materials = result.get("materials") or []
+            added = 0
+            for item in materials:
+                sha = str(item.get("sha256") or "").strip().lower()
+                if SHA_RE.fullmatch(sha) and sha not in used:
+                    used.add(sha)
+                    added += 1
+            if not added:
+                break
+        return used
+
+    def _library_snapshot(self) -> dict:
+        """全库 sha 快照：TTL 内且库条数未变时复用，否则重新枚举。"""
+        with self._library_snapshot_lock:
+            cached = (
+                self._library_snapshot_cache or self._load_library_snapshot()
+            )
+            records = self._library_health_records()
+            now = time.time()
+            fresh = (
+                cached is not None
+                and (records is None or cached.get("library_records") == records)
+                and now - float(cached.get("generated_at") or 0)
+                <= PUBLIC_MATERIALS_MAX_AGE_SECONDS
+            )
+            if fresh:
+                self._library_snapshot_cache = cached
+                return cached
+            shas = self._enumerate_library_sha()
+            if not shas:
+                raise MatrixTemplateError(
+                    "素材库素材范围读取失败，请稍后重试"
+                )
+            snapshot = {
+                "generated_at": time.time(),
+                "library_records": records,
+                "sha256": sorted(shas),
+            }
+            self._save_library_snapshot(snapshot["sha256"], records)
+            self._library_snapshot_cache = snapshot
+            return snapshot
+
+    def _restricted_material_filter(self, payload: dict):
+        """受限任务（material_scope=public_only）的公网白名单；非受限返回 None。"""
+        if payload.get("material_scope") != MATERIAL_SCOPE_PUBLIC_ONLY:
+            return None
+        allowed = self._load_public_materials()
+        if not allowed:
+            raise MatrixTemplateError(
+                "当前可用公共素材不足，暂时无法生成，请稍后重试"
+            )
+        return allowed
+
+    def _select_used_sha256(self, payload: dict, base) -> list:
+        """受限任务的选材排除集：全库快照 − 公网白名单（叠加正常去重集合）。
+
+        非受限任务原样返回基准集合（路径与历史完全一致）。
+        """
+        restricted = None
+        if payload.get("material_scope") == MATERIAL_SCOPE_PUBLIC_ONLY:
+            allowed = self._restricted_material_filter(payload)
+            snapshot = self._library_snapshot()
+            snapshot_shas = set(snapshot["sha256"])
+            if not (allowed & snapshot_shas):
+                # 白名单里没有任何当前在库素材：明确失败，不进入整库排除。
+                raise MatrixTemplateError(
+                    "当前可用公共素材不足，暂时无法生成，请稍后重试"
+                )
+            restricted = set(snapshot_shas) - allowed
+        base_shas = {
+            str(value).strip().lower()
+            for value in (base or [])
+            if SHA_RE.fullmatch(str(value).strip().lower())
+        }
+        if restricted is None:
+            return sorted(base_shas)
+        return sorted(base_shas | restricted)
+
+    def _assert_restricted_selection(self, payload: dict, selected) -> None:
+        """双保险：受限任务从素材库选出的每条素材都必须在公网白名单内。
+
+        账号自己上传的素材（provider=user）不是素材库来源，不受白名单限制
+        （一次性码账号同样是本人素材 + 公网素材补缺的组合，老板 2026-09-17 定调）。
+        """
+        allowed = self._restricted_material_filter(payload)
+        if allowed is None:
+            return
+        for item in selected or []:
+            if item.get("provider") == MATERIAL_PROVIDER_USER:
+                continue
+            sha = str(item.get("sha256") or "").strip().lower()
+            if sha not in allowed:
+                print(
+                    "[matrix-template] restricted material rejected: %s" % sha,
+                    flush=True,
+                )
+                raise MatrixTemplateError("素材范围校验未通过，请稍后重试")
+
+    def _translate_restricted_shortage(self, payload: dict, exc):
+        """受限任务的素材短缺错误 → 明确的中文文案（否则原样抛出）。"""
+        if payload.get("material_scope") != MATERIAL_SCOPE_PUBLIC_ONLY:
+            return exc
+        text = str(exc)
+        if "no unique approved material" not in text:
+            return exc
+        if "bgm" in text.lower():
+            return MatrixTemplateError(
+                "当前可用公共背景音乐不足，暂时无法生成，请稍后重试"
+            )
+        return MatrixTemplateError(
+            "当前可用公共素材不足，暂时无法生成，请稍后重试"
+        )
+
     def _material_contract_version(self, payload: dict) -> int:
         value = payload.get("_material_selection_contract_version", 1)
         if isinstance(value, bool) or value not in {
@@ -4720,20 +5014,25 @@ class MatrixTemplateService:
         scenes, count, _reference_template = self._material_scenes(payload)
         contract_version = self._material_contract_version(payload)
         # 素材一律由本地素材库供给（2026-09-12 老板定调：不再走 Pexels 公网）。
-        result = self._library_request("POST", "/v1/select", {
-            "scenes": scenes, "orientation": "portrait", "seed": job_id,
-            "used_sha256": list(used_sha256),
-            "selection_mode": "round_robin",
-            "selection_id": "matrix-template:" + job_id,
-        })
+        try:
+            result = self._library_request("POST", "/v1/select", {
+                "scenes": scenes, "orientation": "portrait", "seed": job_id,
+                "used_sha256": self._select_used_sha256(payload, used_sha256),
+                "selection_mode": "round_robin",
+                "selection_id": "matrix-template:" + job_id,
+            })
+        except MatrixTemplateError as exc:
+            raise self._translate_restricted_shortage(payload, exc) from exc
         if contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION and (
             result.get("selection_contract_version") != MATERIAL_SELECTION_CONTRACT_VERSION
             or result.get("clip_contract_version") != MATERIAL_CLIP_CONTRACT_VERSION
         ):
             raise MatrixTemplateError("素材库切片能力版本不兼容")
-        return self._validate_material_selection(
+        selected = self._validate_material_selection(
             payload, result.get("materials") or [], contract_version,
         )
+        self._assert_restricted_selection(payload, selected)
+        return selected
 
     def _select_materials(self, payload: dict, job_id: str) -> list[dict]:
         batch_id = str(payload.get("batch_id") or "")
@@ -4747,9 +5046,11 @@ class MatrixTemplateService:
                     or frozen["batch_id"] != batch_id
                 ):
                     raise MatrixTemplateError("素材选择冻结版本冲突")
-                return self._validate_material_selection(
+                selected = self._validate_material_selection(
                     payload, frozen["materials"], contract_version,
                 )
+                self._assert_restricted_selection(payload, selected)
+                return selected
             user_selected = self._user_materials(payload)
             if user_selected is not None:
                 selected = user_selected
@@ -4764,16 +5065,22 @@ class MatrixTemplateService:
                         self.store.batch_used_visuals(batch_id)
                         if batch_id else []
                     )
-                    result = self._library_request("POST", "/v1/select", {
-                        "scenes": scenes[len(selected):count],
-                        "orientation": "portrait",
-                        "seed": job_id,
-                        "used_sha256": used + [
-                            item["sha256"] for item in selected
-                        ],
-                        "selection_mode": "round_robin",
-                        "selection_id": "matrix-template:" + job_id,
-                    })
+                    try:
+                        result = self._library_request("POST", "/v1/select", {
+                            "scenes": scenes[len(selected):count],
+                            "orientation": "portrait",
+                            "seed": job_id,
+                            "used_sha256": self._select_used_sha256(
+                                payload,
+                                used + [item["sha256"] for item in selected],
+                            ),
+                            "selection_mode": "round_robin",
+                            "selection_id": "matrix-template:" + job_id,
+                        })
+                    except MatrixTemplateError as exc:
+                        raise self._translate_restricted_shortage(
+                            payload, exc
+                        ) from exc
                     if (
                         contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
                         and (
@@ -4801,16 +5108,22 @@ class MatrixTemplateService:
                         self.store.batch_used_visuals(batch_id)
                         if batch_id else []
                     )
-                    result = self._library_request("POST", "/v1/select", {
-                        "scenes": scenes[count:],
-                        "orientation": "portrait",
-                        "seed": job_id,
-                        "used_sha256": used + [
-                            item["sha256"] for item in selected
-                        ],
-                        "selection_mode": "round_robin",
-                        "selection_id": "matrix-template:" + job_id + ":bgm",
-                    })
+                    try:
+                        result = self._library_request("POST", "/v1/select", {
+                            "scenes": scenes[count:],
+                            "orientation": "portrait",
+                            "seed": job_id,
+                            "used_sha256": self._select_used_sha256(
+                                payload,
+                                used + [item["sha256"] for item in selected],
+                            ),
+                            "selection_mode": "round_robin",
+                            "selection_id": "matrix-template:" + job_id + ":bgm",
+                        })
+                    except MatrixTemplateError as exc:
+                        raise self._translate_restricted_shortage(
+                            payload, exc
+                        ) from exc
                     if (
                         contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
                         and (
@@ -4825,6 +5138,7 @@ class MatrixTemplateService:
                 selected = self._validate_material_selection(
                     payload, selected, contract_version,
                 )
+                self._assert_restricted_selection(payload, selected)
                 if batch_id:
                     self.store.reserve_batch_materials(
                         batch_id, job_id, selected, contract_version,
@@ -4842,14 +5156,19 @@ class MatrixTemplateService:
                     self.store.batch_used_visuals(batch_id)
                     if batch_id else []
                 )
-                result = self._library_request("POST", "/v1/select", {
-                    "scenes": scenes,
-                    "orientation": "portrait",
-                    "seed": job_id,
-                    "used_sha256": list(used),
-                    "selection_mode": "round_robin",
-                    "selection_id": "matrix-template:" + job_id,
-                })
+                try:
+                    result = self._library_request("POST", "/v1/select", {
+                        "scenes": scenes,
+                        "orientation": "portrait",
+                        "seed": job_id,
+                        "used_sha256": self._select_used_sha256(payload, used),
+                        "selection_mode": "round_robin",
+                        "selection_id": "matrix-template:" + job_id,
+                    })
+                except MatrixTemplateError as exc:
+                    raise self._translate_restricted_shortage(
+                        payload, exc
+                    ) from exc
                 if (
                     contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
                     and (
@@ -4864,6 +5183,7 @@ class MatrixTemplateService:
                 selected = self._validate_material_selection(
                     payload, selected, contract_version,
                 )
+                self._assert_restricted_selection(payload, selected)
                 if batch_id:
                     self.store.reserve_batch_materials(
                         batch_id, job_id, selected, contract_version,
