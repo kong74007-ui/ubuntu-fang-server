@@ -102,6 +102,7 @@ if [[ ! -f /etc/huangque/pixelle-material-library.env || -L /etc/huangque/pixell
   echo "material library client environment is missing" >&2; exit 2
 fi
 source "${ROLLBACK_LIB}"
+python3 "${DEPLOY_ROOT}/deploy/matrix-template-video/verify-hdr-runtime.py"
 systemctl is-active --quiet "${SERVICE}" && WAS_ACTIVE=1 || true
 systemctl is-enabled --quiet "${SERVICE}" && WAS_ENABLED=1 || true
 if [[ "${WAS_ACTIVE}" -eq 1 ]]; then

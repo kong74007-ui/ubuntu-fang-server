@@ -4198,6 +4198,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
              mock.patch.object(self.service, "_download", side_effect=download), \
              mock.patch.object(self.service, "_render_reference", side_effect=render_reference), \
              mock.patch.object(self.service, "_render", side_effect=AssertionError("FFmpeg renderer must not run")), \
+             mock.patch.object(self.service, "_source_color", return_value={"dynamic_range": "sdr"}), \
              mock.patch.object(self.service, "_probe", return_value={"duration": 11.0, "width": 1080, "height": 1920}):
             result = self.service._execute(job["job_id"])
 
@@ -4536,6 +4537,8 @@ class NineGridTemplateTests(unittest.TestCase):
             self.service, "_run_tracked_process", side_effect=run,
         ), mock.patch.object(
             self.service, "_reference_video_duration", return_value=3.233,
+        ), mock.patch.object(
+            self.service, "_source_color", return_value={"dynamic_range": "sdr"},
         ):
             self.service._prepare_nine_grid_clip(
                 source, destination, 12.5, deadline_at=time.time() + 30,
@@ -4571,6 +4574,8 @@ class NineGridTemplateTests(unittest.TestCase):
             self.service, "_run_tracked_process", side_effect=run,
         ), mock.patch.object(
             self.service, "_reference_video_duration", return_value=3.233,
+        ), mock.patch.object(
+            self.service, "_source_color", return_value={"dynamic_range": "sdr"},
         ):
             self.service._prepare_nine_grid_clip(
                 source, destination, 0.0, deadline_at=time.time() + 30,
@@ -5310,12 +5315,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.write_bytes(b"prepared-video")
         config = {
+            "duration": 12.5,
             "still_frames": ((
                 "assets/media/01-aspect-fixed.mp4",
                 "assets/media/01-aspect-fixed.jpg",
                 0.5,
             ),),
         }
+        (workdir / "index.html").write_text(
+            "<style>background-image:url('assets/media/01-aspect-fixed.jpg')</style>"
+            + '<div class="fan-band"></div>' * 18, encoding="utf-8",
+        )
         captured = {}
 
         def run(command, **_kwargs):
@@ -5325,6 +5335,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
 
         with mock.patch.object(
             self.service, "_run_tracked_process", side_effect=run,
+        ), mock.patch.object(
+            self.service, "_source_color", return_value={"dynamic_range": "sdr"},
         ):
             self.service._prepare_fixed_skill_stills(
                 workdir, config, deadline_at=time.time() + 30,

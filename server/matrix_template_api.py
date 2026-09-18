@@ -4295,6 +4295,8 @@ class MatrixTemplateService:
             "degraded_jobs": degraded_job_count,
             "material_library_ready": library["ready"],
             "material_source_policy": "huangque-library-only",
+            "color_contract_version": 1,
+            "hdr_master_output": True,
             "material_selection_contract_version": library[
                 "selection_contract_version"
             ],
@@ -5500,6 +5502,62 @@ class MatrixTemplateService:
                     raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
                 return
 
+    @staticmethod
+    def _source_color(path: Path) -> dict:
+        result = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=pix_fmt,color_primaries,color_transfer,color_space,color_range",
+            "-of", "json", str(path),
+        ], check=True, capture_output=True, text=True, timeout=30)
+        try:
+            video = json.loads(result.stdout)["streams"][0]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise MatrixTemplateError("模板素材色彩信息无法读取") from exc
+        transfer = video.get("color_transfer")
+        if transfer in {"arib-std-b67", "smpte2084"}:
+            matrix = video.get("color_space")
+            if video.get("color_primaries") != "bt2020" or (
+                matrix != "bt2020nc" and not (path.suffix.lower() == ".png" and matrix == "gbr")
+            ):
+                raise MatrixTemplateError("模板素材 HDR 色彩格式暂不支持")
+            return {"dynamic_range": "hdr", "transfer": transfer,
+                    "primaries": "bt2020", "matrix": matrix,
+                    "range": video.get("color_range") or "tv"}
+        return {"dynamic_range": "sdr"}
+
+    @staticmethod
+    def _clip_color_encoding(color: dict, sdr_encoder: str = "libx264") -> tuple[str, list[str]]:
+        if color["dynamic_range"] == "hdr":
+            return "yuv420p10le", [
+                "-c:v", "libx265", "-preset", "fast", "-crf", "18",
+                "-x265-params", "pools=2:frame-threads=1:colorprim=9:colormatrix=9:transfer="
+                + ("18" if color["transfer"] == "arib-std-b67" else "16"), "-tag:v", "hvc1",
+                "-color_primaries", color["primaries"], "-color_trc", color["transfer"],
+                "-colorspace", color["matrix"], "-color_range", color["range"],
+            ]
+        encoder = (
+            ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18"]
+            if sdr_encoder == "h264_nvenc" else
+            ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "2"]
+        )
+        return "yuv420p", encoder + [
+            "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-colorspace", "bt709", "-color_range", "tv",
+        ]
+
+    @staticmethod
+    def _hdr_text_layers(index: str, duration: float) -> str:
+        # HDR compositing discovers timed DOM layers. Persistent text must also
+        # be listed there, or native HDR footage is painted over untimed text.
+        def stamp(match):
+            tag = match.group(0)
+            if re.search(r'\bdata-start\s*=', tag):
+                return tag
+            return tag[:-1] + (
+                f' data-start="0" data-duration="{duration:.9f}">'
+            )
+        return re.sub(r'<(?:h[1-6]|p|div|span)\b[^>]*\bdata-var-text="[^"]+"[^>]*>', stamp, index)
+
     def _prepare_nine_grid_clip(
         self, source: Path, destination: Path, start: float,
         *, deadline_at: float,
@@ -5522,26 +5580,21 @@ class MatrixTemplateService:
         visible = NINE_GRID_SELECTED_CLIP_SECONDS
         encoded = NINE_GRID_RENDER_CLIP_SECONDS + NINE_GRID_HIDDEN_TAIL_SECONDS
         tail = encoded - visible
+        pixel_format, encoder_args = self._clip_color_encoding(
+            self._source_color(source), self.nine_grid_prep_encoder,
+        )
         video_filter = (
             f"trim=duration={visible:.6f},setpts=PTS-STARTPTS,"
             "scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,setsar=1,fps=30,"
             f"tpad=stop_mode=clone:stop_duration={tail:.6f},"
-            "format=yuv420p"
-        )
-        encoder_args = (
-            ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18"]
-            if self.nine_grid_prep_encoder == "h264_nvenc"
-            else ["-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                  "-threads", "2"]
+            f"format={pixel_format}"
         )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-ss", _format_reference_seconds(float(start)), "-i", str(source),
             "-map", "0:v:0", "-an", "-vf", video_filter,
-            "-t", f"{encoded:.6f}", *encoder_args, "-pix_fmt", "yuv420p",
-            "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-colorspace", "bt709", "-color_range", "tv",
+            "-t", f"{encoded:.6f}", *encoder_args, "-pix_fmt", pixel_format,
             "-map_metadata", "-1", "-movflags", "+faststart", str(temporary),
         ]
         try:
@@ -5773,6 +5826,7 @@ class MatrixTemplateService:
         ):
             raise MatrixTemplateError("固定 Skill 模板素材时长不足")
         actual_start = float(start)
+        pixel_format, encoder_args = self._clip_color_encoding(self._source_color(source))
         remaining = deadline_at - time.time()
         if remaining <= 0:
             raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -5781,16 +5835,13 @@ class MatrixTemplateService:
         temporary.unlink(missing_ok=True)
         video_filter = (
             f"scale=1080:{height}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{height},setsar=1,fps=30,format=yuv420p"
+            f"crop=1080:{height},setsar=1,fps=30,format={pixel_format}"
         )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-ss", _format_reference_seconds(actual_start), "-i", str(source),
             "-map", "0:v:0", "-an", "-vf", video_filter,
-            "-frames:v", str(frames), "-c:v", "libx264", "-preset", "fast",
-            "-crf", "18", "-pix_fmt", "yuv420p", "-threads", "2",
-            "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-colorspace", "bt709", "-color_range", "tv",
+            "-frames:v", str(frames), *encoder_args, "-pix_fmt", pixel_format,
             "-map_metadata", "-1", "-movflags", "+faststart", str(temporary),
         ]
         try:
@@ -5815,9 +5866,10 @@ class MatrixTemplateService:
     def _prepare_fixed_skill_stills(
         self, workdir: Path, config: dict, *, deadline_at: float,
     ) -> None:
-        for source_relative, target_relative, at_seconds in config.get(
+        still_layers = {}
+        for number, (source_relative, target_relative, at_seconds) in enumerate(config.get(
             "still_frames", ()
-        ):
+        ), 1):
             source = workdir.joinpath(*str(source_relative).split("/"))
             target = workdir.joinpath(*str(target_relative).split("/"))
             remaining = deadline_at - time.time()
@@ -5830,13 +5882,22 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "固定 Skill 模板抽帧参数无效"
                 )
-            temporary = target.with_name("." + target.name + ".part.jpg")
+            color = self._source_color(source)
+            hdr = color["dynamic_range"] == "hdr"
+            if hdr:
+                target = target.with_suffix(".hdr.png")
+            still_layers[number] = (target_relative, target.relative_to(workdir).as_posix())
+            temporary = target.with_name("." + target.stem + ".part" + target.suffix)
             temporary.unlink(missing_ok=True)
             command = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-nostdin", "-y", "-ss",
                 _format_reference_seconds(float(at_seconds)),
-                "-i", str(source), "-frames:v", "1", "-q:v", "2",
+                "-i", str(source), "-frames:v", "1",
+                *([
+                    "-pix_fmt", "rgb48be", "-color_primaries", color["primaries"],
+                    "-color_trc", color["transfer"], "-colorspace", "rgb",
+                ] if hdr else ["-q:v", "2"]),
                 str(temporary),
             ]
             try:
@@ -5853,9 +5914,40 @@ class MatrixTemplateService:
                     raise MatrixTemplateError(
                         "固定 Skill 模板抽帧失败"
                     )
+                if hdr and self._source_color(temporary).get("transfer") != color["transfer"]:
+                    raise MatrixTemplateError("HDR 静帧色彩信息丢失，请升级 FFmpeg")
                 os.replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
+        if still_layers:
+            # Every still needs a timed layer, including SDR stills when HDR is
+            # present only in a later video. Each image retains its own color space.
+            index_path = workdir / "index.html"
+            index = index_path.read_text(encoding="utf-8")
+            for old, _new in still_layers.values():
+                declaration = "background-image:url('" + old + "')"
+                if index.count(declaration) != 1:
+                    raise MatrixTemplateError("HDR 模板静帧声明发生变化")
+                index = index.replace(declaration, "background-image:none")
+            seen = 0
+
+            def image_layer(match):
+                nonlocal seen
+                number = seen % len(config["still_frames"]) + 1
+                seen += 1
+                path = html.escape(still_layers[number][1], quote=True)
+                return match.group(1) + (
+                    f'<img id="matrix-hdr-still-{seen}" class="clip" src="{path}" '
+                    f'data-start="0" data-duration="{config["duration"]}" '
+                    f'data-track-index="{50 + seen}" '
+                    'style="position:absolute;inset:0;width:100%;height:100%;'
+                    'object-fit:cover;object-position:center 45%">'
+                ) + "</div>"
+
+            index = re.sub(r'(<div\b[^>]*\bclass="fan-band"[^>]*>)</div>', image_layer, index)
+            if seen != 18:
+                raise MatrixTemplateError("HDR 模板静帧画面位发生变化")
+            index_path.write_text(index, encoding="utf-8")
 
     def _render_fixed_skill_template(
         self, payload: dict, job_id: str,
@@ -5947,6 +6039,7 @@ class MatrixTemplateService:
             index_html, bool(payload["bgm"]),
             str(config.get("audio_id", "bound-bgm")),
         )
+        index_html = self._hdr_text_layers(index_html, float(config["duration"]))
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -5962,7 +6055,7 @@ class MatrixTemplateService:
         command = [
             str(cli), "render", str(workdir),
             "--output", str(output), "--quality", "high", "--workers", "1",
-            "--fps", "30", "--sdr", "--no-browser-gpu",
+            "--fps", "30", "--no-browser-gpu",
             "--strict-variables", "--variables-file", str(variables_path),
         ]
         env = os.environ.copy()
@@ -6158,6 +6251,7 @@ class MatrixTemplateService:
         index_html = self._rewrite_nine_grid_media_sources(
             index_html, variables,
         )
+        index_html = self._hdr_text_layers(index_html, NINE_GRID_DURATION_SECONDS)
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -6173,7 +6267,7 @@ class MatrixTemplateService:
         command = [
             str(self.nine_grid_hyperframes_cli), "render", str(workdir),
             "--output", str(output), "--quality", "high", "--workers", "1",
-            "--fps", str(NINE_GRID_OUTPUT_FPS), "--sdr", "--no-browser-gpu",
+            "--fps", str(NINE_GRID_OUTPUT_FPS), "--no-browser-gpu",
             "--strict-variables", "--variables-file", str(variables_path),
         ]
         env = os.environ.copy()
@@ -6443,7 +6537,6 @@ class MatrixTemplateService:
             "--quality", "high",
             "--workers", "1",
             "--fps", "30",
-            "--sdr",
             "--no-browser-gpu",
             "--strict-variables",
             "--variables-file", str(variables_path),
@@ -6518,7 +6611,7 @@ class MatrixTemplateService:
     def _probe(self, output: Path) -> dict:
         result = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries",
-            "format=duration:stream=codec_type,codec_name,width,height",
+            "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,color_primaries,color_transfer,color_space,color_range",
             "-of", "json", str(output),
         ], check=True, capture_output=True, text=True, timeout=30)
         data = json.loads(result.stdout)
@@ -6526,11 +6619,23 @@ class MatrixTemplateService:
         video = next((item for item in streams if item.get("codec_type") == "video"), None)
         audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
         duration = float((data.get("format") or {}).get("duration") or 0)
-        if not video or video.get("codec_name") != "h264" or (video.get("width"), video.get("height")) != (1080, 1920):
+        hdr = bool(video and video.get("color_transfer") in {"arib-std-b67", "smpte2084"})
+        valid_codec = bool(video and (
+            (not hdr and video.get("codec_name") == "h264") or
+            (hdr and video.get("codec_name") == "hevc"
+             and video.get("pix_fmt") == "yuv420p10le"
+             and video.get("color_primaries") == "bt2020"
+             and video.get("color_space") == "bt2020nc")
+        ))
+        if not valid_codec or (video.get("width"), video.get("height")) != (1080, 1920):
             raise MatrixTemplateError("模板成片画面规格校验失败")
         if not audio or audio.get("codec_name") != "aac" or duration <= 0:
             raise MatrixTemplateError("模板成片音频或时长校验失败")
-        return {"duration": round(duration, 3), "width": 1080, "height": 1920}
+        return {"duration": round(duration, 3), "width": 1080, "height": 1920,
+                "color_profile": {"dynamic_range": "hdr" if hdr else "sdr",
+                                  **{key: video.get(key) for key in (
+                                      "codec_name", "pix_fmt", "color_primaries",
+                                      "color_transfer", "color_space", "color_range")}}}
 
     def _material_manifest(self, payload: dict, materials: list[dict]) -> list[dict]:
         scenes, _count, _reference = self._material_scenes(payload)
@@ -6681,6 +6786,14 @@ class MatrixTemplateService:
         output = root / "output/final.mp4"
         try:
             probe = self._probe(output)
+            if reference_template or nine_grid_template or fixed_skill_template:
+                source_hdr = any(
+                    self._source_color(path)["dynamic_range"] == "hdr"
+                    for item, path in zip(materials, paths)
+                    if item.get("media_type") == "video"
+                )
+                if source_hdr and (probe.get("color_profile") or {}).get("dynamic_range") != "hdr":
+                    raise MatrixTemplateError("HDR 素材未输出 HDR 母版，已阻止色彩降级")
             os.replace(output, root / "output/published.mp4")
         except Exception:
             self._discard_output(job_id)

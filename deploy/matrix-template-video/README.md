@@ -1,5 +1,48 @@
 # Matrix template video service
 
+## HDR color preservation
+
+HDR video sources tagged BT.2020 HLG or PQ are prepared as 10-bit HEVC clips,
+with the original transfer function and range retained. They must not be
+relabelled BT.709 without a color transform. SDR inputs keep the existing
+H.264 preparation path, including optional nine-grid NVENC acceleration.
+HDR preparation uses software `libx265`; every renderer needs an FFmpeg build
+with the 10-bit `libx265` encoder. It can take longer than SDR/NVENC preparation.
+Run `python deploy/matrix-template-video/verify-hdr-runtime.py` on each worker
+before synchronization. The Linux installer runs this check before touching
+the active release; a missing encoder or lost PNG color tag blocks deployment.
+
+All three pinned HyperFrames runtimes use automatic HDR detection instead of
+`--sdr`. HDR jobs use native high-precision compositing and produce HEVC Main 10
+MP4 masters, while SDR-only jobs keep H.264 output. Publishing rejects an
+eight-bit output tagged as HDR and rejects SDR output for an HDR-source job.
+This is HLG/PQ HDR preservation, not Dolby Vision dynamic-metadata preservation.
+No separate SDR compatibility video is generated.
+
+Every fan-whip still is exposed as a timed image layer at the same authored
+position, including SDR JPEGs in mixed tasks or when HDR appears only in a
+later video. HDR stills use 16-bit PNG and native HDR composition; SDR stills
+remain SDR and use the DOM layer. FFmpeg must retain PNG cICP
+color information; verify this on each node (tested with FFmpeg 8.1.1).
+Missing transfer tags fail the job instead of publishing a mismatched frame.
+Persistent text is explicitly timed so the HDR compositor paints it above
+the native media layers; fonts, wording, layout and animation stay unchanged.
+
+Rollout order: install main-site HEVC voiceover/delivery validation first, then
+update **every** rendering node through the team's worker synchronization
+process. Deploying only one node does not fix jobs assigned to the others.
+`/health` exposes `color_contract_version=1` and `hdr_master_output=true`;
+completed jobs include the measured `color_profile`. Check the actual output
+with ffprobe and visually compare on the same HDR-capable device/player.
+
+Mixed-layer regression can also be verified against the pinned engine in real
+Chrome. Set `MATRIX_HDR_LAYER_FIXTURE_DIR` to a temporary output directory and
+run `python -m pytest -q tests/test_matrix_hdr_color.py -k mixed`. Then run
+`node tests/matrix_hdr_layers_browser.cjs <hyperframes-0.8.34/dist/cli.js> <chrome-path> <fixture-directory>`.
+The browser test executes that engine's actual `applyDomLayerMask` and checks
+all SDR image layers remain loaded, visible and hit-testable. It covers mixed
+stills, HDR in the last still, HDR only in a later video, and SDR-only jobs.
+
 Internal generation-server API for the `text-media-text` mode from the pinned
 `kong74007-ui/script-to-matrix-video` Skill. It binds to `127.0.0.1:8112`, runs
 up to five FFmpeg renders at a time, and uses the existing material-library
