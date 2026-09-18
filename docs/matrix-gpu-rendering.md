@@ -16,9 +16,8 @@ across different encoders, displays or GPU drivers. Other workers still need
 their own hardware preflight before activation.
 
 The sanitized [22-template validation receipt](matrix-gpu-validation-20260919.json)
-records the exact runtime fingerprint, per-video hashes and frame counts. The
-final local warm-cache runs took 8.99-32.35 seconds per template (12.25 seconds
-mean); this excludes source preparation, downloads, queueing and upload.
+records the exact runtime fingerprint, per-video hashes and frame counts.
+Render-stage timings exclude source preparation, downloads, queueing and upload.
 
 ## Rendering path
 
@@ -28,7 +27,9 @@ mean); this excludes source preparation, downloads, queueing and upload.
    The yellow-banner canvas uses a native 24-sample radial shader with the
    original template's exported pose function. Unrecognized canvas compositors
    are rejected instead of silently producing background-only video.
-2. Source frames decode to 16-bit RGBA. Native HLG/PQ matching the output signal
+2. Only sampled source-frame intervals decode to 16-bit RGBA. Overlapping ranges
+   share a cache window; disjoint ranges seek independently instead of decoding
+   the unused prefix or gap. Native HLG/PQ matching the output signal
    bypasses transfer conversion. Mixed primaries/transfers use explicit FFmpeg
    zscale conversion. No arbitrary brightness multiplier is applied.
 3. Dawn/WebGPU runs the perspective placement, clipping, texture sampling,
@@ -118,6 +119,26 @@ node deploy/matrix-gpu/render.mjs --project <prepared-project> --variables <vari
 The CLI only accepts project-local assets, blocks browser network requests, and
 never overwrites a final output. A total deadline and process cleanup bound work.
 By default raw-frame scratch is per-job and removed after completion/failure.
+The Python parent also removes that owned scratch after the renderer tree exits,
+including timeout, cancellation and nonzero exit. Windows Job Objects contain
+descendant writers even if Node crashes; POSIX workers use their dedicated
+process group. Linked/junction scratch paths are rejected. If tree termination
+cannot be confirmed, scratch is retained rather than deleted under a writer.
 `--cache <directory>` is an explicit local-benchmark option; operators own its
 retention and must not point it at original media. Rendering receipts contain
 source hashes and actual encoder/adapter evidence; do not publish private media.
+
+## PR 201 regression cases
+
+`node --test deploy/matrix-gpu/decode-plan.test.mjs` covers late source offsets,
+disjoint/overlapping ranges and fractional composition starts. The opt-in test
+`tests/test_matrix_gpu_windows_integration.py` creates a synthetic 30-second
+2160x3840 source, then renders a 20s+3s selection and two disjoint selections with
+cold caches. Both decode only 90 frames (5.56 GiB), validate actual selected frame
+colors, and retain the 32 GiB per-source limit. Set `MATRIX_GPU_INTEGRATION=1`
+and optionally `MATRIX_GPU_TEST_BROWSER` to run it on an NVIDIA worker; it makes
+no external material/provider requests.
+
+`tests/test_matrix_gpu_cleanup.py` launches real Node parent/child processes,
+forces termination or crashes the renderer, and checks parent-owned cleanup,
+external-file preservation, active-job protection and symlink/junction rejection.

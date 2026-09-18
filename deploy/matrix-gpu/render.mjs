@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {BrowserScene} from './browser.mjs';
 import {Compositor} from './compositor.mjs';
+import {frameWindow,mergeWindows,sourceFrame} from './decode-plan.mjs';
 
 function argumentsOf(argv) {
  const result={};for(let i=0;i<argv.length;i+=2){if(!argv[i].startsWith('--')||argv[i+1]===undefined)throw Error('Expected named option and value');result[argv[i].slice(2)]=argv[i+1];}return result;
@@ -51,12 +52,12 @@ export async function render(options) {
    if(!source){
     const info=probe(file),v=info.streams.find(s=>s.codec_type==='video');if(!v)throw Error('Missing video/image stream');
     const rotation=v.side_data_list?.find(s=>s.side_data_type==='Display Matrix')?.rotation||0;
-    source={file,info: v,width:v.width,height:v.height,image:item.image,seconds:0};
+    source={file,info: v,width:v.width,height:v.height,image:item.image,windows:[]};
     if(Math.abs(rotation)%180===90)[source.width,source.height]=[source.height,source.width];
     sources.set(file,source);
    }
    if(item.playbackRate!==1)throw Error('Retimed source needs explicit adapter');
-   source.seconds=Math.max(source.seconds,item.mediaStart+Math.min(item.duration,duration-item.start));
+   source.windows.push(frameWindow(item,duration));
    metadata.set(item.id,source);
   }
   const transfers=[...sources.values()].map(s=>s.info.color_transfer);
@@ -69,15 +70,18 @@ export async function render(options) {
   for(const source of sources.values()) {
    if(cancelled)throw Error('Render cancelled');
    const digest=await fileHash(source.file);source.sha256=digest;
-   const count=source.image?1:Math.ceil(source.seconds*30);
-   const key=crypto.createHash('sha256').update(JSON.stringify([digest,mode,count,'rgba16-v1'])).digest('hex');
-   const raw=path.join(cache,key+'.rgba16'),bytes=source.width*source.height*8;
+   source.windows=mergeWindows(source.windows);
+   const bytes=source.width*source.height*8;
    if(source.info.color_transfer&&['arib-std-b67','smpte2084'].includes(source.info.color_transfer)){
     if(source.info.color_primaries!=='bt2020')throw Error('Unsupported HDR primaries');
     if(!/(10|12|16|48|64|f32)/.test(source.info.pix_fmt||''))throw Error('Eight-bit input cannot be advertised as HDR');
    }
    if(!source.info.color_transfer&&/(10|12|16|48|64|f32)/.test(source.info.pix_fmt||''))throw Error('High-bit-depth input needs explicit transfer metadata');
-   if(bytes*count>32*1024**3)throw Error('Decoded asset exceeds memory/disk contract');
+   if(bytes*source.windows.reduce((n,w)=>n+w.end-w.start,0)>32*1024**3)throw Error('Decoded asset exceeds memory/disk contract');
+   for(const window of source.windows){
+   const count=window.end-window.start;
+   const key=crypto.createHash('sha256').update(JSON.stringify([digest,mode,window.start,window.end,'rgba16-window-v2'])).digest('hex');
+   const raw=path.join(cache,key+'.rgba16');
    if(!fs.existsSync(raw)||fs.statSync(raw).size!==bytes*count){
     const stats=fs.statfsSync(cache);if(stats.bavail*stats.bsize<bytes*count+4*1024**3)throw Error('Insufficient scratch disk');
     let vf='fps=30,format=rgba64le';
@@ -87,11 +91,13 @@ export async function render(options) {
      vf=`fps=30,format=gbrap16le,zscale=pin=${source.info.color_primaries||'bt709'}:tin=${from}:min=gbr:rin=full:p=${primaries}:t=${transfer}:m=gbr:r=full:npl=203,format=rgba64le`;
     }
     const temporary=raw+'.'+crypto.randomUUID()+'.part';
-    await run('decode-'+counter++,options.ffmpeg||'ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-y','-protocol_whitelist','file,pipe','-i',source.file,'-vf',vf,'-frames:v',String(count),'-f','rawvideo',temporary]);
+    await run('decode-'+counter++,options.ffmpeg||'ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-y','-protocol_whitelist','file,pipe',...(source.image?[]:['-ss',(window.start/30).toFixed(9)]),'-i',source.file,'-vf',vf,'-frames:v',String(count),'-f','rawvideo',temporary]);
     if(fs.statSync(temporary).size!==bytes*count)throw Error('Source does not cover authored timeline');
     fs.renameSync(temporary,raw);
    }
-   source.handle=fs.openSync(raw,'r');handles.push(source.handle);source.bytes=bytes;source.count=count;source.buffer=Buffer.alloc(bytes);source.key=key;
+   window.handle=fs.openSync(raw,'r');handles.push(window.handle);
+   }
+   source.bytes=bytes;source.buffer=Buffer.alloc(bytes);source.key=digest;
   }
   await scene.staticLayers(work);
   compositor=await Compositor.create(width,height,options.adapter||'');
@@ -139,8 +145,10 @@ export async function render(options) {
     }
     for(const state of states){
      const item=media[state.id],source=metadata.get(state.id);
-     const frame=source.image?0:Math.min(source.count-1,Math.max(0,Math.floor((time-item.start+item.mediaStart)*30+1e-6)));
-     if(source.lastFrame!==frame){const size=fs.readSync(source.handle,source.buffer,0,source.bytes,frame*source.bytes);if(size!==source.bytes)throw Error('Truncated raw media');source.lastFrame=frame;}
+     const frame=source.image?0:sourceFrame(item,time);
+     const window=source.windows.find(w=>w.start<=frame&&frame<w.end);
+     if(!window)throw Error('Frame outside selected decode windows');
+     if(source.lastFrame!==frame){const size=fs.readSync(window.handle,source.buffer,0,source.bytes,(frame-window.start)*source.bytes);if(size!==source.bytes)throw Error('Truncated raw media');source.lastFrame=frame;}
      const key=source.image?source.key:`${source.key}:media:${state.id}`;
      let texture=compositor.upload(key,source.buffer,source.width,source.height,frame);
      if(state.blur)texture=compositor.blur(texture,state.blur*source.width/state.width,state.blur*source.height/state.height,key);
@@ -164,7 +172,7 @@ export async function render(options) {
   if(v.color_transfer!==transfer||v.width!==width||v.height!==height||Number(v.nb_frames)!==frames||(mode!=='sdr'&&v.pix_fmt!=='yuv420p10le'))throw Error('Output contract failed');
   fs.renameSync(pending,output);
   const report={output,adapter:compositor.adapter,compositor:'webgpu-native',mode,frames,renderSeconds:(Date.now()-started)/1000,media:media.length,foregroundCaptures,
-   sources:[...sources.values()].map(s=>({sha256:s.sha256,transfer:s.info.color_transfer,width:s.width,height:s.height})),probe:final};
+   sources:[...sources.values()].map(s=>({sha256:s.sha256,transfer:s.info.color_transfer,width:s.width,height:s.height,decodedFrames:s.windows.reduce((n,w)=>n+w.end-w.start,0),decodeWindows:s.windows.map(({start,end})=>({start,end}))})),probe:final};
   fs.writeFileSync(output+'.json',JSON.stringify(report,null,2));return report;
  }finally{
   abort();if(encoderDone)await encoderDone.catch(()=>{});

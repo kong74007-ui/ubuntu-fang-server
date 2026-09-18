@@ -4585,9 +4585,52 @@ class MatrixTemplateService:
                 self.active_downloads.discard(job_id)
 
     def _discard_output(self, job_id: str) -> None:
+        self._cleanup_gpu_scratch(job_id)
         output_dir = self.data_root / job_id / "output"
         for name in ("final.mp4", "published.mp4"):
             (output_dir / name).unlink(missing_ok=True)
+
+    def _cleanup_gpu_scratch(self, job_id: str) -> None:
+        # Only the renderer-owned default cache, never external caches or linked source directories.
+        if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+            raise MatrixTemplateError("Invalid GPU scratch job path")
+        for process in list(getattr(self, "active_processes", ())):
+            if (getattr(process, "_matrix_gpu_job", None) == job_id
+                    and not getattr(getattr(process, "_matrix_gpu_guard", None), "stopped", False)):
+                return
+        base = self.data_root.resolve()
+        job = base / job_id
+        output = job / "output"
+        scratch = output / "raw-cache"
+        for target in (job, output, scratch):
+            if not target.exists() and not target.is_symlink():
+                return
+            info = target.lstat()
+            if (target.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400
+                    or target.resolve() != target):
+                raise MatrixTemplateError("Refusing linked GPU scratch directory")
+        if scratch.is_dir():
+            shutil.rmtree(scratch)
+
+    def _guard_gpu_process(self, process, job_id: str) -> None:
+        if not getattr(self, "gpu_runtime", None):
+            return
+        process._matrix_gpu = True
+        process._matrix_gpu_job = job_id
+        try:
+            process._matrix_gpu_guard = self.gpu_runtime.guard(process)
+        except Exception:
+            self._terminate(process)
+            raise
+
+    def _finish_render_process(self, process, job_id: str) -> None:
+        if getattr(process, "_matrix_gpu", False) is True:
+            process._matrix_gpu_guard.stop()
+        with self.process_lock:
+            self.active_processes.discard(process)
+            self.active_process = next(iter(self.active_processes), None)
+        if getattr(process, "_matrix_gpu", False) is True:
+            self._cleanup_gpu_scratch(job_id)
 
     def _library_request(
         self, method: str, path: str, body=None, *, timeout: float = 30,
@@ -6507,8 +6550,7 @@ class MatrixTemplateService:
             if getattr(self, "gpu_runtime", None):
                 command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
-            if getattr(self, "gpu_runtime", None):
-                process._matrix_gpu = True
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6533,11 +6575,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(
-                        iter(self.active_processes), None,
-                    )
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -6697,8 +6735,7 @@ class MatrixTemplateService:
             if getattr(self, "gpu_runtime", None):
                 command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
-            if getattr(self, "gpu_runtime", None):
-                process._matrix_gpu = True
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6723,11 +6760,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(
-                        iter(self.active_processes), None,
-                    )
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("九宫格模板任务超过总时限")
@@ -6972,8 +7005,7 @@ class MatrixTemplateService:
             if getattr(self, "gpu_runtime", None):
                 command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
-            if getattr(self, "gpu_runtime", None):
-                process._matrix_gpu = True
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6996,9 +7028,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(iter(self.active_processes), None)
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("HyperFrames 模板任务超过总时限")

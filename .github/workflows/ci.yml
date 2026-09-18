@@ -85,6 +85,7 @@ jobs:
         run: |
           for file in deploy/matrix-gpu/*.mjs; do node --check "$file"; done
           node --test deploy/matrix-gpu/geometry.test.mjs
+          node --test deploy/matrix-gpu/decode-plan.test.mjs
 
       - name: 测试全部工作台 JavaScript
         run: node --test tests/*.js

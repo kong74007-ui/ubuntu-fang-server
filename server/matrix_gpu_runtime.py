@@ -1,15 +1,22 @@
 """Verified, opt-in GPU runtime contract shared by template render entry points."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
+import time
 
 CONTRACT_VERSION = 1
 RUNTIME_FILES = ("package.json", "package-lock.json", "render.mjs", "browser.mjs",
-                 "geometry.mjs", "compositor.mjs", "probe.mjs", "compile.mjs", "contract.json")
+                 "geometry.mjs", "compositor.mjs", "probe.mjs", "compile.mjs", "contract.json", "decode-plan.mjs")
 
 
 class GpuRuntime:
+    @staticmethod
+    def guard(process):
+        return GpuProcessGuard(process)
+
     def __init__(self, root, browser, *, node="node", adapter=""):
         self.root = Path(root).resolve()
         self.browser = Path(browser).resolve()
@@ -73,3 +80,86 @@ class GpuRuntime:
                 "encoder": "hevc_nvenc" if report["mode"] != "sdr" else "h264_nvenc",
                 "runtime_sha256": self.fingerprint, "adapter": report["adapter"],
                 "render_seconds": report["renderSeconds"], "frames": report["frames"]}
+
+
+class GpuProcessGuard:
+    """Contain descendants so scratch can be removed after an abrupt renderer exit."""
+
+    def __init__(self, process):
+        self.process = process
+        self.job = None
+        self.stopped = False
+        if os.name != "nt":
+            return  # The service already starts a dedicated POSIX process group.
+        import ctypes
+        from ctypes import wintypes as w
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("process_time", ctypes.c_int64), ("job_time", ctypes.c_int64),
+                        ("flags", w.DWORD), ("min_ws", ctypes.c_size_t),
+                        ("max_ws", ctypes.c_size_t), ("active_limit", w.DWORD),
+                        ("affinity", ctypes.c_size_t), ("priority", w.DWORD), ("scheduling", w.DWORD)]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("basic", BasicLimits), ("io", ctypes.c_uint64 * 6),
+                        ("memory", ctypes.c_size_t * 4)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [("times", ctypes.c_int64 * 4), ("faults", w.DWORD),
+                        ("total", w.DWORD), ("active", w.DWORD), ("terminated", w.DWORD)]
+
+        self.ctypes, self.Accounting = ctypes, Accounting
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        signatures = {
+            "CreateJobObjectW": ([ctypes.c_void_p, w.LPCWSTR], w.HANDLE),
+            "SetInformationJobObject": ([w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD], w.BOOL),
+            "AssignProcessToJobObject": ([w.HANDLE, w.HANDLE], w.BOOL),
+            "TerminateJobObject": ([w.HANDLE, w.UINT], w.BOOL),
+            "QueryInformationJobObject": ([w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.c_void_p], w.BOOL),
+            "CloseHandle": ([w.HANDLE], w.BOOL),
+        }
+        for name, (args, result) in signatures.items():
+            function = getattr(self.kernel, name)
+            function.argtypes, function.restype = args, result
+        job = self.kernel.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        try:
+            if not self.kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not self.kernel.AssignProcessToJobObject(job, int(process._handle)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except Exception:
+            self.kernel.CloseHandle(job)
+            raise
+        self.job = job
+
+    def stop(self):
+        if self.stopped:
+            return
+        if self.job is not None:
+            if not self.kernel.TerminateJobObject(self.job, 1):
+                raise self.ctypes.WinError(self.ctypes.get_last_error())
+            deadline = time.monotonic() + 5
+            while True:
+                info = self.Accounting()
+                if not self.kernel.QueryInformationJobObject(
+                    self.job, 1, self.ctypes.byref(info), self.ctypes.sizeof(info), None,
+                ):
+                    raise self.ctypes.WinError(self.ctypes.get_last_error())
+                if not info.active:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("GPU process tree did not exit; retaining scratch")
+                time.sleep(0.01)
+            self.kernel.CloseHandle(self.job)
+            self.job = None
+        else:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self.process.wait(timeout=5)
+        self.stopped = True

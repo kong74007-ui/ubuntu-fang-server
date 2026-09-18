@@ -12,7 +12,7 @@ $nodePath = (Get-Command $Node -ErrorAction Stop).Source
 $nodeVersion = & $nodePath --version
 if ($LASTEXITCODE -ne 0 -or [int]($nodeVersion.TrimStart('v').Split('.')[0]) -lt 22) { throw 'Node.js 22 or newer is required.' }
 New-Item -ItemType Directory -Path $destinationPath | Out-Null
-$files = 'package.json','package-lock.json','contract.json','render.mjs','browser.mjs','compile.mjs','geometry.mjs','compositor.mjs','probe.mjs'
+$files = 'package.json','package-lock.json','contract.json','render.mjs','browser.mjs','compile.mjs','geometry.mjs','compositor.mjs','probe.mjs','decode-plan.mjs'
 foreach ($name in $files) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $destinationPath $name) }
 & $Npm ci --prefix $destinationPath --ignore-scripts --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'GPU dependency installation failed; no service was changed.' }
