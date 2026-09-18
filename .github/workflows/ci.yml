@@ -87,6 +87,13 @@ jobs:
           node --test deploy/matrix-gpu/geometry.test.mjs
           node --test deploy/matrix-gpu/decode-plan.test.mjs
 
+      - name: 验证 Linux GPU 进程树与真实 Chrome 异常回收
+        env:
+          MATRIX_GPU_REQUIRE_BROWSER_TEST: "1"
+        run: |
+          npm ci --prefix deploy/matrix-gpu --ignore-scripts --no-audit --no-fund
+          python -m pytest tests/test_matrix_gpu_posix.py tests/test_matrix_gpu_cleanup.py -q
+
       - name: 测试全部工作台 JavaScript
         run: node --test tests/*.js
 

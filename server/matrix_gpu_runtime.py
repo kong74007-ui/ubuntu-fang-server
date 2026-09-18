@@ -5,11 +5,24 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
+import uuid
 
 CONTRACT_VERSION = 1
 RUNTIME_FILES = ("package.json", "package-lock.json", "render.mjs", "browser.mjs",
                  "geometry.mjs", "compositor.mjs", "probe.mjs", "compile.mjs", "contract.json", "decode-plan.mjs")
+
+SUPERVISOR = Path(__file__).with_name("matrix_gpu_supervisor.py")
+
+
+def supervised_command(command, output_directory):
+    if os.name == "nt":
+        return command
+    if not sys.platform.startswith("linux") or not SUPERVISOR.is_file():
+        raise RuntimeError("Required Linux GPU supervisor is unavailable")
+    receipt = Path(output_directory).resolve() / ("gpu-reaped-" + uuid.uuid4().hex + ".json")
+    return [sys.executable, str(SUPERVISOR), "--matrix-gpu-receipt", str(receipt), "--", *command]
 
 
 class GpuRuntime:
@@ -28,6 +41,9 @@ class GpuRuntime:
         if contract.get("version") != CONTRACT_VERSION or not isinstance(contract.get("templates"), list):
             raise ValueError("Invalid GPU template contract")
         self.templates = frozenset(contract["templates"])
+        if os.name != "nt":
+            subprocess.run([sys.executable, str(SUPERVISOR), "--check"],
+                           capture_output=True, timeout=10, check=True)
         args = [node, str(self.root / "probe.mjs")]
         if adapter:
             args += ["--adapter", adapter]
@@ -58,7 +74,7 @@ class GpuRuntime:
                   "--browser", str(self.browser), "--timeout", str(remaining)]
         if self.adapter:
             result += ["--adapter", self.adapter]
-        return result
+        return supervised_command(result, Path(output).parent)
 
     def public(self, templates):
         try:
@@ -90,7 +106,13 @@ class GpuProcessGuard:
         self.job = None
         self.stopped = False
         if os.name != "nt":
-            return  # The service already starts a dedicated POSIX process group.
+            args = process.args
+            if (not isinstance(args, (list, tuple)) or len(args) < 6
+                    or Path(args[1]).resolve() != SUPERVISOR.resolve()
+                    or args[2] != "--matrix-gpu-receipt" or args[4] != "--"):
+                raise ValueError("Refusing an unsupervised POSIX GPU process")
+            self.receipt = Path(args[3])
+            return
         import ctypes
         from ctypes import wintypes as w
 
@@ -157,9 +179,31 @@ class GpuProcessGuard:
             self.kernel.CloseHandle(self.job)
             self.job = None
         else:
+            if self.process.poll() is None:
+                # Do not signal Python before its supervisor handlers are installed.
+                deadline = time.monotonic() + 10
+                ready = self.receipt.with_suffix(".ready")
+                while self.process.poll() is None:
+                    try:
+                        initialized = ready.read_text(encoding="ascii") == str(self.process.pid)
+                    except FileNotFoundError:
+                        initialized = False
+                    if initialized:
+                        try:
+                            self.process.send_signal(signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("GPU supervisor did not initialize; retaining scratch")
+                    time.sleep(.02)
+            self.process.wait(timeout=15)
             try:
-                os.killpg(self.process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                proof = json.loads(self.receipt.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("GPU supervisor did not prove tree exit; retaining scratch") from exc
+            if (proof.get("version") != 1 or proof.get("supervisor_pid") != self.process.pid
+                    or proof.get("all_children_reaped") is not True):
+                raise RuntimeError("Invalid GPU tree-exit receipt; retaining scratch")
         self.process.wait(timeout=5)
         self.stopped = True

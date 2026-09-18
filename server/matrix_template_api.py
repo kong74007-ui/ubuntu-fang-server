@@ -5689,6 +5689,10 @@ class MatrixTemplateService:
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
+        guard = getattr(process, "_matrix_gpu_guard", None)
+        if os.name != "nt" and getattr(process, "_matrix_gpu", False) is True and guard is not None:
+            guard.stop()
+            return
         if process.poll() is not None:
             return
         try:

@@ -63,7 +63,9 @@ uses FFmpeg 8.1.1. Windows uses D3D12; Linux uses Vulkan and must pass preflight
 on that machine. The central CPU service can remain the metadata/preflight
 upstream; it is not eligible to claim GPU-required jobs.
 
-Install both `server/matrix_template_api.py` and `server/matrix_gpu_runtime.py`.
+Install `server/matrix_template_api.py`, `server/matrix_gpu_runtime.py` and
+`server/matrix_gpu_supervisor.py` together. Linux requires procfs, child-subreaper
+support and pidfds; startup checks these prerequisites before claiming readiness.
 Set these only on the GPU worker's rendering service:
 
 ```text
@@ -121,8 +123,12 @@ never overwrites a final output. A total deadline and process cleanup bound work
 By default raw-frame scratch is per-job and removed after completion/failure.
 The Python parent also removes that owned scratch after the renderer tree exits,
 including timeout, cancellation and nonzero exit. Windows Job Objects contain
-descendant writers even if Node crashes; POSIX workers use their dedicated
-process group. Linked/junction scratch paths are rejected. If tree termination
+descendant writers even if Node crashes. Linux starts a dedicated per-render
+subreaper supervisor: detached Chrome processes and double-forked descendants
+are adopted, killed with identity-checked pidfds, and reaped. The parent does not
+set `stopped` or remove scratch without that supervisor's all-children-reaped
+receipt. An abrupt supervisor crash or failed drain produces no success proof.
+Linked/junction scratch paths are rejected. If tree termination
 cannot be confirmed, scratch is retained rather than deleted under a writer.
 `--cache <directory>` is an explicit local-benchmark option; operators own its
 retention and must not point it at original media. Rendering receipts contain
@@ -142,3 +148,10 @@ no external material/provider requests.
 `tests/test_matrix_gpu_cleanup.py` launches real Node parent/child processes,
 forces termination or crashes the renderer, and checks parent-owned cleanup,
 external-file preservation, active-job protection and symlink/junction rejection.
+
+`tests/test_matrix_gpu_posix.py` additionally covers detached children and
+grandchildren, cancellation, missing/invalid completion proof and unrelated
+process preservation. CI also launches the pinned Puppeteer with a real Chrome
+using its default independent process group, kills Node with SIGKILL, and checks
+that Chrome and its observed descendants no longer exist. This does not require
+a GPU or any production worker access.

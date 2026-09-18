@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 
-from server.matrix_gpu_runtime import GpuProcessGuard
+from server.matrix_gpu_runtime import GpuProcessGuard, supervised_command
 from server.matrix_template_api import MatrixTemplateService, MatrixTemplateError
 
 
@@ -55,7 +55,8 @@ const cache=process.argv[2],ready=process.argv[3];
         options = {"stdin": subprocess.PIPE, "stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE}
         options.update({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True})
         ready = self.root / "ready"
-        self.process = subprocess.Popen([shutil.which("node"), str(script), str(self.cache), str(ready)], **options)
+        command = supervised_command([shutil.which("node"), str(script), str(self.cache), str(ready)], self.cache.parent)
+        self.process = subprocess.Popen(command, **options)
         self.guard = GpuProcessGuard(self.process)
         self.process._matrix_gpu = True
         self.process._matrix_gpu_job = self.job
