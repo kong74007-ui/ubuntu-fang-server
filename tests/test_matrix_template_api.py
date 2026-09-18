@@ -5315,12 +5315,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.write_bytes(b"prepared-video")
         config = {
+            "duration": 12.5,
             "still_frames": ((
                 "assets/media/01-aspect-fixed.mp4",
                 "assets/media/01-aspect-fixed.jpg",
                 0.5,
             ),),
         }
+        (workdir / "index.html").write_text(
+            "<style>background-image:url('assets/media/01-aspect-fixed.jpg')</style>"
+            + '<div class="fan-band"></div>' * 18, encoding="utf-8",
+        )
         captured = {}
 
         def run(command, **_kwargs):

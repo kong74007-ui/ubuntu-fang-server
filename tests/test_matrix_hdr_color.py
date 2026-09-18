@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -7,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from PIL import Image
 
 from server.matrix_template_api import MatrixTemplateService, MatrixTemplateError
 
@@ -85,6 +87,64 @@ class HdrColorTests(unittest.TestCase):
                 self.assertIn('rgb48be', command)
                 self.assertIn('arib-std-b67', command)
                 self.assertTrue(command[-1].endswith('.png'))
+
+    def test_mixed_and_late_hdr_jobs_enumerate_all_fan_images(self):
+        service = object.__new__(MatrixTemplateService)
+        hdr_color = dict(dynamic_range='hdr', transfer='arib-std-b67',
+                         primaries='bt2020', matrix='bt2020nc', range='tv')
+        scenarios = {'mixed': (True, False, False),
+                     'last-still-hdr': (False, False, True),
+                     'later-video-hdr': (False, False, False),
+                     'sdr-only': (False, False, False)}
+        for name, flags in scenarios.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                for i in range(3):
+                    (root / f'source-{i}.mp4').write_bytes(b'source')
+                styles = ''.join(
+                    ".fan-band:nth-child(%d){top:%dpx;background-image:url('still-%d.jpg')}"
+                    % (i + 1, i * 60, i) for i in range(3))
+                index = root / 'index.html'
+                index.write_text(
+                    '<html><head><style>.petal{position:relative;display:inline-block;'
+                    'width:80px;height:180px}.fan-band{position:absolute;left:0;width:80px;'
+                    'height:60px;background-size:cover}' + styles + '</style></head><body>'
+                    + ('<div class="petal">' + '<div class="fan-band"></div>' * 3 + '</div>') * 6
+                    + '<p id="title" data-start="0" data-duration="12.5">Title</p>'
+                    + ('<video id="later-hdr" data-start="6" data-duration="6.5"></video>'
+                       if name == 'later-video-hdr' else '') + '</body></html>', encoding='utf-8')
+                config = {'duration': 12.5, 'still_frames': [
+                    (f'source-{i}.mp4', f'still-{i}.jpg', 0.5) for i in range(3)
+                ]}
+
+                def color(path):
+                    hdr = path.suffix == '.png' or (
+                        path.stem.startswith('source-') and flags[int(path.stem[-1])])
+                    return hdr_color if hdr else {'dynamic_range': 'sdr'}
+
+                def run(command, **kwargs):
+                    target = Path(command[-1])
+                    Image.new('RGB', (80, 180), (100, 180, 80)).save(target)
+                    # Keep fake media above the production size gate.
+                    with target.open('ab') as handle:
+                        handle.write(b'\0' * 2048)
+                    return 0, b'', b''
+
+                with mock.patch.object(service, '_source_color', side_effect=color), \
+                     mock.patch.object(service, '_run_tracked_process', side_effect=run):
+                    service._prepare_fixed_skill_stills(root, config, deadline_at=time.time() + 30)
+                rendered = index.read_text(encoding='utf-8')
+                self.assertEqual(rendered.count('<img '), 18)
+                self.assertEqual(rendered.count('data-track-index='), 18)
+                self.assertEqual(rendered.count('background-image:none'), 3)
+                self.assertNotIn('background-image:url', rendered)
+                for i, hdr in enumerate(flags):
+                    path = f'still-{i}.hdr.png' if hdr else f'still-{i}.jpg'
+                    self.assertEqual(rendered.count(f'src="{path}"'), 6)
+                fixture_root = os.environ.get('MATRIX_HDR_LAYER_FIXTURE_DIR')
+                if fixture_root:
+                    target = Path(fixture_root) / name
+                    shutil.copytree(root, target, dirs_exist_ok=True)
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'requires FFmpeg')
     def test_real_hdr_fixed_and_nine_grid_clips_preserve_ten_bits_and_transfer(self):

@@ -5866,7 +5866,7 @@ class MatrixTemplateService:
     def _prepare_fixed_skill_stills(
         self, workdir: Path, config: dict, *, deadline_at: float,
     ) -> None:
-        hdr_stills = {}
+        still_layers = {}
         for number, (source_relative, target_relative, at_seconds) in enumerate(config.get(
             "still_frames", ()
         ), 1):
@@ -5886,7 +5886,7 @@ class MatrixTemplateService:
             hdr = color["dynamic_range"] == "hdr"
             if hdr:
                 target = target.with_suffix(".hdr.png")
-                hdr_stills[number] = (target_relative, target.relative_to(workdir).as_posix())
+            still_layers[number] = (target_relative, target.relative_to(workdir).as_posix())
             temporary = target.with_name("." + target.stem + ".part" + target.suffix)
             temporary.unlink(missing_ok=True)
             command = [
@@ -5919,12 +5919,12 @@ class MatrixTemplateService:
                 os.replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
-        if hdr_stills:
-            # CSS background screenshots are eight-bit; expose the same stills as
-            # native HDR image layers without changing their geometry or animation.
+        if still_layers:
+            # Every still needs a timed layer, including SDR stills when HDR is
+            # present only in a later video. Each image retains its own color space.
             index_path = workdir / "index.html"
             index = index_path.read_text(encoding="utf-8")
-            for old, _new in hdr_stills.values():
+            for old, _new in still_layers.values():
                 declaration = "background-image:url('" + old + "')"
                 if index.count(declaration) != 1:
                     raise MatrixTemplateError("HDR 模板静帧声明发生变化")
@@ -5935,9 +5935,7 @@ class MatrixTemplateService:
                 nonlocal seen
                 number = seen % len(config["still_frames"]) + 1
                 seen += 1
-                if number not in hdr_stills:
-                    return match.group(0)
-                path = html.escape(hdr_stills[number][1], quote=True)
+                path = html.escape(still_layers[number][1], quote=True)
                 return match.group(1) + (
                     f'<img id="matrix-hdr-still-{seen}" class="clip" src="{path}" '
                     f'data-start="0" data-duration="{config["duration"]}" '
