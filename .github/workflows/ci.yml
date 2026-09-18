@@ -81,6 +81,11 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
+      - name: 检查 GPU 渲染模块与几何契约
+        run: |
+          for file in deploy/matrix-gpu/*.mjs; do node --check "$file"; done
+          node --test deploy/matrix-gpu/geometry.test.mjs
+
       - name: 测试全部工作台 JavaScript
         run: node --test tests/*.js
 
