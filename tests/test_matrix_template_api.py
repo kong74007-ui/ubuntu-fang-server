@@ -714,6 +714,7 @@ class MatrixTemplateApiTests(unittest.TestCase):
             "bgm": False,
         })
         payload = self.service._freeze_font_provenance("a" * 32, payload)
+        self.assertEqual(1, payload["_video_color_contract"])
         self.assertEqual(
             2, payload["_material_selection_contract_version"],
         )
@@ -827,6 +828,11 @@ class MatrixTemplateApiTests(unittest.TestCase):
             with mock.patch.object(
                 self.service.store, "reserve_job_materials",
                 side_effect=SystemExit("simulated crash"),
+            ), mock.patch(
+                "server.material_library.subprocess.run",
+                return_value=mock.Mock(stdout=json.dumps({"streams": [{
+                    "pix_fmt": "yuv420p", "color_transfer": "bt709",
+                }]})),
             ), self.assertRaisesRegex(SystemExit, "simulated crash"):
                 self.service._select_materials(payload, job_id)
 
