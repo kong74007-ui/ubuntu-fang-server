@@ -4655,17 +4655,25 @@ class MatrixTemplateService:
                 "Content-Type": "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as exc:
+        replayable = (method == "POST" and path == "/v1/select"
+                      and isinstance(body, dict) and body.get("selection_mode") == "round_robin"
+                      and isinstance(body.get("selection_id"), str) and bool(body["selection_id"]))
+        for attempt in range(2 if replayable else 1):
             try:
-                detail = json.loads(exc.read()).get("detail")
-            except Exception:
-                detail = None
-            raise MatrixTemplateError(str(detail or "平台素材库暂不可用")) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise MatrixTemplateError("平台素材库暂不可用") from exc
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                try:
+                    detail = json.loads(exc.read()).get("detail")
+                except Exception:
+                    detail = None
+                raise MatrixTemplateError(str(detail or "平台素材库暂不可用")) from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                reason = getattr(exc, "reason", exc)
+                if replayable and attempt == 0 and isinstance(reason, TimeoutError):
+                    print("[matrix-template] selection timeout; replaying same receipt", flush=True)
+                    continue
+                raise MatrixTemplateError("平台素材库暂不可用") from exc
 
     def library_readiness(self, *, force: bool = False) -> dict:
         with self.library_readiness_lock:
