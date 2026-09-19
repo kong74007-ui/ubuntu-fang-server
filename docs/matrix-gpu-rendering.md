@@ -103,7 +103,17 @@ The token stays in the existing private environment file. Loopback HTTP rules
 and public-material account restrictions are unchanged. This opt-in replaces
 the untracked HTTPS adaptation previously present on rendering workers.
 Set `MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=1` and `NODE_CONCURRENCY=1` for the
-initial GPU rollout; the checked-in renderer retains its existing 1–2 limit.
+initial GPU rollout. After hardware preflight, GPU-required mode permits 1–5
+render slots; legacy mode retains its 1–2 limit. This is a configurable ceiling,
+not a claim that every GPU sustains five renders. To exercise five real jobs,
+set `MATRIX_TEMPLATE_CONCURRENCY=5`,
+`MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=5`, and `NODE_CONCURRENCY=5` together.
+For that test, set `MATRIX_TEMPLATE_SLOT_CUT_WORKERS=1` so per-job clip pools do
+not multiply five jobs into twenty simultaneous hardware encoders. Isolate
+test jobs from website billing, drain existing jobs before switching, measure
+actual overlapping render processes and successful outputs, and restore the
+previous settings on memory/encoder failures or unacceptable latency. Existing
+driver, disk, timeout and child-process containment checks remain mandatory.
 
 Startup performs a real 16-bit GPU composition and a ten-bit NVENC encode probe.
 Missing dependencies, software adapters, changed runtime files and failed probes
