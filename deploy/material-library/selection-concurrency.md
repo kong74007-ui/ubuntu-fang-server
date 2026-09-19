@@ -18,8 +18,8 @@ limited to five seconds. Semantic selection retains its prior bounded check path
 These are guardrails, not a promised end-to-end latency under arbitrary I/O stalls.
 
 Candidate expansion is reused for identical slot specifications within one plan;
-random/round-robin scoring is computed only for chosen assets, preserving returned
-match_score without scoring every discarded candidate. No ranking, exclusion,
+random/round-robin skips unused semantic scoring and retains the legacy returned
+match_score of zero. Semantic mode still computes its original scores. No ranking, exclusion,
 diversity, HDR precision, ownership, receipt version or index schema is relaxed.
 
 The renderer retries exactly once ONLY after a timeout on a round-robin /v1/select

@@ -46,8 +46,8 @@ class SelectionConcurrencyTests(unittest.TestCase):
         scenes=[{'scene_id':str(i),'media_type':'video','clip_duration_seconds':5,'query':'material'} for i in range(7)]
         with mock.patch.object(ml,'_score',wraps=ml._score) as score, mock.patch.object(ml,'_material_candidates',wraps=ml._material_candidates) as candidates:
             result=self.lib.select(scenes,selection_mode='round_robin',selection_id='seven')
-        self.assertLessEqual(score.call_count,len(scenes)*3)
-        self.assertTrue(all(x['match_score']>0 for x in result['materials']))
+        self.assertEqual(score.call_count,0)
+        self.assertTrue(all(x['match_score']==0 for x in result['materials']))
         self.assertLessEqual(candidates.call_count,len(self.rows)*3)
 
     def test_timeout_replays_same_selection_request_once(self):

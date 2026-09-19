@@ -1449,9 +1449,6 @@ class MaterialLibrary:
                 )
             candidate, score = selected_pair
             material = candidate.material
-            if mode in {"random", "round_robin"}:
-                # Preserve public match_score without scoring every candidate.
-                score = _score(material, tokens, query_text)
             used.add(material.sha256)
             used_groups.add(material.diversity_group)
             if mode == "round_robin":
