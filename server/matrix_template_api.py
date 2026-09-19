@@ -2563,8 +2563,11 @@ class MatrixTemplateService:
                 "nine-grid prep encoder must be libx264 or h264_nvenc"
             )
         self.hyperframes_concurrency = int(hyperframes_concurrency)
-        if not 1 <= self.hyperframes_concurrency <= 2:
-            raise MatrixTemplateError("HyperFrames concurrency must be between 1 and 2")
+        max_render_concurrency = 5 if self.gpu_runtime is not None else 2
+        if not 1 <= self.hyperframes_concurrency <= max_render_concurrency:
+            raise MatrixTemplateError(
+                f"HyperFrames concurrency must be between 1 and {max_render_concurrency}"
+            )
         self.hyperframes_total_timeout_seconds = int(hyperframes_total_timeout_seconds)
         self.hyperframes_slot_timeout_seconds = int(hyperframes_slot_timeout_seconds)
         if not 120 <= self.hyperframes_total_timeout_seconds <= 1100:
