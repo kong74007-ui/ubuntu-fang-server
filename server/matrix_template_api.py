@@ -2424,6 +2424,7 @@ class MatrixTemplateService:
     def __init__(self, *, data_root: Path, skill_root: Path, library_url: str,
                  library_token: str,
                  public_materials_path: Path | None = None,
+                 allow_remote_library: bool = False,
                  python: str = sys.executable,
                  private_font_root: Path | None = None,
                  reference_skill_root: Path | None = None,
@@ -2469,13 +2470,20 @@ class MatrixTemplateService:
         self._library_snapshot_cache: dict | None = None
         self.legacy_templates_enabled = bool(legacy_templates_enabled)
         parsed_library = urlsplit(self.library_url)
-        if (
-            parsed_library.scheme != "http"
-            or parsed_library.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or parsed_library.path not in {"", "/"}
-            or parsed_library.username or parsed_library.password
+        loopback = parsed_library.hostname in {"127.0.0.1", "localhost", "::1"}
+        safe_location = not (
+            parsed_library.username or parsed_library.password
             or parsed_library.query or parsed_library.fragment
-        ):
+        )
+        local_library = (
+            loopback and parsed_library.scheme == "http"
+            and parsed_library.path in {"", "/"}
+        )
+        remote_library = (
+            allow_remote_library is True and not loopback
+            and parsed_library.scheme == "https" and bool(parsed_library.hostname)
+        )
+        if not safe_location or not (local_library or remote_library):
             raise MatrixTemplateError("material library URL must be loopback HTTP")
         if not self.library_token:
             raise MatrixTemplateError("material library token is missing")
@@ -7600,6 +7608,7 @@ def main() -> None:
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
+        allow_remote_library=os.environ.get("MATRIX_TEMPLATE_ALLOW_REMOTE_LIBRARY", "0") == "1",
         legacy_templates_enabled=False,
         gpu_mode=os.environ.get("MATRIX_TEMPLATE_GPU_MODE", "disabled"),
         gpu_runtime_root=(Path(os.environ["MATRIX_TEMPLATE_GPU_RUNTIME"])

@@ -73,6 +73,8 @@ MATRIX_TEMPLATE_GPU_MODE=required
 MATRIX_TEMPLATE_GPU_RUNTIME=<immutable-runtime-directory>
 MATRIX_TEMPLATE_GPU_NODE=<node-executable>
 MATRIX_TEMPLATE_HYPERFRAMES_BROWSER=<chrome-executable>
+# Existing workers using the operator-configured HTTPS material gateway:
+MATRIX_TEMPLATE_ALLOW_REMOTE_LIBRARY=1
 # Optional exact Dawn adapter selection:
 MATRIX_TEMPLATE_GPU_ADAPTER=<adapter-name>
 ```
@@ -81,6 +83,15 @@ MATRIX_TEMPLATE_GPU_ADAPTER=<adapter-name>
 stopping, restarting or switching services. It deliberately does not copy
 credentials or edit active environment files. Start conservatively with one
 render slot on low-VRAM nodes, then measure before increasing concurrency.
+
+Remote material-library access is disabled by default. When explicitly enabled
+by the operator, `PIXELLE_MATERIAL_LIBRARY_URL` may use a remote HTTPS endpoint
+with a path prefix, without embedded credentials, query parameters or fragments.
+The token stays in the existing private environment file. Loopback HTTP rules
+and public-material account restrictions are unchanged. This opt-in replaces
+the untracked HTTPS adaptation previously present on rendering workers.
+Set `MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=1` and `NODE_CONCURRENCY=1` for the
+initial GPU rollout; the checked-in renderer retains its existing 1–2 limit.
 
 Startup performs a real 16-bit GPU composition and a ten-bit NVENC encode probe.
 Missing dependencies, software adapters, changed runtime files and failed probes
