@@ -55,6 +55,18 @@ silently returning to a CPU renderer.
 
 ## Worker configuration
 
+For a Windows-native worker, `windows-node-launcher.py --config <private.json>`
+loads only the worker-specific environment and executes the checked-in renderer
+or poller entry point without a shell. Keep the version-1 configuration private
+with fields `mode` (`renderer` or `poller`), `program`, `env`, and `log_dir`.
+Restrict its NTFS ACL to the service identity and administrators; never commit
+tokens. The renderer binds only 127.0.0.1:8212. Use a supervised scheduled task
+or service with restart-on-failure, and disable the prior poller only after
+draining its jobs. Preserve the existing database, user uploads and completed
+outputs when relocating the data directory. Verify hardware under the actual
+Windows service identity before enabling claims. Driver installation/reboot is
+a separate operational gate; do not auto-reboot as part of worker activation.
+
 Keep the GPU runtime in an immutable release directory with its pinned lockfile.
 Install dependencies using `npm ci --ignore-scripts --no-audit --no-fund` there.
 Requirements: Node >=22, Chrome, Python/Pillow, FFmpeg/ffprobe with NVENC and
