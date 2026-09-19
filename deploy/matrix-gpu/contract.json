@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "compositor": "webgpu-native",
+  "templates": [
+    "ref-01-chengdu-green-brush", "ref-02-shenzhen-ai-orange",
+    "ref-03-zhengzhou-blue-banner", "ref-04-foshan-yellow-strip",
+    "ref-05-changsha-white-red", "ref-06-guangzhou-yellow-button",
+    "ref-07-shenzhen-red-growth", "ref-08-puyang-yellow-white",
+    "ref-09-urumqi-soft-brush", "ref-10-shenzhen-sisters",
+    "ref-11-nansha-clean", "ref-12-guangzhou-brush",
+    "ref-13-shenzhen-green-location", "ref-14-karamay-green",
+    "ref-15-tianjin-monochrome", "ref-16-shenzhen-opc",
+    "ref-17-shenzhen-yellow-red", "nine-grid-reveal",
+    "triple-strip-shutter", "yellow-banner-zoom", "fan-whip-static",
+    "brush-panel-transitions"
+  ]
+}

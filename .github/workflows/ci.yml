@@ -81,6 +81,19 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
+      - name: 检查 GPU 渲染模块与几何契约
+        run: |
+          for file in deploy/matrix-gpu/*.mjs; do node --check "$file"; done
+          node --test deploy/matrix-gpu/geometry.test.mjs
+          node --test deploy/matrix-gpu/decode-plan.test.mjs
+
+      - name: 验证 Linux GPU 进程树与真实 Chrome 异常回收
+        env:
+          MATRIX_GPU_REQUIRE_BROWSER_TEST: "1"
+        run: |
+          npm ci --prefix deploy/matrix-gpu --ignore-scripts --no-audit --no-fund
+          python -m pytest tests/test_matrix_gpu_posix.py tests/test_matrix_gpu_cleanup.py -q
+
       - name: 测试全部工作台 JavaScript
         run: node --test tests/*.js
 

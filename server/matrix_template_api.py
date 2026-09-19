@@ -1716,7 +1716,7 @@ def _validate_reference_editing_plan(value) -> dict:
     return value
 
 
-def _inject_reference_editing_plan(html: str, plan: dict) -> str:
+def _inject_reference_editing_plan(html: str, plan: dict, *, gpu_safe_clips: bool = False) -> str:
     plan = _validate_reference_editing_plan(plan)
     if (
         REFERENCE_EDITING_SCRIPT_ID in html
@@ -1745,6 +1745,19 @@ def _inject_reference_editing_plan(html: str, plan: dict) -> str:
         )
         html = html[:matches[0].start()] + layers + html[matches[0].end():]
     plan_json = json.dumps(plan, ensure_ascii=True, separators=(",", ":"))
+    clip_helper = '''
+  const fullClipNeutral = effect => ({...neutral, clipPath:
+    effect.clipPath?.startsWith("polygon(") ? "polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%)" :
+    effect.clipPath?.startsWith("circle(") ? "circle(100% at 50% 50%)" : neutral.clipPath});
+''' if gpu_safe_clips else ""
+    first_neutral = "fullClipNeutral(entrances[plan.bookends.entrance])" if gpu_safe_clips else "neutral"
+    last_tween = (
+        'timeline.fromTo(transitionLayers[lastIndex], fullClipNeutral(exits[plan.bookends.exit]), '
+        '{...exits[plan.bookends.exit], duration: lastEdge, ease: "power3.in", immediateRender: false}, '
+        'lastStart + lastDuration - lastEdge);'
+        if gpu_safe_clips else
+        'timeline.to(transitionLayers[lastIndex], {...exits[plan.bookends.exit], duration: lastEdge, ease: "power3.in"}, lastStart + lastDuration - lastEdge);'
+    )
     style = f'''<style id="{REFERENCE_EDITING_STYLE_ID}">
 .matrix-media-transition,.matrix-media-motion{{position:absolute;inset:0;width:1080px;height:1920px;overflow:hidden;transform-origin:50% 50%;transform-style:preserve-3d;backface-visibility:hidden}}
 </style>'''
@@ -1755,6 +1768,7 @@ def _inject_reference_editing_plan(html: str, plan: dict) -> str:
   const transitionLayers = videos.map(video => document.getElementById(`${{video.id}}-transition`));
   const motionLayers = videos.map(video => document.getElementById(`${{video.id}}-motion`));
   const neutral = {{x: 0, y: 0, scale: 1, rotation: 0, rotationX: 0, rotationY: 0, clipPath: "inset(0% 0% 0% 0%)"}};
+{clip_helper}
   const motions = {{
     slow_push: [{{scale: 1.03}}, {{scale: 1.14}}],
     pull_back: [{{scale: 1.15}}, {{scale: 1.03}}],
@@ -1799,7 +1813,7 @@ def _inject_reference_editing_plan(html: str, plan: dict) -> str:
   }});
   const firstStart = Number(videos[0].dataset.start);
   const firstEdge = Math.min(0.34, Number(videos[0].dataset.duration) * 0.16);
-  timeline.fromTo(transitionLayers[0], entrances[plan.bookends.entrance], {{...neutral, duration: firstEdge, ease: "power3.out", immediateRender: false}}, firstStart);
+  timeline.fromTo(transitionLayers[0], entrances[plan.bookends.entrance], {{...{first_neutral}, duration: firstEdge, ease: "power3.out", immediateRender: false}}, firstStart);
   plan.transitions.forEach((item, index) => {{
     const outgoingEnd = Number(videos[index].dataset.start) + Number(videos[index].dataset.duration);
     const incomingStart = Number(videos[index + 1].dataset.start);
@@ -1812,7 +1826,7 @@ def _inject_reference_editing_plan(html: str, plan: dict) -> str:
   const lastStart = Number(videos[lastIndex].dataset.start);
   const lastDuration = Number(videos[lastIndex].dataset.duration);
   const lastEdge = Math.min(0.34, lastDuration * 0.16);
-  timeline.to(transitionLayers[lastIndex], {{...exits[plan.bookends.exit], duration: lastEdge, ease: "power3.in"}}, lastStart + lastDuration - lastEdge);
+  {last_tween}
   window.__matrixEditingPlan = plan;
   window.__timelines["main"] = timeline;
 }})();
@@ -2423,6 +2437,10 @@ class MatrixTemplateService:
                  motion_v2_hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
+                 gpu_mode: str = "disabled",
+                 gpu_runtime_root: Path | None = None,
+                 gpu_node: str = "node",
+                 gpu_adapter: str = "",
                  nine_grid_prep_encoder: str = "libx264",
                  hyperframes_concurrency: int = DEFAULT_HYPERFRAMES_CONCURRENCY,
                  hyperframes_total_timeout_seconds: int = DEFAULT_HYPERFRAMES_TOTAL_TIMEOUT_SECONDS,
@@ -2514,6 +2532,23 @@ class MatrixTemplateService:
         self.hyperframes_browser = (
             hyperframes_browser.resolve() if hyperframes_browser else None
         )
+        self.gpu_runtime = None
+        if gpu_mode not in {"disabled", "required"}:
+            raise MatrixTemplateError("GPU mode must be disabled or required")
+        if gpu_mode == "required":
+            if gpu_runtime_root is None or self.hyperframes_browser is None:
+                raise MatrixTemplateError("Required GPU runtime/browser is not configured")
+            try:
+                try:
+                    from .matrix_gpu_runtime import GpuRuntime
+                except ImportError:
+                    from matrix_gpu_runtime import GpuRuntime
+                self.gpu_runtime = GpuRuntime(
+                    gpu_runtime_root, self.hyperframes_browser,
+                    node=gpu_node, adapter=gpu_adapter,
+                )
+            except (ImportError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise MatrixTemplateError("GPU hardware composition/encoding preflight failed") from exc
         self.nine_grid_prep_encoder = str(nine_grid_prep_encoder).strip().lower()
         if self.nine_grid_prep_encoder not in NINE_GRID_PREP_ENCODERS:
             raise MatrixTemplateError(
@@ -2580,6 +2615,14 @@ class MatrixTemplateService:
             self.catalog[0]["id"] if self.catalog else ""
         )
         self.templates = {item["id"]: item for item in self.catalog}
+        if self.gpu_runtime:
+            supported = set(self.reference_templates) | set(self.fixed_skill_templates)
+            if self.nine_grid_template is not None:
+                supported.add(NINE_GRID_TEMPLATE_ID)
+            if set(self.templates) - supported:
+                raise MatrixTemplateError("GPU-only mode cannot admit legacy templates")
+            if set(self.templates) - self.gpu_runtime.templates:
+                raise MatrixTemplateError("GPU template contract does not cover the public catalog")
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._purge_trash()
         self.cleanup_once()
@@ -4319,9 +4362,17 @@ class MatrixTemplateService:
         workers_ready = not self.workers_expected or (
             worker_alive and cleanup_alive and not worker_degraded
         )
-        ready = workers_ready and library["ready"]
+        gpu_status = (
+            self.gpu_runtime.public(self.templates)
+            if getattr(self, "gpu_runtime", None) else
+            {"contract_version": 1, "ready": False, "templates": []}
+        )
+        ready = workers_ready and library["ready"] and (
+            not getattr(self, "gpu_runtime", None) or gpu_status["ready"]
+        )
         return {
             "ok": ready,
+            "gpu_render": gpu_status,
             "worker_alive": worker_alive,
             "worker_count": live_workers,
             "cleanup_worker_alive": cleanup_alive,
@@ -4534,9 +4585,52 @@ class MatrixTemplateService:
                 self.active_downloads.discard(job_id)
 
     def _discard_output(self, job_id: str) -> None:
+        self._cleanup_gpu_scratch(job_id)
         output_dir = self.data_root / job_id / "output"
         for name in ("final.mp4", "published.mp4"):
             (output_dir / name).unlink(missing_ok=True)
+
+    def _cleanup_gpu_scratch(self, job_id: str) -> None:
+        # Only the renderer-owned default cache, never external caches or linked source directories.
+        if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
+            raise MatrixTemplateError("Invalid GPU scratch job path")
+        for process in list(getattr(self, "active_processes", ())):
+            if (getattr(process, "_matrix_gpu_job", None) == job_id
+                    and not getattr(getattr(process, "_matrix_gpu_guard", None), "stopped", False)):
+                return
+        base = self.data_root.resolve()
+        job = base / job_id
+        output = job / "output"
+        scratch = output / "raw-cache"
+        for target in (job, output, scratch):
+            if not target.exists() and not target.is_symlink():
+                return
+            info = target.lstat()
+            if (target.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400
+                    or target.resolve() != target):
+                raise MatrixTemplateError("Refusing linked GPU scratch directory")
+        if scratch.is_dir():
+            shutil.rmtree(scratch)
+
+    def _guard_gpu_process(self, process, job_id: str) -> None:
+        if not getattr(self, "gpu_runtime", None):
+            return
+        process._matrix_gpu = True
+        process._matrix_gpu_job = job_id
+        try:
+            process._matrix_gpu_guard = self.gpu_runtime.guard(process)
+        except Exception:
+            self._terminate(process)
+            raise
+
+    def _finish_render_process(self, process, job_id: str) -> None:
+        if getattr(process, "_matrix_gpu", False) is True:
+            process._matrix_gpu_guard.stop()
+        with self.process_lock:
+            self.active_processes.discard(process)
+            self.active_process = next(iter(self.active_processes), None)
+        if getattr(process, "_matrix_gpu", False) is True:
+            self._cleanup_gpu_scratch(job_id)
 
     def _library_request(
         self, method: str, path: str, body=None, *, timeout: float = 30,
@@ -5595,11 +5689,22 @@ class MatrixTemplateService:
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
+        guard = getattr(process, "_matrix_gpu_guard", None)
+        if os.name != "nt" and getattr(process, "_matrix_gpu", False) is True and guard is not None:
+            guard.stop()
+            return
         if process.poll() is not None:
             return
         try:
             if os.name == "nt":
-                process.terminate()
+                if getattr(process, "_matrix_gpu", False) is True:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=10, check=False,
+                    )
+                else:
+                    process.terminate()
             else:
                 os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=2)
@@ -5645,6 +5750,8 @@ class MatrixTemplateService:
                 self.active_process = next(iter(self.active_processes), None)
 
     def _render(self, project_path: Path) -> None:
+        if getattr(self, "gpu_runtime", None):
+            raise MatrixTemplateError("Legacy FFmpeg templates are not admitted to GPU-only mode")
         output = project_path.parent / "output/final.mp4"
         command = [
             self.python, str(self.skill_root / "scripts/render_video.py"),
@@ -5846,8 +5953,14 @@ class MatrixTemplateService:
         return {"dynamic_range": "sdr"}
 
     @staticmethod
-    def _clip_color_encoding(color: dict, sdr_encoder: str = "libx264") -> tuple[str, list[str]]:
+    def _clip_color_encoding(color: dict, sdr_encoder: str = "libx264", *, gpu: bool = False) -> tuple[str, list[str]]:
         if color["dynamic_range"] == "hdr":
+            if gpu:
+                return "yuv420p10le", [
+                    "-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "18", "-tag:v", "hvc1",
+                    "-color_primaries", color["primaries"], "-color_trc", color["transfer"],
+                    "-colorspace", color["matrix"], "-color_range", color["range"],
+                ]
             return "yuv420p10le", [
                 "-c:v", "libx265", "-preset", "fast", "-crf", "18",
                 "-x265-params", "pools=2:frame-threads=1:colorprim=9:colormatrix=9:transfer="
@@ -5857,7 +5970,7 @@ class MatrixTemplateService:
             ]
         encoder = (
             ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18"]
-            if sdr_encoder == "h264_nvenc" else
+            if gpu or sdr_encoder == "h264_nvenc" else
             ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "2"]
         )
         return "yuv420p", encoder + [
@@ -5902,6 +6015,7 @@ class MatrixTemplateService:
         tail = encoded - visible
         pixel_format, encoder_args = self._clip_color_encoding(
             self._source_color(source), self.nine_grid_prep_encoder,
+            gpu=bool(getattr(self, "gpu_runtime", None)),
         )
         video_filter = (
             f"trim=duration={visible:.6f},setpts=PTS-STARTPTS,"
@@ -6146,7 +6260,9 @@ class MatrixTemplateService:
         ):
             raise MatrixTemplateError("固定 Skill 模板素材时长不足")
         actual_start = float(start)
-        pixel_format, encoder_args = self._clip_color_encoding(self._source_color(source))
+        pixel_format, encoder_args = self._clip_color_encoding(
+            self._source_color(source), gpu=bool(getattr(self, "gpu_runtime", None)),
+        )
         remaining = deadline_at - time.time()
         if remaining <= 0:
             raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -6435,7 +6551,10 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
+            if getattr(self, "gpu_runtime", None):
+                command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6460,11 +6579,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(
-                        iter(self.active_processes), None,
-                    )
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
@@ -6621,7 +6736,10 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("九宫格模板任务超过总时限")
+            if getattr(self, "gpu_runtime", None):
+                command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6646,11 +6764,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(
-                        iter(self.active_processes), None,
-                    )
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("九宫格模板任务超过总时限")
@@ -6839,7 +6953,9 @@ class MatrixTemplateService:
             editing_plan = _validate_reference_editing_plan(editing_plan)
             if len(editing_plan["segments"]) != visual_count:
                 raise MatrixTemplateError("HyperFrames 剪辑方案片段数量不匹配")
-            index = _inject_reference_editing_plan(index, editing_plan)
+            index = _inject_reference_editing_plan(
+                index, editing_plan, gpu_safe_clips=bool(getattr(self, "gpu_runtime", None)),
+            )
         index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -6890,7 +7006,10 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
+            if getattr(self, "gpu_runtime", None):
+                command = self.gpu_runtime.command(workdir, output, variables_path, remaining)
             process = subprocess.Popen(command, **options)
+            self._guard_gpu_process(process, job_id)
             with self.process_lock:
                 self.active_processes.add(process)
                 self.active_process = process
@@ -6913,9 +7032,7 @@ class MatrixTemplateService:
                         + (": " + detail if detail else "")
                     )
             finally:
-                with self.process_lock:
-                    self.active_processes.discard(process)
-                    self.active_process = next(iter(self.active_processes), None)
+                self._finish_render_process(process, job_id)
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("HyperFrames 模板任务超过总时限")
@@ -7104,8 +7221,11 @@ class MatrixTemplateService:
             editing_plan = None
             engine = "ffmpeg"
         output = root / "output/final.mp4"
+        gpu_evidence = None
         try:
             probe = self._probe(output)
+            if getattr(self, "gpu_runtime", None):
+                gpu_evidence = self.gpu_runtime.result(output)
             if reference_template or nine_grid_template or fixed_skill_template:
                 source_hdr = any(
                     self._source_color(path)["dynamic_range"] == "hdr"
@@ -7121,6 +7241,7 @@ class MatrixTemplateService:
         material_contract_version = self._material_contract_version(payload)
         return {
             **probe,
+            **({"gpu_render": gpu_evidence} if gpu_evidence else {}),
             "template_id": payload["template_id"],
             "batch_id": payload.get("batch_id") or "",
             "batch_index": payload.get("batch_index"),
@@ -7480,6 +7601,11 @@ def main() -> None:
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
         legacy_templates_enabled=False,
+        gpu_mode=os.environ.get("MATRIX_TEMPLATE_GPU_MODE", "disabled"),
+        gpu_runtime_root=(Path(os.environ["MATRIX_TEMPLATE_GPU_RUNTIME"])
+                          if os.environ.get("MATRIX_TEMPLATE_GPU_RUNTIME") else None),
+        gpu_node=os.environ.get("MATRIX_TEMPLATE_GPU_NODE", "node"),
+        gpu_adapter=os.environ.get("MATRIX_TEMPLATE_GPU_ADAPTER", ""),
         python=os.environ.get("MATRIX_TEMPLATE_PYTHON", sys.executable),
         private_font_root=Path(os.environ.get(
             "MATRIX_TEMPLATE_PRIVATE_FONT_ROOT",
