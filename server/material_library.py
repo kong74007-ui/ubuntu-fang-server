@@ -99,6 +99,11 @@ class MaterialSelectionConflictError(MaterialLibraryError):
     pass
 
 
+class _MaterialChecksNeeded(Exception):
+    def __init__(self, materials):
+        self.materials = materials
+
+
 @dataclass(frozen=True)
 class Material:
     record_id: str
@@ -376,12 +381,17 @@ def _selection_request_sha256(
 
 
 class MaterialLibrary:
-    def __init__(self, root: str | Path, *, usage_path: str | Path | None = None):
+    def __init__(self, root: str | Path, *, usage_path: str | Path | None = None,
+                 prepared_cache_path: str | Path | None = None):
         self.root = Path(root).resolve()
         self.index_path = self.root / "index.jsonl"
         self._lock = threading.RLock()
         self._usage_lock = threading.Lock()
+        self._io_slots = threading.BoundedSemaphore(4)
         self._stamp: tuple[int, int] | None = None
+        self._prepared_cache_path = Path(prepared_cache_path).absolute() if prepared_cache_path is not None else None
+        self._prepared_cache_stamp = None
+        self._prepared_cache_entries = 0
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
         self._video_color_cache: dict[str, tuple[tuple, bool]] = {}
@@ -410,6 +420,7 @@ class MaterialLibrary:
         stat = self.index_path.stat()
         stamp = (stat.st_mtime_ns, stat.st_size)
         if stamp == self._stamp:
+            self._load_prepared_cache()
             return
         if stat.st_size > MAX_INDEX_BYTES:
             raise MaterialLibraryError("material index is too large")
@@ -433,7 +444,85 @@ class MaterialLibrary:
         self._by_sha = {item.sha256: item for item in materials}
         self._verification_cache.clear()
         self._video_color_cache.clear()
+        self._prepared_cache_stamp = None
         self._stamp = stamp
+        self._load_prepared_cache()
+
+    def _load_prepared_cache(self) -> None:
+        """Load private operator-prepared hints; every lookup still checks file identity.
+
+        This is not an authorization/integrity boundary: /v1/assets always hashes
+        the bytes it actually transfers and the renderer retains HDR validation.
+        """
+        path = self._prepared_cache_path
+        if path is None:
+            return
+        try:
+            stat = path.stat()
+            stamp = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            if path.is_symlink() or not path.is_file() or stat.st_size > 8 * 1024 * 1024:
+                raise ValueError("unsafe prepared cache")
+            if stamp == self._prepared_cache_stamp:
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(data, dict) or set(data) != {"version", "policy", "root_sha256", "entries"}
+                    or type(data["version"]) is not int or data["version"] != 1
+                    or data["policy"] != "matrix-hdr-v1"
+                    or data["root_sha256"] != hashlib.sha256(str(self.root).encode()).hexdigest()
+                    or not isinstance(data["entries"], dict) or len(data["entries"]) > MAX_RECORDS):
+                raise ValueError("invalid prepared cache")
+            checked = {}
+            for sha, value in data["entries"].items():
+                if (not isinstance(sha, str) or not SHA256_RE.fullmatch(sha)
+                        or not isinstance(value, dict) or set(value) != {"identity", "available", "color"}
+                        or type(value["available"]) is not bool
+                        or value["color"] is not None and type(value["color"]) is not bool
+                        or not value["available"] and value["color"] is not None
+                        or not isinstance(value["identity"], list) or len(value["identity"]) != 4
+                        or any(type(v) is not int or not 0 <= v < 2**128 for v in value["identity"])):
+                    raise ValueError("invalid prepared entry")
+                checked[sha] = (tuple(value["identity"]), value["available"], value["color"])
+            after = path.stat()
+            if stamp != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+                raise ValueError("prepared cache changed")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise MaterialLibraryError("prepared material cache is unavailable or invalid") from exc
+        for sha, (identity, available, color) in checked.items():
+            if sha in self._by_sha:
+                self._verification_cache[sha] = (identity, available)
+                if color is not None:
+                    self._video_color_cache[sha] = (identity, color)
+        self._prepared_cache_entries = len(set(checked) & set(self._by_sha))
+        self._prepared_cache_stamp = stamp
+
+    def write_prepared_cache(self, output: str | Path) -> None:
+        """Publish a bounded acceleration hint outside the approved asset directory."""
+        path = Path(output).absolute()
+        if path.is_symlink() or path.resolve().is_relative_to(self.root):
+            raise MaterialLibraryError("prepared cache must be outside the material root")
+        self.refresh()
+        entries = {}
+        for sha, (identity, available) in list(self._verification_cache.items()):
+            if sha not in self._by_sha:
+                continue
+            color = self._video_color_cache.get(sha)
+            entries[sha] = {"identity": list(identity), "available": available,
+                            "color": color[1] if available and color and color[0] == identity else None}
+        data = json.dumps({"version": 1, "policy": "matrix-hdr-v1",
+                           "root_sha256": hashlib.sha256(str(self.root).encode()).hexdigest(),
+                           "entries": entries}, separators=(",", ":"))
+        if len(data.encode()) > 8 * 1024 * 1024:
+            raise MaterialLibraryError("prepared cache too large")
+        name = None
+        try:
+            fd, name = tempfile.mkstemp(prefix=".prepared-", suffix=".tmp", dir=path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+            os.chmod(name, 0o600)
+            os.replace(name, path); name = None
+        finally:
+            if name is not None:
+                Path(name).unlink(missing_ok=True)
 
     def _load_usage(self) -> None:
         if self._usage_path is None:
@@ -921,6 +1010,7 @@ class MaterialLibrary:
             "selection_contract_version": SELECTION_CONTRACT_VERSION,
             "clip_contract_version": CLIP_CONTRACT_VERSION,
             "video_color_contract": 1,
+            "prepared_cache_entries": self._prepared_cache_entries,
         }
 
     def resolve(self, sha256: str) -> tuple[Material, Path]:
@@ -957,7 +1047,8 @@ class MaterialLibrary:
                 if cached and cached[0] == identity:
                     return cached[1]
                 try:
-                    actual_sha256 = sha256_file(path)
+                    with self._io_slots:
+                        actual_sha256 = sha256_file(path)
                     after = path.stat()
                 except OSError:
                     continue
@@ -1000,12 +1091,20 @@ class MaterialLibrary:
                 raise MaterialLibraryError("material color probe budget exceeded")
             budget[0] -= 1
             try:
-                result = subprocess.run([
-                    "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
-                    "-select_streams", "v:0", "-show_entries",
-                    "stream=pix_fmt,color_transfer,color_primaries,color_space",
-                    "-of", "json", str(path),
-                ], check=True, capture_output=True, text=True, timeout=min(5, remaining))
+                if not self._io_slots.acquire(timeout=remaining):
+                    raise MaterialLibraryError("material color probe budget exceeded")
+                try:
+                    remaining = budget[1] - time.monotonic()
+                    if remaining <= 0:
+                        raise MaterialLibraryError("material color probe budget exceeded")
+                    result = subprocess.run([
+                        "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                        "-select_streams", "v:0", "-show_entries",
+                        "stream=pix_fmt,color_transfer,color_primaries,color_space",
+                        "-of", "json", str(path),
+                    ], check=True, capture_output=True, text=True, timeout=min(5, remaining))
+                finally:
+                    self._io_slots.release()
                 video = json.loads(result.stdout)["streams"][0]
                 if not isinstance(video, dict) or not isinstance(video.get("pix_fmt"), str):
                     raise ValueError("missing pixel format")
@@ -1030,6 +1129,26 @@ class MaterialLibrary:
                 raise MaterialLibraryError("material changed during color probe")
             self._video_color_cache[material.sha256] = (identity, compatible)
             return compatible
+
+    def _cached_candidate_available(self, material, color_contract, deferred):
+        """Only stat/cache lookups while reserving usage; never wait on media I/O."""
+        try:
+            _record, path = self.resolve(material.sha256)
+            stat = path.stat()
+        except (OSError, KeyError, MaterialLibraryError):
+            return False
+        identity = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        cached = self._verification_cache.get(material.sha256)
+        if cached and cached[0] == identity:
+            if not cached[1]:
+                return False
+            if not color_contract or material.media_type != "video":
+                return True
+            color = self._video_color_cache.get(material.sha256)
+            if color and color[0] == identity:
+                return color[1]
+        deferred[material.sha256] = (material, color_contract)
+        return True  # Tentative only: the complete plan is discarded before commit.
 
     def select(
         self,
@@ -1059,65 +1178,84 @@ class MaterialLibrary:
         request_sha256 = _selection_request_sha256(
             scenes, str(orientation), str(seed), mode,
         )
-        self.refresh()
-        with self._usage_lock:
-            recovery_usage = {
-                key: dict(value) for key, value in self._usage.items()
-            }
+        verification_budget = [32, time.monotonic() + 25]
+        for _attempt in range(33):
+            self.refresh()
             try:
-                if self._apply_receipt_usage():
-                    self._save_usage()
-            except BaseException:
-                self._usage = recovery_usage
-                raise
+                with self._usage_lock:
+                    return self._commit_selection(
+                        scenes, orientation, seed, used_values, mode, receipt_id,
+                        request_sha256,
+                    )
+            except _MaterialChecksNeeded as pending:
+                # No tentative usage/receipt survives. Re-plan against current usage
+                # after checking bytes outside the global serialization boundary.
+                for material, color_contract in pending.materials:
+                    if self._is_available(material) and color_contract:
+                        self._video_color_compatible(material, verification_budget)
+        raise MaterialLibraryError("material verification retry limit exceeded")
+
+    def _commit_selection(
+        self, scenes, orientation, seed, used_values, mode, receipt_id,
+        request_sha256,
+    ):
+        recovery_usage = {
+            key: dict(value) for key, value in self._usage.items()
+        }
+        try:
+            if self._apply_receipt_usage():
+                self._save_usage()
+        except BaseException:
+            self._usage = recovery_usage
+            raise
+        if receipt_id:
+            receipt = self._selection_receipts.get(receipt_id)
+            if receipt is not None:
+                if not hmac.compare_digest(
+                    receipt["request_sha256"], request_sha256,
+                ):
+                    raise MaterialSelectionConflictError(
+                        "selection_id request conflict"
+                    )
+                return json.loads(json.dumps(receipt["result"]))
+            self._prune_receipts(reserve_slots=1)
+        previous_usage = {
+            key: dict(value) for key, value in self._usage.items()
+        }
+        receipt_committed = False
+        try:
+            result = self._select_impl(
+                scenes, orientation=orientation, seed=seed,
+                used_sha256=used_values, selection_mode=mode, _defer_checks=True,
+            )
+            prepared = self._prepared_usage_state()
             if receipt_id:
-                receipt = self._selection_receipts.get(receipt_id)
-                if receipt is not None:
-                    if not hmac.compare_digest(
-                        receipt["request_sha256"], request_sha256,
-                    ):
-                        raise MaterialSelectionConflictError(
-                            "selection_id request conflict"
-                        )
-                    return json.loads(json.dumps(receipt["result"]))
-                self._prune_receipts(reserve_slots=1)
-            previous_usage = {
-                key: dict(value) for key, value in self._usage.items()
-            }
-            receipt_committed = False
-            try:
-                result = self._select_impl(
-                    scenes, orientation=orientation, seed=seed,
-                    used_sha256=used_values, selection_mode=mode,
-                )
-                prepared = self._prepared_usage_state()
-                if receipt_id:
-                    usage_after = {
-                        key: dict(value)
-                        for key, value in prepared[0].items()
-                        if previous_usage.get(key) != value
-                    }
-                    receipt = {
-                        "version": SELECTION_RECEIPT_VERSION,
-                        "selection_id": receipt_id,
-                        "request_sha256": request_sha256,
-                        "result": json.loads(json.dumps(result)),
-                        "created_at": time.time(),
-                        "usage_after": usage_after,
-                    }
-                    # The receipt must reach disk first so this selection can
-                    # repair a crash before the flat usage replacement.
-                    self._write_receipt(receipt)
-                    self._selection_receipts[receipt_id] = receipt
-                    receipt_committed = True
-                self._save_usage(prepared)
-                self._prune_receipts()
-                return result
-            except BaseException:
-                self._usage = previous_usage
-                if not receipt_committed and receipt_id:
-                    self._selection_receipts.pop(receipt_id, None)
-                raise
+                usage_after = {
+                    key: dict(value)
+                    for key, value in prepared[0].items()
+                    if previous_usage.get(key) != value
+                }
+                receipt = {
+                    "version": SELECTION_RECEIPT_VERSION,
+                    "selection_id": receipt_id,
+                    "request_sha256": request_sha256,
+                    "result": json.loads(json.dumps(result)),
+                    "created_at": time.time(),
+                    "usage_after": usage_after,
+                }
+                # The receipt must reach disk first so this selection can
+                # repair a crash before the flat usage replacement.
+                self._write_receipt(receipt)
+                self._selection_receipts[receipt_id] = receipt
+                receipt_committed = True
+            self._save_usage(prepared)
+            self._prune_receipts()
+            return result
+        except BaseException:
+            self._usage = previous_usage
+            if not receipt_committed and receipt_id:
+                self._selection_receipts.pop(receipt_id, None)
+            raise
 
     def _select_impl(
         self,
@@ -1127,6 +1265,7 @@ class MaterialLibrary:
         seed: str = "",
         used_sha256: Iterable[str] = (),
         selection_mode: str = "semantic",
+        _defer_checks: bool = False,
     ) -> dict[str, Any]:
         self.refresh()
         if not isinstance(scenes, list) or not scenes:
@@ -1150,6 +1289,8 @@ class MaterialLibrary:
         selected: list[dict[str, Any]] = []
         virtual_candidate_ids: set[str] = set()
         color_probe_budget = [32, time.monotonic() + 15]
+        candidate_pools = {}
+        deferred = {}
 
         for position, scene in enumerate(scenes):
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
@@ -1176,25 +1317,20 @@ class MaterialLibrary:
             allowed_types = {"image", "video"} if media_type == "visual" else {media_type}
             if not allowed_types <= {"image", "video", "bgm"}:
                 raise ValueError(f"unsupported media_type for {scene_id}")
-            candidates = []
-            for material in self._materials:
-                if (
-                    material.sha256 in used
-                    or material.media_type not in allowed_types
-                ):
-                    continue
-                for candidate in _material_candidates(
-                    material, clip_duration, minimum_source_duration,
-                ):
-                    virtual_candidate_ids.add(candidate.usage_key)
-                    if (
-                        len(virtual_candidate_ids)
-                        > MAX_VIRTUAL_CANDIDATES_PER_REQUEST
-                    ):
-                        raise MaterialLibraryError(
-                            "virtual candidate limit exceeded"
-                        )
-                    candidates.append(candidate)
+            pool_key = (tuple(sorted(allowed_types)), clip_duration, minimum_source_duration)
+            if pool_key not in candidate_pools:
+                pool = []
+                for material in self._materials:
+                    if material.sha256 in used or material.media_type not in allowed_types:
+                        continue
+                    for candidate in _material_candidates(material, clip_duration, minimum_source_duration):
+                        virtual_candidate_ids.add(candidate.usage_key)
+                        if len(virtual_candidate_ids) > MAX_VIRTUAL_CANDIDATES_PER_REQUEST:
+                            raise MaterialLibraryError("virtual candidate limit exceeded")
+                        pool.append(candidate)
+                candidate_pools[pool_key] = pool
+            candidates = [candidate for candidate in candidate_pools[pool_key]
+                          if candidate.material.sha256 not in used]
             if not candidates:
                 raise MaterialShortageError(f"no unique approved material remains for {scene_id}")
 
@@ -1207,7 +1343,8 @@ class MaterialLibrary:
             tokens = _tokens(*query_values)
             query_text = " ".join(_text(value) for value in query_values)
             scored = [
-                (candidate, _score(candidate.material, tokens, query_text))
+                (candidate, 0 if mode in {"random", "round_robin"}
+                 else _score(candidate.material, tokens, query_text))
                 for candidate in candidates
             ]
             same_orientation = lambda candidate: (
@@ -1293,10 +1430,13 @@ class MaterialLibrary:
                 selected_pair = next(
                     (
                         pair for pair in ranked
-                        if self._is_available(pair[0].material)
-                        and (not color_contract or self._video_color_compatible(
-                            pair[0].material, color_probe_budget,
-                        ))
+                        if (self._cached_candidate_available(pair[0].material, color_contract, deferred)
+                            if _defer_checks else (
+                                self._is_available(pair[0].material)
+                                and (not color_contract or self._video_color_compatible(
+                                    pair[0].material, color_probe_budget,
+                                ))
+                            ))
                     ),
                     None,
                 )
@@ -1326,6 +1466,8 @@ class MaterialLibrary:
             item["match_score"] = score
             selected.append(item)
 
+        if deferred:
+            raise _MaterialChecksNeeded(tuple(deferred.values()))
         return {
             "materials": selected,
             "used_sha256": sorted(used),
