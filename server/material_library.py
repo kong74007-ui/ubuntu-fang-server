@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -383,6 +384,7 @@ class MaterialLibrary:
         self._stamp: tuple[int, int] | None = None
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
+        self._video_color_cache: dict[str, tuple[tuple, bool]] = {}
         self._verification_cache: dict[
             str, tuple[tuple[int, int, int, int], bool]
         ] = {}
@@ -430,6 +432,7 @@ class MaterialLibrary:
         self._materials = tuple(materials)
         self._by_sha = {item.sha256: item for item in materials}
         self._verification_cache.clear()
+        self._video_color_cache.clear()
         self._stamp = stamp
 
     def _load_usage(self) -> None:
@@ -917,6 +920,7 @@ class MaterialLibrary:
             "usage_state_ready": self._usage_state_ready,
             "selection_contract_version": SELECTION_CONTRACT_VERSION,
             "clip_contract_version": CLIP_CONTRACT_VERSION,
+            "video_color_contract": 1,
         }
 
     def resolve(self, sha256: str) -> tuple[Material, Path]:
@@ -971,6 +975,61 @@ class MaterialLibrary:
                 )
                 return available
             return False
+
+    def _video_color_compatible(self, material: Material, budget: list) -> bool:
+        """Probe verified library bytes, never infer HDR precision from index tags."""
+        if material.media_type != "video":
+            return True
+        with self._lock:
+            lock = self._verification_locks.setdefault(material.sha256, threading.Lock())
+        with lock:
+            try:
+                _record, path = self.resolve(material.sha256)
+                before = path.stat()
+            except (OSError, KeyError) as exc:
+                raise MaterialLibraryError("material unavailable before color probe") from exc
+            identity = (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size)
+            verified = self._verification_cache.get(material.sha256)
+            if not verified or verified != (identity, True):
+                raise MaterialLibraryError("material changed before color probe")
+            cached = self._video_color_cache.get(material.sha256)
+            if cached and cached[0] == identity:
+                return cached[1]
+            remaining = budget[1] - time.monotonic()
+            if budget[0] <= 0 or remaining <= 0:
+                raise MaterialLibraryError("material color probe budget exceeded")
+            budget[0] -= 1
+            try:
+                result = subprocess.run([
+                    "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                    "-select_streams", "v:0", "-show_entries",
+                    "stream=pix_fmt,color_transfer,color_primaries,color_space",
+                    "-of", "json", str(path),
+                ], check=True, capture_output=True, text=True, timeout=min(5, remaining))
+                video = json.loads(result.stdout)["streams"][0]
+                if not isinstance(video, dict) or not isinstance(video.get("pix_fmt"), str):
+                    raise ValueError("missing pixel format")
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, TypeError) as exc:
+                raise MaterialLibraryError("material color probe unavailable") from exc
+            transfer = video.get("color_transfer")
+            compatible = True
+            if transfer in {"arib-std-b67", "smpte2084"}:
+                # Anchored depth suffix: yuv410p is 8-bit, not '10'-bit.
+                high_depth = bool(re.search(
+                    r"(?:p(?:10|12|14|16)|p[024](?:10|12|16)|gray(?:10|12|14|16)|"
+                    r"(?:rgb|bgr)48|(?:rgba|bgra)64|(?:gbrp|gbrap)f32)(?:le|be)?$",
+                    video["pix_fmt"],
+                ))
+                compatible = (high_depth and video.get("color_primaries") == "bt2020"
+                              and video.get("color_space") in {"bt2020nc", "gbr"})
+            try:
+                after = path.stat()
+            except OSError as exc:
+                raise MaterialLibraryError("material unavailable after color probe") from exc
+            if identity != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+                raise MaterialLibraryError("material changed during color probe")
+            self._video_color_cache[material.sha256] = (identity, compatible)
+            return compatible
 
     def select(
         self,
@@ -1090,10 +1149,14 @@ class MaterialLibrary:
         }
         selected: list[dict[str, Any]] = []
         virtual_candidate_ids: set[str] = set()
+        color_probe_budget = [32, time.monotonic() + 15]
 
         for position, scene in enumerate(scenes):
             scene_id = str(scene.get("scene_id") or f"scene_{position + 1:02d}")
             media_type = _text(scene.get("media_type") or "visual")
+            color_contract = scene.get("video_color_contract", 0)
+            if type(color_contract) is not int or color_contract not in {0, 1}:
+                raise ValueError("unsupported video_color_contract")
             clip_duration = _clip_duration(scene.get("clip_duration_seconds"))
             minimum_source_duration = _duration(
                 scene.get("minimum_source_duration_seconds")
@@ -1231,6 +1294,9 @@ class MaterialLibrary:
                     (
                         pair for pair in ranked
                         if self._is_available(pair[0].material)
+                        and (not color_contract or self._video_color_compatible(
+                            pair[0].material, color_probe_budget,
+                        ))
                     ),
                     None,
                 )

@@ -4093,6 +4093,7 @@ class MatrixTemplateService:
         self._user_materials(payload)
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
+        payload["_video_color_contract"] = 1
         payload["_material_selection_contract_version"] = (
             MATERIAL_SELECTION_CONTRACT_VERSION
         )
@@ -5026,6 +5027,10 @@ class MatrixTemplateService:
             ),
             "clip_duration_seconds": clip_durations[index - 1],
         } for index in range(1, count + 1)]
+        # Preserve old frozen scene hashes when replaying a pre-upgrade receipt.
+        if payload.get("_video_color_contract") == 1:
+            for scene in scenes:
+                scene["video_color_contract"] = 1
         if payload["bgm"] and not (
             nine_grid_template or fixed_skill_template
         ):
