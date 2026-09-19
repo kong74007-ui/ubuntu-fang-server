@@ -27,13 +27,32 @@ request carrying a stable selection_id. It sends the same URL/body/ID, never a n
 job. Definitive HTTP errors, missing IDs, readiness GETs and connection refusal do
 not retry. The existing receipt is returned without another usage increment.
 
-This is lazy, shared-cache preparation, not a claim that the whole library was
-prewarmed or that every asset remains valid forever. File/index changes invalidate
-the existing caches. No automatic cloud synchronization is added.
+## Prepare synchronized assets before accepting work
+
+Cold fairness-driven plans can repeatedly choose new unchecked files. Releasing
+the lock alone therefore does not guarantee faster batch completion. Run the
+following with the SAME native OS/Python and root path used by the material API:
+
+`python scripts/prepare_material_library_cache.py --root <approved-root> --output <private-state>/prepared-v1.json --workers 4`
+
+It checks all approved bytes and video metadata once, without changing usage or
+receipts, then atomically publishes a bounded private cache outside the media root.
+Configure `MATERIAL_LIBRARY_PREPARED_CACHE` to that file for the API. Its health
+exposes `prepared_cache_entries` for deployment verification. Prepare before
+service activation, and repeat after importing a new snapshot. Never commit the
+generated cache or put it in a public asset directory.
+
+The cache is an operator-controlled performance hint, bound to root identity and
+file stat identity, with strict schema/policy validation. Changed files are checked
+again. It is NOT a delivery integrity/authorization boundary: the asset endpoint
+always hashes the actual transferred bytes; the GPU HDR validator remains intact.
+Malformed/configured-missing caches fail closed. Running without a prepared cache
+retains lazy verification, but cold-batch latency is not the optimized acceptance
+configuration. No automatic cloud synchronization is added.
 
 ## Rollout
 
-Deploy the material-library module to the active HY Windows-native service first,
+Deploy the material-library module and API to the active HY Windows-native service first,
 then the renderer API to all four active workers, only from a merged/CI-approved
 commit, with zero in-flight tasks, backups and health checks. Preserve LAN tunnels,
 private credentials, usage/receipts and four-by-five concurrency. HY remains a

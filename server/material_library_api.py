@@ -177,12 +177,13 @@ class MaterialHandler(BaseHTTPRequestHandler):
 def build_server(
     host: str, port: int, root: Path, api_token: str,
     *, usage_path: Path | None = None,
+    prepared_cache_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     if not api_token:
         raise SystemExit("MATERIAL_LIBRARY_API_TOKEN is required")
     server = ThreadingHTTPServer((host, port), MaterialHandler)
     library = MaterialLibrary(
-        root, usage_path=usage_path,
+        root, usage_path=usage_path, prepared_cache_path=prepared_cache_path,
     )
     if usage_path is not None:
         library.verify_usage_state()
@@ -206,8 +207,10 @@ def main() -> None:
     if not usage_path_value:
         raise SystemExit("MATERIAL_LIBRARY_USAGE_PATH is required")
     usage_path = Path(usage_path_value)
+    prepared_path = os.environ.get("MATERIAL_LIBRARY_PREPARED_CACHE", "").strip()
     with build_server(
         args.host, args.port, args.root, token, usage_path=usage_path,
+        prepared_cache_path=Path(prepared_path) if prepared_path else None,
     ) as server:
         server.serve_forever()
 

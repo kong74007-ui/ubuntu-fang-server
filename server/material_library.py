@@ -381,13 +381,17 @@ def _selection_request_sha256(
 
 
 class MaterialLibrary:
-    def __init__(self, root: str | Path, *, usage_path: str | Path | None = None):
+    def __init__(self, root: str | Path, *, usage_path: str | Path | None = None,
+                 prepared_cache_path: str | Path | None = None):
         self.root = Path(root).resolve()
         self.index_path = self.root / "index.jsonl"
         self._lock = threading.RLock()
         self._usage_lock = threading.Lock()
         self._io_slots = threading.BoundedSemaphore(4)
         self._stamp: tuple[int, int] | None = None
+        self._prepared_cache_path = Path(prepared_cache_path).absolute() if prepared_cache_path is not None else None
+        self._prepared_cache_stamp = None
+        self._prepared_cache_entries = 0
         self._materials: tuple[Material, ...] = ()
         self._by_sha: dict[str, Material] = {}
         self._video_color_cache: dict[str, tuple[tuple, bool]] = {}
@@ -416,6 +420,7 @@ class MaterialLibrary:
         stat = self.index_path.stat()
         stamp = (stat.st_mtime_ns, stat.st_size)
         if stamp == self._stamp:
+            self._load_prepared_cache()
             return
         if stat.st_size > MAX_INDEX_BYTES:
             raise MaterialLibraryError("material index is too large")
@@ -439,7 +444,85 @@ class MaterialLibrary:
         self._by_sha = {item.sha256: item for item in materials}
         self._verification_cache.clear()
         self._video_color_cache.clear()
+        self._prepared_cache_stamp = None
         self._stamp = stamp
+        self._load_prepared_cache()
+
+    def _load_prepared_cache(self) -> None:
+        """Load private operator-prepared hints; every lookup still checks file identity.
+
+        This is not an authorization/integrity boundary: /v1/assets always hashes
+        the bytes it actually transfers and the renderer retains HDR validation.
+        """
+        path = self._prepared_cache_path
+        if path is None:
+            return
+        try:
+            stat = path.stat()
+            stamp = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            if path.is_symlink() or not path.is_file() or stat.st_size > 8 * 1024 * 1024:
+                raise ValueError("unsafe prepared cache")
+            if stamp == self._prepared_cache_stamp:
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(data, dict) or set(data) != {"version", "policy", "root_sha256", "entries"}
+                    or type(data["version"]) is not int or data["version"] != 1
+                    or data["policy"] != "matrix-hdr-v1"
+                    or data["root_sha256"] != hashlib.sha256(str(self.root).encode()).hexdigest()
+                    or not isinstance(data["entries"], dict) or len(data["entries"]) > MAX_RECORDS):
+                raise ValueError("invalid prepared cache")
+            checked = {}
+            for sha, value in data["entries"].items():
+                if (not isinstance(sha, str) or not SHA256_RE.fullmatch(sha)
+                        or not isinstance(value, dict) or set(value) != {"identity", "available", "color"}
+                        or type(value["available"]) is not bool
+                        or value["color"] is not None and type(value["color"]) is not bool
+                        or not value["available"] and value["color"] is not None
+                        or not isinstance(value["identity"], list) or len(value["identity"]) != 4
+                        or any(type(v) is not int or not 0 <= v < 2**128 for v in value["identity"])):
+                    raise ValueError("invalid prepared entry")
+                checked[sha] = (tuple(value["identity"]), value["available"], value["color"])
+            after = path.stat()
+            if stamp != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+                raise ValueError("prepared cache changed")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise MaterialLibraryError("prepared material cache is unavailable or invalid") from exc
+        for sha, (identity, available, color) in checked.items():
+            if sha in self._by_sha:
+                self._verification_cache[sha] = (identity, available)
+                if color is not None:
+                    self._video_color_cache[sha] = (identity, color)
+        self._prepared_cache_entries = len(set(checked) & set(self._by_sha))
+        self._prepared_cache_stamp = stamp
+
+    def write_prepared_cache(self, output: str | Path) -> None:
+        """Publish a bounded acceleration hint outside the approved asset directory."""
+        path = Path(output).absolute()
+        if path.is_symlink() or path.resolve().is_relative_to(self.root):
+            raise MaterialLibraryError("prepared cache must be outside the material root")
+        self.refresh()
+        entries = {}
+        for sha, (identity, available) in list(self._verification_cache.items()):
+            if sha not in self._by_sha:
+                continue
+            color = self._video_color_cache.get(sha)
+            entries[sha] = {"identity": list(identity), "available": available,
+                            "color": color[1] if available and color and color[0] == identity else None}
+        data = json.dumps({"version": 1, "policy": "matrix-hdr-v1",
+                           "root_sha256": hashlib.sha256(str(self.root).encode()).hexdigest(),
+                           "entries": entries}, separators=(",", ":"))
+        if len(data.encode()) > 8 * 1024 * 1024:
+            raise MaterialLibraryError("prepared cache too large")
+        name = None
+        try:
+            fd, name = tempfile.mkstemp(prefix=".prepared-", suffix=".tmp", dir=path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+            os.chmod(name, 0o600)
+            os.replace(name, path); name = None
+        finally:
+            if name is not None:
+                Path(name).unlink(missing_ok=True)
 
     def _load_usage(self) -> None:
         if self._usage_path is None:
@@ -927,6 +1010,7 @@ class MaterialLibrary:
             "selection_contract_version": SELECTION_CONTRACT_VERSION,
             "clip_contract_version": CLIP_CONTRACT_VERSION,
             "video_color_contract": 1,
+            "prepared_cache_entries": self._prepared_cache_entries,
         }
 
     def resolve(self, sha256: str) -> tuple[Material, Path]:
