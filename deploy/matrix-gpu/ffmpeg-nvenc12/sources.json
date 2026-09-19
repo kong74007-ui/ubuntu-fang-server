@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "target": "windows-x86_64-nvenc12.2",
+  "sources": [
+    {"name":"ffmpeg","version":"8.1.2","commit":"38b88335f99e76ed89ff3c93f877fdefce736c13","archive":"ffmpeg-8.1.2-release.tar.xz","sha256":"464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c","url":"https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz"},
+    {"name":"nv-codec-headers","version":"12.2.72.0","commit":"c69278340ab1d5559c7d7bf0edf615dc33ddbba7","archive":"nv-codec-headers-12.2.72.0-src.tar.gz","sha256":"51b05f32618abb4930be0bf9ef85f8e2057972804c606383e976beccf31d9828","url":"https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/157becbf51c8b813425572b75c06c370bd43d8fd"},
+    {"name":"zimg","version":"3.0.6","commit":"f819b14e8f39d1282400b0d9543e8ef73c1b2bbd","archive":"zimg-3.0.6-src.tar.gz","sha256":"5fbcf1784c0883dd97cce3daa543b108f69e8f400e18ea58a50a8d6285456483","url":"https://codeload.github.com/sekrit-twc/zimg/tar.gz/ef19c4adcfda6e8b4af57aa9dc640e48f6306c35"},
+    {"name":"x264","version":"0480cb05","commit":"0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee","archive":"x264-src.tar.gz","sha256":"d0967a1348c85dfde363bb52610403be898171493100561efa0dd05d5fd1ae50","url":"https://code.videolan.org/videolan/x264/-/archive/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee/x264-0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.gz"},
+    {"name":"zlib","version":"1.3.2","commit":"da607da739fa6047df13e66a2af6b8bec7c2a498","archive":"zlib-1.3.2-src.tar.gz","sha256":"a0c6d883cfc04cd5aba7e34c72c62aa0d1ae677ae39251d2a3c895d2d3135d2a","url":"https://codeload.github.com/madler/zlib/tar.gz/216c70c020aa53f0c40920d155f808b6b59c9acb"}
+  ]
+}
