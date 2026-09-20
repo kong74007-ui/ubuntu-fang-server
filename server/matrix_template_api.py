@@ -1131,6 +1131,13 @@ class MatrixTemplateError(RuntimeError):
     pass
 
 
+class MaterialLibraryUnavailableError(MatrixTemplateError):
+    def __init__(self, reason_code: str, retryable: bool):
+        super().__init__("素材库切片能力暂不可用")
+        self.reason_code = reason_code
+        self.retryable = retryable
+
+
 class QueueCapacityError(MatrixTemplateError):
     pass
 
@@ -4709,21 +4716,47 @@ class MatrixTemplateService:
                         clip_version if type(clip_version) is int else 0
                     ),
                 }
-            except (MatrixTemplateError, AttributeError, TypeError, ValueError):
+                if not ready:
+                    result.update(reason_code="contract_invalid", retryable=False)
+            except MatrixTemplateError as exc:
+                cause = exc.__cause__
+                reason, retryable = "probe_failed", True
+                if isinstance(cause, urllib.error.HTTPError) and cause.code in {400, 401, 403, 404}:
+                    reason = "auth_failed" if cause.code in {401, 403} else "probe_rejected"
+                    retryable = False
+                elif isinstance(cause, TimeoutError) or (
+                    isinstance(cause, urllib.error.URLError)
+                    and isinstance(cause.reason, TimeoutError)
+                ):
+                    reason = "probe_timeout"
                 result = {
                     "ready": False,
                     "selection_contract_version": 0,
                     "clip_contract_version": 0,
+                    "reason_code": reason,
+                    "retryable": retryable,
                 }
+            except (AttributeError, TypeError, ValueError):
+                result = {
+                    "ready": False, "selection_contract_version": 0,
+                    "clip_contract_version": 0,
+                    "reason_code": "contract_invalid", "retryable": False,
+                }
+            # A failed probe is not evidence that the next admission must fail.
+            # Success TTL starts at completion, not before a slow network call.
             self._library_readiness_cache = (
-                now + MATERIAL_LIBRARY_READINESS_TTL_SECONDS, result,
+                (time.monotonic() + MATERIAL_LIBRARY_READINESS_TTL_SECONDS, result)
+                if result["ready"] else None
             )
             return dict(result)
 
     def require_library_ready(self, *, force: bool = False) -> dict:
         result = self.library_readiness(force=force)
         if not result["ready"]:
-            raise MatrixTemplateError("素材库切片能力暂不可用")
+            raise MaterialLibraryUnavailableError(
+                result.get("reason_code", "probe_failed"),
+                result.get("retryable", True) is True,
+            )
         return result
 
     # ---- 素材范围：公网素材白名单（2026-09-17 一次性邀请码账号限制） ----
@@ -7583,8 +7616,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(202, job)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": "invalid_request", "detail": str(exc)})
+        except MaterialLibraryUnavailableError as exc:
+            request_id = str(self.headers.get("X-Request-Id") or "")
+            request_id = request_id if REQUEST_RE.fullmatch(request_id) else "preflight"
+            print("[matrix-template] admission_rejected request_id=%s reason=%s retryable=%s"
+                  % (request_id, exc.reason_code, exc.retryable), flush=True)
+            self.send_json(503 if exc.retryable else 409, {
+                "error": "material_library_unavailable", "detail": str(exc),
+                "reason_code": exc.reason_code, "retryable": exc.retryable,
+            })
         except MatrixTemplateError as exc:
-            self.send_json(409, {"error": "submission_failed", "detail": str(exc)})
+            reason = ("queue_capacity" if isinstance(exc, QueueCapacityError) else
+                      "disk_capacity" if isinstance(exc, DiskCapacityError) else "admission_failed")
+            self.send_json(409, {"error": "submission_failed", "detail": str(exc),
+                                 "reason_code": reason, "retryable": False})
 
 
 def build_server(host: str, port: int, service: MatrixTemplateService, token: str):
