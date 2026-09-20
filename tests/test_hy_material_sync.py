@@ -103,7 +103,7 @@ class SyncContracts(unittest.TestCase):
         old_sha=hashlib.sha256(old).hexdigest();new_sha=hashlib.sha256(new).hexdigest()
         (root/'old.jpg').write_bytes(old)
         rows=[{'SHA256':old_sha,'server_relative_path':'old.jpg','状态':'可使用'},
-              {'SHA256':new_sha,'server_relative_path':'files/new.jpg','状态':'可使用'}]
+              {'SHA256':new_sha,'server_relative_path':'files/new.jpg','状态':'可使用','文件大小字节':len(new)}]
         (root/'index.jsonl').write_text(json.dumps(rows[0])+'\n')
         (base/'repairs.json').write_text('{}')
         cache={'version':1,'policy':'matrix-hdr-v1','root_sha256':hashlib.sha256(str(root.resolve()).encode()).hexdigest(),'entries':{}}

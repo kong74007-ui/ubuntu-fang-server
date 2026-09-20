@@ -168,6 +168,14 @@ class Sync:
             else:
                 missing.append((row, sha, row["server_relative_path"]))
         if missing:
+            planned_bytes = 0
+            for row, _, _ in missing:
+                size = row.get("文件大小字节")
+                if type(size) is not int or not 0 < size <= 512 * 1024**2:
+                    raise ValueError("source_size_contract_invalid")
+                planned_bytes += size
+            if planned_bytes > 5 * 1024**3 or shutil.disk_usage(self.base).free < planned_bytes + 4 * 1024**3:
+                raise ValueError("sync_transfer_budget_exceeded")
             folder = self.run / "download"
             folder.mkdir()
             names = self.run / "files.list"
@@ -175,7 +183,7 @@ class Sync:
             self.rsync("./", folder, names)
             for row, sha, path in missing:
                 incoming = contained(folder, path)
-                if not incoming.is_file() or hash_file(incoming) != sha:
+                if not incoming.is_file() or incoming.stat().st_size != row['文件大小字节'] or hash_file(incoming) != sha:
                     raise ValueError("download_sha_invalid")
                 relative_new = "files/_sync/" + sha + Path(path).suffix.lower()
                 target = contained(self.root, relative_new)
@@ -241,6 +249,8 @@ class Sync:
                 continue
             seeds = list((self.private / "snapshots").glob("*/owners/" + r["owner_hash"] + "/" + r["sha256"] + r["suffix"]))
             temp = path.with_name(path.name + ".part")
+            if shutil.disk_usage(self.private).free < r['bytes'] + 4 * 1024**3:
+                raise ValueError("private_disk_space_low")
             if seeds:
                 if seeds[0].is_symlink() or not seeds[0].resolve().is_relative_to(self.private): raise ValueError("private_seed_escape")
                 shutil.copyfile(seeds[0], temp)
