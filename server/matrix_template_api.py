@@ -641,6 +641,16 @@ REFERENCE_CTA_SAFE_AREA_STYLE = (
     f'#root .bottom{{bottom:{REFERENCE_CTA_SAFE_AREA_PERCENT}%}}'
     '</style>'
 )
+REFERENCE_MEDIA_CLARITY_STYLE_ID = "matrix-reference-media-clarity"
+REFERENCE_MEDIA_CLARITY_STYLE = (
+    f'<style id="{REFERENCE_MEDIA_CLARITY_STYLE_ID}">'
+    '#root:not(.v11) .text-layer::before{background:none}'
+    '#root.v01 .text-layer::before,#root.v03 .text-layer::before,'
+    '#root.v14 .text-layer::before,#root.v15 .text-layer::before{'
+    'background:linear-gradient(to bottom,#070707 0 590px,'
+    'transparent 590px 1330px,#070707 1330px 1920px)}'
+    '</style>'
+)
 REFERENCE_BGM_SOURCE_RE = re.compile(
     r"assets/(?:input/bgm|bgm/silence)\.m4a"
 )
@@ -6924,10 +6934,13 @@ class MatrixTemplateService:
             raise MatrixTemplateError("HyperFrames fixed private font style conflicts")
         if REFERENCE_CTA_SAFE_AREA_STYLE_ID in index:
             raise MatrixTemplateError("HyperFrames CTA safe-area style conflicts")
+        if REFERENCE_MEDIA_CLARITY_STYLE_ID in index:
+            raise MatrixTemplateError("HyperFrames media clarity style conflicts")
         index = index.replace(
             "</head>",
             REFERENCE_EMPTY_LAYER_STYLE
             + "\n" + REFERENCE_CTA_SAFE_AREA_STYLE
+            + "\n" + REFERENCE_MEDIA_CLARITY_STYLE
             + ("\n" + fixed_font_style if fixed_font_style else "")
             + "\n</head>",
         )

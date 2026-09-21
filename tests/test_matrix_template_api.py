@@ -3302,6 +3302,8 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         self.assertIn(matrix.REFERENCE_GSAP_LOCAL, index)
         self.assertNotIn(matrix.REFERENCE_GSAP_CDN, index)
         self.assertIn(matrix.REFERENCE_EMPTY_LAYER_STYLE, index)
+        self.assertEqual(1, index.count(matrix.REFERENCE_MEDIA_CLARITY_STYLE_ID))
+        self.assertIn(matrix.REFERENCE_MEDIA_CLARITY_STYLE, index)
         self.assertEqual(
             1, index.count(matrix.REFERENCE_CTA_SAFE_AREA_STYLE_ID)
         )
