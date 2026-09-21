@@ -14,6 +14,7 @@ HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
 NODE_NPM="/opt/node-v22.22.0-linux-x64/bin/npm"
 LAYOUT_PATCH_SHA256="33f64143e481301bcfd0f157ce1398c590d2e41512e2ea930772d739b4651329"
 REFERENCE_LAYOUT_PATCH_SHA256="d3be213c1dec22309c5a500f6813b9bf20fac21f83219a12d32da0ca7d37dc03"
+REFERENCE_V05_CONTROLS_PATCH_SHA256="79ea8b5c50b07178de605468bc8ee4de677bef36e791b4df422db0346b1a3798"
 NINE_GRID_ADAPTER_SHA256="7623d6d9e954af95096e077f91c626bc9d856549257c2e42c0d8e83ef326a395"
 NINE_GRID_PACKAGE_SHA256="6a9f7d9900b2a7e9c451811b19f373fa2a081f3737133c5783346aeebc0be216"
 NINE_GRID_LOCK_SHA256="df5d53aa4b5c3e8cf0c896649b3ea8c75c5d76d197ebc89d2923d12964423e84"
@@ -35,6 +36,7 @@ GPU_HELPER_SOURCE="${DEPLOY_ROOT}/server/matrix_gpu_runtime.py"
 GPU_SUPERVISOR_SOURCE="${DEPLOY_ROOT}/server/matrix_gpu_supervisor.py"
 LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/private-domain-layouts.patch"
 REFERENCE_LAYOUT_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-featured-layout.patch"
+REFERENCE_V05_CONTROLS_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-v05-controls.patch"
 REFERENCE_V04_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v04_preview.py"
 REFERENCE_V07_PREVIEW_CHECK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify_v07_preview.py"
 NINE_GRID_ADAPTER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-nine-grid-template.py"
@@ -95,7 +97,7 @@ cleanup() {
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then echo "run as root" >&2; exit 2; fi
-for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${PUBLIC_PALETTE_APPLIER_SOURCE}" "${REFERENCE_PALETTE_COMPAT_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
+for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFERENCE_LAYOUT_PATCH_SOURCE}" "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}" "${REFERENCE_V04_PREVIEW_CHECK_SOURCE}" "${REFERENCE_V07_PREVIEW_CHECK_SOURCE}" "${PUBLIC_PALETTE_APPLIER_SOURCE}" "${REFERENCE_PALETTE_COMPAT_SOURCE}" "${NINE_GRID_ADAPTER_SOURCE}" "${NINE_GRID_PACKAGE_SOURCE}" "${NINE_GRID_LOCK_SOURCE}" "${MOTION_V2_PACKAGE_SOURCE}" "${MOTION_V2_LOCK_SOURCE}" "${ROLLBACK_LIB}"; do
   if [[ ! -f "${source}" || -L "${source}" || ! -r "${source}" ]]; then
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
@@ -181,6 +183,11 @@ if [[ "$(sha256sum "${REFERENCE_LAYOUT_PATCH_SOURCE}" | awk '{print $1}')" != "$
 fi
 git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_LAYOUT_PATCH_SOURCE}"
 git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"
+if [[ "$(sha256sum "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}" | awk '{print $1}')" != "${REFERENCE_V05_CONTROLS_PATCH_SHA256}" ]]; then
+  echo "reference v05 controls patch hash mismatch" >&2; exit 1
+fi
+git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"
+git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"
 REFERENCE_SKILL_ROOT="${REFERENCE_UPSTREAM}/script-to-matrix-video"
 REFERENCE_PACK_ROOT="${REFERENCE_SKILL_ROOT}/assets/templates/reference-typography-17"
 REFERENCE_SKILL_ROOT="${REFERENCE_SKILL_ROOT}" HYPERFRAMES_VERSION="${HYPERFRAMES_VERSION}" PRIVATE_FONT_ROOT="${PRIVATE_FONT_ROOT}" python3 - <<'PY'
@@ -624,7 +631,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("overrides_contract_version")==1 and d.get("tunable_templates")==["ref-05-changsha-white-red"] and d.get("preview_concurrency")==2 and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"
