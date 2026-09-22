@@ -5107,7 +5107,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
             )
             self.assertEqual(1, library.call_count)
 
-    def test_production_without_pexels_uses_library_for_every_slot(self):
+    def test_production_requires_user_visuals_without_bgm_library_call(self):
         def version(command, **_kwargs):
             value = (
                 "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
@@ -5137,6 +5137,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 concurrency=5,
                 legacy_templates_enabled=False,
                 start_worker=True,
+                enforce_user_materials=True,
             )
 
         library_scene_groups = []
@@ -5181,7 +5182,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
         def execute(job_id):
             row = production.store.get(job_id)
             payload = json.loads(row["payload"])
-            selected.extend(production._select_materials_once(payload, job_id))
+            selected.extend(production._select_materials(payload, job_id))
             return {"file_url": f"/v1/files/{job_id}.mp4"}
 
         server = matrix.build_server("127.0.0.1", 0, production, "api-token")
@@ -5215,6 +5216,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
             ),
             "bgm": False,
         }
+        asset_root = production.data_root / matrix.USER_ASSET_DIRNAME
+        asset_root.mkdir(parents=True, exist_ok=True)
+        body["user_materials"] = []
+        for index in range(
+            self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"]
+        ):
+            content = ("production-user-%d" % index).encode()
+            sha = hashlib.sha256(content).hexdigest()
+            (asset_root / (sha + ".mp4")).write_bytes(content)
+            body["user_materials"].append({
+                "sha256": sha, "media_type": "video",
+            })
         try:
             with mock.patch.object(
                 production, "_library_request", side_effect=library_request,
@@ -5222,14 +5235,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 production, "_execute", side_effect=execute,
             ), mock.patch.object(
                 production, "_reference_text_width", side_effect=self.text_width,
+            ), mock.patch.object(
+                production, "_inspect_user_asset", return_value=30.0,
             ):
                 health = production.health()
                 self.assertTrue(health["ok"])
                 self.assertTrue(health["material_library_ready"])
                 self.assertEqual(
-                    "huangque-library-only",
+                    "account-upload-visuals+shared-bgm",
                     health["material_source_policy"],
                 )
+                self.assertFalse(health["shared_material_library_visuals_enabled"])
+                self.assertTrue(health["shared_material_library_bgm_enabled"])
                 self.assertEqual(5, health["worker_count"])
 
                 with post("/v1/preflight", body) as response:
@@ -5252,13 +5269,10 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"],
                     len(selected),
                 )
-                self.assertEqual({"huangque"}, {
+                self.assertEqual({"user"}, {
                     item["provider"] for item in selected
                 })
-                self.assertEqual(
-                    [[item["scene_id"] for item in selected]],
-                    library_scene_groups,
-                )
+                self.assertEqual([], library_scene_groups)
         finally:
             server.shutdown()
             server.server_close()

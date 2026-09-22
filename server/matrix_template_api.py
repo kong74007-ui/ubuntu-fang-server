@@ -5393,7 +5393,7 @@ class MatrixTemplateService:
         """校验 payload 自带用户素材并绑定到最前面的画面位。
 
         payload["user_materials"] 形如 [{"sha256": "<64 hex>", "media_type": "image"|"video"}, ...]
-        shared 数量必须填满画面位；owned_public 允许剩余画面由素材库补齐。
+        生产策略要求数量必须填满全部画面位；共享素材库只可补 BGM。
         """
         raw = payload.get("user_materials")
         if not raw:
