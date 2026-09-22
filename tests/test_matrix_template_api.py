@@ -5472,6 +5472,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
 
 
 class UserMaterialsTests(unittest.TestCase):
+    def test_large_user_asset_stream_preserves_bytes_above_old_128mb_limit(self):
+        length = 129 * 1024 * 1024
+        class Stream:
+            remaining = length
+            def read(self, size):
+                self.assert_bounded(size)
+                size = min(size, self.remaining)
+                self.remaining -= size
+                return b"x" * size
+            def assert_bounded(self, size):
+                assert 0 <= size <= 1024 * 1024
+        digest = hashlib.sha256()
+        stream = Stream()
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            matrix.shutil, "disk_usage", return_value=SimpleNamespace(free=2 * 1024 ** 3),
+        ):
+            handler = object.__new__(matrix.Handler)
+            handler.server = SimpleNamespace(service=SimpleNamespace(data_root=Path(directory)))
+            handler.headers = {"X-HQ-Asset-Sha256": digest.hexdigest(),
+                               "Content-Type": "video/mp4", "Content-Length": str(length)}
+            handler.rfile = Stream()
+            handler.send_json = mock.Mock()
+            handler._receive_user_asset()
+            handler.send_json.assert_called_once_with(200, {
+                "ok": True, "sha256": digest.hexdigest(), "bytes": length,
+            })
+            target = Path(directory) / "user-assets" / (digest.hexdigest() + ".mp4")
+            self.assertEqual(length, target.stat().st_size)
+
     """用户自带素材（provider=user）内测功能回归测试。"""
 
     def setUp(self):
