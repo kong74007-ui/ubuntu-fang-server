@@ -71,20 +71,20 @@ up to five FFmpeg renders at a time. The shared material-library tunnel at
 `127.0.0.1:8111` is retained only for optional BGM. It never calls an AI image
 or video provider.
 
-The runtime exposes 22 templates: the 17-template
+The runtime exposes 23 templates: the 17-template
 `reference-typography-17` HyperFrames pack, the nine-grid
-template, and four fixed motion templates:
-`triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`, and
-`brush-panel-transitions`. The 17 reference templates use three to five
+template, and five fixed motion templates:
+`triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`,
+`brush-panel-transitions`, and `health-team-hook`. The 17 reference templates use three to five
 distinct video assets, keeping every selected material clip between two and
 three seconds. Every visual slot of every template — reference, nine-grid, and
-the four fixed templates — must be filled by the requesting account's uploaded
+the five fixed templates — must be filled by the requesting account's uploaded
 assets. The shared Huangque library may supply only an optional BGM; it never
 fills a visual slot. Missing or partial user visuals fail before admission for
 administrators and ordinary accounts alike.
 Reference
 templates render with HyperFrames `0.8.16`; the first three motion templates
-use the locked `0.8.33` runtime and the two new templates use a separate
+use the locked `0.8.33` runtime and the three new templates use a separate
 lockfile-pinned `0.8.34` runtime.
 All HyperFrames templates share at most two concurrent render slots on the 8 GB host.
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
@@ -115,7 +115,7 @@ variants `v01`, `v04`, `v05`, `v07`, `v09`, `v10`, `v12`, and `v16`, and install
 `3.14.2` inside the release.
 It also sparse-checks out Skill commit
 `2a2db5877728dcf4987f85973cfba38bb80f45a2`, adapts and validates the
-nine-grid template, validates all four fixed-template source contracts and
+nine-grid template, validates all five fixed-template source contracts and
 their bound audio, and installs lockfile-pinned HyperFrames `0.8.33` and
 `0.8.34` runtimes.
 Variant `v01` keeps its green-outlined handwritten treatment while its five

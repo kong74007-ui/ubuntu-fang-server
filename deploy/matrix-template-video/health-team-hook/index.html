@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-resolution="portrait">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1080, height=1920">
+    <script src="assets/vendor/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Noto Sans SC"; src: url("assets/fonts/NotoSansSC-Variable.ttf") format("truetype"); font-weight: 100 900; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { width: 1080px; height: 1920px; overflow: hidden; background: #090909; }
+      #root { width: 100%; height: 100%; overflow: hidden; font-family: "Noto Sans SC", sans-serif; }
+      .media-viewport { overflow: hidden; background: #18120d; }
+      .media-inner { position: absolute; inset: -2%; width: 104%; height: 104%; overflow: hidden; will-change: transform; }
+      .media-inner video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scale(3.15); filter: saturate(.9) contrast(1.03) brightness(.80) blur(1.2px); }
+      .shade { position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(0,0,0,.25) 0%, rgba(0,0,0,.04) 39%, rgba(0,0,0,.03) 56%, rgba(0,0,0,.32) 100%); }
+      .copy { position: absolute; left: 44px; right: 44px; z-index: 3; text-align: center; letter-spacing: -.045em; }
+      .top-copy { top: 76px; }
+      .bottom-copy { bottom: 102px; }
+      .line { display: block; width: 100%; line-height: 1.13; white-space: nowrap; paint-order: stroke fill; -webkit-text-stroke: 10px #070707; text-shadow: 0 6px 4px rgba(0,0,0,.42); }
+      .white { color: #fff; }
+      .yellow { color: #ffd51a; }
+      .top1 { font-size: 128px; font-weight: 900; margin-bottom: 30px; }
+      .top2 { font-size: 59px; font-weight: 700; margin-bottom: 20px; }
+      .top3 { font-size: 76px; font-weight: 900; margin-bottom: 18px; }
+      .top4 { font-size: 58px; font-weight: 700; }
+      .bottom1 { font-size: 72px; font-weight: 900; margin-bottom: 22px; }
+      .bottom2 { font-size: 132px; font-weight: 900; }
+      [data-var-text]:empty { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="health-team-hook" data-duration="9.7" data-width="1080" data-height="1920" data-composition-variables="[{&quot;id&quot;:&quot;title&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;团队8个人&quot;},{&quot;id&quot;:&quot;subtitle&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;每天产出&quot;},{&quot;id&quot;:&quot;metric&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;100条短视频&quot;},{&quot;id&quot;:&quot;platform&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;覆盖全部短视频平台&quot;},{&quot;id&quot;:&quot;lead&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;有想进军健康赛道的&quot;},{&quot;id&quot;:&quot;cta&quot;,&quot;type&quot;:&quot;text&quot;,&quot;default&quot;:&quot;勾兑勾兑&quot;}]">
+      <div id="background" class="media-viewport" style="position:absolute;inset:0;width:100%;height:100%">
+        <div class="media-inner" data-layout-allow-overflow="">
+          <video id="source-video-1" class="clip" src="assets/media/01.mp4" muted playsinline data-start="0" data-duration="4.866666667" data-track-index="0"></video>
+          <video id="source-video-2" class="clip" src="assets/media/02.mp4" muted playsinline data-start="4.866666667" data-duration="4.833333333" data-track-index="0"></video>
+        </div>
+        <div class="shade" data-layout-ignore=""></div>
+      </div>
+      <div id="top-copy" class="clip copy top-copy" data-start="0" data-duration="9.7" data-track-index="1">
+        <div id="title" class="line white top1" data-var-text="title">团队8个人</div>
+        <div id="subtitle" class="line white top2" data-var-text="subtitle">每天产出</div>
+        <div id="metric" class="line yellow top3" data-var-text="metric">100条短视频</div>
+        <div id="platform" class="line white top4" data-var-text="platform">覆盖全部短视频平台</div>
+      </div>
+      <div id="bottom-copy" class="clip copy bottom-copy" data-start="0" data-duration="9.7" data-track-index="2" data-layout-allow-caption-zone="">
+        <div id="lead" class="line yellow bottom1" data-var-text="lead">有想进军健康赛道的</div>
+        <div id="cta" class="line yellow bottom2" data-var-text="cta">勾兑勾兑</div>
+      </div>
+      <audio id="reference-bgm" class="clip" src="assets/media/reference-bgm.m4a" data-start="0" data-duration="9.7" data-track-index="3" data-volume="1"></audio>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      tl.fromTo(".media-inner", { scale: 1, y: -8 }, { scale: 1.035, y: 8, duration: 9.7, ease: "none" }, 0);
+      tl.fromTo("#top-copy", { opacity: 0, y: -34 }, { opacity: 1, y: 0, duration: .52, ease: "back.out(1.35)" }, .05);
+      tl.fromTo("#bottom-copy", { opacity: 0, y: 38 }, { opacity: 1, y: 0, duration: .54, ease: "back.out(1.3)" }, .42);
+      window.__timelines["health-team-hook"] = tl;
+    </script>
+  </body>
+</html>
