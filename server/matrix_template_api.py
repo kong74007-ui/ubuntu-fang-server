@@ -87,7 +87,7 @@ PUBLIC_MATERIALS_ENUM_SLOTS = 20
 PUBLIC_MATERIALS_ENUM_MAX_ROUNDS = 40
 PUBLIC_MATERIALS_STATE_DIRNAME = ".public-material-scope"
 USER_ASSET_DIRNAME = "user-assets"
-MAX_USER_ASSET_BYTES = 128 * 1024 * 1024
+MAX_USER_ASSET_BYTES = 2 * 1024 * 1024 * 1024  # Trusted transfer budget matches account storage.
 JOB_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 BATCH_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -7532,9 +7532,11 @@ class Handler(BaseHTTPRequestHandler):
         target = target_dir / (expected + suffix)
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
+            if length > shutil.disk_usage(target_dir).free:
+                raise OSError("素材临时存储空间不足")
             digest = hashlib.sha256()
             total = 0
-            temporary = target.with_suffix(target.suffix + ".part")
+            temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".part")
             try:
                 with temporary.open("wb") as handle:
                     while True:
