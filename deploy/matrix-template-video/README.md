@@ -80,9 +80,9 @@ three seconds. Every
 visual slot of every template — reference, nine-grid, and the four fixed
 templates — is supplied by the local Huangque material library (Huangque
 library plus public library, 816 records) over the tunnel at `127.0.0.1:8111`.
-The Pexels public-network path was removed on 2026-09-12 (boss decision: no
-more public-network material sourcing); the old `_download_pexels` code remains
-only to finish already-frozen legacy jobs.
+The Pexels public-network path was removed on 2026-09-12. New and replayed jobs
+fail closed unless every material comes from the Huangque library or the
+requesting user's uploaded assets.
 Reference
 templates render with HyperFrames `0.8.16`; the first three motion templates
 use the locked `0.8.33` runtime and the two new templates use a separate

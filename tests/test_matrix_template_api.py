@@ -5928,7 +5928,7 @@ class UserMaterialsTests(unittest.TestCase):
             ):
                 self.service._reference_duration_with_user_materials(8, payload)
 
-    def test_owned_public_manifest_contains_only_user_and_pexels_sources(self):
+    def test_owned_public_manifest_contains_only_user_and_library_sources(self):
         payload = {
             "template_id": "full-overlay-bold", "duration": 10,
             "top_text": "素材清单", "bottom_text": "来源必须可审计",
@@ -5940,21 +5940,18 @@ class UserMaterialsTests(unittest.TestCase):
             "clip_start_seconds": 0.0, "clip_duration_seconds": 2.5,
         }] + [{
             "scene_id": "media_%02d" % index,
-            "record_id": "pexels-%d" % index,
+            "record_id": "library-%d" % index,
             "sha256": format(index, "064x"), "media_type": "video",
-            "provider": "pexels", "provider_video_id": 1000 + index,
+            "provider": "huangque",
             "clip_start_seconds": float(index), "clip_duration_seconds": 2.5,
         } for index in range(2, 5)]
         manifest = self.service._material_manifest(payload, materials)
         self.assertEqual([1, 2, 3, 4], [item["slot"] for item in manifest])
-        self.assertEqual(["user", "pexels", "pexels", "pexels"], [
+        self.assertEqual(["user", "shared", "shared", "shared"], [
             item["source"] for item in manifest
         ])
-        self.assertFalse({"shared", "library", "yuelei"} & {
-            item["source"] for item in manifest
-        })
         self.assertEqual("a" * 64, manifest[0]["sha256"])
-        self.assertEqual(1002, manifest[1]["pexels_id"])
+        self.assertEqual(format(2, "064x"), manifest[1]["sha256"])
 
     def test_user_material_clip_and_media_validation(self):
         image_sha = self._store_user_asset(b"image", ".jpg")
@@ -6402,44 +6399,16 @@ class UserMaterialsTests(unittest.TestCase):
         self.assertTrue(recent.exists())
 
 
-    def _response(self, body=b"{}", content_type="application/json"):
-        class _Headers:
-            def get_content_type(self):
-                return content_type
-        class _Resp:
-            def __init__(self):
-                self.headers = _Headers()
-                self._buf = body
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                return False
-            def read(self, _n=-1):
-                data = self._buf
-                self._buf = b""
-                return data
-        return _Resp()
-
-    # 旧冻结任务兜底：Pexels 下载路径保留（新任务素材全走本地库）。
-
-    def test_download_checks(self):
-        item = {"sha256": "a" * 64, "source_url": "https://videos.pexels.com/x.mp4"}
+    def test_download_rejects_external_provider(self):
         target = self.root / "dl"
         target.mkdir()
-        with mock.patch.object(matrix.urllib.request, "urlopen",
-                               return_value=self._response(b"x", "text/html")):
-            with self.assertRaises(matrix.MatrixTemplateError):
-                self.service._download_pexels(item, target)
-        with mock.patch.object(matrix.urllib.request, "urlopen",
-                               return_value=self._response(b"", "video/mp4")):
-            with self.assertRaises(matrix.MatrixTemplateError):
-                self.service._download_pexels(item, target)
-        payload = b"fake-mp4-content"
-        with mock.patch.object(matrix.urllib.request, "urlopen",
-                               return_value=self._response(payload, "video/mp4")):
-            path = self.service._download_pexels(item, target)
-        self.assertTrue(path.exists())
-        self.assertEqual(hashlib.sha256(payload).hexdigest(), item["content_sha256"])
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "只允许使用素材库或本人上传素材",
+        ):
+            self.service._download({
+                "provider": "pexels", "sha256": "a" * 64,
+                "source_url": "https://videos.pexels.com/x.mp4",
+            }, target)
 
     # 19：密钥不进入结果与日志（Pexels key 已删除，无密钥可漏）
 
