@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 from server import matrix_motion_v3 as v3
 from server import matrix_template_api as api
@@ -11,6 +12,20 @@ def plan():
 
 
 class MotionV3Tests(unittest.TestCase):
+    def test_owned_materials_keep_frame_precise_windows(self):
+        service=object.__new__(api.MatrixTemplateService)
+        service.reference_templates={}
+        for template_id in (v3.OPENING,v3.BILINGUAL):
+            payload={'template_id':template_id,'duration':17.3,'top_text':'广州圈子','bottom_text':'共同成长','bgm':False}
+            if template_id==v3.BILINGUAL:
+                payload['narration_plan']=plan()
+                payload['duration']=12.6
+            config=v3.runtime_config(api.FIXED_SKILL_TEMPLATE_CONFIGS[template_id],payload)
+            payload['user_materials']=[{'sha256':f'{i:064x}','media_type':'video'} for i in range(config['required_visuals'])]
+            with mock.patch.object(service,'user_asset_path',return_value='fixture'),mock.patch.object(service,'_inspect_user_asset',return_value=20.):
+                materials=service._user_materials(payload)
+            self.assertEqual([round(n/30,6) for n in config['slot_frames']], [m['clip_duration_seconds'] for m in materials])
+
     def test_three_templates_keep_original_timing_and_asset_mapping(self):
         c=api.FIXED_SKILL_TEMPLATE_CONFIGS
         self.assertEqual(443,c[v3.INSET]['frames'])

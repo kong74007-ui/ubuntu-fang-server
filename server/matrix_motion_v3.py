@@ -56,7 +56,7 @@ def configs(base):
                 size = 128 if main else 80
                 metrics.update(family="Ma Shan Zheng" if main else "Noto Serif SC", weight=400 if main else 800,
                                minimum=size, maximum=size, width=950, height=2000, max_lines=12, line_height=1.2,
-                               stroke_px=2, letter_spacing_em=0)
+                               stroke_px=2, letter_spacing_em=5/128 if main else 0)
         result[identifier] = c
     return result
 

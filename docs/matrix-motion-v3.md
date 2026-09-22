@@ -66,3 +66,12 @@ This PR does not deploy, restart services, modify live jobs, or call paid TTS,
 ASR or translation providers. Local renders use approved local footage and
 frozen test cue timings. Provider transport/recovery is covered with mocks;
 production credentials and provider availability still require rollout checks.
+
+## Local validation scope
+
+All three additions render through account-asset validation and the service's
+GPU entry point. Twenty-two previous prepared template fixtures also pass.
+The separately merged health-team-hook was additionally probed but its authored
+CSS video filter (saturate/contrast/brightness/blur) is rejected by the existing
+GPU runtime. This PR preserves that template and does not claim all 26 templates
+are GPU-ready; its filter adapter needs a separate fix before a GPU-only rollout.

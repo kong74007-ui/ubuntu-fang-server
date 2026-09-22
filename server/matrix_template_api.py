@@ -7041,7 +7041,7 @@ class MatrixTemplateService:
                 "slot_index": index + 1,
                 "slot_count": count,
                 "clip_start_seconds": round(float(clip_start), 3),
-                "clip_duration_seconds": round(clip_duration, 3),
+                "clip_duration_seconds": round(clip_duration, 6),
             }
             records.append(record)
         return records
