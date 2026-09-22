@@ -40,6 +40,52 @@ MATERIAL_SELECTION_CONTRACT_VERSION = 2
 MATERIAL_CLIP_CONTRACT_VERSION = 3
 PUBLIC_TEMPLATE_PALETTE_VERSION = "reference-palettes-v2"
 PUBLIC_TEMPLATE_PALETTE_COUNT = 20
+PUBLIC_TEMPLATE_PALETTE_STYLE_ID = "matrix-public-template-palettes-v2"
+# ---------------------------------------------------------------------------
+# 模板参数微调（overrides）合同 v1 —— 见三仓库统一接口合同 §1/§2。
+# 仅 ref-05-changsha-white-red（v05）可调；其余模板收到 overrides 一律明确拒绝。
+# ---------------------------------------------------------------------------
+OVERRIDES_CONTRACT_VERSION = 1
+REFERENCE_UPSTREAM_COMMIT = "9040a24139372f14346816cf42a97271767a0777"
+REFERENCE_V05_TUNABLE_TEMPLATE_ID = "ref-05-changsha-white-red"
+REFERENCE_V05_CONTROLS_SCRIPT_ID = "matrix-reference-v05-controls"
+REFERENCE_OVERRIDES_SCALE_MIN = 0.85
+REFERENCE_OVERRIDES_SCALE_MAX = 1.10
+REFERENCE_OVERRIDES_OFFSET_MIN = -60
+REFERENCE_OVERRIDES_OFFSET_MAX = 60
+REFERENCE_OVERRIDES_CONTRAST_MIN = 3.0
+REFERENCE_OVERRIDES_FIELDS = (
+    "title_scale", "title_offset_y", "cta_scale", "cta_offset_y",
+    "accent_color", "media_focus",
+)
+# v05 生效布局基线：必须与实际下发模板的 CSS 完全一致（_load_reference_catalog 加载时核对，
+# 任何漂移直接失败，而不是“悄悄按旧基线算”）。
+REFERENCE_V05_LAYER_BASES = {
+    "top1": {
+        "font_size_px": 102, "stroke_px": 12,
+        "line_height": 1.02, "margin_top_px": 0,
+    },
+    "top2": {
+        "font_size_px": 104, "stroke_px": 13,
+        "line_height": 1.01, "margin_top_px": 12,
+    },
+    "top3": {
+        "font_size_px": 68, "stroke_px": 9,
+        "line_height": 1.04, "margin_top_px": 24,
+    },
+    "bottom2": {
+        "font_size_px": 70, "stroke_px": 0,
+        "line_height": 1.06, "margin_top_px": 28,
+    },
+}
+REFERENCE_V05_TOP_LAYERS = ("top1", "top2", "top3")
+REFERENCE_V05_GEOMETRY_GAP_PX = 12.0
+REFERENCE_CANVAS_HEIGHT_PX = 1920.0
+PREVIEW_CACHE_TTL_SECONDS = 30 * 60
+PREVIEW_CONCURRENCY = 2
+PREVIEW_MAX_PENDING = 6
+PREVIEW_FRAME_WIDTH_PX = 540
+PREVIEW_FRAME_EDGE_SECONDS = 0.08
 MAX_MATERIAL_CLIP_START_SECONDS = 30 * 60
 MAX_MATERIAL_CLIP_SLOTS = 600
 MAX_MATERIAL_CLIP_DURATION_SECONDS = 5.0
@@ -1085,6 +1131,581 @@ def _reference_variant_layer_plan(
     )
 
 
+def _round_half_up(value: float) -> int:
+    """与模板侧 JS 的 Math.round 完全一致的取整（避免用 transform 缩放骗过校验）。"""
+    return int(math.floor(float(value) + 0.5))
+
+
+def _hex_luminance(value: str) -> float:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        raise ValueError("颜色必须是 #RRGGBB")
+    channels = []
+    for index in (1, 3, 5):
+        channel = int(text[index:index + 2], 16) / 255.0
+        channels.append(
+            channel / 12.92 if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+        )
+    return (
+        0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    )
+
+
+def _contrast_ratio(first: str, second: str) -> float:
+    left = _hex_luminance(first)
+    right = _hex_luminance(second)
+    lighter, darker = max(left, right), min(left, right)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _normalize_reference_overrides(value, *, accent_default: str) -> dict:
+    """§1 词汇表：校验、规范化并补齐默认值，返回 effective_overrides。
+
+    空 overrides / 缺省返回 {}（旧路径零变化）；未知键、bool 冒充数值、
+    NaN/±Infinity、越界值、坏颜色、重复/越界槽位一律拒绝。
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("overrides 必须是对象")
+    if not value:
+        return {}
+    unknown = sorted(set(value) - set(REFERENCE_OVERRIDES_FIELDS))
+    if unknown:
+        raise ValueError("overrides 不支持字段：%s" % ", ".join(unknown))
+
+    def scale(field: str) -> float:
+        if field not in value:
+            return 1.0
+        raw = value[field]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError("%s 必须是 %s~%s 之间的数字" % (
+                field, REFERENCE_OVERRIDES_SCALE_MIN, REFERENCE_OVERRIDES_SCALE_MAX,
+            ))
+        parsed = float(raw)
+        if not math.isfinite(parsed) or not (
+            REFERENCE_OVERRIDES_SCALE_MIN <= parsed <= REFERENCE_OVERRIDES_SCALE_MAX
+        ):
+            raise ValueError("%s 超出范围（%s~%s）" % (
+                field, REFERENCE_OVERRIDES_SCALE_MIN, REFERENCE_OVERRIDES_SCALE_MAX,
+            ))
+        return parsed
+
+    def offset(field: str) -> int:
+        if field not in value:
+            return 0
+        raw = value[field]
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError("%s 必须是 %s~%s 之间的整数像素" % (
+                field, REFERENCE_OVERRIDES_OFFSET_MIN, REFERENCE_OVERRIDES_OFFSET_MAX,
+            ))
+        if not (
+            REFERENCE_OVERRIDES_OFFSET_MIN <= raw <= REFERENCE_OVERRIDES_OFFSET_MAX
+        ):
+            raise ValueError("%s 超出范围（%s~%s 像素）" % (
+                field, REFERENCE_OVERRIDES_OFFSET_MIN, REFERENCE_OVERRIDES_OFFSET_MAX,
+            ))
+        return int(raw)
+
+    accent = str(accent_default or "").upper()
+    if not re.fullmatch(r"#[0-9A-F]{6}", accent):
+        raise MatrixTemplateError("HyperFrames v05 强调色基线不可用")
+    if "accent_color" in value:
+        raw = value["accent_color"]
+        if not isinstance(raw, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", raw):
+            raise ValueError("accent_color 必须是 #RRGGBB")
+        accent = raw.upper()
+
+    focus: list[dict] = []
+    if value.get("media_focus") not in (None, []):
+        items = value["media_focus"]
+        if not isinstance(items, list):
+            raise ValueError("media_focus 必须是数组")
+        seen_slots = set()
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"slot", "x", "y"}:
+                raise ValueError("media_focus 每项必须且只能包含 slot/x/y")
+            slot = item["slot"]
+            if isinstance(slot, bool) or not isinstance(slot, int):
+                raise ValueError("media_focus.slot 必须是整数槽位")
+            if not 1 <= slot <= len(REFERENCE_VIDEO_IDS):
+                raise ValueError(
+                    "media_focus 槽位必须在 1~%d 之间" % len(REFERENCE_VIDEO_IDS)
+                )
+            if slot in seen_slots:
+                raise ValueError("media_focus 槽位不能重复")
+            axes = []
+            for axis in ("x", "y"):
+                raw = item[axis]
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    raise ValueError("media_focus.%s 必须是 0~1 之间的数字" % axis)
+                parsed = float(raw)
+                if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+                    raise ValueError("media_focus.%s 超出范围（0~1）" % axis)
+                axes.append(parsed)
+            seen_slots.add(slot)
+            focus.append({"slot": slot, "x": axes[0], "y": axes[1]})
+        focus.sort(key=lambda item: item["slot"])
+    return {
+        "title_scale": scale("title_scale"),
+        "title_offset_y": offset("title_offset_y"),
+        "cta_scale": scale("cta_scale"),
+        "cta_offset_y": offset("cta_offset_y"),
+        "accent_color": accent,
+        "media_focus": focus,
+    }
+
+
+def _reference_v05_layer_style(
+    declarations: dict[str, str], layer: str,
+) -> dict:
+    """解析 v05 文字层 CSS 基线（字号/行高/描边/上边距）。"""
+    font_size = None
+    line_height = None
+    shorthand = declarations.get("font")
+    if shorthand:
+        match = re.search(
+            r"(?:^|\s)([0-9]+(?:\.[0-9]+)?)px/([0-9]*\.?[0-9]+)(?:\s|$)",
+            shorthand,
+        )
+        if match:
+            font_size = float(match.group(1))
+            line_height = float(match.group(2))
+    if declarations.get("font-size"):
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)px", declarations["font-size"]
+        )
+        if match:
+            font_size = float(match.group(1))
+    if declarations.get("line-height"):
+        match = re.fullmatch(
+            r"([0-9]*\.?[0-9]+)", declarations["line-height"]
+        )
+        if match:
+            line_height = float(match.group(1))
+    stroke = 0.0
+    if declarations.get("-webkit-text-stroke"):
+        match = re.search(
+            r"([0-9]+(?:\.[0-9]+)?)px", declarations["-webkit-text-stroke"]
+        )
+        if match:
+            stroke = float(match.group(1))
+    if declarations.get("-webkit-text-stroke-width"):
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)px",
+            declarations["-webkit-text-stroke-width"],
+        )
+        if match:
+            stroke = float(match.group(1))
+    margin_top = 0.0
+    if declarations.get("margin-top"):
+        match = re.fullmatch(
+            r"(-?[0-9]+(?:\.[0-9]+)?)px", declarations["margin-top"]
+        )
+        if match:
+            margin_top = float(match.group(1))
+    if font_size is None or line_height is None:
+        raise MatrixTemplateError(
+            "HyperFrames v05 template baseline is unreadable: %s" % layer
+        )
+    return {
+        "font_size_px": font_size,
+        "line_height": line_height,
+        "stroke_px": stroke,
+        "margin_top_px": margin_top,
+    }
+
+
+def _reference_css_rules(index_html: str) -> dict[str, dict[str, str]]:
+    """按文件顺序合并后的 选择器 → 声明表（所有 <style> 块）。"""
+    styles = "\n".join(re.findall(
+        r"<style\b[^>]*>(.*?)</style>", index_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    styles = re.sub(r"/\*.*?\*/", "", styles, flags=re.DOTALL)
+    rules: dict[str, dict[str, str]] = {}
+    for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", styles, re.DOTALL):
+        declarations = _css_declarations(rule.group(2))
+        for item in rule.group(1).split(","):
+            selector = re.sub(r"\s+", " ", item.strip())
+            if not selector:
+                continue
+            rules.setdefault(selector, {}).update(declarations)
+    return rules
+
+
+def _reference_css_specificity(selector: str) -> tuple[int, int, int]:
+    """选择器特异度（id, class/属性/伪类, 元素），只覆盖本模板用到的简单形态。"""
+    ids = len(re.findall(r"#[A-Za-z_][\w-]*", selector))
+    classes = len(re.findall(r"\.[A-Za-z_][\w-]*", selector))
+    attributes = len(re.findall(r"\[[^\]]*\]", selector))
+    pseudo = len(re.findall(r":(?!:)[A-Za-z-]+", selector))
+    elements = len(re.findall(r"(?:^|[\s>+~])([A-Za-z][\w-]*)", selector))
+    return (ids, classes + attributes + pseudo, elements)
+
+
+def _reference_css_expand(declarations: dict[str, str]) -> dict[str, str]:
+    """把声明块摊平成属性级，展开 font / -webkit-text-stroke 简写。
+
+    浏览器按**属性**层叠：`.v05 .top1 { font: 900 102px/1.02 }` 与通用
+    `.top1 { line-height: 1.13 }` 争的是同一个 line-height 属性，简写摊平后才比得对。
+    """
+    properties = dict(declarations)
+    shorthand = declarations.get("font")
+    if shorthand:
+        match = re.search(
+            r"(?:^|\s)([0-9]+(?:\.[0-9]+)?)px(?:/([0-9]*\.?[0-9]+))?(?:\s|$)",
+            shorthand,
+        )
+        if match:
+            properties["font-size"] = match.group(1) + "px"
+            if match.group(2):
+                properties["line-height"] = match.group(2)
+    stroke = declarations.get("-webkit-text-stroke")
+    if stroke:
+        match = re.match(
+            r"([0-9]+(?:\.[0-9]+)?)px(?:\s+(\S+))?", stroke.strip(),
+        )
+        if match:
+            properties["-webkit-text-stroke-width"] = match.group(1) + "px"
+            if match.group(2):
+                properties["-webkit-text-stroke-color"] = match.group(2)
+    return properties
+
+
+def _reference_css_cascade(
+    rules: dict[str, dict[str, str]], selectors: tuple[str, ...],
+) -> dict[str, str]:
+    """按 CSS 层叠合并多个选择器的声明：特异度高者赢，同特异度按传入顺序。
+
+    部署版里 ``.v05 .top1``（两个类）压过通用 ``.top1`` 的 ``line-height``——
+    直接按文件顺序覆盖会被 shorthand/longhand 的书写先后骗到，字号对了行高错。
+    """
+    merged: dict[str, str] = {}
+    for index, selector in sorted(
+        enumerate(selectors),
+        key=lambda item: (_reference_css_specificity(item[1]), item[0]),
+    ):
+        merged.update(_reference_css_expand(rules.get(selector) or {}))
+    return merged
+
+
+def reference_v05_control_audit(index_html: str) -> dict:
+    """校验 v05 参数微调链路：模板读取器 + CSS 基线 + 调色层默认强调色。
+
+    服务端 preflight 与模板侧 JS 必须按同一批基值算有效字号/偏移；任何一处漂移
+    （补丁没打、CSS 改了、调色层换了）都在目录加载与部署门禁处直接失败。
+    """
+    if index_html.count(REFERENCE_V05_CONTROLS_SCRIPT_ID) != 1:
+        raise MatrixTemplateError(
+            "HyperFrames v05 template controls reader is missing"
+        )
+    rules = _reference_css_rules(index_html)
+    for layer, expected in REFERENCE_V05_LAYER_BASES.items():
+        declarations = _reference_css_cascade(
+            rules, (f".{layer}", f".{REFERENCE_FEATURED_VARIANT} .{layer}"),
+        )
+        parsed = _reference_v05_layer_style(declarations, layer)
+        for key in ("font_size_px", "stroke_px", "line_height", "margin_top_px"):
+            if abs(float(parsed[key]) - float(expected[key])) > 0.0001:
+                raise MatrixTemplateError(
+                    "HyperFrames v05 template baseline changed: %s.%s"
+                    % (layer, key)
+                )
+    top_declarations = rules.get("#root .top") or {}
+    match = re.fullmatch(
+        r"([0-9]+(?:\.[0-9]+)?)%", str(top_declarations.get("top") or "")
+    )
+    if not match:
+        raise MatrixTemplateError(
+            "HyperFrames v05 template top safe area anchor is missing"
+        )
+    palette = re.search(
+        rf'<style id="{PUBLIC_TEMPLATE_PALETTE_STYLE_ID}">(.*?)</style>',
+        index_html, re.DOTALL,
+    )
+    if not palette:
+        raise MatrixTemplateError(
+            "HyperFrames public palette overlay is missing"
+        )
+    target = f'#root[class~="{REFERENCE_FEATURED_VARIANT}"] .bottom2'
+    v05_declarations: dict[str, str] = {}
+    for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", palette.group(1), re.DOTALL):
+        selectors = {
+            re.sub(r"\s+", " ", item.strip())
+            for item in rule.group(1).split(",")
+        }
+        if target in selectors:
+            v05_declarations.update(_css_declarations(rule.group(2)))
+    accent_default = str(v05_declarations.get("background-color") or "").strip().lower()
+    cta_text = str(v05_declarations.get("color") or "").strip().lower()
+    if not re.fullmatch(r"#[0-9a-f]{6}", accent_default) or not re.fullmatch(
+        r"#[0-9a-f]{6}", cta_text
+    ):
+        raise MatrixTemplateError(
+            "HyperFrames v05 palette accent layer is missing"
+        )
+    return {
+        "tunable": True,
+        "controls_script_id": REFERENCE_V05_CONTROLS_SCRIPT_ID,
+        "layers": {
+            layer: dict(base) for layer, base in REFERENCE_V05_LAYER_BASES.items()
+        },
+        "top_offset_percent": float(match.group(1)),
+        "bottom_offset_percent": float(REFERENCE_CTA_SAFE_AREA_PERCENT),
+        "accent_default": accent_default,
+        "cta_text_color": cta_text,
+    }
+
+
+def _reference_v05_effective_layers(overrides: dict) -> dict[str, dict]:
+    """按 overrides 计算 v05 各文字层的有效字号/描边/边距（与模板 JS 同取整）。"""
+    title_scale = float(overrides.get("title_scale", 1.0) or 1.0)
+    cta_scale = float(overrides.get("cta_scale", 1.0) or 1.0)
+    result = {}
+    for layer, base in REFERENCE_V05_LAYER_BASES.items():
+        scale = title_scale if layer in REFERENCE_V05_TOP_LAYERS else cta_scale
+        result[layer] = {
+            "font_size_px": _round_half_up(base["font_size_px"] * scale),
+            "stroke_px": _round_half_up(base["stroke_px"] * scale),
+            "margin_top_px": _round_half_up(base["margin_top_px"] * scale),
+            "line_height": float(base["line_height"]),
+        }
+    return result
+
+
+def _reference_effective_contract(contract: dict, overrides: dict) -> dict:
+    """用有效字号/描边替换语义排版契约（宽度预算不变，padding/最大宽度未缩放）。"""
+    effective = {layer: dict(metrics) for layer, metrics in contract.items()}
+    for layer, values in _reference_v05_effective_layers(overrides).items():
+        if layer in effective:
+            effective[layer]["font_size_px"] = int(values["font_size_px"])
+            effective[layer]["stroke_px"] = int(values["stroke_px"])
+    return effective
+
+
+def _reference_v05_geometry(
+    layers: dict[str, dict], display_text: dict[str, str], overrides: dict,
+    controls: dict, *, gap_px: float = REFERENCE_V05_GEOMETRY_GAP_PX,
+) -> dict:
+    """顶部/底部文字组的几何校验（1080×1920 设计坐标，不越界不重叠）。"""
+    height = REFERENCE_CANVAS_HEIGHT_PX
+    top_offset = (
+        float(controls["top_offset_percent"]) / 100.0 * height
+        + float(overrides.get("title_offset_y", 0) or 0)
+    )
+    bottom_offset = (
+        float(controls["bottom_offset_percent"]) / 100.0 * height
+        - float(overrides.get("cta_offset_y", 0) or 0)
+    )
+
+    def layer_height(layer: str) -> float:
+        lines = [
+            line for line in str(display_text.get(layer) or "").splitlines()
+            if line
+        ]
+        if not lines:
+            return 0.0
+        values = layers.get(layer)
+        if not isinstance(values, dict):
+            raise MatrixTemplateError(
+                "HyperFrames v05 几何校验缺少图层基线：%s" % layer
+            )
+        return (
+            float(values["margin_top_px"])
+            + len(lines) * float(values["font_size_px"])
+            * float(values["line_height"])
+            + 2.0 * float(values["stroke_px"])
+        )
+
+    top_height = sum(layer_height(layer) for layer in REFERENCE_V05_TOP_LAYERS)
+    bottom_height = layer_height("bottom1") + layer_height("bottom2")
+    top_bottom = top_offset + top_height
+    bottom_top = height - bottom_offset - bottom_height
+    return {
+        "canvas_height_px": height,
+        "top_offset_px": round(top_offset, 3),
+        "top_group_height_px": round(top_height, 3),
+        "top_group_bottom_px": round(top_bottom, 3),
+        "bottom_offset_px": round(bottom_offset, 3),
+        "bottom_group_height_px": round(bottom_height, 3),
+        "bottom_group_top_px": round(bottom_top, 3),
+        "gap_px": round(bottom_top - top_bottom, 3),
+        "gap_min_px": float(gap_px),
+        "ok": bool(
+            top_offset >= 0.0
+            and bottom_top >= 0.0
+            and bottom_top - top_bottom >= float(gap_px)
+        ),
+    }
+
+
+def _preview_request_digest(
+    payload: dict, overrides: dict, revision: str, owner: str,
+) -> str:
+    """预览/正式任务共用的一份完整输入摘要（文本+素材+参数+版本）。"""
+    user_materials = sorted(
+        (
+            str(item.get("sha256") or "").lower(),
+            str(item.get("media_type") or ""),
+            str(item.get("clip_start_seconds") if item.get("clip_start_seconds") is not None else ""),
+        )
+        for item in (payload.get("user_materials") or [])
+        if isinstance(item, dict)
+    )
+    canonical = {
+        "owner": owner,
+        "template_id": payload.get("template_id"),
+        "template_revision": revision,
+        "top_text": payload.get("top_text"),
+        "bottom_text": payload.get("bottom_text"),
+        "bgm": bool(payload.get("bgm")),
+        "material_policy": payload.get("material_policy", "shared"),
+        "material_scope": payload.get("material_scope"),
+        "user_materials": user_materials,
+        "semantic_layout": payload.get("semantic_layout"),
+        "overrides": overrides,
+    }
+    canonical_bytes = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def _preview_version_payload(payload: dict, overrides: dict, candidate: bool) -> dict:
+    """预览两版共享同一份冻结 payload；候选版才带上有效微调参数。
+
+    默认版必须与「无 overrides 的旧路径」逐字节等价：这里直接把 overrides 键
+    摘掉，渲染端连注入段都不会触发。
+    """
+    version_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+    reference = version_payload.get("_reference_template")
+    if isinstance(reference, dict):
+        if candidate and overrides:
+            reference["overrides"] = dict(overrides)
+        else:
+            reference.pop("overrides", None)
+    return version_payload
+
+
+def _preview_frame_times(duration: float, visual_count: int) -> list[float]:
+    """代表帧时间点：首帧 + 每段中点 + 每转场边界前后（§3.2，3 段共 8 帧）。"""
+    total = max(0.0, float(duration))
+    count = max(1, int(visual_count))
+    limit = max(0.0, total - 1.0 / 30.0)
+    segment = total / count
+    times = {0.05 if limit >= 0.05 else 0.0}
+    for index in range(count):
+        times.add(min(segment * (index + 0.5), limit))
+    for index in range(1, count):
+        boundary = segment * index
+        times.add(max(0.0, boundary - PREVIEW_FRAME_EDGE_SECONDS))
+        times.add(min(boundary + PREVIEW_FRAME_EDGE_SECONDS, limit))
+    return [round(min(value, limit), 3) for value in sorted(times)]
+
+
+def _reference_v05_controls_tag(overrides: dict) -> str:
+    """服务端注入的 v05 微调 JSON（只含已校验字段，模板脚本读取后应用）。"""
+    payload = json.dumps(
+        overrides, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    payload = (
+        payload.replace("<", "\\u003c").replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+    return (
+        '<script type="application/json" id="%s">%s</script>'
+        % (REFERENCE_V05_CONTROLS_SCRIPT_ID, payload)
+    )
+
+
+def _reference_template_revision(
+    pack_root: Path, skill_root: Path,
+) -> str:
+    """§2 模板修订：参考包自身（含适配/校验）的字节指纹 + 两个合同版本常量。
+
+    只代表参考模板包本身，不代表 api.py 版本；任何模板包字节变化都会换 revision。
+    """
+    digest = hashlib.sha256()
+    digest.update(REFERENCE_UPSTREAM_COMMIT.encode("ascii"))
+    digest.update(b"\x00")
+    digest.update(OVERRIDES_CONTRACT_VERSION.to_bytes(4, "big"))
+    digest.update(b"\x00")
+    digest.update(PUBLIC_TEMPLATE_PALETTE_VERSION.encode("utf-8"))
+    for name in ("index.html", "manifest.json", "hyperframes.json", "preview-data.js"):
+        path = pack_root / name
+        if path.is_symlink() or not path.is_file():
+            raise MatrixTemplateError(
+                "HyperFrames reference template pack is incomplete"
+            )
+        digest.update(b"\x00")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(path.read_bytes())
+    for name in REFERENCE_FONT_FILES:
+        path = skill_root / "assets/fonts" / name
+        if path.is_symlink() or not path.is_file():
+            raise MatrixTemplateError(
+                "HyperFrames reference template fonts are incomplete"
+            )
+        digest.update(b"\x00")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def reference_overrides_schema(controls: dict) -> dict:
+    """紧凑可调控制定义（不塞大 schema；字段名/范围/默认值与合同 §1 一致）。"""
+    return {
+        "contract_version": OVERRIDES_CONTRACT_VERSION,
+        "fields": {
+            "title_scale": {
+                "type": "number", "minimum": REFERENCE_OVERRIDES_SCALE_MIN,
+                "maximum": REFERENCE_OVERRIDES_SCALE_MAX, "default": 1.0,
+                "description": "顶部标题组（top1/top2/top3）字号比例",
+            },
+            "title_offset_y": {
+                "type": "integer", "minimum": REFERENCE_OVERRIDES_OFFSET_MIN,
+                "maximum": REFERENCE_OVERRIDES_OFFSET_MAX, "default": 0,
+                "unit": "px",
+                "description": "顶部标题组纵向偏移，正数向下（1080×1920 设计坐标）",
+            },
+            "cta_scale": {
+                "type": "number", "minimum": REFERENCE_OVERRIDES_SCALE_MIN,
+                "maximum": REFERENCE_OVERRIDES_SCALE_MAX, "default": 1.0,
+                "description": "底部 CTA（bottom2）字号比例",
+            },
+            "cta_offset_y": {
+                "type": "integer", "minimum": REFERENCE_OVERRIDES_OFFSET_MIN,
+                "maximum": REFERENCE_OVERRIDES_OFFSET_MAX, "default": 0,
+                "unit": "px",
+                "description": "底部 CTA 纵向偏移，正数向下",
+            },
+            "accent_color": {
+                "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$",
+                "default": str(controls.get("accent_default") or "").upper(),
+                "description": "CTA 强调层底色（只改 bottom2 背景色）",
+            },
+            "media_focus": {
+                "type": "array",
+                "max_items": len(REFERENCE_VIDEO_IDS),
+                "item_fields": {
+                    "slot": "整数，从 1 计，不得超过本次实际画面数",
+                    "x": "0~1，object-position 横向比例",
+                    "y": "0~1，object-position 纵向比例",
+                },
+                "description": "按画面槽位设置裁切焦点（object-position），槽位不得重复",
+            },
+        },
+        "media_focus_slots": (
+            "槽位从 1 计；实际画面数 3~5（由冻结时长决定），"
+            "不得引用不存在的槽位"
+        ),
+    }
+
+
 def reference_pack_layer_audit(index_html: str) -> dict:
     """Re-parse the reference pack exactly like the service does.
 
@@ -1116,6 +1737,7 @@ def reference_pack_layer_audit(index_html: str) -> dict:
         "templates": REFERENCE_TEMPLATE_COUNT,
         "top_layer_counts": histogram,
         "font_sizes": font_sizes,
+        "controls": reference_v05_control_audit(index_html),
     }
 
 
@@ -2260,6 +2882,41 @@ class JobStore:
                 PRIMARY KEY(batch_id,sha256)
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS idx_batch_material_job ON batch_material_reservations(job_id)")
+            # 预览任务（purpose=preview）与正式任务表物理分离：preview 行永不进
+            # pending_ids()/relay/正式产物端点，/v1/files 也永远看不到预览产物。
+            db.execute("""CREATE TABLE IF NOT EXISTS preview_jobs(
+                id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                template_revision TEXT NOT NULL,
+                overrides TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                materials TEXT,
+                checks TEXT,
+                resources TEXT,
+                error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )""")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_preview_digest "
+                "ON preview_jobs(owner,digest)"
+            )
+            db.execute("""CREATE TABLE IF NOT EXISTS preview_files(
+                token TEXT PRIMARY KEY,
+                preview_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )""")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_preview_files_job "
+                "ON preview_files(preview_id)"
+            )
 
     @contextlib.contextmanager
     def connect(self):
@@ -2492,6 +3149,127 @@ class JobStore:
                 (_now(), job_id),
             )
 
+    # -- 预览任务（purpose=preview） -----------------------------------------
+    def create_preview(self, preview_id: str, *, owner: str, digest: str,
+                       template_revision: str, overrides: dict,
+                       payload: dict, materials: list[dict],
+                       checks: dict, expires_at: int) -> None:
+        now = _now()
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO preview_jobs(
+                    id,request_id,status,owner,digest,template_revision,
+                    overrides,payload,materials,checks,resources,error,
+                    created_at,updated_at,expires_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    preview_id, "preview-" + preview_id, "queued", owner,
+                    digest, template_revision,
+                    json.dumps(overrides, ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
+                    json.dumps(materials, ensure_ascii=False),
+                    json.dumps(checks, ensure_ascii=False),
+                    None, None, now, now, int(expires_at),
+                ),
+            )
+
+    def get_preview(self, preview_id: str):
+        with self.connect() as db:
+            return db.execute(
+                "SELECT * FROM preview_jobs WHERE id=?", (preview_id,)
+            ).fetchone()
+
+    def find_preview_by_digest(self, owner: str, digest: str, *, now: int):
+        with self.connect() as db:
+            return db.execute(
+                """SELECT * FROM preview_jobs
+                   WHERE owner=? AND digest=? AND expires_at>?
+                     AND status IN ('queued','rendering','ready')
+                   ORDER BY created_at DESC LIMIT 1""",
+                (owner, digest, int(now)),
+            ).fetchone()
+
+    def count_pending_previews(self) -> int:
+        with self.connect() as db:
+            return int(db.execute(
+                "SELECT COUNT(*) FROM preview_jobs "
+                "WHERE status IN ('queued','rendering')"
+            ).fetchone()[0])
+
+    def update_preview(self, preview_id: str, status: str, *,
+                       checks=None, resources=None, error=None) -> None:
+        sets = ["status=?", "updated_at=?"]
+        values: list = [status, _now()]
+        if checks is not None:
+            sets.append("checks=?")
+            values.append(json.dumps(checks, ensure_ascii=False))
+        if resources is not None:
+            sets.append("resources=?")
+            values.append(json.dumps(resources, ensure_ascii=False))
+        if error is not None:
+            sets.append("error=?")
+            values.append(str(error)[:500] or None)
+        values.append(preview_id)
+        with self.connect() as db:
+            db.execute(
+                "UPDATE preview_jobs SET " + ",".join(sets) + " WHERE id=?",
+                tuple(values),
+            )
+
+    def recoverable_previews(self, *, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                """SELECT * FROM preview_jobs
+                   WHERE status IN ('queued','rendering')
+                   ORDER BY created_at LIMIT ?""",
+                (int(limit),),
+            ))
+
+    def expired_previews(self, *, now: int, limit: int) -> list[sqlite3.Row]:
+        with self.connect() as db:
+            return list(db.execute(
+                "SELECT * FROM preview_jobs WHERE expires_at<=? "
+                "ORDER BY expires_at LIMIT ?",
+                (int(now), int(limit)),
+            ))
+
+    def delete_preview(self, preview_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM preview_jobs WHERE id=?", (preview_id,))
+            db.execute("DELETE FROM preview_files WHERE preview_id=?", (preview_id,))
+
+    def register_preview_file(self, token: str, preview_id: str, name: str,
+                              content_type: str, path: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR REPLACE INTO preview_files(
+                    token,preview_id,name,content_type,path,created_at
+                ) VALUES(?,?,?,?,?,?)""",
+                (token, preview_id, name, content_type, path, _now()),
+            )
+
+    def preview_file(self, token: str):
+        with self.connect() as db:
+            return db.execute(
+                """SELECT f.*, p.expires_at AS preview_expires_at,
+                          p.owner AS preview_owner
+                   FROM preview_files f
+                   JOIN preview_jobs p ON p.id=f.preview_id
+                   WHERE f.token=?""",
+                (token,),
+            ).fetchone()
+
+    @staticmethod
+    def public_preview(row) -> dict:
+        return {
+            "preview_id": row["id"],
+            "status": row["status"],
+            "expires_at": row["expires_at"],
+            "template_revision": row["template_revision"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def update(self, job_id: str, status: str, *, result=None, error=None) -> None:
         with self.connect() as db:
             db.execute(
@@ -2598,6 +3376,8 @@ class MatrixTemplateService:
         self.reference_semantic_layouts: dict[str, dict] = {}
         self.reference_fonts: dict[str, dict] = {}
         self.reference_font_fingerprint = _font_bundle_fingerprint({})
+        self.reference_v05_controls: dict | None = None
+        self.reference_template_revision = ""
         self.reference_measure_fonts: dict[
             tuple[str, int, int], ImageFont.FreeTypeFont
         ] = {}
@@ -2692,6 +3472,14 @@ class MatrixTemplateService:
         self.queue_lock = threading.Lock()
         self.queued_jobs: set[str] = set()
         self.active_jobs: set[str] = set()
+        # 预览任务独立并发闸（最多 2 槽）：永不进正式渲染 worker、永不进 relay。
+        self.preview_owner = "local"
+        self.preview_queue: queue.Queue[str] = queue.Queue()
+        self.preview_slots = threading.BoundedSemaphore(PREVIEW_CONCURRENCY)
+        self.preview_queued: set[str] = set()
+        self.preview_active: set[str] = set()
+        self.preview_lock = threading.Lock()
+        self.preview_workers: list[threading.Thread] = []
         self.stop_event = threading.Event()
         self.worker_degraded = threading.Event()
         self.degraded_lock = threading.Lock()
@@ -2739,6 +3527,18 @@ class MatrixTemplateService:
         self.cleanup_once()
         for job_id in self.store.pending_ids():
             self._enqueue(job_id)
+        # 预览恢复：冻结过的 prepared 可原样重放（素材/时长/运动种子不重选）；
+        # 已过期的一律作废并清文件。
+        preview_now = _now()
+        for row in self.store.expired_previews(
+            now=preview_now, limit=max(1, self.cleanup_batch_size),
+        ):
+            self._discard_preview(row["id"], reason="预览已过期，请重新预览")
+        for row in self.store.recoverable_previews():
+            if int(row["expires_at"]) > preview_now:
+                self._enqueue_preview(row["id"])
+            else:
+                self._discard_preview(row["id"], reason="预览已过期，请重新预览")
         if start_worker:
             self.workers = [
                 threading.Thread(
@@ -2752,6 +3552,16 @@ class MatrixTemplateService:
                 worker.start()
             self.cleanup_worker = threading.Thread(target=self._cleanup_worker, daemon=True)
             self.cleanup_worker.start()
+            self.preview_workers = [
+                threading.Thread(
+                    target=self._preview_worker,
+                    name=f"matrix-template-preview-{index + 1}",
+                    daemon=True,
+                )
+                for index in range(PREVIEW_CONCURRENCY)
+            ]
+            for worker in self.preview_workers:
+                worker.start()
 
     def _load_catalog(self) -> list[dict]:
         path = self.skill_root / "assets/templates/catalog.json"
@@ -2978,6 +3788,18 @@ class MatrixTemplateService:
             item["variant"] == REFERENCE_FEATURED_VARIANT for item in result
         ) != 1:
             raise MatrixTemplateError("featured HyperFrames template is missing")
+        controls = reference_v05_control_audit(index_html)
+        template_revision = _reference_template_revision(
+            pack_root, self.reference_skill_root,
+        )
+        for record in result:
+            tunable = record["variant"] == REFERENCE_FEATURED_VARIANT
+            record["tunable"] = bool(tunable)
+            if tunable:
+                record["template_revision"] = template_revision
+                record["overrides_schema"] = reference_overrides_schema(controls)
+        self.reference_v05_controls = controls
+        self.reference_template_revision = template_revision
         result.sort(
             key=lambda item: item["variant"] != REFERENCE_FEATURED_VARIANT
         )
@@ -3824,8 +4646,10 @@ class MatrixTemplateService:
 
     def _reference_semantic_text_layout(
         self, top: str, bottom: str, variant: str, semantic_layout: dict,
+        *, contract: dict | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
-        contract = self.reference_semantic_layouts.get(variant)
+        if contract is None:
+            contract = self.reference_semantic_layouts.get(variant)
         if contract is None:
             raise ValueError("HyperFrames 模板不支持语义排版")
         layout = _normalize_reference_semantic_layout(
@@ -4060,6 +4884,46 @@ class MatrixTemplateService:
                 raise ValueError("HyperFrames 模板必须提供 AI 语义排版")
         elif semantic_layout is not None:
             raise ValueError("semantic_layout 仅支持指定 HyperFrames 模板")
+        # 模板参数微调（合同 §1/§2）：只有可调模板接受 overrides，其余明确拒绝；
+        # 版本号必须与当前目录一致，过期一律拒绝。
+        tunable = bool((self.templates.get(template_id) or {}).get("tunable"))
+        template_revision = raw.get("template_revision")
+        if template_revision is not None:
+            if (
+                not isinstance(template_revision, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", template_revision.strip().lower())
+            ):
+                raise ValueError("template_revision 必须是 64 位十六进制字符串")
+            template_revision = template_revision.strip().lower()
+        overrides_raw = raw.get("overrides")
+        normalized_overrides: dict = {}
+        if overrides_raw is not None:
+            if not tunable:
+                raise ValueError(self._untunable_message(template_id))
+            accent_default = str(
+                (self.reference_v05_controls or {}).get("accent_default") or ""
+            )
+            if not accent_default:
+                raise MatrixTemplateError("HyperFrames v05 参数绑定不可用")
+            normalized_overrides = _normalize_reference_overrides(
+                overrides_raw, accent_default=accent_default,
+            )
+        preview_id = raw.get("preview_id")
+        if preview_id is not None:
+            normalized_preview = str(preview_id).strip().lower()
+            if not JOB_RE.fullmatch(normalized_preview):
+                raise ValueError("preview_id 无效")
+            if not tunable:
+                raise ValueError(self._untunable_message(template_id))
+            preview_id = normalized_preview
+        if template_revision is not None:
+            # 不可调模板连版本号都不该有：优先给「该模板不支持微调」的可改原因。
+            if not tunable:
+                raise ValueError(self._untunable_message(template_id))
+            if template_revision != self.reference_template_revision:
+                raise ValueError("模板版本不匹配，请重新获取模板可调参数")
+        if (normalized_overrides or preview_id) and template_revision is None:
+            raise ValueError("缺少 template_revision，请先读取模板可调参数")
         font_family = str(raw.get("font_family") or "").strip()
         if (
             not hyperframes_template and font_family
@@ -4130,7 +4994,22 @@ class MatrixTemplateService:
         user_materials = raw.get("user_materials")
         if user_materials:
             result["user_materials"] = user_materials
+        # 模板参数微调（§1/§2）：只有真的带参数/预览身份时才写入，
+        # 空 overrides 与旧请求的存储载荷保持逐字节一致（旧路径零变化）。
+        if normalized_overrides or preview_id is not None:
+            result["template_revision"] = template_revision
+        if normalized_overrides:
+            result["overrides"] = normalized_overrides
+        if preview_id is not None:
+            result["preview_id"] = preview_id
         return result
+
+    def _untunable_message(self, template_id: str) -> str:
+        return (
+            "模板 %s 不支持参数微调：只有 %s 可调，其余模板 tunable=false，"
+            "请去掉 overrides/template_revision"
+            % (template_id, REFERENCE_V05_TUNABLE_TEMPLATE_ID)
+        )
 
     def available_font_families(self) -> set[str]:
         return set(self.bundled_fonts) | set(self.private_fonts)
@@ -4202,6 +5081,7 @@ class MatrixTemplateService:
         if not REQUEST_RE.fullmatch(request_id):
             raise ValueError("invalid request id")
         existing = self.store.get_by_request_id(request_id)
+        preview = None
         if existing is not None:
             stored_payload = json.loads(existing["payload"])
             stored_template_id = str(stored_payload.get("template_id") or "")
@@ -4234,13 +5114,325 @@ class MatrixTemplateService:
                 and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
             ):
                 self.require_library_ready()
+            if payload.get("preview_id"):
+                # 带预览身份：核对属主/有效期/版本/完整输入摘要后复用预览冻结的
+                # prepared（素材、时长、运动种子、候选布局），不偷偷生成另一版。
+                preview = self._adopt_preview(payload["preview_id"], payload)
+        if preview is not None:
+            frozen = preview["frozen"]
+
+            def freeze_payload(_job_id: str, incoming: dict) -> dict:
+                stored = dict(frozen)
+                stored["preview_id"] = incoming["preview_id"]
+                return stored
+
+            freeze_payload.__name__ = "_freeze_preview_payload"
+        else:
+            freeze_payload = self._freeze_font_provenance
         job, created = self.store.create(
             request_id, payload, admission_guard=self._ensure_disk_capacity,
-            freeze_payload=self._freeze_font_provenance,
+            freeze_payload=freeze_payload,
         )
         if created:
+            if preview is not None and preview["materials"]:
+                try:
+                    self.store.reserve_job_materials(
+                        job["job_id"], preview["materials"],
+                        self._material_contract_version(preview["frozen"]),
+                    )
+                except Exception:
+                    # 冻结选材复制失败就不许进入渲染：否则会重新随机选材，
+                    # 与用户预览过的两版对不上。
+                    self.store.update(
+                        job["job_id"], "failed", error="预览素材选择冻结失败",
+                    )
+                    raise MatrixTemplateError("预览素材选择冻结失败")
             self._enqueue(job["job_id"])
         return job
+
+    def _adopt_preview(self, preview_id: str, payload: dict) -> dict:
+        """校验预览身份与输入摘要，返回可复用的冻结 payload 与素材选择。"""
+        row = self.store.get_preview(preview_id)
+        if row is None:
+            raise ValueError("预览不存在或已过期，请重新预览")
+        if str(row["owner"]) != str(self.preview_owner):
+            raise ValueError("预览不属于当前账号，请重新预览")
+        if int(row["expires_at"]) <= _now():
+            raise ValueError("预览已过期，请重新预览")
+        if str(row["status"]) == "failed":
+            raise ValueError(str(row["error"] or "预览渲染失败，请重新预览"))
+        if str(row["status"]) != "ready":
+            raise ValueError("预览还在渲染中，请等预览完成后再出片")
+        if str(row["template_revision"]) != str(payload.get("template_revision") or ""):
+            raise ValueError("模板版本不匹配，请重新获取模板可调参数")
+        expected = _preview_request_digest(
+            payload, payload.get("overrides") or {},
+            str(payload.get("template_revision") or ""), self.preview_owner,
+        )
+        if not hmac.compare_digest(str(row["digest"]), expected):
+            raise ValueError(
+                "本次请求与预览的输入不一致（文本/素材/参数已变化），"
+                "请按预览时的参数提交或重新预览"
+            )
+        return {
+            "frozen": json.loads(row["payload"] or "{}"),
+            "materials": json.loads(row["materials"] or "[]"),
+        }
+
+    def _preview_needs_library(self, payload: dict) -> bool:
+        """账号画面已在入口校验；仅未绑定的可选 BGM 需要共享库。"""
+        return bool(payload["bgm"] and payload.get("template_id") not in (
+            set(FIXED_SKILL_TEMPLATE_CONFIGS) | {NINE_GRID_TEMPLATE_ID}
+        ))
+
+    def submit_preview(self, raw: dict) -> dict:
+        """POST /v1/preview-jobs：冻结一份 prepared，随后渲染默认版+微调版。"""
+        if not isinstance(raw, dict):
+            raise ValueError("request body must be an object")
+        payload = self.validate_payload(
+            raw, require_available_font=False,
+            require_reference_semantic_layout=True,
+        )
+        template_id = payload["template_id"]
+        if not self.templates.get(template_id, {}).get("tunable"):
+            raise ValueError(self._untunable_message(template_id))
+        if payload.get("template_revision") is None:
+            raise ValueError("缺少 template_revision，请先读取模板可调参数")
+        if payload.get("preview_id"):
+            raise ValueError("预览请求不支持 preview_id")
+        if payload.get("batch_id") or payload.get("batch_index") is not None:
+            raise ValueError("预览不支持批量任务")
+        self._validate_material_policy(payload)
+        self._ensure_disk_capacity()
+        if self.store.count_pending_previews() >= PREVIEW_MAX_PENDING:
+            raise QueueCapacityError("预览任务排队已满，请稍后再试")
+        if self.enforce_library_readiness and self._preview_needs_library(payload):
+            self.require_library_ready()
+        overrides = payload.get("overrides") or {}
+        revision = str(payload["template_revision"])
+        now = _now()
+        digest = _preview_request_digest(
+            payload, overrides, revision, self.preview_owner,
+        )
+        cached = self.store.find_preview_by_digest(
+            self.preview_owner, digest, now=now,
+        )
+        if cached is not None:
+            # 同一账号 + 同一份输入摘要：直接复用（TTL 内不重复渲染）。
+            self._enqueue_preview(cached["id"])
+            return self._preview_public(cached)
+        preview_id = uuid.uuid4().hex
+        frozen = self._freeze_font_provenance(preview_id, dict(payload))
+        checks = self.reference_override_preflight(frozen)
+        materials = self._select_materials(frozen, preview_id)
+        expires_at = now + PREVIEW_CACHE_TTL_SECONDS
+        self.store.create_preview(
+            preview_id, owner=self.preview_owner, digest=digest,
+            template_revision=revision, overrides=overrides,
+            payload=frozen, materials=materials,
+            checks=checks.get("checks") or {}, expires_at=expires_at,
+        )
+        self._enqueue_preview(preview_id)
+        return self._preview_public(self.store.get_preview(preview_id))
+
+    def _preview_public(self, row) -> dict:
+        value = self.store.public_preview(row)
+        value["effective_overrides"] = json.loads(row["overrides"] or "{}")
+        value["checks"] = json.loads(row["checks"] or "{}")
+        resources = json.loads(row["resources"] or "{}")
+        if resources:
+            value["resources"] = resources
+        value["prepared"] = {
+            "digest": row["digest"], "valid_until": int(row["expires_at"]),
+        }
+        if str(row["status"]) == "failed":
+            # 失败必须给可改原因（§3.3），不吞成泛泛报错。
+            value["error"] = str(row["error"] or "预览渲染失败，请重新预览")
+        return value
+
+    def _reference_v05_checks(
+        self, display_text: dict[str, str], overrides: dict, duration: float,
+    ) -> dict:
+        """生效布局的几何与对比度校验（两版都不得越界/重叠，§1/§3.6）。"""
+        controls = self.reference_v05_controls or {}
+        visual_count = _required_visuals(duration)
+        slots = [
+            int(item["slot"]) for item in (overrides.get("media_focus") or [])
+        ]
+        beyond = sorted({slot for slot in slots if slot > visual_count})
+        if beyond:
+            raise ValueError(
+                "media_focus 槽位 %s 超出本次实际画面数 %d："
+                "把槽位改到 1~%d，或把标题写短一点增加画面数"
+                % ("、".join(str(slot) for slot in beyond), visual_count, visual_count)
+            )
+        geometry = _reference_v05_geometry(
+            _reference_v05_effective_layers(overrides), display_text, overrides,
+            controls,
+        )
+        if not geometry["ok"]:
+            raise ValueError(self._reference_geometry_hint(geometry, overrides))
+        contrast = self._reference_v05_contrast(overrides)
+        if not contrast["ok"]:
+            raise ValueError(
+                "强调色 %s 与 CTA 文字色 %s 对比度不足（%.2f < %.2f）："
+                "换更深或更亮的强调色（例如保留默认 %s）"
+                % (
+                    contrast["accent_color"], contrast["text_color"],
+                    contrast["ratio"], contrast["minimum"],
+                    str(controls.get("accent_default") or "").upper(),
+                )
+            )
+        return {
+            "effective_layout": {
+                layer: dict(values)
+                for layer, values in _reference_v05_effective_layers(overrides).items()
+            },
+            "geometry": geometry,
+            "contrast": contrast,
+        }
+
+    def _reference_v05_contrast(self, overrides: dict) -> dict:
+        controls = self.reference_v05_controls or {}
+        accent = str(
+            overrides.get("accent_color")
+            or controls.get("accent_default") or ""
+        ).upper()
+        text_color = str(controls.get("cta_text_color") or "").upper()
+        ratio = None
+        if re.fullmatch(r"#[0-9A-F]{6}", accent) and re.fullmatch(
+            r"#[0-9A-F]{6}", text_color
+        ):
+            ratio = round(_contrast_ratio(text_color, accent), 2)
+        return {
+            "ok": bool(
+                ratio is not None
+                and ratio >= REFERENCE_OVERRIDES_CONTRAST_MIN
+            ),
+            "ratio": ratio,
+            "minimum": REFERENCE_OVERRIDES_CONTRAST_MIN,
+            "accent_color": accent,
+            "text_color": text_color,
+        }
+
+    def _reference_overflow_hint(
+        self, top: str, bottom: str, variant: str, semantic_layout: dict,
+        overrides: dict, exc: Exception,
+    ) -> str:
+        """有效布局排不下时的「可改原因」：给出可行的字号倍数上限。"""
+        base_contract = self.reference_semantic_layouts.get(variant) or {}
+        requested_title = float(overrides.get("title_scale", 1.0) or 1.0)
+        requested_cta = float(overrides.get("cta_scale", 1.0) or 1.0)
+
+        def fits(candidate: dict) -> bool:
+            try:
+                self._reference_semantic_text_layout(
+                    top, bottom, variant, semantic_layout,
+                    contract=_reference_effective_contract(base_contract, candidate),
+                )
+            except ValueError:
+                return False
+            return True
+
+        for field, requested, label in (
+            ("title_scale", requested_title, "标题"),
+            ("cta_scale", requested_cta, "底部 CTA"),
+        ):
+            if requested <= 1.0:
+                continue
+            for candidate in (1.05, 1.0, 0.95, 0.9, 0.85):
+                if candidate >= requested:
+                    continue
+                trial = dict(overrides)
+                trial[field] = candidate
+                if fits(trial):
+                    return (
+                        "%s按 %.2f 倍会超出安全区/宽度（%s），"
+                        "建议 %s 不超过 %.2f，或把文案写短一点"
+                        % (label, requested, exc, field, candidate)
+                    )
+        return (
+            "%s（当前 title_scale=%.2f / cta_scale=%.2f）：建议调小字号倍数、"
+            "把标题偏移往中间收，或缩短文案"
+            % (exc, requested_title, requested_cta)
+        )
+
+    @staticmethod
+    def _reference_geometry_hint(geometry: dict, overrides: dict) -> str:
+        title_scale = float(overrides.get("title_scale", 1.0) or 1.0)
+        cta_scale = float(overrides.get("cta_scale", 1.0) or 1.0)
+        parts = []
+        if title_scale > 1.0:
+            parts.append("标题字号倍数改小（当前 %.2f）" % title_scale)
+        if cta_scale > 1.0:
+            parts.append("CTA 字号倍数改小（当前 %.2f）" % cta_scale)
+        title_offset = int(overrides.get("title_offset_y", 0) or 0)
+        if title_offset > 0:
+            parts.append("顶部标题少往下移（当前 +%dpx）" % title_offset)
+        if title_offset < 0 or int(overrides.get("cta_offset_y", 0) or 0) > 0:
+            parts.append("把标题与 CTA 的偏移往中间收一点")
+        if not parts:
+            parts.append("适当缩小字号或偏移")
+        return (
+            "排版会越界/重叠：顶部标题组与底部 CTA 之间只剩 %.0fpx"
+            "（需要 ≥%.0fpx，当前字号倍数 %.2f/%.2f）。建议%s。"
+            % (
+                geometry["gap_px"], geometry["gap_min_px"],
+                title_scale, cta_scale, "，".join(parts),
+            )
+        )
+
+    def reference_override_preflight(self, payload: dict) -> dict:
+        """§3.6：按有效布局重新校验（复用语义断句，不重写缓存），返回 checks。"""
+        overrides = payload.get("overrides") or {}
+        if not overrides:
+            return {}
+        template_id = str(payload.get("template_id") or "")
+        if not self.templates.get(template_id, {}).get("tunable"):
+            raise ValueError(self._untunable_message(template_id))
+        reference = payload.get("_reference_template")
+        duration = float(payload.get("duration") or 0)
+        display_text = None
+        if isinstance(reference, dict):
+            duration = float(reference.get("duration") or duration)
+            display_text = reference.get("display_text")
+        if not isinstance(display_text, dict):
+            semantic_layout = payload.get("semantic_layout")
+            if not isinstance(semantic_layout, dict):
+                raise ValueError("参数微调需要 AI 语义排版")
+            template = self.reference_templates[template_id]
+            layout_contract = _reference_effective_contract(
+                self.reference_semantic_layouts[template["variant"]], overrides,
+            )
+            _source, display_text = self._reference_semantic_text_layout(
+                payload["top_text"], payload["bottom_text"],
+                template["variant"], semantic_layout, contract=layout_contract,
+            )
+        checks = self._reference_v05_checks(display_text, overrides, duration)
+        visual_count = _required_visuals(duration)
+        return {
+            "effective_overrides": dict(overrides),
+            "geometry": checks["geometry"],
+            "checks": {
+                "text_overflow": {
+                    "ok": True,
+                    "layout": "effective",
+                    "visuals": visual_count,
+                },
+                "layer_overlap": {
+                    "ok": checks["geometry"]["ok"],
+                    "gap_px": checks["geometry"]["gap_px"],
+                    "gap_min_px": checks["geometry"]["gap_min_px"],
+                },
+                "contrast": checks["contrast"],
+                "material_valid": {
+                    "ok": True,
+                    "visuals": visual_count,
+                    "user_materials": len(payload.get("user_materials") or []),
+                },
+                "render_ok": None,
+            },
+        }
 
     def _validate_material_policy(self, payload: dict) -> None:
         if not self.enforce_user_materials:
@@ -4380,6 +5572,17 @@ class MatrixTemplateService:
             payload.pop("font_family", None)
             template = self.reference_templates[template_id]
             top_layer_count = int(template["text_layers"]["top"])
+            # 模板参数微调（§1/§2）：只有 v05 可调，其余模板明确拒绝。
+            overrides = payload.get("overrides") or {}
+            if overrides and not self.templates[template_id].get("tunable"):
+                raise ValueError(self._untunable_message(template_id))
+            if overrides:
+                overrides = _normalize_reference_overrides(
+                    overrides,
+                    accent_default=str(
+                        (self.reference_v05_controls or {}).get("accent_default") or ""
+                    ),
+                )
             fixed_fonts = {}
             private_font_records = {}
             for layer, font in REFERENCE_FIXED_PRIVATE_FONTS.get(
@@ -4407,9 +5610,30 @@ class MatrixTemplateService:
                     "source": "private",
                 }
             if payload.get("semantic_layout") is not None:
-                source_text, display_text = self._reference_semantic_text_layout(
-                    payload["top_text"], payload["bottom_text"],
-                    template["variant"], payload["semantic_layout"],
+                layout_contract = self.reference_semantic_layouts[template["variant"]]
+                if overrides:
+                    # 语义缓存不重写：按有效字号/描边重算一份契约再校验断句，
+                    # 水平宽度预算（max_width_px）与 padding 不随字号缩放。
+                    layout_contract = _reference_effective_contract(
+                        layout_contract, overrides,
+                    )
+                try:
+                    source_text, display_text = self._reference_semantic_text_layout(
+                        payload["top_text"], payload["bottom_text"],
+                        template["variant"], payload["semantic_layout"],
+                        contract=layout_contract,
+                    )
+                except ValueError as exc:
+                    if overrides:
+                        raise ValueError(self._reference_overflow_hint(
+                            payload["top_text"], payload["bottom_text"],
+                            template["variant"], payload["semantic_layout"],
+                            overrides, exc,
+                        )) from exc
+                    raise
+            elif overrides:
+                raise ValueError(
+                    "HyperFrames 模板参数微调需要 AI 语义排版"
                 )
             else:
                 # Persisted jobs accepted before semantic layout became mandatory
@@ -4428,6 +5652,11 @@ class MatrixTemplateService:
                     minimum=int((template or {}).get("required_visuals") or 3),
                     maximum=int((template or {}).get("required_visuals_max") or 5),
                 )
+            if overrides:
+                # 生效布局的几何/对比度校验：不通过就带着「可改原因」失败。
+                self._reference_v05_checks(
+                    display_text, overrides, reference_duration,
+                )
             payload["_reference_template"] = {
                 "pack_id": REFERENCE_PACK_ID,
                 "engine": "hyperframes",
@@ -4438,6 +5667,10 @@ class MatrixTemplateService:
                 "text": source_text,
                 "display_text": display_text,
                 "fixed_fonts": fixed_fonts,
+                # 运动随机种子：与 editing_plan 同源冻结。带预览提交的正式任务
+                # 沿用预览时冻结的种子，不因 job_id 不同重新随机（§3.5）。
+                "timing_seed": job_id,
+                **({"overrides": overrides} if overrides else {}),
                 "editing_plan": _reference_editing_plan(
                     job_id, template_id, _required_visuals(reference_duration)
                 ),
@@ -4514,6 +5747,191 @@ class MatrixTemplateService:
             self.queued_jobs.add(job_id)
             self.jobs.put_nowait(job_id)
             return True
+
+    # -- 预览渲染（独立并发闸，永不进正式队列/relay/节点） --------------------
+    def _enqueue_preview(self, preview_id: str) -> bool:
+        with self.preview_lock:
+            if preview_id in self.preview_queued or preview_id in self.preview_active:
+                return False
+            self.preview_queued.add(preview_id)
+            self.preview_queue.put_nowait(preview_id)
+            return True
+
+    def _preview_worker(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                preview_id = self.preview_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            with self.preview_lock:
+                self.preview_queued.discard(preview_id)
+                self.preview_active.add(preview_id)
+            try:
+                with self.preview_slots:
+                    if not self.stop_event.is_set():
+                        self._run_preview(preview_id)
+            except ValueError as exc:
+                # 可改原因（§3.3）原样带给前端，不含内部路径。
+                self.store.update_preview(preview_id, "failed", error=str(exc))
+            except Exception as exc:
+                print(
+                    f"[matrix-template] preview failed preview={preview_id}: {exc}",
+                    flush=True,
+                )
+                self.store.update_preview(
+                    preview_id, "failed", error="预览渲染失败，请重新预览",
+                )
+            finally:
+                with self.preview_lock:
+                    self.preview_active.discard(preview_id)
+                self.preview_queue.task_done()
+
+    def _run_preview(self, preview_id: str) -> None:
+        row = self.store.get_preview(preview_id)
+        if row is None:
+            return
+        if int(row["expires_at"]) <= _now():
+            raise ValueError("预览已过期，请重新预览")
+        payload = json.loads(row["payload"] or "{}")
+        overrides = json.loads(row["overrides"] or "{}")
+        materials = json.loads(row["materials"] or "[]")
+        checks = json.loads(row["checks"] or "{}") or {}
+        reference = payload.get("_reference_template") or {}
+        duration = float(reference.get("duration") or payload.get("duration") or 0.0)
+        visual_count = _required_visuals(duration)
+        frame_times = _preview_frame_times(duration, visual_count)
+        deadline_at = min(
+            float(row["expires_at"]),
+            time.time() + 2.0 * self.hyperframes_total_timeout_seconds,
+        )
+        self.store.update_preview(preview_id, "rendering")
+        resources: dict = {}
+        try:
+            for version, candidate in (("default", False), ("candidate", True)):
+                version_id = f"{preview_id}-{version}"
+                root = self.data_root / version_id
+                self._discard_output(version_id)
+                assets = root / "assets/library"
+                assets.mkdir(parents=True, exist_ok=True)
+                paths = [
+                    self._download(item, assets, version_id) for item in materials
+                ]
+                version_payload = _preview_version_payload(
+                    payload, overrides, candidate,
+                )
+                self._render_reference(
+                    version_payload, version_id, materials, paths,
+                    deadline_at=deadline_at,
+                )
+                output = root / "output/final.mp4"
+                probe = self._probe(output)
+                token = self._register_preview_token(
+                    preview_id, f"{version}.mp4", "video/mp4", output,
+                )
+                resources[version] = {
+                    "video_url": f"/v1/preview-files/{token}",
+                    "frames": self._register_preview_frames(
+                        preview_id, version, output, frame_times,
+                    ),
+                    "duration": probe["duration"],
+                    "visuals": visual_count,
+                }
+        except Exception:
+            self._remove_preview_files(preview_id)
+            raise
+        checks = {**checks, "render_ok": True}
+        self.store.update_preview(
+            preview_id, "ready", checks=checks, resources=resources,
+        )
+
+    def _register_preview_token(
+        self, preview_id: str, name: str, content_type: str, path: Path,
+    ) -> str:
+        token = hashlib.sha256(
+            f"{preview_id}:{name}".encode("utf-8")
+        ).hexdigest()[:32]
+        self.store.register_preview_file(
+            token, preview_id, name, content_type, str(path),
+        )
+        return token
+
+    def _register_preview_frames(
+        self, preview_id: str, version: str, video: Path, frame_times: list[float],
+    ) -> list[str]:
+        directory = video.parent.parent / "preview-frames"
+        if directory.exists():
+            shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True, exist_ok=True)
+        urls = []
+        for index, instant in enumerate(frame_times, 1):
+            name = f"{version}-{index:02d}.jpg"
+            target = directory / name
+            self._extract_preview_frame(video, target, instant)
+            token = self._register_preview_token(
+                preview_id, name, "image/jpeg", target,
+            )
+            urls.append(f"/v1/preview-files/{token}")
+        return urls
+
+    @staticmethod
+    def _extract_preview_frame(video: Path, target: Path, instant: float):
+        target.unlink(missing_ok=True)
+        try:
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", "%.3f" % max(0.0, float(instant)),
+                "-i", str(video),
+                "-frames:v", "1",
+                "-vf", "scale=%d:-2" % PREVIEW_FRAME_WIDTH_PX,
+                "-q:v", "3",
+                str(target),
+            ], check=True, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MatrixTemplateError("预览代表帧抽取失败") from exc
+        if not target.is_file() or target.stat().st_size <= 0:
+            raise MatrixTemplateError("预览代表帧抽取失败")
+
+    def _remove_preview_files(self, preview_id: str) -> None:
+        if not JOB_RE.fullmatch(str(preview_id or "")):
+            return
+        with self.file_lock:
+            for version in ("default", "candidate"):
+                root = self.data_root / f"{preview_id}-{version}"
+                if root.is_symlink() or not root.is_dir():
+                    continue
+                if root.resolve() != root:
+                    continue
+                shutil.rmtree(root, ignore_errors=True)
+
+    def _discard_preview(self, preview_id: str, *, reason: str = "") -> None:
+        if not JOB_RE.fullmatch(str(preview_id or "")):
+            return
+        if reason:
+            print(
+                f"[matrix-template] discard preview {preview_id}: {reason}",
+                flush=True,
+            )
+        self._remove_preview_files(preview_id)
+        self.store.delete_preview(preview_id)
+
+    def cleanup_previews(self, *, now: int | None = None,
+                         limit: int | None = None) -> int:
+        current = _now() if now is None else int(now)
+        rows = self.store.expired_previews(
+            now=current, limit=max(1, int(limit or self.cleanup_batch_size)),
+        )
+        removed = 0
+        for row in rows:
+            preview_id = row["id"]
+            with self.preview_lock:
+                if preview_id in self.preview_active:
+                    # 正在渲染的这一份等它自己收尾；过期后结果不再对外可用。
+                    continue
+                # 排队中的过期预览不会再产出结果：直接作废并清文件。
+                self.preview_queued.discard(preview_id)
+            self._discard_preview(preview_id, reason="expired")
+            removed += 1
+        return removed
 
     def health(self) -> dict:
         worker_threads = self.workers or ([self.worker] if self.worker is not None else [])
@@ -4628,6 +6046,15 @@ class MatrixTemplateService:
             ),
             "public_template_palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
             "public_template_palette_count": PUBLIC_TEMPLATE_PALETTE_COUNT,
+            "tunable_templates": sorted(
+                template_id for template_id, item in self.templates.items()
+                if item.get("tunable")
+            ),
+            "overrides_contract_version": OVERRIDES_CONTRACT_VERSION,
+            "preview_concurrency": PREVIEW_CONCURRENCY,
+            "preview_max_pending": PREVIEW_MAX_PENDING,
+            "preview_pending": self.store.count_pending_previews(),
+            "preview_ttl_seconds": PREVIEW_CACHE_TTL_SECONDS,
             "hyperframes_concurrency": self.hyperframes_concurrency,
             "nine_grid_prep_encoder": self.nine_grid_prep_encoder,
             "hyperframes_total_timeout_seconds": self.hyperframes_total_timeout_seconds,
@@ -4704,6 +6131,10 @@ class MatrixTemplateService:
             self.cleanup_user_assets(now=current)
         except Exception as exc:  # 清理用户素材失败不应影响任务目录清理
             print("[matrix-template] user-asset cleanup failed: %s" % exc, flush=True)
+        try:
+            self.cleanup_previews(now=current)
+        except Exception as exc:  # 预览过期清理失败同样不应拖垮任务清理
+            print("[matrix-template] preview cleanup failed: %s" % exc, flush=True)
         candidates = self.store.cleanup_candidates(
             now=current,
             retention_seconds=self.retention_seconds,
@@ -6933,6 +8364,22 @@ class MatrixTemplateService:
             raise MatrixTemplateError("HyperFrames template GSAP localization failed")
         if index.count("</head>") != 1:
             raise MatrixTemplateError("HyperFrames template head declaration changed")
+        # 参数微调（§3.5/§5）：只有冻结里带有效 overrides 才注入；默认版与旧路径
+        # 一个字节都不多。模板没有读取器就 fail closed，绝不“悄悄忽略参数”。
+        controls_tag = ""
+        frozen_overrides = reference.get("overrides")
+        if frozen_overrides:
+            if str(reference.get("variant") or "") != REFERENCE_FEATURED_VARIANT:
+                raise MatrixTemplateError("HyperFrames 参数微调只支持 v05 模板")
+            if index.count(REFERENCE_V05_CONTROLS_SCRIPT_ID) != 1:
+                raise MatrixTemplateError("HyperFrames v05 参数读取器缺失，已阻止渲染")
+            normalized_frozen = _normalize_reference_overrides(
+                frozen_overrides,
+                accent_default=str(
+                    (self.reference_v05_controls or {}).get("accent_default") or ""
+                ),
+            )
+            controls_tag = _reference_v05_controls_tag(normalized_frozen)
         fixed_font_style = _reference_private_font_style(
             str(reference.get("variant") or ""), fixed_fonts
         )
@@ -6948,6 +8395,7 @@ class MatrixTemplateService:
             REFERENCE_EMPTY_LAYER_STYLE
             + "\n" + REFERENCE_CTA_SAFE_AREA_STYLE
             + ("\n" + fixed_font_style if fixed_font_style else "")
+            + ("\n" + controls_tag if controls_tag else "")
             + "\n</head>",
         )
         shutil.copy2(self.hyperframes_gsap, workdir / "gsap.min.js")
@@ -6958,7 +8406,8 @@ class MatrixTemplateService:
             for path in paths[:visual_count]
         ]
         segment_starts, segment_durations, media_offsets = _reference_segment_timing(
-            float(reference["duration"]), media_durations, seed=job_id
+            float(reference["duration"]), media_durations,
+            seed=str(reference.get("timing_seed") or job_id),
         )
         selected_clip_starts = [
             item.get("clip_start_seconds")
@@ -7418,6 +8867,8 @@ class MatrixTemplateService:
             worker.join(timeout=3)
         if self.cleanup_worker is not None:
             self.cleanup_worker.join(timeout=3)
+        for worker in self.preview_workers:
+            worker.join(timeout=3)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -7466,7 +8917,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/templates":
             self.send_json(200, {
                 "templates": [
-                    {**item, "palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION}
+                    {
+                        **item,
+                        "tunable": bool(item.get("tunable")),
+                        "palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
+                    }
                     for item in self.service.catalog
                 ],
                 "default_template": self.service.default_template_id,
@@ -7487,6 +8942,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             row = self.service.store.get(job_id)
             self.send_json(200, self.service.store.public(row)) if row else self.send_json(404, {"error": "not_found"})
+            return
+        if path.startswith("/v1/preview-jobs/"):
+            preview_id = path.rsplit("/", 1)[-1]
+            if not JOB_RE.fullmatch(preview_id):
+                self.send_json(404, {"error": "not_found"})
+                return
+            row = self.service.store.get_preview(preview_id)
+            if (
+                row is None
+                or str(row["owner"]) != str(self.service.preview_owner)
+                or int(row["expires_at"]) <= _now()
+            ):
+                self.send_json(404, {
+                    "error": "not_found", "detail": "预览不存在或已过期，请重新预览",
+                })
+                return
+            self.send_json(200, self.service._preview_public(row))
+            return
+        match = re.fullmatch(r"/v1/preview-files/([0-9a-f]{32})", path)
+        if match:
+            row = self.service.store.preview_file(match.group(1))
+            if (
+                row is None
+                or str(row["preview_owner"]) != str(self.service.preview_owner)
+                or int(row["preview_expires_at"]) <= _now()
+            ):
+                self.send_json(404, {"error": "not_found"})
+                return
+            self._send_preview_file(row)
             return
         match = re.fullmatch(r"/v1/files/([0-9a-f]{32})\.mp4", path)
         if match:
@@ -7511,6 +8995,36 @@ class Handler(BaseHTTPRequestHandler):
                 file_context.__exit__(None, None, None)
             return
         self.send_json(404, {"error": "not_found"})
+
+    def _send_preview_file(self, row) -> None:
+        """预览 MP4/JPEG 流式回放（§3.4）：inline + private 缓存，永不出现在 /v1/files/。"""
+        path = Path(str(row["path"] or ""))
+        root = self.service.data_root
+        try:
+            resolved = path.resolve()
+        except OSError:
+            self.send_json(404, {"error": "not_found"})
+            return
+        if root not in resolved.parents or path.is_symlink() or not resolved.is_file():
+            self.send_json(404, {"error": "not_found"})
+            return
+        try:
+            size = resolved.stat().st_size
+            handle = resolved.open("rb")
+        except OSError:
+            self.send_json(404, {"error": "not_found"})
+            return
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", str(row["name"] or "preview"))
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", str(row["content_type"] or "application/octet-stream"))
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'inline; filename="{name}"')
+            self.send_header("Cache-Control", "private, max-age=300")
+            self.end_headers()
+            copyfileobj(handle, self.wfile, 1024 * 1024)
+        finally:
+            handle.close()
 
     def _receive_user_asset(self) -> None:
         """接收一个用户素材文件，按 sha256 落盘。请求体是原始二进制。"""
@@ -7568,7 +9082,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
-        if path not in {"/v1/jobs", "/v1/preflight", "/v1/user-assets"}:
+        if path not in {
+            "/v1/jobs", "/v1/preflight", "/v1/user-assets", "/v1/preview-jobs",
+        }:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authorized():
@@ -7582,11 +9098,22 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > MAX_BODY_BYTES:
                 raise ValueError("invalid request size")
             body = json.loads(self.rfile.read(length))
+            if path == "/v1/preview-jobs":
+                self.send_json(202, self.service.submit_preview(body))
+                return
             if path == "/v1/preflight":
                 payload = self.service.validate_payload(
                     body, require_reference_semantic_layout=True,
                 )
                 self.service._validate_material_policy(payload)
+                override_preflight: dict = {}
+                if payload.get("overrides"):
+                    frozen = self.service._freeze_font_provenance(
+                        "preflight", dict(payload),
+                    )
+                    override_preflight = self.service.reference_override_preflight(
+                        frozen,
+                    )
                 library = (
                     self.service.require_library_ready(force=True)
                     if payload["bgm"]
@@ -7602,6 +9129,7 @@ class Handler(BaseHTTPRequestHandler):
                     "payload": payload,
                     "duration": payload["duration"],
                     "required_visuals": self.service.required_visuals(payload),
+                    **override_preflight,
                     "material_selection_contract_version": library[
                         "selection_contract_version"
                     ],
@@ -7652,6 +9180,10 @@ def build_server(host: str, port: int, service: MatrixTemplateService, token: st
     server = ThreadingHTTPServer((host, port), Handler)
     server.service = service  # type: ignore[attr-defined]
     server.api_token = token  # type: ignore[attr-defined]
+    # 预览缓存/预览文件的属主指纹：同一把 API token 的调用方共享，不跨 token 混用。
+    service.preview_owner = hashlib.sha256(
+        ("matrix-template-preview:" + token).encode("utf-8")
+    ).hexdigest()[:16]
     return server
 
 
