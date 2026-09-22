@@ -155,8 +155,9 @@ TRIPLE_STRIP_TEMPLATE_ID = "triple-strip-shutter"
 YELLOW_BANNER_TEMPLATE_ID = "yellow-banner-zoom"
 FAN_WHIP_TEMPLATE_ID = "fan-whip-static"
 BRUSH_PANEL_TEMPLATE_ID = "brush-panel-transitions"
+HEALTH_TEAM_TEMPLATE_ID = "health-team-hook"
 MOTION_V2_TEMPLATE_IDS = (
-    FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID,
+    FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID, HEALTH_TEAM_TEMPLATE_ID,
 )
 FIXED_SKILL_TEMPLATE_IDS = (
     TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
@@ -491,6 +492,101 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
                 "maximum": 86, "minimum": 50, "width": 996,
                 "height": 290, "line_height": 1.16, "max_lines": 5,
                 "stroke_px": 10, "letter_spacing_em": -0.025,
+            },
+        },
+    },
+    HEALTH_TEAM_TEMPLATE_ID: {
+        "name": "健康团队强钩子·黄白描边",
+        "description": "单素材慢推镜，上下六层黄白粗体文案常驻",
+        "variant": "health-team-hook",
+        "version": 1,
+        "manifest_version": None,
+        "hyperframes_version": MOTION_V2_HYPERFRAMES_VERSION,
+        "composition_id": HEALTH_TEAM_TEMPLATE_ID,
+        "duration": 9.7,
+        "frames": 291,
+        "required_visuals": 2,
+        "slot_frames": (146, 145),
+        "slot_heights": (1920, 1920),
+        "media_paths": ("assets/media/01.mp4", "assets/media/02.mp4"),
+        "bgm_path": "assets/media/reference-bgm.m4a",
+        "bgm_sha256": (
+            "95183944e0c5f63e583c52686bff3a57d94fa078c22eee10fd5749026c5fdae8"
+        ),
+        "bgm_duration": 12.538776,
+        "bgm_manifest_key": "referenceAudio",
+        "audio_id": "reference-bgm",
+        "font_files": {"Noto Sans SC": "NotoSansSC-Variable.ttf"},
+        "expected_fields": (
+            "title", "subtitle", "metric", "platform", "lead", "cta",
+        ),
+        "extra_variable_ids": (),
+        "required_files": (
+            "hyperframes.json", "index.motion.json",
+            "assets/vendor/gsap.min.js",
+        ),
+        "semantic": {
+            "top1": {
+                "family": "Noto Sans SC", "font_size_px": 128,
+                "font_weight": 900, "max_width_px": 992,
+                "max_lines": 1, "stroke_px": 10,
+                "letter_spacing_em": -0.045,
+            },
+            "top2": {
+                "family": "Noto Sans SC", "font_size_px": 59,
+                "font_weight": 700, "max_width_px": 600,
+                "max_lines": 4, "stroke_px": 10,
+                "letter_spacing_em": -0.045,
+            },
+            "top3": {
+                "family": "Noto Sans SC", "font_size_px": 58,
+                "font_weight": 700, "max_width_px": 992,
+                "max_lines": 4, "stroke_px": 10,
+                "letter_spacing_em": -0.045,
+            },
+            "bottom2": {
+                "family": "Noto Sans SC", "font_size_px": 72,
+                "font_weight": 900, "max_width_px": 992,
+                "max_lines": 2, "stroke_px": 10,
+                "letter_spacing_em": -0.045,
+            },
+        },
+        "field_specs": {
+            "title": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 128, "minimum": 50, "width": 992,
+                "height": 145, "line_height": 1.13, "max_lines": 1,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
+            },
+            "subtitle": {
+                "family": "Noto Sans SC", "weight": 700,
+                "maximum": 59, "minimum": 50, "width": 600,
+                "height": 226, "line_height": 1.13, "max_lines": 4,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
+            },
+            "metric": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 76, "minimum": 50, "width": 992,
+                "height": 86, "line_height": 1.13, "max_lines": 1,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
+            },
+            "platform": {
+                "family": "Noto Sans SC", "weight": 700,
+                "maximum": 58, "minimum": 50, "width": 992,
+                "height": 509, "line_height": 1.13, "max_lines": 9,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
+            },
+            "lead": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 72, "minimum": 50, "width": 992,
+                "height": 509, "line_height": 1.13, "max_lines": 9,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
+            },
+            "cta": {
+                "family": "Noto Sans SC", "weight": 900,
+                "maximum": 132, "minimum": 50, "width": 992,
+                "height": 150, "line_height": 1.13, "max_lines": 1,
+                "stroke_px": 10, "letter_spacing_em": -0.045,
             },
         },
     },
@@ -2433,6 +2529,7 @@ class MatrixTemplateService:
                  yellow_banner_root: Path | None = None,
                  fan_whip_root: Path | None = None,
                  brush_panel_root: Path | None = None,
+                 health_team_root: Path | None = None,
                  hyperframes_cli: Path | None = None,
                  nine_grid_hyperframes_cli: Path | None = None,
                  motion_v2_hyperframes_cli: Path | None = None,
@@ -2518,6 +2615,7 @@ class MatrixTemplateService:
                 (YELLOW_BANNER_TEMPLATE_ID, yellow_banner_root),
                 (FAN_WHIP_TEMPLATE_ID, fan_whip_root),
                 (BRUSH_PANEL_TEMPLATE_ID, brush_panel_root),
+                (HEALTH_TEAM_TEMPLATE_ID, health_team_root),
             )
             if root is not None
         }
@@ -3558,9 +3656,62 @@ class MatrixTemplateService:
         semantic_layout: dict,
     ) -> dict:
         config = FIXED_SKILL_TEMPLATE_CONFIGS[template_id]
-        source_text, display_text = self._reference_semantic_text_layout(
-            top, bottom, str(config["variant"]), semantic_layout,
-        )
+        health_fields = None
+        if template_id == HEALTH_TEAM_TEMPLATE_ID:
+            normalized = _normalize_reference_semantic_layout(
+                semantic_layout, top, bottom,
+            )
+
+            def semantic_segments(value: str, break_after: list[int]) -> list[str]:
+                boundaries = sorted({
+                    *(index + 1 for index in break_after if index < len(value) - 1),
+                    len(value),
+                })
+                start = 0
+                segments = []
+                for end in boundaries:
+                    segment = _hide_reference_edge_punctuation(value[start:end])
+                    if segment:
+                        segments.append(segment)
+                    start = end
+                return segments
+
+            top_segments = semantic_segments(top, normalized["top_break_after"])
+            bottom_segments = semantic_segments(
+                bottom, normalized["bottom_break_after"],
+            )
+            if not top_segments or not bottom_segments:
+                raise ValueError("健康团队模板文案缺少完整语义层")
+            health_fields = {
+                "title": top_segments[0],
+                "subtitle": top_segments[1] if len(top_segments) > 1 else "",
+                "metric": top_segments[2] if len(top_segments) > 2 else "",
+                "platform": "\n".join(top_segments[3:]),
+                "lead": "\n".join(bottom_segments[:-1]),
+                "cta": bottom_segments[-1],
+            }
+            source_text = {
+                "top1": top_segments[0],
+                "top2": top_segments[1] if len(top_segments) > 1 else "",
+                "top3": "\n".join(top_segments[2:]),
+                "bottom1": "",
+                "bottom2": "\n".join(bottom_segments),
+            }
+            display_text = {
+                "top1": health_fields["title"],
+                "top2": health_fields["subtitle"],
+                "top3": "\n".join(filter(None, (
+                    health_fields["metric"], health_fields["platform"],
+                ))),
+                "bottom1": "",
+                "bottom2": "\n".join(filter(None, (
+                    health_fields["lead"], health_fields["cta"],
+                ))),
+            }
+        else:
+            source_text, display_text = self._reference_semantic_text_layout(
+                top, bottom, str(config["variant"]), semantic_layout,
+            )
         bottom_lines = [
             line for line in display_text["bottom2"].splitlines() if line
         ]
@@ -3583,6 +3734,8 @@ class MatrixTemplateService:
                 "body": "\n".join(bottom_lines[:-1]),
                 "cta": bottom_lines[-1],
             }
+        elif template_id == HEALTH_TEAM_TEMPLATE_ID:
+            fields = health_fields
         else:
             fields = {
                 "title": display_text["top1"],
@@ -6188,6 +6341,19 @@ class MatrixTemplateService:
 #body{{font-size:{sizes["body"]}px!important;line-height:1.15!important}}
 #cta{{font-size:{sizes["cta"]}px!important;line-height:1.1!important}}
 </style>'''
+        elif template_id == HEALTH_TEAM_TEMPLATE_ID:
+            style = f'''<style id="matrix-fixed-skill-copy">
+[data-var-text]:empty{{display:none!important}}
+#title,#subtitle,#metric,#platform,#lead,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
+.top-copy{{top:76px!important}}
+.bottom-copy{{top:auto!important;bottom:102px!important}}
+#title{{font-size:{sizes["title"]}px!important;line-height:1.13!important}}
+#subtitle{{font-size:{sizes["subtitle"]}px!important;line-height:1.13!important}}
+#metric{{font-size:{sizes["metric"]}px!important;line-height:1.13!important}}
+#platform{{font-size:{sizes["platform"]}px!important;line-height:1.13!important}}
+#lead{{font-size:{sizes["lead"]}px!important;line-height:1.13!important}}
+#cta{{font-size:{sizes["cta"]}px!important;line-height:1.13!important}}
+</style>'''
         elif template_id in MOTION_V2_TEMPLATE_IDS:
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
@@ -7582,6 +7748,9 @@ def main() -> None:
     brush_panel_root_value = os.environ.get(
         "MATRIX_TEMPLATE_BRUSH_PANEL_ROOT", ""
     ).strip()
+    health_team_root_value = os.environ.get(
+        "MATRIX_TEMPLATE_HEALTH_TEAM_ROOT", ""
+    ).strip()
     service = MatrixTemplateService(
         data_root=Path(os.environ.get("MATRIX_TEMPLATE_DATA_ROOT", "/var/lib/huangque-matrix-template")),
         skill_root=Path(os.environ.get("MATRIX_TEMPLATE_SKILL_ROOT", "/opt/huangque/matrix-template-video/source/skill/script-to-matrix-video")),
@@ -7612,6 +7781,9 @@ def main() -> None:
         ),
         brush_panel_root=(
             Path(brush_panel_root_value) if brush_panel_root_value else None
+        ),
+        health_team_root=(
+            Path(health_team_root_value) if health_team_root_value else None
         ),
         hyperframes_cli=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_CLI", "/usr/local/bin/hyperframes"

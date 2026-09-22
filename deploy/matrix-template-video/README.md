@@ -70,14 +70,14 @@ Internal generation-server API for the `text-media-text` mode from the pinned
 up to five FFmpeg renders at a time, and uses the existing material-library
 tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
 
-The runtime exposes 22 templates: the 17-template
+The runtime exposes 23 templates: the 17-template
 `reference-typography-17` HyperFrames pack, the nine-grid
-template, and four fixed motion templates:
+template, and five fixed motion templates:
 `triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`, and
-`brush-panel-transitions`. The 17 reference templates use three to five
+`brush-panel-transitions`, and `health-team-hook`. The 17 reference templates use three to five
 distinct video assets, keeping every selected material clip between two and
 three seconds. Every
-visual slot of every template — reference, nine-grid, and the four fixed
+visual slot of every template — reference, nine-grid, and the five fixed
 templates — is supplied by the local Huangque material library (Huangque
 library plus public library, 816 records) over the tunnel at `127.0.0.1:8111`.
 The Pexels public-network path was removed on 2026-09-12. New and replayed jobs
@@ -119,7 +119,7 @@ variants `v01`, `v04`, `v05`, `v07`, `v09`, `v10`, `v12`, and `v16`, and install
 `3.14.2` inside the release.
 It also sparse-checks out Skill commit
 `2a2db5877728dcf4987f85973cfba38bb80f45a2`, adapts and validates the
-nine-grid template, validates all four fixed-template source contracts and
+nine-grid template, validates all five fixed-template source contracts and
 their bound audio, and installs lockfile-pinned HyperFrames `0.8.33` and
 `0.8.34` runtimes.
 Variant `v01` keeps its green-outlined handwritten treatment while its five

@@ -4727,6 +4727,9 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 brush_panel_root=self.template_roots[
                     matrix.BRUSH_PANEL_TEMPLATE_ID
                 ],
+                health_team_root=self.template_roots[
+                    matrix.HEALTH_TEAM_TEMPLATE_ID
+                ],
                 nine_grid_hyperframes_cli=self.cli,
                 motion_v2_hyperframes_cli=self.motion_v2_cli,
                 hyperframes_browser=self.browser,
@@ -4908,8 +4911,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
             + 2 * int(metrics.get("stroke_px") or 0)
         )
 
-    def test_catalog_exposes_four_fixed_templates_after_existing_catalog(self):
-        self.assertEqual(4, len(self.service.catalog))
+    def test_catalog_exposes_five_fixed_templates_after_existing_catalog(self):
+        self.assertEqual(5, len(self.service.catalog))
         self.assertEqual(
             list(matrix.FIXED_SKILL_TEMPLATE_IDS),
             [item["id"] for item in self.service.catalog],
@@ -4933,12 +4936,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
             sorted(matrix.FIXED_SKILL_TEMPLATE_IDS),
             health["fixed_skill_templates"],
         )
-        self.assertEqual(4, health["fixed_skill_template_count"])
+        self.assertEqual(5, health["fixed_skill_template_count"])
         self.assertEqual("mixed", health["fixed_skill_hyperframes_version"])
         self.assertEqual(
-            {"0.8.33": 2, "0.8.34": 2},
+            {"0.8.33": 2, "0.8.34": 3},
             health["fixed_skill_hyperframes_versions"],
         )
+
+    def test_health_team_template_preserves_approved_six_layer_hierarchy(self):
+        top = "团队8个人，每天产出，100条短视频，覆盖全部短视频平台"
+        bottom = "有想进军健康赛道的，勾兑勾兑"
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self.text_width,
+        ):
+            layout = self.service._fixed_skill_text_layout(
+                matrix.HEALTH_TEAM_TEMPLATE_ID,
+                top,
+                bottom,
+                self.semantic(top, bottom),
+            )
+        self.assertEqual({
+            "title": "团队8个人",
+            "subtitle": "每天产出",
+            "metric": "100条短视频",
+            "platform": "覆盖全部短视频平台",
+            "lead": "有想进军健康赛道的",
+            "cta": "勾兑勾兑",
+        }, layout["display"])
+        self.assertEqual({
+            "title": 128, "subtitle": 59, "metric": 76,
+            "platform": 58, "lead": 72, "cta": 132,
+        }, layout["font_size_px"])
 
     def test_shared_sixty_eighty_copy_contract_preserves_source_text(self):
         top = "创业团队，" * 12
@@ -5461,6 +5489,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
                         self.assertIn(
                             ".footer{top:auto!important;"
                             "bottom:15%!important}", index_html,
+                        )
+                    elif template_id == matrix.HEALTH_TEAM_TEMPLATE_ID:
+                        self.assertIn(
+                            ".top-copy{top:76px!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".bottom-copy{top:auto!important;"
+                            "bottom:102px!important}", index_html,
+                        )
+                        self.assertIn(
+                            "#cta{font-size:132px!important", index_html,
                         )
                     else:
                         self.assertIn(
