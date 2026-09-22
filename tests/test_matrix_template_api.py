@@ -5540,6 +5540,7 @@ class UserMaterialsTests(unittest.TestCase):
             library_token="library-token",
             start_worker=False,
         )
+        self.service.enforce_user_materials = True
         self.inspect_patch = mock.patch.object(
             self.service, "_inspect_user_asset", return_value=30.0,
         )
@@ -5615,78 +5616,71 @@ class UserMaterialsTests(unittest.TestCase):
                 "huangque", matrix._material_source_plan(count)[-1],
             )
 
-    # BGM 始终来自黄雀库
-    def test_bgm_always_huangque(self):
-        payload = self.service.validate_payload({
-            "top_text": "大健康行业", "bottom_text": "评论交流", "bgm": True,
-        })
-        self.assertEqual("shared", payload["material_policy"])
-        library_scene_groups = []
-
-        def fake_library(method, path, body):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            library_scene_groups.append(body.get("scenes") or [])
-            return {
-                "materials": [], "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
-        with mock.patch.object(
-            self.service, "_library_request", side_effect=fake_library,
-        ), mock.patch.object(
-            self.service, "_validate_material_selection",
-            side_effect=lambda p, v, c: v,
-        ):
-            self.service._select_materials_once(payload, "a" * 32)
-        library_scene_ids = {
-            scene["scene_id"] for group in library_scene_groups
-            for scene in group
-        }
-        self.assertIn("bgm", library_scene_ids)
-
-    def test_owned_public_without_upload_uses_library_for_every_slot(self):
-        body = {
-            "top_text": "普通用户素材策略",
-            "bottom_text": "没有素材时全部使用本地素材库",
-            "material_policy": "owned_public",
-            "bgm": False,
-        }
-
+    def test_shared_policy_uses_user_visuals_and_library_bgm_only(self):
+        materials = [{
+            "sha256": self._store_user_asset(
+                ("bgm-user-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
+            self.assertEqual(["bgm"], [
+                scene["scene_id"] for scene in request_body["scenes"]
+            ])
             return {
                 "materials": [{
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": "video", "provider": "huangque",
-                    "clip_id": format(index + 100, "064x"),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": scene["clip_duration_seconds"],
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                } for index, scene in enumerate(request_body["scenes"], 1)],
+                    "scene_id": "bgm", "record_id": "library-bgm",
+                    "sha256": "b" * 64, "media_type": "bgm",
+                    "provider": "huangque",
+                }],
                 "selection_contract_version": 2,
                 "clip_contract_version": 3,
             }
 
         with mock.patch.object(
             self.service, "_library_request", side_effect=library,
-        ) as library_request:
-            accepted = self.service.submit(body, "owned-public-no-user")
-            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
-            result = self.service._select_materials(payload, accepted["job_id"])
-            replay = self.service.submit(body, "owned-public-no-user")
-            replay_result = self.service._select_materials(
-                payload, replay["job_id"],
+        ) as library_request, mock.patch.object(
+            self.service, "_ensure_disk_capacity",
+        ):
+            accepted = self.service.submit({
+                "top_text": "大健康行业", "bottom_text": "评论交流",
+                "bgm": True, "user_materials": materials,
+            }, "shared-bgm-only")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
             )
-        self.assertEqual(3, len(result))
-        self.assertEqual(accepted["job_id"], replay["job_id"])
-        self.assertEqual(result, replay_result)
-        self.assertEqual({"huangque"}, {item["provider"] for item in result})
+            selected = self.service._select_materials(
+                payload, accepted["job_id"],
+            )
         self.assertEqual(1, library_request.call_count)
+        self.assertEqual(
+            ["user", "user", "user", "huangque"],
+            [item["provider"] for item in selected],
+        )
+
+    def test_all_policies_reject_without_user_uploads(self):
+        for policy in ("shared", "owned_public"):
+            with self.subTest(policy=policy), mock.patch.object(
+                self.service, "_library_request",
+                side_effect=AssertionError("shared library must not be called"),
+            ), self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "停用共享素材库",
+            ):
+                self.service.submit({
+                    "top_text": "本人素材策略",
+                    "bottom_text": "没有本人素材时明确拒绝",
+                    "material_policy": policy,
+                    "bgm": False,
+                }, "no-user-" + policy)
 
     def test_owned_public_user_materials_must_exist_and_be_visual(self):
         nonvisual_sha = self._store_user_asset(b"owned-user-audio")
+        valid = [{
+            "sha256": self._store_user_asset(
+                ("owned-valid-%d" % index).encode(), ".jpg",
+            ),
+            "media_type": "image",
+        } for index in range(2)]
         cases = (
             ({"sha256": "f" * 64, "media_type": "video"}, "不存在"),
             ({"sha256": nonvisual_sha, "media_type": "audio"}, "图片或视频"),
@@ -5700,24 +5694,27 @@ class UserMaterialsTests(unittest.TestCase):
                     "top_text": "普通用户素材校验",
                     "bottom_text": "素材必须存在且类型有效",
                     "material_policy": "owned_public",
-                    "user_materials": [material],
+                    "user_materials": [material] + valid,
                     "bgm": False,
                 }, request_id)
             self.assertIsNone(
                 self.service.store.get_by_request_id(request_id)
             )
 
-    def test_owned_public_preflight_checks_library_readiness(self):
-        user_sha = self._store_user_asset(b"owned-preflight-video")
+    def test_preflight_uses_exact_user_materials_without_library_probe(self):
+        user_materials = [{
+            "sha256": self._store_user_asset(
+                ("owned-preflight-video-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         server, thread, base = self._start_server()
         try:
             body = json.dumps({
                 "top_text": "普通用户预检策略",
-                "bottom_text": "只检查自有素材与本地素材库",
+                "bottom_text": "只检查当前账号本人素材",
                 "material_policy": "owned_public",
-                "user_materials": [{
-                    "sha256": user_sha, "media_type": "video",
-                }],
+                "user_materials": user_materials,
                 "bgm": False,
             }).encode()
             request = urllib.request.Request(
@@ -5725,12 +5722,10 @@ class UserMaterialsTests(unittest.TestCase):
                 headers={"Authorization": "Bearer api-token"},
             )
             with mock.patch.object(
+                self.service, "_inspect_user_asset", return_value=30.0,
+            ), mock.patch.object(
                 self.service, "_library_request",
-                return_value={
-                    "ok": True, "records": 100,
-                    "selection_contract_version": 2,
-                    "clip_contract_version": 3,
-                },
+                side_effect=AssertionError("shared library must not be called"),
             ) as library, urllib.request.build_opener(
                 urllib.request.ProxyHandler({})
             ).open(request, timeout=3) as response:
@@ -5739,19 +5734,17 @@ class UserMaterialsTests(unittest.TestCase):
             self.assertEqual(2, result["material_selection_contract_version"])
             self.assertEqual(3, result["material_clip_contract_version"])
             self.assertEqual([], self.service.store.pending_ids())
-            self.assertEqual(("GET", "/v1/ping"), (
-                library.call_args.args[0], library.call_args.args[1],
-            ))
+            library.assert_not_called()
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
 
-    def test_owned_public_partial_user_materials_fill_from_library(self):
+    def test_owned_public_partial_user_materials_are_rejected_without_library(self):
         user_sha = self._store_user_asset(b"owned-user-image", ".jpg")
         body = {
             "top_text": "普通用户部分素材",
-            "bottom_text": "剩余画面使用本地素材库",
+            "bottom_text": "素材不足时明确拒绝",
             "material_policy": "owned_public",
             "duration": 10,
             "user_materials": [{
@@ -5760,49 +5753,16 @@ class UserMaterialsTests(unittest.TestCase):
             "bgm": False,
         }
 
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            self.assertEqual(["media_02", "media_03", "media_04"], [
-                scene["scene_id"] for scene in request_body["scenes"]
-            ])
-            self.assertIn(user_sha, request_body["used_sha256"])
-            return {
-                "materials": [{
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": "video", "provider": "huangque",
-                    "clip_id": format(index + 100, "064x"),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": scene["clip_duration_seconds"],
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                } for index, scene in enumerate(request_body["scenes"], 1)],
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
-        ) as select_library:
-            accepted = self.service.submit(body, "owned-public-partial")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"]
-            )
+            self.service, "_library_request",
+            side_effect=AssertionError("shared library must not be called"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
+        ):
+            self.service.submit(body, "owned-public-partial")
+        library.assert_not_called()
 
-        self.assertEqual(1, select_library.call_count)
-        self.assertEqual(
-            ["user", "huangque", "huangque", "huangque"],
-            [item["provider"] for item in selected],
-        )
-        self.assertEqual(
-            ["media_01", "media_02", "media_03", "media_04"],
-            [item["scene_id"] for item in selected],
-        )
-
-    def test_three_user_materials_plus_ten_second_template_adds_one_library_clip(self):
+    def test_three_user_materials_do_not_trigger_shared_fallback(self):
         materials = [{
             "sha256": self._store_user_asset(
                 ("owned-%d" % index).encode(), ".mp4",
@@ -5811,7 +5771,7 @@ class UserMaterialsTests(unittest.TestCase):
         } for index in range(3)]
         body = {
             "top_text": "十秒模板三份素材",
-            "bottom_text": "只补一个本地素材库画面",
+            "bottom_text": "缺一个素材时明确拒绝",
             "material_policy": "owned_public",
             "user_materials": materials,
             "duration": 10,
@@ -5819,27 +5779,12 @@ class UserMaterialsTests(unittest.TestCase):
         }
         with mock.patch.object(
             self.service, "_library_request",
-            return_value={
-                "materials": [{
-                    "scene_id": "media_04", "record_id": "library-4",
-                    "sha256": "f" * 64, "media_type": "video",
-                    "provider": "huangque", "clip_id": "e" * 64,
-                    "clip_start_seconds": 0.0, "clip_duration_seconds": 2.5,
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                }],
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            },
-        ) as library:
-            accepted = self.service.submit(body, "owned-public-three-plus-one")
-            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
-            selected = self.service._select_materials(payload, accepted["job_id"])
-        self.assertEqual(["user", "user", "user", "huangque"], [
-            item["provider"] for item in selected
-        ])
-        self.assertEqual(["media_04"], [
-            scene["scene_id"] for scene in library.call_args.args[2]["scenes"]
-        ])
+            side_effect=AssertionError("shared library must not be called"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
+        ):
+            self.service.submit(body, "owned-public-three-plus-one")
+        library.assert_not_called()
 
     def test_owned_public_rejects_too_many_user_materials(self):
         materials = [{
@@ -5956,6 +5901,18 @@ class UserMaterialsTests(unittest.TestCase):
     def test_user_material_clip_and_media_validation(self):
         image_sha = self._store_user_asset(b"image", ".jpg")
         video_sha = self._store_user_asset(b"video", ".mp4")
+        extra_images = [{
+            "sha256": self._store_user_asset(
+                ("image-extra-%d" % index).encode(), ".jpg",
+            ),
+            "media_type": "image",
+        } for index in range(2)]
+        extra_videos = [{
+            "sha256": self._store_user_asset(
+                ("video-extra-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(2)]
         with self.assertRaisesRegex(matrix.MatrixTemplateError, "图片素材不能设置"):
             self.service.submit({
                 "top_text": "图片不能设置入点", "bottom_text": "请直接使用图片",
@@ -5963,7 +5920,7 @@ class UserMaterialsTests(unittest.TestCase):
                 "user_materials": [{
                     "sha256": image_sha, "media_type": "image",
                     "clip_start_seconds": 1,
-                }],
+                }] + extra_images,
             }, "owned-image-start")
         with mock.patch.object(
             self.service, "_inspect_user_asset", return_value=2.0,
@@ -5974,7 +5931,7 @@ class UserMaterialsTests(unittest.TestCase):
                 "user_materials": [{
                     "sha256": video_sha, "media_type": "video",
                     "clip_start_seconds": 1,
-                }],
+                }] + extra_videos,
             }, "owned-video-start")
 
     def test_real_media_inspection_rejects_wrong_mime(self):
@@ -6026,7 +5983,9 @@ class UserMaterialsTests(unittest.TestCase):
         accepted_holder = {}
         with mock.patch.object(
             self.service, "_library_request", side_effect=library,
-        ) as library_request:
+        ) as library_request, mock.patch.object(
+            self.service, "_ensure_disk_capacity",
+        ):
             accepted = self.service.submit(body, "owned-public-bgm")
             accepted_holder["job_id"] = accepted["job_id"]
             payload = json.loads(
@@ -6043,9 +6002,7 @@ class UserMaterialsTests(unittest.TestCase):
         )
         self.assertEqual("bgm", selected[-1]["scene_id"])
 
-    def test_owned_public_partial_materials_plus_bgm_use_distinct_selection_ids(self):
-        # #8633 回归：同一任务先补画面再补 BGM，素材库把 selection_id 当唯一
-        # 收据键，两次同 key 会撞「selection_id request conflict」。
+    def test_partial_visuals_with_bgm_never_call_library(self):
         user_sha = self._store_user_asset(b"owned-partial-bgm", ".mp4")
         body = {
             "top_text": "普通用户部分素材配乐",
@@ -6057,140 +6014,49 @@ class UserMaterialsTests(unittest.TestCase):
             }],
             "bgm": True,
         }
-        selection_ids = []
-
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            selection_ids.append(request_body["selection_id"])
-            materials = []
-            for index, scene in enumerate(request_body["scenes"], 1):
-                sha = hashlib.sha256(
-                    (request_body["selection_id"] + ":" + scene["scene_id"])
-                    .encode()
-                ).hexdigest()
-                materials.append({
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": sha,
-                    "media_type": (
-                        "bgm" if scene["scene_id"] == "bgm" else "video"
-                    ),
-                    "provider": "huangque",
-                    "clip_id": (
-                        None if scene["scene_id"] == "bgm"
-                        else hashlib.sha256((sha + ":clip").encode()).hexdigest()
-                    ),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": (
-                        0.0 if scene["scene_id"] == "bgm"
-                        else scene["clip_duration_seconds"]
-                    ),
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                })
-            return {
-                "materials": materials,
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
+            self.service, "_library_request",
+            side_effect=AssertionError("visual shortage must fail before BGM"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
         ):
-            accepted = self.service.submit(body, "owned-public-partial-bgm")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"],
-            )
+            self.service.submit(body, "owned-public-partial-bgm")
+        library.assert_not_called()
 
-        self.assertEqual(2, len(selection_ids))
-        self.assertEqual(
-            "matrix-template:" + accepted["job_id"], selection_ids[0],
-        )
-        self.assertEqual(
-            "matrix-template:" + accepted["job_id"] + ":bgm", selection_ids[1],
-        )
-        self.assertEqual(
-            ["user", "huangque", "huangque", "huangque", "huangque"],
-            [item["provider"] for item in selected],
-        )
-        self.assertEqual("bgm", selected[-1]["scene_id"])
-
-    def test_owned_public_without_upload_selects_bgm_in_one_request(self):
+    def test_owned_public_without_upload_rejects_before_bgm(self):
         body = {
             "top_text": "普通用户无素材配乐",
             "bottom_text": "画面与音乐一次选全",
             "material_policy": "owned_public",
             "bgm": True,
         }
-        requested_scenes = []
-
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            requested_scenes.append(
-                [scene["scene_id"] for scene in request_body["scenes"]]
-            )
-            materials = []
-            for index, scene in enumerate(request_body["scenes"], 1):
-                materials.append({
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": (
-                        "bgm" if scene["scene_id"] == "bgm" else "video"
-                    ),
-                    "provider": "huangque",
-                    "clip_id": (
-                        None if scene["scene_id"] == "bgm"
-                        else format(index + 100, "064x")
-                    ),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": (
-                        0.0 if scene["scene_id"] == "bgm"
-                        else scene["clip_duration_seconds"]
-                    ),
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                })
-            return {
-                "materials": materials,
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
+            self.service, "_library_request",
+            side_effect=AssertionError("shared library must not supply visuals"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "停用共享素材库",
         ):
-            accepted = self.service.submit(body, "owned-public-no-user-bgm")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"],
-            )
-
-        self.assertEqual(1, len(requested_scenes))
-        self.assertEqual(
-            ["media_01", "media_02", "media_03", "bgm"],
-            requested_scenes[0],
-        )
-        self.assertEqual("bgm", selected[-1]["scene_id"])
+            self.service.submit(body, "owned-public-no-user-bgm")
+        library.assert_not_called()
 
     def test_owned_public_accepts_without_pexels(self):
-        user_sha = self._store_user_asset(b"owned-user-video")
+        user_materials = [{
+            "sha256": self._store_user_asset(
+                ("owned-user-video-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         body = {
             "top_text": "普通用户公共素材",
             "bottom_text": "不再依赖公网素材",
             "material_policy": "owned_public",
-            "user_materials": [{
-                "sha256": user_sha, "media_type": "video",
-            }],
+            "user_materials": user_materials,
             "bgm": False,
         }
         with mock.patch.object(
             self.service, "_library_request",
             side_effect=AssertionError("submit must not touch the library"),
-        ):
+        ), mock.patch.object(self.service, "_ensure_disk_capacity"):
             accepted = self.service.submit(body, "owned-public-no-pexels")
         self.assertEqual("pending", accepted["status"])
         self.assertIsNotNone(
@@ -6403,7 +6269,7 @@ class UserMaterialsTests(unittest.TestCase):
         target = self.root / "dl"
         target.mkdir()
         with self.assertRaisesRegex(
-            matrix.MatrixTemplateError, "只允许使用素材库或本人上传素材",
+            matrix.MatrixTemplateError, "只允许提供背景音乐",
         ):
             self.service._download({
                 "provider": "pexels", "sha256": "a" * 64,

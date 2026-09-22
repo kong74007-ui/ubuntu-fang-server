@@ -2448,6 +2448,7 @@ class MatrixTemplateService:
                  hyperframes_slot_timeout_seconds: int = DEFAULT_HYPERFRAMES_SLOT_TIMEOUT_SECONDS,
                  concurrency: int = 1,
                  legacy_templates_enabled: bool = True,
+                 enforce_user_materials: bool = False,
                  start_worker: bool = True,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
                  delivery_grace_seconds: int = DEFAULT_DELIVERY_GRACE_SECONDS,
@@ -2610,6 +2611,7 @@ class MatrixTemplateService:
         self.cleanup_worker = None
         self.workers_expected = start_worker
         self.enforce_library_readiness = bool(start_worker)
+        self.enforce_user_materials = bool(enforce_user_materials)
         self.catalog = (
             self._load_catalog() if self.legacy_templates_enabled else []
         )
@@ -4074,7 +4076,9 @@ class MatrixTemplateService:
             self._validate_material_policy(payload)
             if (
                 self.enforce_library_readiness
-                and payload["material_policy"] in ("shared", "owned_public")
+                and payload["bgm"]
+                and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+                and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
             ):
                 self.require_library_ready()
         job, created = self.store.create(
@@ -4086,11 +4090,14 @@ class MatrixTemplateService:
         return job
 
     def _validate_material_policy(self, payload: dict) -> None:
-        # 素材策略（2026-09-12 定稿）：shared / owned_public 的剩余画面位与 BGM
-        # 一律由本地素材库供给，不再走 Pexels 公网（老板定调「不再走公网拉素材」，
-        # #8629/#8631 公网抖动实锤）。这里保留用户素材本身的提交时预校验
-        # （存在性 / 媒体类型 / 数量），素材库就绪性在 create 入口统一把关。
-        self._user_materials(payload)
+        if not self.enforce_user_materials:
+            self._user_materials(payload)
+            return
+        materials = self._user_materials(payload)
+        if not materials:
+            raise MatrixTemplateError(
+                "模板成片已停用共享素材库，请先从当前账号素材库选择并上传本人素材"
+            )
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
         payload["_video_color_contract"] = 1
@@ -4391,7 +4398,9 @@ class MatrixTemplateService:
             "worker_degraded": worker_degraded,
             "degraded_jobs": degraded_job_count,
             "material_library_ready": library["ready"],
-            "material_source_policy": "huangque-library-only",
+            "shared_material_library_visuals_enabled": False,
+            "shared_material_library_bgm_enabled": True,
+            "material_source_policy": "account-upload-visuals+shared-bgm",
             "color_contract_version": 1,
             "hdr_master_output": True,
             "material_selection_contract_version": library[
@@ -5086,7 +5095,19 @@ class MatrixTemplateService:
         if set(by_scene) != set(expected) or len(by_scene) != len(expected):
             raise MatrixTemplateError("素材库返回的分镜绑定不完整")
         ordered = [by_scene[scene_id] for scene_id in expected]
-        if any(
+        if self.enforce_user_materials:
+            if any(
+                item.get("provider") != MATERIAL_PROVIDER_USER
+                for item in ordered[:count]
+            ):
+                raise MatrixTemplateError("模板成片画面只允许使用当前账号本人上传素材")
+            if any(
+                item.get("provider") != MATERIAL_PROVIDER_LIBRARY
+                or item.get("media_type") != "bgm"
+                for item in ordered[count:]
+            ):
+                raise MatrixTemplateError("共享素材库只允许提供背景音乐")
+        elif any(
             (item.get("provider") or MATERIAL_PROVIDER_LIBRARY) not in {
                 MATERIAL_PROVIDER_LIBRARY, MATERIAL_PROVIDER_USER,
             }
@@ -5098,7 +5119,7 @@ class MatrixTemplateService:
             any(not SHA_RE.fullmatch(value) for value in shas)
             or len(set(shas)) != len(shas)
         ):
-            raise MatrixTemplateError("素材库返回了无效或重复素材")
+            raise MatrixTemplateError("用户素材包含无效或重复内容")
         user_supplied = any(
             item.get("provider") == MATERIAL_PROVIDER_USER for item in ordered
         )
@@ -5200,96 +5221,15 @@ class MatrixTemplateService:
                 selected = self._validate_material_selection(
                     payload, frozen["materials"], contract_version,
                 )
-                self._assert_restricted_selection(payload, selected)
                 return selected
             user_selected = self._user_materials(payload)
-            if user_selected is not None:
-                selected = user_selected
-                if (
-                    payload.get("material_policy", "shared") == "owned_public"
-                    and len(selected) < self.required_visuals(payload)
-                ):
-                    # 素材库优先（2026-09-12 老板定调）：剩余画面位改从本地
-                    # 素材库补选，不再走 Pexels 公网（公网抖动导致 #8631）。
-                    scenes, count, _reference = self._material_scenes(payload)
-                    used = (
-                        self.store.batch_used_visuals(batch_id)
-                        if batch_id else []
-                    )
-                    try:
-                        result = self._library_request("POST", "/v1/select", {
-                            "scenes": scenes[len(selected):count],
-                            "orientation": "portrait",
-                            "seed": job_id,
-                            "used_sha256": self._select_used_sha256(
-                                payload,
-                                used + [item["sha256"] for item in selected],
-                            ),
-                            "selection_mode": "round_robin",
-                            "selection_id": "matrix-template:" + job_id,
-                        })
-                    except MatrixTemplateError as exc:
-                        raise self._translate_restricted_shortage(
-                            payload, exc
-                        ) from exc
-                    if (
-                        contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
-                        and (
-                            result.get("selection_contract_version")
-                            != MATERIAL_SELECTION_CONTRACT_VERSION
-                            or result.get("clip_contract_version")
-                            != MATERIAL_CLIP_CONTRACT_VERSION
-                        )
-                    ):
-                        raise MatrixTemplateError("素材库切片能力版本不兼容")
-                    selected = selected + (result.get("materials") or [])
-                if (
-                    payload["bgm"]
-                    and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
-                    and payload.get("template_id")
-                    not in FIXED_SKILL_TEMPLATE_CONFIGS
-                ):
-                    # 自带画面素材时，从素材库随机路由一条背景音乐
-                    # （绑定音乐模板不走这里，沿用模板包内的固定音乐）。
-                    # selection_id 带 :bgm 后缀：素材库把 selection_id 当唯一
-                    # 收据键，与补画面那次同 key 会撞「request conflict」
-                    # （#8633 实锤：先补画面再补 BGM，同 key 场景不同 → 409）。
-                    scenes, count, _reference = self._material_scenes(payload)
-                    used = (
-                        self.store.batch_used_visuals(batch_id)
-                        if batch_id else []
-                    )
-                    try:
-                        result = self._library_request("POST", "/v1/select", {
-                            "scenes": scenes[count:],
-                            "orientation": "portrait",
-                            "seed": job_id,
-                            "used_sha256": self._select_used_sha256(
-                                payload,
-                                used + [item["sha256"] for item in selected],
-                            ),
-                            "selection_mode": "round_robin",
-                            "selection_id": "matrix-template:" + job_id + ":bgm",
-                        })
-                    except MatrixTemplateError as exc:
-                        raise self._translate_restricted_shortage(
-                            payload, exc
-                        ) from exc
-                    if (
-                        contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
-                        and (
-                            result.get("selection_contract_version")
-                            != MATERIAL_SELECTION_CONTRACT_VERSION
-                            or result.get("clip_contract_version")
-                            != MATERIAL_CLIP_CONTRACT_VERSION
-                        )
-                    ):
-                        raise MatrixTemplateError("素材库切片能力版本不兼容")
-                    selected = selected + (result.get("materials") or [])
-                selected = self._validate_material_selection(
-                    payload, selected, contract_version,
+            if not self.enforce_user_materials and user_selected is None:
+                used = (
+                    self.store.batch_used_visuals(batch_id) if batch_id else []
                 )
-                self._assert_restricted_selection(payload, selected)
+                selected = self._select_materials_once(
+                    payload, job_id, used_sha256=used,
+                )
                 if batch_id:
                     self.store.reserve_batch_materials(
                         batch_id, job_id, selected, contract_version,
@@ -5299,27 +5239,25 @@ class MatrixTemplateService:
                         job_id, selected, contract_version,
                     )
                 return selected
-            if payload.get("material_policy", "shared") == "owned_public":
-                # 素材库优先（2026-09-12 老板定调）：owned_public 无本人素材时
-                # 全部画面位（含 BGM 位）一次由本地素材库供给，不再走 Pexels 公网。
-                scenes, count, _reference = self._material_scenes(payload)
-                used = (
-                    self.store.batch_used_visuals(batch_id)
-                    if batch_id else []
+            if user_selected is None:
+                raise MatrixTemplateError(
+                    "模板成片已停用共享素材库，请先上传本人素材"
                 )
-                try:
-                    result = self._library_request("POST", "/v1/select", {
-                        "scenes": scenes,
-                        "orientation": "portrait",
-                        "seed": job_id,
-                        "used_sha256": self._select_used_sha256(payload, used),
-                        "selection_mode": "round_robin",
-                        "selection_id": "matrix-template:" + job_id,
-                    })
-                except MatrixTemplateError as exc:
-                    raise self._translate_restricted_shortage(
-                        payload, exc
-                    ) from exc
+            selected = user_selected
+            if (
+                payload["bgm"]
+                and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+                and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
+            ):
+                scenes, count, _reference = self._material_scenes(payload)
+                result = self._library_request("POST", "/v1/select", {
+                    "scenes": scenes[count:],
+                    "orientation": "portrait",
+                    "seed": job_id,
+                    "used_sha256": [item["sha256"] for item in selected],
+                    "selection_mode": "round_robin",
+                    "selection_id": "matrix-template:" + job_id + ":bgm",
+                })
                 if (
                     contract_version >= MATERIAL_SELECTION_CONTRACT_VERSION
                     and (
@@ -5329,26 +5267,10 @@ class MatrixTemplateService:
                         != MATERIAL_CLIP_CONTRACT_VERSION
                     )
                 ):
-                    raise MatrixTemplateError("素材库切片能力版本不兼容")
-                selected = result.get("materials") or []
-                selected = self._validate_material_selection(
-                    payload, selected, contract_version,
-                )
-                self._assert_restricted_selection(payload, selected)
-                if batch_id:
-                    self.store.reserve_batch_materials(
-                        batch_id, job_id, selected, contract_version,
-                    )
-                else:
-                    self.store.reserve_job_materials(
-                        job_id, selected, contract_version,
-                    )
-                return selected
-            used = (
-                self.store.batch_used_visuals(batch_id) if batch_id else []
-            )
-            selected = self._select_materials_once(
-                payload, job_id, used_sha256=used
+                    raise MatrixTemplateError("素材库背景音乐契约版本不兼容")
+                selected = selected + (result.get("materials") or [])
+            selected = self._validate_material_selection(
+                payload, selected, contract_version,
             )
             if batch_id:
                 self.store.reserve_batch_materials(
@@ -5364,8 +5286,8 @@ class MatrixTemplateService:
         provider = item.get("provider") or MATERIAL_PROVIDER_LIBRARY
         if provider == MATERIAL_PROVIDER_USER:
             return self._download_user_asset(item, target_dir)
-        if provider != MATERIAL_PROVIDER_LIBRARY:
-            raise MatrixTemplateError("模板成片只允许使用素材库或本人上传素材")
+        if provider != MATERIAL_PROVIDER_LIBRARY or item.get("media_type") != "bgm":
+            raise MatrixTemplateError("共享素材库只允许提供背景音乐")
         sha = str(item["sha256"]).lower()
         request = urllib.request.Request(
             self.library_url + "/v1/assets/" + sha,
@@ -5376,7 +5298,7 @@ class MatrixTemplateService:
                 content_type = response.headers.get_content_type()
                 suffix = CONTENT_SUFFIXES.get(content_type)
                 if not suffix:
-                    raise MatrixTemplateError("素材库文件类型不受支持")
+                    raise MatrixTemplateError("背景音乐文件类型不受支持")
                 target = target_dir / (sha + suffix)
                 temporary = target.with_suffix(target.suffix + ".part")
                 digest = hashlib.sha256()
@@ -5386,18 +5308,18 @@ class MatrixTemplateService:
                         while chunk := response.read(1024 * 1024):
                             total += len(chunk)
                             if total > MAX_ASSET_BYTES:
-                                raise MatrixTemplateError("素材库文件过大")
+                                raise MatrixTemplateError("背景音乐文件过大")
                             digest.update(chunk)
                             handle.write(chunk)
                     if not total or not hmac.compare_digest(digest.hexdigest(), sha):
-                        raise MatrixTemplateError("素材库文件校验失败")
+                        raise MatrixTemplateError("背景音乐文件校验失败")
                     os.replace(temporary, target)
                 finally:
                     temporary.unlink(missing_ok=True)
                 item["content_sha256"] = sha
                 return target
         except urllib.error.HTTPError as exc:
-            raise MatrixTemplateError("素材库文件读取失败") from exc
+            raise MatrixTemplateError("背景音乐文件读取失败") from exc
 
     def user_asset_path(self, sha: str) -> Path | None:
         """按 sha256 找用户上传素材的落地文件。"""
@@ -5479,8 +5401,7 @@ class MatrixTemplateService:
         if not isinstance(raw, list):
             raise MatrixTemplateError("用户素材清单格式无效")
         scenes, count, _reference = self._material_scenes(payload)
-        owned_public = payload.get("material_policy", "shared") == "owned_public"
-        if len(raw) > count or (not owned_public and len(raw) != count):
+        if len(raw) != count:
             raise MatrixTemplateError(
                 "用户素材数量与模板画面位不符（需要 %d 个）" % count
             )
@@ -7500,7 +7421,16 @@ class Handler(BaseHTTPRequestHandler):
                     body, require_reference_semantic_layout=True,
                 )
                 self.service._validate_material_policy(payload)
-                library = self.service.require_library_ready(force=True)
+                library = (
+                    self.service.require_library_ready(force=True)
+                    if payload["bgm"]
+                    and payload.get("template_id") != NINE_GRID_TEMPLATE_ID
+                    and payload.get("template_id") not in FIXED_SKILL_TEMPLATE_CONFIGS
+                    else {
+                        "selection_contract_version": MATERIAL_SELECTION_CONTRACT_VERSION,
+                        "clip_contract_version": MATERIAL_CLIP_CONTRACT_VERSION,
+                    }
+                )
                 self.send_json(200, {
                     "ok": True,
                     "payload": payload,
@@ -7588,6 +7518,7 @@ def main() -> None:
         library_url=os.environ.get("PIXELLE_MATERIAL_LIBRARY_URL", "http://127.0.0.1:8111"),
         library_token=os.environ.get("PIXELLE_MATERIAL_LIBRARY_TOKEN", ""),
         allow_remote_library=os.environ.get("MATRIX_TEMPLATE_ALLOW_REMOTE_LIBRARY", "0") == "1",
+        enforce_user_materials=True,
         legacy_templates_enabled=False,
         gpu_mode=os.environ.get("MATRIX_TEMPLATE_GPU_MODE", "disabled"),
         gpu_runtime_root=(Path(os.environ["MATRIX_TEMPLATE_GPU_RUNTIME"])
