@@ -51,14 +51,6 @@ MATERIAL_DOWNLOAD_WORKERS = max(1, min(16, int(os.environ.get(
 # 占了「渲染 82 秒」里的一大半。它们互相独立 —— 并行切（2026-09-12）。
 SLOT_CUT_WORKERS = max(1, min(8, int(os.environ.get(
     "MATRIX_TEMPLATE_SLOT_CUT_WORKERS", "4"))))
-# 素材下载：单次尝试的总时长上限 + 重试次数（2026-09-12）。
-# timeout=180 只管「每次读」，一个卡死或细水长流的连接能烧掉 180~313 秒再失败，
-# 整条任务跟着报废（实测 fang 的出口只有 128 KB/s、节点约 1 MB/s 且会间歇卡死）。
-# 卡顿多是连接级的 —— 换个连接通常就恢复，所以按「单次限时 + 重试」来，而不是死等。
-PEXELS_DOWNLOAD_ATTEMPT_SECONDS = max(10, min(180, int(os.environ.get(
-    "MATRIX_TEMPLATE_PEXELS_ATTEMPT_SECONDS", "45"))))
-PEXELS_DOWNLOAD_ATTEMPTS = max(1, min(5, int(os.environ.get(
-    "MATRIX_TEMPLATE_PEXELS_ATTEMPTS", "3"))))
 RENDER_TIMEOUT_SECONDS = 900
 REFERENCE_BGM_PREPARE_TIMEOUT_SECONDS = 120
 NINE_GRID_PREPARE_CLIP_TIMEOUT_SECONDS = 120
@@ -77,6 +69,7 @@ JOB_REQUEUE_SECONDS = 0.25
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 # 用户自带素材（内测期新增）：走 provider="user"，文件在落盘时就按 sha256 存好。
 MATERIAL_PROVIDER_USER = "user"
+MATERIAL_PROVIDER_LIBRARY = "huangque"
 MATERIAL_POLICIES = frozenset({"shared", "owned_public"})
 # 素材范围（2026-09-17 一次性邀请码账号限制）：public_only 只允许公网素材。
 MATERIAL_SCOPES = frozenset({"public_only"})
@@ -5093,6 +5086,13 @@ class MatrixTemplateService:
         if set(by_scene) != set(expected) or len(by_scene) != len(expected):
             raise MatrixTemplateError("素材库返回的分镜绑定不完整")
         ordered = [by_scene[scene_id] for scene_id in expected]
+        if any(
+            (item.get("provider") or MATERIAL_PROVIDER_LIBRARY) not in {
+                MATERIAL_PROVIDER_LIBRARY, MATERIAL_PROVIDER_USER,
+            }
+            for item in ordered
+        ):
+            raise MatrixTemplateError("模板成片只允许使用素材库或本人上传素材")
         shas = [str(item.get("sha256") or "").lower() for item in ordered]
         if (
             any(not SHA_RE.fullmatch(value) for value in shas)
@@ -5361,10 +5361,11 @@ class MatrixTemplateService:
             return selected
 
     def _download(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
-        if item.get("provider") == "pexels":
-            return self._download_pexels(item, target_dir, job_id)
-        if item.get("provider") == MATERIAL_PROVIDER_USER:
+        provider = item.get("provider") or MATERIAL_PROVIDER_LIBRARY
+        if provider == MATERIAL_PROVIDER_USER:
             return self._download_user_asset(item, target_dir)
+        if provider != MATERIAL_PROVIDER_LIBRARY:
+            raise MatrixTemplateError("模板成片只允许使用素材库或本人上传素材")
         sha = str(item["sha256"]).lower()
         request = urllib.request.Request(
             self.library_url + "/v1/assets/" + sha,
@@ -5522,75 +5523,6 @@ class MatrixTemplateService:
             }
             records.append(record)
         return records
-
-    def _download_pexels(self, item: dict, target_dir: Path, job_id: str = "") -> Path:
-        identity = str(item.get("sha256") or "").lower()
-        parsed = urlsplit(str(item.get("source_url") or ""))
-        if (
-            not SHA_RE.fullmatch(identity)
-            or parsed.scheme != "https" or not parsed.hostname
-            or parsed.username or parsed.password or parsed.fragment
-        ):
-            raise MatrixTemplateError("Pexels 素材下载地址无效")
-        request = urllib.request.Request(
-            parsed.geturl(), headers={"User-Agent": "HuangqueMatrixTemplate/1.0"},
-        )
-        target = target_dir / (identity + ".mp4")
-        temporary = target.with_suffix(".mp4.part")
-        digest = hashlib.sha256()
-        total = 0
-        try:
-            # 单次限时 + 重试：卡住的连接不再烧 180 秒然后整条任务报废。
-            for _attempt in range(1, PEXELS_DOWNLOAD_ATTEMPTS + 1):
-                digest = hashlib.sha256()
-                total = 0
-                _started = time.monotonic()
-                try:
-                    try:
-                        with urllib.request.urlopen(
-                            request, timeout=PEXELS_DOWNLOAD_ATTEMPT_SECONDS,
-                        ) as response:
-                            if response.headers.get_content_type() != "video/mp4":
-                                raise MatrixTemplateError("Pexels 素材文件类型不受支持")
-                            with temporary.open("wb") as handle:
-                                while chunk := response.read(1024 * 1024):
-                                    if (time.monotonic() - _started
-                                            > PEXELS_DOWNLOAD_ATTEMPT_SECONDS):
-                                        raise TimeoutError("Pexels 素材下载超时")
-                                    total += len(chunk)
-                                    if total > MAX_ASSET_BYTES:
-                                        raise MatrixTemplateError("Pexels 素材文件过大")
-                                    digest.update(chunk)
-                                    handle.write(chunk)
-                    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-                        raise MatrixTemplateError("Pexels 素材文件读取失败") from exc
-                    if not total:
-                        raise MatrixTemplateError("Pexels 素材文件为空")
-                    break
-                except MatrixTemplateError as exc:
-                    if _attempt >= PEXELS_DOWNLOAD_ATTEMPTS:
-                        raise
-                    print("[matrix-template] Pexels 下载第%d次失败（%.1fs），换连接重试：%s"
-                          % (_attempt, time.monotonic() - _started, str(exc)[:60]),
-                          flush=True)
-            content_sha256 = digest.hexdigest()
-            frozen = str(item.get("content_sha256") or "").lower()
-            if frozen and (
-                not SHA_RE.fullmatch(frozen)
-                or not hmac.compare_digest(frozen, content_sha256)
-            ):
-                raise MatrixTemplateError("素材文件发生变化")
-            # 先以 CAS 持久化内容哈希，成功后再原子替换最终文件，
-            # 避免「下载完成但数据库未写入」的崩溃窗口。
-            if job_id and item.get("scene_id"):
-                self.store.update_material_content_sha256(
-                    job_id, str(item["scene_id"]), content_sha256,
-                )
-            item["content_sha256"] = content_sha256
-            os.replace(temporary, target)
-            return target
-        finally:
-            temporary.unlink(missing_ok=True)
 
     def _stage_project_fonts(self, root: Path, provenance: dict) -> str | None:
         frozen_fonts = provenance.get("fonts") if isinstance(provenance, dict) else None
@@ -7137,11 +7069,7 @@ class MatrixTemplateService:
         manifest = []
         for index, item in enumerate(materials, 1):
             provider = str(item.get("provider") or "")
-            source = (
-                "user" if provider == MATERIAL_PROVIDER_USER
-                else "pexels" if provider == "pexels"
-                else "shared"
-            )
+            source = "user" if provider == MATERIAL_PROVIDER_USER else "shared"
             scene = scene_map.get(str(item.get("scene_id") or ""), {})
             record = {
                 "slot": index,
@@ -7156,19 +7084,7 @@ class MatrixTemplateService:
                 ),
                 "match_level": item.get("match_level"),
             }
-            if source == "pexels":
-                record.update({
-                    "pexels_id": item.get("provider_video_id"),
-                    "content_sha256": item.get("content_sha256"),
-                    "source_identity": item.get("source_identity"),
-                    "provider_file_id": item.get("provider_file_id"),
-                    "provider_url": item.get("provider_url"),
-                    "contributor_name": item.get("contributor_name"),
-                    "contributor_url": item.get("contributor_url"),
-                    "search_query": item.get("search_query"),
-                })
-            else:
-                record["sha256"] = item.get("sha256")
+            record["sha256"] = item.get("sha256")
             if item.get("clip_id"):
                 record.update({
                     "clip_id": item.get("clip_id"),
@@ -7192,10 +7108,10 @@ class MatrixTemplateService:
         # 实测固定 Skill 模板卡在这一步 90~160 秒 —— 期间机器 CPU 全程为 0、
         # chrome/ffmpeg 都没起，纯粹在等网络；而真正渲染只要 44~80 秒。
         # 也就是说「出片 3 分钟」里有 2/3 是排队等素材，不是算得慢。
-        # pool.map 保序，异常照常抛出；_download 各自写独立文件、Pexels 缓存自带锁。
+        # pool.map 保序，异常照常抛出；_download 各自写独立文件。
         def _fetch(item):
             # 每格下载计时（2026-09-12）：下载总量波动极大（14s~265s），要分清是
-            # Pexels 还是黄雀库、是哪一格拖的 —— 只看总量查不下去。
+            # 黄雀库或本人上传素材是哪一格拖慢 —— 只看总量查不下去。
             _t = time.monotonic()
             _p = str(item.get("provider") or item.get("source") or "?")
             try:
