@@ -67,8 +67,9 @@ stills, HDR in the last still, HDR only in a later video, and SDR-only jobs.
 
 Internal generation-server API for the `text-media-text` mode from the pinned
 `kong74007-ui/script-to-matrix-video` Skill. It binds to `127.0.0.1:8112`, runs
-up to five FFmpeg renders at a time, and uses the existing material-library
-tunnel at `127.0.0.1:8111`. It never calls an AI image or video provider.
+up to five FFmpeg renders at a time. The shared material-library tunnel at
+`127.0.0.1:8111` is retained only for optional BGM. It never calls an AI image
+or video provider.
 
 The runtime exposes 22 templates: the 17-template
 `reference-typography-17` HyperFrames pack, the nine-grid
@@ -76,13 +77,11 @@ template, and four fixed motion templates:
 `triple-strip-shutter`, `yellow-banner-zoom`, `fan-whip-static`, and
 `brush-panel-transitions`. The 17 reference templates use three to five
 distinct video assets, keeping every selected material clip between two and
-three seconds. Every
-visual slot of every template — reference, nine-grid, and the four fixed
-templates — is supplied by the local Huangque material library (Huangque
-library plus public library, 816 records) over the tunnel at `127.0.0.1:8111`.
-The Pexels public-network path was removed on 2026-09-12. New and replayed jobs
-fail closed unless every material comes from the Huangque library or the
-requesting user's uploaded assets.
+three seconds. Every visual slot of every template — reference, nine-grid, and
+the four fixed templates — must be filled by the requesting account's uploaded
+assets. The shared Huangque library may supply only an optional BGM; it never
+fills a visual slot. Missing or partial user visuals fail before admission for
+administrators and ordinary accounts alike.
 Reference
 templates render with HyperFrames `0.8.16`; the first three motion templates
 use the locked `0.8.33` runtime and the two new templates use a separate
@@ -91,14 +90,11 @@ All HyperFrames templates share at most two concurrent render slots on the 8 GB 
 Their fonts, sizes, colors, outlines, and text hierarchy are locked by the
 template. Any request `font_family` is ignored for these public templates.
 
-Every new request carries a server-owned `material_policy`. `shared` keeps the
-existing authorized developer/tester routing across the Huangque library.
-`owned_public` is the ordinary-customer policy: uploaded user assets are used
-first in order, and every remaining slot — visuals and BGM alike — is filled
-from the local material library. Zero uploads use the library for every slot.
-Template-bound BGM remains available for bound templates. Missing user assets
-or an invalid policy fails before a job is admitted. Jobs created before this
-field existed replay with the legacy shared policy.
+Every new request carries a server-owned `material_policy`, but both `shared`
+and `owned_public` now enforce the same visual boundary: exactly the required
+number of current-account uploads. Template-bound BGM remains available; an
+ordinary template with `bgm=true` may select only a BGM from the shared library.
+Missing or partial user visuals fail before a job is admitted.
 HyperFrames templates accept batches of up to five outputs. Two renders occupy
 slots concurrently and additional accepted jobs wait for a slot. A persisted
 900-second deadline starts at database admission; render-slot waiting is capped
@@ -212,18 +208,10 @@ The values are configurable through `MATRIX_TEMPLATE_RETENTION_SECONDS`,
 ## Material routing and batch diversity
 
 Output duration is frozen between 7 and 15 seconds. It produces three to five
-clips and never produces a sixth clip. All visuals and BGM come from the local
-Huangque material library; there is no Pexels credential and no public-network
-search path anymore (2026-09-12). Completed job provenance includes the library
-record ids and downloaded content SHA-256 for attribution and audit.
-
-Matrix template jobs request `selection_mode=round_robin` for every Huangque
-visual and BGM scene. Copy relevance does not affect Huangque ranking.
-Source-scene and exact-asset
-cooldowns rotate healthy Huangque assets before count and stable-seed
-tie-breaking. The Huangque material library persists selection counts and clip
-windows before returning and verifies selected files against the approved
-checksum.
+clips and never produces a sixth clip. All visuals come from current-account
+uploads. The shared Huangque library is queried only for an optional BGM, using
+`selection_mode=round_robin`; template-bound music stays inside the template.
+Completed job provenance records every user asset SHA-256 and any selected BGM.
 
 Requests may include one shared 32-character `batch_id` plus `batch_index` and
 `batch_size` (1-5). Material selection is serialized briefly while job

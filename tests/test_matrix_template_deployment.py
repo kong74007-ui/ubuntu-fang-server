@@ -446,7 +446,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("assert max(widths) <= 996", installer)
         self.assertIn("weight=800", installer)
 
-    def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
+    def test_systemd_is_loopback_hardened_and_reuses_material_tunnel_for_bgm(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")
         self.assertIn("--host 127.0.0.1 --port 8112", unit)
         self.assertIn("Requires=huangque-pixelle-material-tunnel.service", unit)
@@ -456,6 +456,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("ReadWritePaths=/var/lib/huangque-matrix-template", unit)
         self.assertIn("MemoryMax=6G", unit)
         self.assertIn("CPUQuota=400%", unit)
+
+    def test_production_enforces_account_visuals_and_shared_bgm_only(self):
+        source = (ROOT / "server/matrix_template_api.py").read_text(encoding="utf-8")
+        self.assertIn("enforce_user_materials=True", source)
+        self.assertIn('"shared_material_library_visuals_enabled": False', source)
+        self.assertIn('"shared_material_library_bgm_enabled": True', source)
+        self.assertIn("共享素材库只允许提供背景音乐", source)
 
     def test_nginx_bridge_is_private_to_production_content_host(self):
         for relative in (
