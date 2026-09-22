@@ -44,6 +44,7 @@ MOTION_V2_PACKAGE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-
 MOTION_V2_LOCK_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v2-runtime/package-lock.json"
 PUBLIC_PALETTE_APPLIER_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/apply-public-template-palettes.py"
 REFERENCE_PALETTE_COMPAT_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/verify-reference-palette-compat.py"
+HEALTH_TEAM_TEMPLATE_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/health-team-hook"
 ROLLBACK_LIB="${DEPLOY_ROOT}/deploy/material-library/lib/rollback.sh"
 SERVICE="huangque-matrix-template.service"
 
@@ -100,6 +101,9 @@ for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFER
     echo "missing or unsafe deployment source: ${source}" >&2; exit 2
   fi
 done
+if [[ ! -d "${HEALTH_TEAM_TEMPLATE_SOURCE}" || -L "${HEALTH_TEAM_TEMPLATE_SOURCE}" ]]; then
+  echo "missing or unsafe health-team template source" >&2; exit 2
+fi
 if [[ ! -f /etc/huangque/pixelle-material-library.env || -L /etc/huangque/pixelle-material-library.env ]]; then
   echo "material library client environment is missing" >&2; exit 2
 fi
@@ -339,6 +343,22 @@ TRIPLE_STRIP_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates
 YELLOW_BANNER_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/yellow-banner-zoom"
 FAN_WHIP_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/fan-whip-static"
 BRUSH_PANEL_ROOT="${NINE_GRID_UPSTREAM}/script-to-matrix-video/assets/templates/brush-panel-transitions"
+HEALTH_TEAM_ROOT="${RELEASE}/health-team-hook"
+install -d -o root -g root -m 0755 \
+  "${HEALTH_TEAM_ROOT}" "${HEALTH_TEAM_ROOT}/assets/fonts" \
+  "${HEALTH_TEAM_ROOT}/assets/media" "${HEALTH_TEAM_ROOT}/assets/vendor"
+for source in index.html template.json package.json hyperframes.json index.motion.json; do
+  install -o root -g root -m 0644 \
+    "${HEALTH_TEAM_TEMPLATE_SOURCE}/${source}" "${HEALTH_TEAM_ROOT}/${source}"
+done
+install -o root -g root -m 0644 \
+  "${REFERENCE_SKILL_ROOT}/assets/fonts/NotoSansSC-Variable.ttf" \
+  "${HEALTH_TEAM_ROOT}/assets/fonts/NotoSansSC-Variable.ttf"
+install -o root -g root -m 0644 "${GSAP_SOURCE}" \
+  "${HEALTH_TEAM_ROOT}/assets/vendor/gsap.min.js"
+install -o root -g root -m 0644 \
+  "${FAN_WHIP_ROOT}/assets/media/reference-bgm.m4a" \
+  "${HEALTH_TEAM_ROOT}/assets/media/reference-bgm.m4a"
 python3 "${NINE_GRID_ADAPTER_SOURCE}" --root "${NINE_GRID_ROOT}"
 NINE_GRID_ROOT="${NINE_GRID_ROOT}" NINE_GRID_VERSION="${NINE_GRID_HYPERFRAMES_VERSION}" python3 - <<'PY'
 import hashlib
@@ -388,7 +408,7 @@ for number in range(1, 4):
 PY
 python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_triple_strip.py"
 python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_yellow_banner.py"
-FAN_WHIP_ROOT="${FAN_WHIP_ROOT}" BRUSH_PANEL_ROOT="${BRUSH_PANEL_ROOT}" python3 - <<'PY'
+FAN_WHIP_ROOT="${FAN_WHIP_ROOT}" BRUSH_PANEL_ROOT="${BRUSH_PANEL_ROOT}" HEALTH_TEAM_ROOT="${HEALTH_TEAM_ROOT}" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -410,6 +430,14 @@ contracts = {
         "bgm": "f3327c91050b6b77c95ffde4d5aeb3926ec447bb4de2d7a45a77acdeba74c4ea",
         "composition": "brush-panel-transitions", "audio": "bound-bgm",
     },
+    "health-team-hook": {
+        "root": Path(os.environ["HEALTH_TEAM_ROOT"]),
+        "frames": 291, "duration": 9.7,
+        "videos": 2, "prepared": 146 / 30,
+        "bgm": "95183944e0c5f63e583c52686bff3a57d94fa078c22eee10fd5749026c5fdae8",
+        "composition": "health-team-hook", "audio": "reference-bgm",
+        "fields": ("title", "subtitle", "metric", "platform", "lead", "cta"),
+    },
 }
 for template_id, contract in contracts.items():
     root = contract["root"]
@@ -425,8 +453,8 @@ for template_id, contract in contracts.items():
     assert hashlib.sha256(audio.read_bytes()).hexdigest() == contract["bgm"]
     index = (root / "index.html").read_text(encoding="utf-8")
     assert index.count(f'data-composition-id="{contract["composition"]}"') == 1
-    assert all(index.count(f'data-var-text="{field}"') == 1
-               for field in ("title", "subtitle", "body", "cta"))
+    fields = contract.get("fields", ("title", "subtitle", "body", "cta"))
+    assert all(index.count(f'data-var-text="{field}"') == 1 for field in fields)
     assert re.search(
         rf'<audio\b[^>]*\bid="{contract["audio"]}"[^>]*\bdata-volume="1"',
         index,
@@ -504,6 +532,8 @@ BUILD_ID="$(printf '%s\n' \
   "$(sha256sum "${FAN_WHIP_ROOT}/assets/media/reference-bgm.m4a" | awk '{print $1}')" \
   "$(sha256sum "${BRUSH_PANEL_ROOT}/index.html" | awk '{print $1}')" \
   "$(sha256sum "${BRUSH_PANEL_ROOT}/assets/media/reference-bgm.m4a" | awk '{print $1}')" \
+  "$(sha256sum "${HEALTH_TEAM_ROOT}/index.html" | awk '{print $1}')" \
+  "$(sha256sum "${HEALTH_TEAM_ROOT}/assets/media/reference-bgm.m4a" | awk '{print $1}')" \
   "$(sha256sum "${RELEASE}/api.py" | awk '{print $1}')" \
   | sha256sum | awk '{print $1}')"
 printf '%s\n' "${BUILD_ID}" > "${RELEASE}/BUILD_ID"
@@ -525,6 +555,7 @@ MATRIX_TEMPLATE_TRIPLE_STRIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-ma
 MATRIX_TEMPLATE_YELLOW_BANNER_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom
 MATRIX_TEMPLATE_FAN_WHIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static
 MATRIX_TEMPLATE_BRUSH_PANEL_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions
+MATRIX_TEMPLATE_HEALTH_TEAM_ROOT=${SOURCE_LINK}/health-team-hook
 MATRIX_TEMPLATE_PYTHON=/usr/bin/python3
 MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
 MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
@@ -554,6 +585,7 @@ else
   YELLOW_BANNER_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom" \
   FAN_WHIP_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static" \
   BRUSH_PANEL_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions" \
+  HEALTH_TEAM_ROOT_VALUE="${SOURCE_LINK}/health-team-hook" \
   NINE_GRID_CLI_VALUE="${SOURCE_LINK}/nine-grid-runtime/hyperframes" \
   MOTION_V2_CLI_VALUE="${SOURCE_LINK}/motion-v2-runtime/hyperframes" \
   HYPERFRAMES_CLI_VALUE="${HYPERFRAMES_CLI}" \
@@ -572,6 +604,7 @@ settings = {
     "MATRIX_TEMPLATE_YELLOW_BANNER_ROOT": os.environ["YELLOW_BANNER_ROOT_VALUE"],
     "MATRIX_TEMPLATE_FAN_WHIP_ROOT": os.environ["FAN_WHIP_ROOT_VALUE"],
     "MATRIX_TEMPLATE_BRUSH_PANEL_ROOT": os.environ["BRUSH_PANEL_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_HEALTH_TEAM_ROOT": os.environ["HEALTH_TEAM_ROOT_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CLI": os.environ["HYPERFRAMES_CLI_VALUE"],
     "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI": os.environ["NINE_GRID_CLI_VALUE"],
     "MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI": os.environ["MOTION_V2_CLI_VALUE"],
@@ -624,7 +657,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==23 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","health-team-hook","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==5 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":3} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

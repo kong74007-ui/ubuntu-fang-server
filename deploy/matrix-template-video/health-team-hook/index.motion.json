@@ -1,0 +1,11 @@
+{
+  "duration": 9.7,
+  "assertions": [
+    { "kind": "appearsBy", "selector": "#title", "bySec": 0.6 },
+    { "kind": "appearsBy", "selector": "#cta", "bySec": 1.2 },
+    { "kind": "before", "a": "#title", "b": "#cta" },
+    { "kind": "staysInFrame", "selector": "#top-copy" },
+    { "kind": "staysInFrame", "selector": "#bottom-copy" },
+    { "kind": "keepsMoving", "withinSelector": "#background", "maxStaticSec": 2 }
+  ]
+}

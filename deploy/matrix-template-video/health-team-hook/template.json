@@ -1,0 +1,19 @@
+{
+  "id": "health-team-hook",
+  "renderer": "hyperframes",
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "frames": 291,
+  "duration": 9.7,
+  "media": {
+    "requiredDistinctVideos": 2,
+    "minimumPreparedDuration": 4.866666666666666,
+    "paths": ["assets/media/01.mp4", "assets/media/02.mp4"]
+  },
+  "referenceAudio": {
+    "path": "assets/media/reference-bgm.m4a",
+    "sha256": "95183944e0c5f63e583c52686bff3a57d94fa078c22eee10fd5749026c5fdae8",
+    "duration": 12.538776
+  }
+}
