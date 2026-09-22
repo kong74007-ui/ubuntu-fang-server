@@ -39,4 +39,4 @@ foreach ($name in 'matrix_template_api.py','matrix_motion_v3.py','matrix_gpu_run
 Write-Output "MATRIX_TEMPLATE_MOTION_V3_ROOT=$templates"
 Write-Output "MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI=$cli"
 Write-Output "Prepared service entry: $(Join-Path $service 'matrix_template_api.py')"
-Write-Output 'No service was changed or restarted. Upgrade the material-library capability and main-site companion before switching idle workers.'
+Write-Output 'No service was changed or restarted. Deploy the main-site companion and upload owned videos before switching idle workers.'

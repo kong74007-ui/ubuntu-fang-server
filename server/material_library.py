@@ -52,7 +52,7 @@ CLIP_CONTRACT_VERSION = 3
 MAX_MATERIAL_DURATION_SECONDS = 30 * 60
 MAX_CLIP_SLOTS_PER_SOURCE = 600
 MAX_VIRTUAL_CANDIDATES_PER_REQUEST = 20_000
-MAX_SELECTION_SCENES = 22
+MAX_SELECTION_SCENES = 21
 # Keep the flat usage file inside the exact limits accepted by the previous
 # production reader so a source rollback can reuse it without conversion.
 MAX_USAGE_RECORDS = MAX_RECORDS
@@ -79,7 +79,7 @@ ROUND_ROBIN_RECENT_GROUP_PENALTY = (
     + ROUND_ROBIN_RECENT_CLIP_PENALTY + 1
 )
 MIN_CLIP_SECONDS = 2.0
-MAX_CLIP_SECONDS = 6.0
+MAX_CLIP_SECONDS = 5.0
 CLIP_SLOT_SECONDS = 3.0
 CLIP_SAFETY_SECONDS = 0.1
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -250,18 +250,18 @@ def _clip_duration(value: Any) -> float | None:
     if value in (None, ""):
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("clip_duration_seconds must be between 2 and 6")
+        raise ValueError("clip_duration_seconds must be between 2 and 5")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
-            "clip_duration_seconds must be between 2 and 6"
+            "clip_duration_seconds must be between 2 and 5"
         ) from exc
     if (
         not math.isfinite(parsed)
         or not MIN_CLIP_SECONDS <= parsed <= MAX_CLIP_SECONDS
     ):
-        raise ValueError("clip_duration_seconds must be between 2 and 6")
+        raise ValueError("clip_duration_seconds must be between 2 and 5")
     return round(parsed, 6)
 
 
@@ -1010,8 +1010,6 @@ class MaterialLibrary:
             "selection_contract_version": SELECTION_CONTRACT_VERSION,
             "clip_contract_version": CLIP_CONTRACT_VERSION,
             "video_color_contract": 1,
-            "max_clip_duration_seconds": MAX_CLIP_SECONDS,
-            "max_selection_scenes": MAX_SELECTION_SCENES,
             "prepared_cache_entries": self._prepared_cache_entries,
         }
 

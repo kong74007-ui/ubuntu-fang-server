@@ -61,6 +61,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('MATRIX_TEMPLATE_YELLOW_BANNER_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/yellow-banner-zoom', installer)
         self.assertIn('MATRIX_TEMPLATE_FAN_WHIP_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/fan-whip-static', installer)
         self.assertIn('MATRIX_TEMPLATE_BRUSH_PANEL_ROOT=${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions', installer)
+        self.assertIn('MATRIX_TEMPLATE_HEALTH_TEAM_ROOT=${SOURCE_LINK}/health-team-hook', installer)
         self.assertIn('python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_triple_strip.py"', installer)
         self.assertIn('python3 "${NINE_GRID_UPSTREAM}/script-to-matrix-video/scripts/test_yellow_banner.py"', installer)
         self.assertIn('MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}', installer)
@@ -78,15 +79,15 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn('systemctl stop "${SERVICE}"', installer)
         self.assertIn('systemctl start "${SERVICE}"', installer)
         self.assertIn('d.get("build_id")==os.environ["EXPECTED_BUILD_ID"]', installer)
-        self.assertIn('d.get("templates")==25', installer)
+        self.assertIn('d.get("templates")==26', installer)
         self.assertIn('d.get("hyperframes_templates")==17', installer)
         self.assertIn('d.get("hyperframes_version")=="0.8.16"', installer)
         self.assertIn('d.get("nine_grid_templates")==1', installer)
         self.assertIn('d.get("nine_grid_hyperframes_version")=="0.8.33"', installer)
-        self.assertIn('d.get("fixed_skill_templates")==["bilingual-stagger-salon","brush-panel-transitions","fan-whip-static","fixed-opening-whip","inset-flip-whip","triple-strip-shutter","yellow-banner-zoom"]', installer)
-        self.assertIn('d.get("fixed_skill_template_count")==7', installer)
+        self.assertIn('d.get("fixed_skill_templates")==["bilingual-stagger-salon","brush-panel-transitions","fan-whip-static","fixed-opening-whip","health-team-hook","inset-flip-whip","triple-strip-shutter","yellow-banner-zoom"]', installer)
+        self.assertIn('d.get("fixed_skill_template_count")==8', installer)
         self.assertIn('d.get("fixed_skill_hyperframes_version")=="mixed"', installer)
-        self.assertIn('d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2,"0.8.38":3}', installer)
+        self.assertIn('d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":3,"0.8.38":3}', installer)
         self.assertIn('MOTION_V3_UPSTREAM_COMMIT="981ecf0584d963c6e26a2f9d5cfa7fd6985758d2"', installer)
         self.assertIn('matrix_motion_v3.py', installer)
         self.assertIn('d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1}', installer)
@@ -330,6 +331,89 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
 
+    def test_v05_controls_patch_is_hash_locked_and_wired_into_installer(self):
+        patch_path = (
+            ROOT / "deploy/matrix-template-video/reference-v05-controls.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            "79ea8b5c50b07178de605468bc8ee4de677bef36e791b4df422db0346b1a3798",
+            hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+        )
+        self.assertIn(
+            "script-to-matrix-video/assets/templates/reference-typography-17/index.html",
+            patch,
+        )
+        # 模板读取器与注入标签共用同一个 id；没注入 JSON 时（默认版）整段不生效。
+        self.assertIn(
+            'const v05ControlsNode = document.getElementById("matrix-reference-v05-controls");',
+            patch,
+        )
+        self.assertIn('if (vars.variant === "v05" && v05ControlsNode) {', patch)
+        self.assertIn("JSON.parse(v05ControlsNode.textContent", patch)
+        # 字号/描边/上边距按 Math.round 与 api.py 的 _round_half_up 对齐
+        self.assertIn(
+            'element.style.fontSize = Math.round(size * scale) + "px";', patch,
+        )
+        self.assertIn(
+            'element.style.webkitTextStrokeWidth = Math.round(strokeWidth * scale) + "px";',
+            patch,
+        )
+        self.assertIn(
+            'element.style.marginTop = Math.round(marginTop * scale) + "px";',
+            patch,
+        )
+        # 顶部组下移 + 底部组上移（bottom 用减号）与 api.py 几何校验同向
+        self.assertIn(
+            'topGroup.style.top = (usedTop + titleOffset) + "px";', patch,
+        )
+        self.assertIn(
+            'bottomGroup.style.bottom = (usedBottom - ctaOffset) + "px";', patch,
+        )
+        # 强调色只写 bottom2 背景，且先过 hex 正则
+        self.assertIn("/^#[0-9A-Fa-f]{6}$/.test(v05Controls.accent_color)", patch)
+        self.assertIn("cta.style.backgroundColor = accentColor;", patch)
+        # 槽位焦点写 object-position（百分比形式），槽位表覆盖 3~5 格
+        self.assertIn(
+            'const videoIds = ["videoA", "videoB", "videoC", "videoD", "videoE"];',
+            patch,
+        )
+        self.assertIn(
+            'video.style.objectPosition = (focusX * 100) + "% " + (focusY * 100) + "%";',
+            patch,
+        )
+        installer = (
+            ROOT / "deploy/matrix-template-video/install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'REFERENCE_V05_CONTROLS_PATCH_SHA256="79ea8b5c50b07178de605468bc8ee4de677bef36e791b4df422db0346b1a3798"',
+            installer,
+        )
+        self.assertIn(
+            'REFERENCE_V05_CONTROLS_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-v05-controls.patch"',
+            installer,
+        )
+        self.assertIn('"${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"', installer)
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"',
+            installer,
+        )
+        # 顺序：featured 补丁 → v05 参数补丁（v05 补丁不改 featured 的行，只追加脚本段）
+        self.assertLess(
+            installer.index('apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"'),
+            installer.index('apply "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"'),
+        )
+        self.assertIn('d.get("overrides_contract_version")==1', installer)
+        self.assertIn(
+            'd.get("tunable_templates")==["ref-05-changsha-white-red"]',
+            installer,
+        )
+        self.assertIn('d.get("preview_concurrency")==2', installer)
+
     def test_v04_preview_browser_guard_rejects_visual_regressions(self):
         path = ROOT / "deploy/matrix-template-video/verify_v04_preview.py"
         spec = importlib.util.spec_from_file_location("verify_v04_preview", path)
@@ -448,7 +532,7 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("assert max(widths) <= 996", installer)
         self.assertIn("weight=800", installer)
 
-    def test_systemd_is_loopback_hardened_and_reuses_material_tunnel(self):
+    def test_systemd_is_loopback_hardened_and_reuses_material_tunnel_for_bgm(self):
         unit = (ROOT / "deploy/systemd/huangque-matrix-template.service").read_text(encoding="utf-8")
         self.assertIn("--host 127.0.0.1 --port 8112", unit)
         self.assertIn("Requires=huangque-pixelle-material-tunnel.service", unit)
@@ -458,6 +542,13 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertIn("ReadWritePaths=/var/lib/huangque-matrix-template", unit)
         self.assertIn("MemoryMax=6G", unit)
         self.assertIn("CPUQuota=400%", unit)
+
+    def test_production_enforces_account_visuals_and_shared_bgm_only(self):
+        source = (ROOT / "server/matrix_template_api.py").read_text(encoding="utf-8")
+        self.assertIn("enforce_user_materials=True", source)
+        self.assertIn('"shared_material_library_visuals_enabled": False', source)
+        self.assertIn('"shared_material_library_bgm_enabled": True', source)
+        self.assertIn("共享素材库只允许提供背景音乐", source)
 
     def test_nginx_bridge_is_private_to_production_content_host(self):
         for relative in (

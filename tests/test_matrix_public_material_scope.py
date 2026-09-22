@@ -43,8 +43,16 @@ class PublicMaterialScopeTests(unittest.TestCase):
             ))
         return dict(materials=items, selection_contract_version=2, clip_contract_version=3)
 
+    def user_materials(self, count=3):
+        return [dict(
+            sha256=self._store_user_asset(("own-%d" % index).encode()),
+            media_type="video",
+        ) for index in range(count)]
+
     def test_scope_validation_and_persistence(self):
-        job = self.service.submit(self.body(), "scope-persist")
+        job = self.service.submit(
+            self.body(user_materials=self.user_materials()), "scope-persist",
+        )
         payload = json.loads(self.service.store.get(job["job_id"])["payload"])
         self.assertEqual("public_only", payload["material_scope"])
         for value in (True, [], "private", ""):
@@ -52,10 +60,13 @@ class PublicMaterialScopeTests(unittest.TestCase):
                 self.service.validate_payload(dict(self.body(), material_scope=value))
 
     def test_legacy_request_replay_preserves_original_payload(self):
-        legacy = self.body()
+        materials = self.user_materials()
+        legacy = self.body(user_materials=materials)
         legacy.pop("material_scope")
         job = self.service.submit(legacy, "legacy-scope")
-        replay = self.service.submit(self.body(), "legacy-scope")
+        replay = self.service.submit(
+            self.body(user_materials=materials), "legacy-scope",
+        )
         self.assertEqual(job["job_id"], replay["job_id"])
         stored = json.loads(self.service.store.get(job["job_id"])["payload"])
         self.assertNotIn("material_scope", stored)
@@ -115,56 +126,33 @@ class PublicMaterialScopeTests(unittest.TestCase):
             self.assertEqual([self.sha("new")], self.service._library_snapshot()["sha256"])
             refresh.assert_called_once()
 
-    def test_actual_selection_and_frozen_replay_reject_private_material(self):
+    def test_shared_visual_selection_is_rejected(self):
         body = self.body()
         payload = self.service._freeze_font_provenance("a" * 32, self.service.validate_payload(body))
         scenes, _, _ = self.service._material_scenes(payload)
-        allowed = [self.sha(s["scene_id"]) for s in scenes]
-        self.whitelist(allowed)
-        snapshot = {"sha256": allowed + [self.sha("private")]}
-        def request(method, path, body):
-            self.assertIn(self.sha("private"), body["used_sha256"])
-            return self.response(body)
-        with mock.patch.object(self.service, "_library_snapshot", return_value=snapshot), \
-             mock.patch.object(self.service, "_library_request", side_effect=request) as select:
-            selected = self.service._select_materials(payload, "a" * 32)
-            self.assertEqual(selected, self.service._select_materials(payload, "a" * 32))
-            select.assert_called_once()
-        self.whitelist([self.sha("unrelated")])
-        with mock.patch.object(self.service, "_library_request") as request, self.assertRaises(matrix.MatrixTemplateError):
-            self.service._select_materials(payload, "a" * 32)
-        request.assert_not_called()
-        self.whitelist(allowed)
-        with mock.patch.object(self.service, "_library_snapshot", return_value=snapshot), \
-             mock.patch.object(self.service, "_library_request", side_effect=lambda m, p, b: self.response(b, private=True)), \
-             self.assertRaises(matrix.MatrixTemplateError):
-            self.service._select_materials(payload, "b" * 32)
-        self.assertIsNone(self.service.store.material_selection("b" * 32))
+        selection = self.response({"scenes": scenes})["materials"]
+        with self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "只允许使用当前账号本人上传素材",
+        ):
+            self.service._validate_material_selection(payload, selection, 2)
 
-    def test_user_upload_plus_visual_and_bgm_fill_apply_same_restriction(self):
-        user_sha = self._store_user_asset(b"own-upload")
+    def test_user_uploads_allow_library_bgm_only(self):
+        materials = self.user_materials(4)
         body = dict(self.body(material_policy="owned_public", duration=10,
-                              user_materials=[dict(sha256=user_sha, media_type="video")]), bgm=True)
+                              user_materials=materials), bgm=True)
         job = self.service.submit(body, "user-fill")
         payload = json.loads(self.service.store.get(job["job_id"])["payload"])
-        scenes, _, _ = self.service._material_scenes(payload)
-        allowed = [self.sha(s["scene_id"]) for s in scenes]
-        self.whitelist(allowed)
         calls = []
         def request(method, path, body):
             calls.append(body)
-            self.assertIn(self.sha("private"), body["used_sha256"])
-            self.assertIn(user_sha, body["used_sha256"])
             return self.response(body)
-        with mock.patch.object(self.service, "_library_snapshot", return_value={"sha256": allowed + [self.sha("private")]}), \
-             mock.patch.object(self.service, "_library_request", side_effect=request):
+        with mock.patch.object(self.service, "_library_request", side_effect=request):
             selected = self.service._select_materials(payload, job["job_id"])
-        self.assertEqual("user", selected[0]["provider"])
-        self.assertEqual(user_sha, selected[0]["sha256"])
+        self.assertEqual(["user"] * 4, [item["provider"] for item in selected[:4]])
         self.assertEqual("bgm", selected[-1]["media_type"])
-        self.assertEqual(2, len(calls))
-        self.assertNotEqual(calls[0]["selection_id"], calls[1]["selection_id"])
-        self.assertTrue(all(i["sha256"] in allowed for i in selected[1:]))
+        self.assertEqual([["bgm"]], [
+            [scene["scene_id"] for scene in call["scenes"]] for call in calls
+        ])
 
     def test_restricted_library_shortage_remains_failure(self):
         exc = matrix.MatrixTemplateError("no unique approved material for bgm")

@@ -2,12 +2,13 @@
 
 Pinned Skill source: `981ecf0584d963c6e26a2f9d5cfa7fd6985758d2`.
 The Skill repository itself is unchanged. The website service stages its own
-copies and exposes 25 templates after the full rollout.
+copies and exposes 26 templates after the full rollout, including the independently
+merged health-team-hook template.
 
-| ID | Timeline | Library sources |
+| ID | Timeline | Account sources |
 | --- | --- | --- |
 | inset-flip-whip | 443 frames / 14.766667s | 7 distinct videos, authored reuse and source offsets |
-| fixed-opening-whip | 519 frames / 17.3s | 2 pinned opening clips plus 4 distinct library videos |
+| fixed-opening-whip | 519 frames / 17.3s | 2 pinned opening clips plus 4 distinct uploaded videos |
 | bilingual-stagger-salon | measured narration plus 0.6s, rounded up to 30fps | at least 3 distinct videos, increasing with duration |
 
 The two fixed templates use existing AI semantic copy layout and website safe
@@ -41,10 +42,10 @@ the audio tail; it does not convert HDR to SDR.
 
 ## Required rollout order
 
-1. Upgrade the material-library service from this revision first. It advertises
-   `max_clip_duration_seconds=6` and `max_selection_scenes=22`; old requests remain
-   compatible. The fixed opening actually needs at most 5.1 seconds of a source,
-   including its later reused section. No existing material index is rewritten.
+1. Preserve main's account-upload-only visual policy. The shared library remains
+   BGM-only and needs no changes from this PR. Fixed opening needs at most 5.1s
+   per source, plus the existing 0.1s validation margin. Upload sufficient owned
+   videos before using these modes; no shared/public visual fallback is added.
 2. Deploy the main-site companion. It must accept the narration catalog contract,
    force voiceover/no BGM for the bilingual template, and preserve its frozen
    measured timeline. ASR uses the existing `video_compose_asr` configuration;
@@ -57,8 +58,8 @@ the audio tail; it does not convert HDR to SDR.
 4. Wait for each worker's active jobs before switching it. Enable
    `MATRIX_TEMPLATE_MOTION_V3_ROOT` and `MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI`.
    GPU-required workers must advertise the three new IDs; old nodes must not
-   claim them. The service fails readiness if the library lacks the new limits.
-5. Confirm the 25-ID catalog, GPU routing, real owned-voice alignment, downloads
+   claim them. The staged API must include the sibling matrix_motion_v3.py module.
+5. Confirm the 26-ID catalog, GPU routing, real owned-voice alignment, downloads
    and refund behavior before general use. Do not regenerate completed jobs.
 
 This PR does not deploy, restart services, modify live jobs, or call paid TTS,

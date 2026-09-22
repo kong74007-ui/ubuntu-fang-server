@@ -23,8 +23,25 @@ from unittest import mock
 from server import material_library_api, matrix_template_api as matrix
 
 
+def _stub_disk_usage(test_case) -> None:
+    """让容量门禁在单测里走确定性路径。
+
+    测试目录落在开发机的系统卷上（本机已用 97%，超过 95% 默认水位），真实
+    ``shutil.disk_usage`` 会让所有提交类用例环境性失败；容量阈值本身的语义由
+    ``test_disk_high_water_rejects_new_job_but_allows_idempotent_replay`` 用
+    自己的 mock 覆盖。
+    """
+    patcher = mock.patch.object(
+        matrix.shutil, "disk_usage",
+        return_value=SimpleNamespace(total=100, used=50, free=50),
+    )
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
+
+
 class MatrixTemplateApiTests(unittest.TestCase):
     def setUp(self):
+        _stub_disk_usage(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
@@ -1666,6 +1683,7 @@ output.write_bytes(b\"ftyp\" + b\"x\" * 2048)
 
 class HyperFramesReferenceTemplateTests(unittest.TestCase):
     def setUp(self):
+        _stub_disk_usage(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
@@ -1763,7 +1781,7 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             ".top, .bottom { width: 100%; padding-left: 42px; padding-right: 42px; }",
             (
                 ".top1, .top2, .top3, .bottom1, .bottom2 "
-                "{ max-width: 996px; letter-spacing: .01em; }"
+                "{ max-width: 996px; letter-spacing: .01em; line-height: 1.13; }"
             ),
         ]
         for index in range(1, 18):
@@ -1780,10 +1798,10 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             if variant == matrix.REFERENCE_FEATURED_VARIANT:
                 styles.extend((
                     '.v05 .top1 { font: 900 102px/1.02 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 12px #203449; text-shadow: 8px 10px 0 #07111e; }',
-                    '.v05 .top2 { font: 900 104px/1.01 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 13px #203449; text-shadow: 9px 11px 0 #07111e; }',
-                    '.v05 .top3 { font: 900 68px/1.04 "NotoSC"; color: #fff8d9; -webkit-text-stroke: 9px #26394a; text-shadow: 7px 8px 0 #07111e; }',
+                    '.v05 .top2 { margin-top: 12px; font: 900 104px/1.01 "NotoSC"; color: #f4f7f2; -webkit-text-stroke: 13px #203449; text-shadow: 9px 11px 0 #07111e; }',
+                    '.v05 .top3 { margin-top: 24px; font: 900 68px/1.04 "NotoSC"; color: #fff8d9; -webkit-text-stroke: 9px #26394a; text-shadow: 7px 8px 0 #07111e; }',
                     '.v05 .bottom1 { font: 900 68px/1.05 "NotoSC"; color: #ffe000; -webkit-text-stroke: 9px #263e32; }',
-                    '.v05 .bottom2 { max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
+                    '.v05 .bottom2 { margin-top: 28px; max-width: 930px; padding: 18px 34px 24px; font: 900 70px/1.06 "NotoSC"; background: #f4c900; color: #26362d; border-radius: 28px; }',
                 ))
                 continue
             if variant == matrix.REFERENCE_V07_VARIANT:
@@ -1843,6 +1861,20 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
             {"id": "videoC", "type": "string"},
             {"id": "bgm", "type": "string"},
         ], separators=(",", ":")), quote=True)
+        # 部署版安全区与调色层（与 fang 上 9040a24 + featured 补丁 + 调色层注入一致）：
+        # 参数微调的基线、默认强调色与文字色都从这两块实际样式里读。
+        styles.append("#root .top { top: 8%; }")
+        palette_style = (
+            '<style id="%s">\n' % matrix.PUBLIC_TEMPLATE_PALETTE_STYLE_ID
+            + '/* v05 ref-05-changsha-white-red · 长沙白字红强调 */\n'
+            + '#root[class~="v05"] .top1,\n'
+            + '#root[class~="v05"] .top3,\n'
+            + '#root[class~="v05"] .bottom2 {\n'
+            + "  color: #f0ff0c;\n"
+            + "  -webkit-text-stroke-color: #080808;\n}\n"
+            + '#root[class~="v05"] .bottom2 { background-color: #ff0086; }\n'
+            + "</style>"
+        )
         timeline_fixture = """
 <div id="root">
   <video data-hf-id="a" id="videoA" class="clip media-video" data-start="0" data-duration="2.666667" data-var-src="videoA" src="a.mp4"></video>
@@ -1859,12 +1891,14 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         document.getElementById("videoB"),
         document.getElementById("videoC")
       ];
-""" + matrix.REFERENCE_BASE_TIMELINE_JS + """
+      const v05ControlsNode = document.getElementById("%s");
+""" % matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID + matrix.REFERENCE_BASE_TIMELINE_JS + """
 </script>
 """
         (pack / "index.html").write_text(
             f'<html data-composition-variables="{reference_variables}"><head><style>\n'
             + "\n".join(styles) + "\n</style>\n"
+            + palette_style + "\n"
             + matrix.REFERENCE_GSAP_CDN
             + "\n</head><body>" + timeline_fixture + "</body></html>\n",
             encoding="utf-8",
@@ -4227,8 +4261,870 @@ class HyperFramesReferenceTemplateTests(unittest.TestCase):
         )
 
 
+class ReferenceOverridesTests(unittest.TestCase):
+    """模板参数微调（合同 §1/§2/§3）：词汇表、生效布局、两版预览与采纳。"""
+
+    TOP = "深圳女性成长局链接，一起搞事业"
+    BOTTOM = "想参加评论666"
+
+    def test_preview_library_gate_matches_account_visual_policy(self):
+        for policy in ("shared", "owned_public"):
+            with self.subTest(policy=policy):
+                payload = {"template_id": "ref-05-fixture-05", "material_policy": policy, "bgm": False}
+                self.assertFalse(self.service._preview_needs_library(payload))
+                self.assertTrue(self.service._preview_needs_library({**payload, "bgm": True}))
+
+    def setUp(self):
+        _stub_disk_usage(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.skill = self.root / "skill"
+        self.reference_skill = self.root / "reference-skill"
+        HyperFramesReferenceTemplateTests._write_skill_fixture(
+            self.skill, reference=False,
+        )
+        HyperFramesReferenceTemplateTests._write_skill_fixture(
+            self.reference_skill, reference=True,
+        )
+        self.private_font_root = self.root / "private-fonts"
+        self.private_font_root.mkdir()
+        private_font = self.private_font_root / "SmileySans-Oblique.ttf"
+        private_font.write_bytes(b"smiley-sans-private-fixture")
+        (self.private_font_root / "sources.json").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "fonts": [{
+                    "family": "Smiley Sans Oblique",
+                    "file": private_font.name,
+                    "sha256": hashlib.sha256(private_font.read_bytes()).hexdigest(),
+                    "authorized": True,
+                }],
+            }),
+            encoding="utf-8",
+        )
+        self.cli = self.root / "hyperframes"
+        self.cli.write_bytes(b"cli")
+        self.gsap = self.root / "gsap.min.js"
+        self.gsap.write_text("window.gsap={};", encoding="utf-8")
+        self.browser = self.root / "chrome"
+        self.browser.write_bytes(b"browser")
+        version = SimpleNamespace(returncode=0, stdout="0.8.16\n", stderr="")
+        with mock.patch.object(matrix.subprocess, "run", return_value=version):
+            self.service = matrix.MatrixTemplateService(
+                data_root=self.root / "data",
+                skill_root=self.skill,
+                private_font_root=self.private_font_root,
+                reference_skill_root=self.reference_skill,
+                hyperframes_cli=self.cli,
+                hyperframes_gsap=self.gsap,
+                hyperframes_browser=self.browser,
+                library_url="http://127.0.0.1:8111",
+                library_token="library-token",
+                start_worker=False,
+            )
+        # 模板字体是假字节，PIL 无法测量；用确定性整字宽桩接管所有测量路径。
+        self.width_patch = mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self._width,
+        )
+        self.width_patch.start()
+        self.addCleanup(self.width_patch.stop)
+        # 参考模板时长随机 8~15 秒（画面数 3~5）：固定成 8 秒让用例可复现。
+        self.duration_patch = mock.patch.object(
+            matrix, "_reference_duration", return_value=8,
+        )
+        self.duration_patch.start()
+        self.addCleanup(self.duration_patch.stop)
+
+    def tearDown(self):
+        self.service.shutdown()
+        self.temp.cleanup()
+
+    # -- 辅助 ---------------------------------------------------------------
+    def _semantic(self, top=None, bottom=None):
+        top = self.TOP if top is None else top
+        bottom = self.BOTTOM if bottom is None else bottom
+        punctuation = "，。！？；,.!?;"
+        breaks = [index for index, char in enumerate(top) if char in punctuation]
+        return {
+            "version": matrix.REFERENCE_SEMANTIC_LAYOUT_VERSION,
+            "model": "test-model",
+            "source_sha256": matrix._reference_semantic_source_sha256(top, bottom),
+            "top1_end": breaks[0] if breaks else max(0, len(top) - 1),
+            "top_break_after": breaks,
+            "bottom_break_after": [
+                index for index, char in enumerate(bottom)
+                if char in punctuation
+            ],
+        }
+
+    def _raw(self, *, top=None, bottom=None, overrides=None, revision=None,
+             template_id="ref-05-fixture-05", bgm=False, policy="shared",
+             materials=None, preview_id=None):
+        top = self.TOP if top is None else top
+        bottom = self.BOTTOM if bottom is None else bottom
+        raw = {
+            "top_text": top, "bottom_text": bottom,
+            "template_id": template_id,
+            "semantic_layout": self._semantic(top, bottom),
+            "bgm": bgm, "material_policy": policy,
+        }
+        if overrides is not None:
+            raw["overrides"] = overrides
+        if revision is not None:
+            raw["template_revision"] = revision
+        if materials is not None:
+            raw["user_materials"] = materials
+        if preview_id is not None:
+            raw["preview_id"] = preview_id
+        return raw
+
+    @staticmethod
+    def _width(value, metrics):
+        # 与真实测量一致的近似：行首尾标点被隐藏（不计宽），其余按整字宽估算。
+        display = matrix._hide_reference_edge_punctuation(str(value))
+        return len(display) * float(metrics["font_size_px"])
+
+    def _validate(self, raw):
+        return self.service.validate_payload(raw)
+
+    def _freeze(self, payload, job_id="a" * 32):
+        return self.service._freeze_font_provenance(job_id, payload)
+
+    def _revision(self):
+        return self.service.reference_template_revision
+
+    def _library(self, materials=None, *, record=True):
+        calls = []
+
+        def fake(method, path, body=None, *, timeout=30):
+            calls.append((method, path, body))
+            if path == "/v1/ping":
+                return {
+                    "ok": True, "records": 12,
+                    "selection_contract_version": 2,
+                    "clip_contract_version": 3,
+                }
+            if path == "/v1/select":
+                scenes = (body or {}).get("scenes") or []
+                # 切片契约（selection_contract_version=2, clip_contract_version=3）：
+                # 每格时长必须与请求的 scene.clip_duration_seconds 完全一致。
+                return {
+                    "selection_contract_version": 2,
+                    "clip_contract_version": 3,
+                    "materials": [
+                        {
+                            "scene_id": str(scene.get("scene_id") or ""),
+                            "sha256": format(index + 40, "064x"),
+                            "media_type": "video",
+                            "record_id": f"clip-{index}",
+                            "clip_id": format(index + 80, "064x"),
+                            "clip_start_seconds": 0.0,
+                            "clip_duration_seconds": float(
+                                scene["clip_duration_seconds"]
+                            ),
+                            "clip_slot_index": index,
+                            "clip_slot_count": len(scenes),
+                        }
+                        for index, scene in enumerate(scenes, start=1)
+                    ],
+                }
+            return {"ok": True, "records": 1}
+
+        patcher = mock.patch.object(
+            self.service, "_library_request", side_effect=fake,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def _render_mock(self):
+        """替换真实 HyperFrames 渲染：记录两版 payload，并落一个假 MP4。"""
+        payloads = []
+
+        def fake_render(payload, job_id, materials, paths, *, deadline_at=None):
+            payloads.append((job_id, payload, list(materials)))
+            output = self.service.data_root / job_id / "output/final.mp4"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"rendered-" + job_id.encode("ascii"))
+            return {"_editing_plan": None, "duration": payload["duration"]}
+
+        def fake_download(item, target_dir, job_id=""):
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / (str(item.get("sha256") or "source") + ".mp4")
+            target.write_bytes(b"video")
+            return target
+
+        patcher = mock.patch.object(
+            self.service, "_render_reference", side_effect=fake_render,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.service._download = fake_download
+        self.service._probe = lambda output: {
+            "duration": 8.0, "width": 1080, "height": 1920,
+        }
+        self.service._extract_preview_frame = (
+            lambda video, target, instant: target.write_bytes(b"jpeg")
+        )
+        return payloads
+
+    def _ready_preview(self, raw, request_id="preview-1"):
+        calls = self._library()
+        payloads = self._render_mock()
+        preview = self.service.submit_preview(raw)
+        self.service._run_preview(preview["preview_id"])
+        return preview, payloads, calls
+
+    # -- 目录与能力暴露 ------------------------------------------------------
+    def test_templates_and_health_expose_tunable_contract(self):
+        records = {item["id"]: item for item in self.service.catalog}
+        tunables = [
+            item for item in records.values() if item.get("tunable")
+        ]
+        self.assertEqual(1, len(tunables))
+        v05 = tunables[0]
+        self.assertEqual("ref-05-fixture-05", v05["id"])
+        self.assertEqual("v05", v05["variant"])
+        self.assertTrue(v05["tunable"])
+        self.assertEqual(self.service.reference_template_revision, v05["template_revision"])
+        self.assertRegex(v05["template_revision"], r"^[0-9a-f]{64}$")
+        schema = v05["overrides_schema"]
+        self.assertEqual(1, schema["contract_version"])
+        self.assertEqual(
+            set(matrix.REFERENCE_OVERRIDES_FIELDS), set(schema["fields"]),
+        )
+        self.assertEqual(
+            [matrix.REFERENCE_OVERRIDES_SCALE_MIN, matrix.REFERENCE_OVERRIDES_SCALE_MAX],
+            [schema["fields"]["title_scale"]["minimum"], schema["fields"]["title_scale"]["maximum"]],
+        )
+        self.assertEqual(
+            [matrix.REFERENCE_OVERRIDES_OFFSET_MIN, matrix.REFERENCE_OVERRIDES_OFFSET_MAX],
+            [schema["fields"]["title_offset_y"]["minimum"], schema["fields"]["title_offset_y"]["maximum"]],
+        )
+        self.assertEqual("#FF0086", schema["fields"]["accent_color"]["default"])
+        for template_id, record in records.items():
+            if template_id == v05["id"]:
+                continue
+            self.assertFalse(record.get("tunable", False), template_id)
+            self.assertNotIn("template_revision", record)
+            self.assertNotIn("overrides_schema", record)
+        health = self.service.health()
+        self.assertEqual(1, health["overrides_contract_version"])
+        self.assertEqual([v05["id"]], health["tunable_templates"])
+        self.assertEqual(matrix.PREVIEW_CONCURRENCY, health["preview_concurrency"])
+
+    def test_overrides_are_rejected_on_untunable_templates(self):
+        for template_id in ("ref-04-fixture-04", "ref-06-fixture-06"):
+            with self.subTest(template_id=template_id), self.assertRaises(
+                ValueError
+            ) as context:
+                self._validate(self._raw(
+                    template_id=template_id, revision=self._revision(),
+                    overrides={"title_scale": 0.9},
+                ))
+            self.assertIn("不支持参数微调", str(context.exception))
+
+    def test_revision_and_payload_binding_are_enforced(self):
+        with self.assertRaises(ValueError) as context:
+            self._validate(self._raw(overrides={"title_scale": 0.9}))
+        self.assertIn("缺少 template_revision", str(context.exception))
+        with self.assertRaises(ValueError) as context:
+            self._validate(self._raw(overrides={"title_scale": 0.9}, revision="0" * 64))
+        self.assertIn("模板版本不匹配", str(context.exception))
+        with self.assertRaises(ValueError) as context:
+            self._validate(self._raw(overrides={"title_scale": 0.9}, revision="zz"))
+        self.assertIn("64 位十六进制", str(context.exception))
+        # 带 preview_id 但没有 overrides：合法（采纳预览时冻结的是默认参数）。
+        adopted = self._validate(self._raw(
+            preview_id="b" * 32, revision=self._revision(),
+        ))
+        self.assertEqual("b" * 32, adopted["preview_id"])
+        self.assertEqual(self._revision(), adopted["template_revision"])
+        # 预览身份对非可调模板同样拒绝
+        with self.assertRaises(ValueError) as context:
+            self._validate(self._raw(
+                template_id="ref-04-fixture-04", preview_id="b" * 32,
+                revision=self._revision(),
+            ))
+        self.assertIn("不支持参数微调", str(context.exception))
+        with self.assertRaises(ValueError) as context:
+            self._validate(self._raw(
+                preview_id="not-hex", revision=self._revision(),
+            ))
+        self.assertIn("preview_id 无效", str(context.exception))
+
+    def test_overrides_vocabulary_boundaries(self):
+        revision = self._revision()
+        bad_values = (
+            {"nope": 1},
+            {"title_scale": True},
+            {"title_scale": "0.9"},
+            {"title_scale": float("nan")},
+            {"title_scale": float("inf")},
+            {"title_scale": 0.84},
+            {"title_scale": 1.11},
+            {"cta_scale": -1},
+            {"title_offset_y": True},
+            {"title_offset_y": 1.5},
+            {"title_offset_y": 61},
+            {"cta_offset_y": -61},
+            {"accent_color": "#fff"},
+            {"accent_color": "#GGGGGG"},
+            {"accent_color": 123456},
+            {"media_focus": [{"slot": 0, "x": 0.5, "y": 0.5}]},
+            {"media_focus": [{"slot": 6, "x": 0.5, "y": 0.5}]},
+            {"media_focus": [{"slot": 1.5, "x": 0.5, "y": 0.5}]},
+            {"media_focus": [{"slot": 1, "x": 1.5, "y": 0.5}]},
+            {"media_focus": [{"slot": 1, "x": 0.5, "y": True}]},
+            {"media_focus": [{"slot": 1, "x": 0.5, "y": float("nan")}]},
+            {"media_focus": [
+                {"slot": 1, "x": 0.5, "y": 0.5},
+                {"slot": 1, "x": 0.4, "y": 0.4},
+            ]},
+            {"media_focus": [{"slot": 1, "x": 0.5}]},
+            {"media_focus": [{"slot": 1, "x": 0.5, "y": 0.5, "z": 1}]},
+            {"media_focus": "slot-1"},
+        )
+        for overrides in bad_values:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                self._validate(self._raw(overrides=overrides, revision=revision))
+        good = self._validate(self._raw(
+            overrides={
+                "title_scale": 0.9,
+                "title_offset_y": -30,
+                "cta_scale": 1.05,
+                "cta_offset_y": 12,
+                "accent_color": "#ffcf33",
+                "media_focus": [
+                    {"slot": 2, "x": 0.65, "y": 0.5},
+                    {"slot": 1, "x": 0.1, "y": 0.9},
+                ],
+            },
+            revision=revision,
+        ))
+        self.assertEqual(revision, good["template_revision"])
+        self.assertEqual({
+            "title_scale": 0.9, "title_offset_y": -30,
+            "cta_scale": 1.05, "cta_offset_y": 12,
+            "accent_color": "#FFCF33",
+            "media_focus": [
+                {"slot": 1, "x": 0.1, "y": 0.9},
+                {"slot": 2, "x": 0.65, "y": 0.5},
+            ],
+        }, good["overrides"])
+
+    def test_empty_overrides_keep_the_legacy_payload_shape(self):
+        legacy = self._validate(self._raw())
+        self.assertEqual(
+            {
+                "top_text", "bottom_text", "template_id", "duration",
+                "bgm", "material_policy", "semantic_layout",
+            },
+            set(legacy),
+        )
+        blank = self._validate(self._raw(overrides={}, revision=self._revision()))
+        self.assertEqual(set(legacy), set(blank))
+        frozen = self._freeze(blank, "b" * 32)
+        reference = frozen["_reference_template"]
+        self.assertNotIn("overrides", reference)
+        self.assertEqual("b" * 32, reference["timing_seed"])
+        self.assertNotIn("overrides", frozen)
+
+    def test_freeze_normalizes_overrides_and_keeps_display_text(self):
+        base = self._freeze(self._validate(self._raw()), "c" * 32)
+        payload = self._validate(self._raw(
+            overrides={
+                "title_scale": 0.9, "title_offset_y": -30,
+                "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+            },
+            revision=self._revision(),
+        ))
+        frozen = self._freeze(payload, "d" * 32)
+        reference = frozen["_reference_template"]
+        self.assertEqual({
+            "title_scale": 0.9, "title_offset_y": -30,
+            "cta_scale": 1.0, "cta_offset_y": 0,
+            "accent_color": "#FF0086",
+            "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+        }, reference["overrides"])
+        # 断句与默认版一致（只按有效字号重校验，不重写语义缓存）
+        self.assertEqual(
+            base["_reference_template"]["display_text"],
+            reference["display_text"],
+        )
+        self.assertEqual(base["_reference_template"]["text"], reference["text"])
+        self.assertEqual("d" * 32, reference["timing_seed"])
+        self.assertEqual(
+            matrix._reference_editing_plan(
+                "d" * 32, "ref-05-fixture-05",
+                matrix._required_visuals(reference["duration"]),
+            ),
+            reference["editing_plan"],
+        )
+
+    def test_media_focus_slot_must_exist_in_frozen_visuals(self):
+        payload = self._validate(self._raw(
+            overrides={"media_focus": [{"slot": 4, "x": 0.5, "y": 0.5}]},
+            revision=self._revision(),
+        ))
+        with self.assertRaises(ValueError) as context:
+            self._freeze(payload)
+        self.assertIn("超出本次实际画面数 3", str(context.exception))
+
+    def test_low_contrast_accent_is_rejected_with_advice(self):
+        payload = self._validate(self._raw(
+            overrides={"accent_color": "#F0FF0C"}, revision=self._revision(),
+        ))
+        with self.assertRaises(ValueError) as context:
+            self._freeze(payload)
+        message = str(context.exception)
+        self.assertIn("对比度不足", message)
+        self.assertIn("默认 #FF0086", message)
+
+    def test_oversized_title_scale_returns_a_fixable_reason(self):
+        # 默认标题：首行「深圳女性成长局链接，」可见 9 字。基线 102px → 918px
+        # 放得下；1.10 倍 → 112px → 1008px 超 996 宽度预算，1.05 倍 → 107px
+        # → 963px 又能放下，所以建议上限必须落到 1.05。
+        payload = self._validate(self._raw(
+            overrides={"title_scale": 1.10}, revision=self._revision(),
+        ))
+        with self.assertRaises(ValueError) as context:
+            self._freeze(payload, "e" * 32)
+        message = str(context.exception)
+        self.assertIn("建议 title_scale 不超过 1.05", message)
+        self.assertIn("1.10", message)
+
+    def test_render_injects_controls_only_for_frozen_overrides(self):
+        pack = self.service.reference_pack_root
+        plain = self._freeze(self._validate(self._raw()), "f" * 32)
+        tools = self._freeze(self._validate(self._raw(
+            overrides={"title_scale": 0.9, "title_offset_y": -30},
+            revision=self._revision(),
+        )), "0" * 32)
+        materials = [{"media_type": "video", "record_id": f"r{index}"}
+                     for index in range(1, 4)]
+        paths = []
+        for index in range(1, 4):
+            path = self.root / f"source-{index}.mp4"
+            path.write_bytes(b"video")
+            paths.append(path)
+        process = mock.Mock()
+        process.returncode = 0
+        process.communicate.return_value = (b"", b"")
+        process.poll.return_value = 0
+        # 两版共用同一份 prepared（含运动种子/剪辑计划/切片起点）：只差注入的参数标签。
+        tools["_reference_template"]["editing_plan"] = (
+            plain["_reference_template"]["editing_plan"]
+        )
+        tools["_reference_template"]["timing_seed"] = (
+            plain["_reference_template"]["timing_seed"]
+        )
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=94.3,
+        ), mock.patch.object(matrix.subprocess, "Popen", return_value=process):
+            self.service._render_reference(plain, "f" * 32, materials, paths)
+            self.service._render_reference(tools, "0" * 32, materials, paths)
+        baseline = (self.service.data_root / ("f" * 32) / "hyperframes/index.html").read_text(encoding="utf-8")
+        candidate = (self.service.data_root / ("0" * 32) / "hyperframes/index.html").read_text(encoding="utf-8")
+        self.assertEqual(1, baseline.count(matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID))
+        self.assertNotIn("application/json", baseline)
+        self.assertEqual(2, candidate.count(matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID))
+        self.assertIn(
+            '<script type="application/json" id="%s">'
+            % matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID,
+            candidate,
+        )
+        self.assertIn('"title_offset_y":-30', candidate)
+        self.assertIn('"title_scale":0.9', candidate)
+        self.assertIn('"accent_color":"#FF0086"', candidate)
+        # 注入标签挂在 </head> 之前（模板脚本在 body 里，读取器保持在 head 之后才可用）
+        tag = (
+            '<script type="application/json" id="%s">'
+            % matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID
+        )
+        tag_index = candidate.index(tag)
+        self.assertLess(tag_index, candidate.index("</head>"))
+        # 默认版与旧路径逐字节一致：候选版 = 默认版 + 一行注入的 JSON 标签
+        tag_end = candidate.index("</script>", tag_index) + len("</script>")
+        self.assertEqual("\n", candidate[tag_index - 1])
+        self.assertEqual(baseline, candidate[:tag_index - 1] + candidate[tag_end:])
+        # 模板没有读取器时 fail closed（不注入、不静默忽略）
+        index_path = pack / "index.html"
+        source = index_path.read_text(encoding="utf-8")
+        index_path.write_text(
+            source.replace(
+                'const v05ControlsNode = document.getElementById("%s");'
+                % matrix.REFERENCE_V05_CONTROLS_SCRIPT_ID,
+                "",
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            self.service, "_reference_video_duration", return_value=94.3,
+        ), mock.patch.object(
+            matrix.subprocess, "Popen", return_value=process
+        ), self.assertRaises(matrix.MatrixTemplateError) as context:
+            self.service._render_reference(tools, "1" * 32, materials, paths)
+        self.assertIn("参数读取器缺失", str(context.exception))
+
+    # -- 预览链路 -----------------------------------------------------------
+    def test_preview_renders_two_versions_from_one_prepared_snapshot(self):
+        preview, payloads, calls = self._ready_preview(self._raw(
+            overrides={
+                "title_scale": 0.9, "title_offset_y": -30,
+                "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+            },
+            revision=self._revision(),
+        ))
+        preview_id = preview["preview_id"]
+        self.assertEqual("queued", preview["status"])
+        self.assertEqual(
+            {"title_scale": 0.9, "title_offset_y": -30, "cta_scale": 1.0,
+             "cta_offset_y": 0, "accent_color": "#FF0086",
+             "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}]},
+            preview["effective_overrides"],
+        )
+        row = self.service.store.get_preview(preview_id)
+        self.assertEqual("ready", row["status"])
+        public = self.service._preview_public(row)
+        self.assertTrue(public["checks"]["render_ok"])
+        # 候选版 CTA 文字色 #f0ff0c 压在默认强调色 #FF0086 上：3.4 ≥ 3.0 通过。
+        self.assertEqual(3.4, public["checks"]["contrast"]["ratio"])
+        self.assertTrue(public["checks"]["contrast"]["ok"])
+        self.assertEqual(8, len(public["resources"]["default"]["frames"]))
+        self.assertEqual(8, len(public["resources"]["candidate"]["frames"]))
+        # 两版共享同一份 prepared：素材/时长/运动种子/断句完全相同
+        self.assertEqual(2, len(payloads))
+        (default_job, default_payload, default_materials) = payloads[0]
+        (candidate_job, candidate_payload, candidate_materials) = payloads[1]
+        self.assertEqual(f"{preview_id}-default", default_job)
+        self.assertEqual(f"{preview_id}-candidate", candidate_job)
+        self.assertEqual(default_materials, candidate_materials)
+        default_reference = default_payload["_reference_template"]
+        candidate_reference = candidate_payload["_reference_template"]
+        self.assertNotIn("overrides", default_reference)
+        self.assertEqual(
+            {
+                "title_scale": 0.9, "title_offset_y": -30, "cta_scale": 1.0,
+                "cta_offset_y": 0, "accent_color": "#FF0086",
+                "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+            },
+            candidate_reference["overrides"],
+        )
+        for key in ("timing_seed", "duration", "display_text", "editing_plan", "variant"):
+            self.assertEqual(default_reference[key], candidate_reference[key], key)
+        self.assertEqual(preview_id, candidate_reference["timing_seed"])
+        # 预览绝不进入正式队列 / 正式文件端点
+        self.assertNotIn(preview_id, self.service.store.pending_ids())
+        self.assertIsNone(self.service.store.get(preview_id))
+        with self.assertRaises(FileNotFoundError):
+            with self.service.open_completed_file(preview_id):
+                pass
+        # 预览抽查过素材库，但预览本身不占生产并发
+        self.assertTrue(any(path == "/v1/select" for _m, path, _b in calls))
+
+    def test_preview_cache_is_reused_for_identical_inputs(self):
+        self._library()
+        raw = self._raw(
+            overrides={"title_scale": 0.95}, revision=self._revision(),
+        )
+        first = self.service.submit_preview(raw)
+        second = self.service.submit_preview(dict(raw))
+        self.assertEqual(first["preview_id"], second["preview_id"])
+        with self.service.store.connect() as db:
+            self.assertEqual(
+                1, db.execute("SELECT COUNT(*) FROM preview_jobs").fetchone()[0],
+            )
+
+    def test_preview_rejects_batch_and_preview_identity(self):
+        self._library()
+        revision = self._revision()
+        batch = self._raw(overrides={"title_scale": 0.9}, revision=revision)
+        batch.update({"batch_id": "f" * 32, "batch_index": 1, "batch_size": 3})
+        with self.assertRaises(ValueError) as context:
+            self.service.submit_preview(batch)
+        self.assertIn("不支持批量任务", str(context.exception))
+        nested = self._raw(
+            overrides={"title_scale": 0.9}, revision=revision,
+            preview_id="a" * 32,
+        )
+        with self.assertRaises(ValueError) as context:
+            self.service.submit_preview(nested)
+        self.assertIn("不支持 preview_id", str(context.exception))
+        with self.assertRaises(ValueError) as context:
+            self.service.submit_preview(
+                self._raw(template_id="ref-04-fixture-04", revision=revision)
+            )
+        self.assertIn("不支持参数微调", str(context.exception))
+
+    def test_preview_queue_limit_and_expiry_cleanup(self):
+        self._library()
+        revision = self._revision()
+        with mock.patch.object(matrix, "PREVIEW_MAX_PENDING", 1):
+            first = self.service.submit_preview(
+                self._raw(overrides={"title_scale": 0.9}, revision=revision)
+            )
+            with self.assertRaises(matrix.QueueCapacityError) as context:
+                self.service.submit_preview(self._raw(
+                    bottom="换一条行动文案", overrides={"title_scale": 0.95},
+                    revision=revision,
+                ))
+            self.assertIn("排队已满", str(context.exception))
+        preview_id = first["preview_id"]
+        for version in ("default", "candidate"):
+            root = self.service.data_root / f"{preview_id}-{version}"
+            (root / "output").mkdir(parents=True)
+            (root / "output/final.mp4").write_bytes(b"mp4")
+        with self.service.store.connect() as db:
+            db.execute(
+                "UPDATE preview_jobs SET expires_at=? WHERE id=?",
+                (matrix._now() - 1, preview_id),
+            )
+        self.assertEqual(1, self.service.cleanup_previews())
+        self.assertIsNone(self.service.store.get_preview(preview_id))
+        self.assertFalse(
+            (self.service.data_root / f"{preview_id}-default").exists()
+        )
+        self.assertFalse(
+            (self.service.data_root / f"{preview_id}-candidate").exists()
+        )
+
+    def test_job_with_preview_id_reuses_the_frozen_prepared(self):
+        preview, payloads, _calls = self._ready_preview(self._raw(
+            overrides={"title_scale": 0.9, "title_offset_y": -30},
+            revision=self._revision(),
+        ))
+        preview_id = preview["preview_id"]
+        raw = self._raw(
+            overrides={"title_scale": 0.9, "title_offset_y": -30},
+            revision=self._revision(), preview_id=preview_id,
+        )
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self._width,
+        ):
+            job = self.service.submit(raw, "formal-1")
+        stored = json.loads(self.service.store.get(job["job_id"])["payload"])
+        row = self.service.store.get_preview(preview_id)
+        frozen = json.loads(row["payload"])
+        self.assertEqual(frozen["_reference_template"], stored["_reference_template"])
+        self.assertEqual(preview_id, stored["_reference_template"]["timing_seed"])
+        self.assertEqual(preview_id, stored["preview_id"])
+        selection = self.service.store.material_selection(job["job_id"])
+        self.assertEqual(
+            json.loads(row["materials"]), selection["materials"],
+        )
+        self.assertIn(job["job_id"], self.service.store.pending_ids())
+
+    def test_job_with_preview_id_rejects_mismatched_inputs(self):
+        preview, _payloads, _calls = self._ready_preview(self._raw(
+            overrides={"title_scale": 0.9}, revision=self._revision(),
+        ))
+        preview_id = preview["preview_id"]
+        revision = self._revision()
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self._width,
+        ):
+            with self.assertRaises(ValueError) as context:
+                self.service.submit(self._raw(
+                    overrides={"title_scale": 0.95}, revision=revision,
+                    preview_id=preview_id,
+                ), "formal-2")
+            self.assertIn("输入不一致", str(context.exception))
+            with self.assertRaises(ValueError) as context:
+                self.service.submit(self._raw(
+                    top="换一个标题", overrides={"title_scale": 0.9},
+                    revision=revision, preview_id=preview_id,
+                ), "formal-3")
+            self.assertIn("输入不一致", str(context.exception))
+            with self.assertRaises(ValueError) as context:
+                self.service.submit(self._raw(
+                    overrides={"title_scale": 0.9}, revision=revision,
+                    preview_id="c" * 32,
+                ), "formal-4")
+            self.assertIn("预览不存在或已过期", str(context.exception))
+
+    def test_job_with_preview_id_checks_owner_expiry_and_status(self):
+        preview, _payloads, _calls = self._ready_preview(self._raw(
+            overrides={"title_scale": 0.9}, revision=self._revision(),
+        ))
+        preview_id = preview["preview_id"]
+        revision = self._revision()
+        raw = self._raw(
+            overrides={"title_scale": 0.9}, revision=revision,
+            preview_id=preview_id,
+        )
+        original_owner = self.service.preview_owner
+        self.service.preview_owner = "someone-else"
+        try:
+            with mock.patch.object(
+                self.service, "_reference_text_width", side_effect=self._width,
+            ), self.assertRaises(ValueError) as context:
+                self.service.submit(raw, "formal-5")
+            self.assertIn("不属于当前账号", str(context.exception))
+        finally:
+            self.service.preview_owner = original_owner
+        with self.service.store.connect() as db:
+            db.execute(
+                "UPDATE preview_jobs SET expires_at=? WHERE id=?",
+                (matrix._now() - 1, preview_id),
+            )
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self._width,
+        ), self.assertRaises(ValueError) as context:
+            self.service.submit(raw, "formal-6")
+        self.assertIn("预览已过期", str(context.exception))
+        with self.service.store.connect() as db:
+            db.execute(
+                "UPDATE preview_jobs SET expires_at=?, status='rendering' WHERE id=?",
+                (matrix._now() + 600, preview_id),
+            )
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self._width,
+        ), self.assertRaises(ValueError) as context:
+            self.service.submit(raw, "formal-7")
+        self.assertIn("还在渲染中", str(context.exception))
+
+    def test_preview_http_endpoints_serve_private_files(self):
+        self._library()
+        server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
+        self.assertEqual(
+            hashlib.sha256(b"matrix-template-preview:api-token").hexdigest()[:16],
+            self.service.preview_owner,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_port
+
+        def request(path, method="GET", body=None, token="api-token", request_id=None):
+            data = json.dumps(body).encode() if body is not None else None
+            req = urllib.request.Request(base + path, data=data, method=method)
+            if token:
+                req.add_header("Authorization", "Bearer " + token)
+            if request_id:
+                req.add_header("X-Request-Id", request_id)
+            return urllib.request.urlopen(req, timeout=5)
+
+        self._render_mock()
+        raw = self._raw(
+            overrides={"title_scale": 0.9}, revision=self._revision(),
+        )
+        try:
+            with request("/v1/preview-jobs", "POST", raw) as response:
+                self.assertEqual(202, response.status)
+                preview = json.load(response)
+            preview_id = preview["preview_id"]
+            self.service._run_preview(preview_id)
+            with request("/v1/preview-jobs/" + preview_id) as response:
+                self.assertEqual(200, response.status)
+                status = json.load(response)
+            self.assertEqual("ready", status["status"])
+            self.assertIn("resources", status)
+            video_url = status["resources"]["candidate"]["video_url"]
+            with request(video_url) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual("video/mp4", response.headers["Content-Type"])
+                self.assertIn("inline", response.headers["Content-Disposition"])
+                self.assertIn("private", response.headers["Cache-Control"])
+                self.assertEqual(b"rendered-" + (preview_id + "-candidate").encode(), response.read())
+            frame_url = status["resources"]["default"]["frames"][0]
+            with request(frame_url) as response:
+                self.assertEqual("image/jpeg", response.headers["Content-Type"])
+                self.assertEqual(b"jpeg", response.read())
+            for missing in (
+                "/v1/preview-files/" + "d" * 32,
+                "/v1/preview-jobs/" + "d" * 32,
+                "/v1/preview-jobs/not-a-hash",
+                "/v1/files/" + preview_id + ".mp4",
+            ):
+                with self.subTest(missing=missing), self.assertRaises(
+                    urllib.error.HTTPError
+                ) as context:
+                    request(missing)
+                self.assertEqual(404, context.exception.code)
+            original_owner = self.service.preview_owner
+            self.service.preview_owner = "someone-else"
+            try:
+                for path in ("/v1/preview-jobs/" + preview_id, video_url):
+                    with self.subTest(path=path), self.assertRaises(
+                        urllib.error.HTTPError
+                    ) as context:
+                        request(path)
+                    self.assertEqual(404, context.exception.code)
+            finally:
+                self.service.preview_owner = original_owner
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                request("/v1/preview-jobs", "POST", self._raw(
+                    template_id="ref-04-fixture-04", revision=self._revision(),
+                ))
+            self.assertEqual(400, context.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_preflight_returns_effective_overrides_and_checks(self):
+        self._library()
+        server = matrix.build_server("127.0.0.1", 0, self.service, "api-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_port
+        payload = self._raw(
+            overrides={"title_scale": 0.9, "media_focus": [{"slot": 2, "x": 0.6, "y": 0.5}]},
+            revision=self._revision(),
+        )
+        try:
+            with mock.patch.object(
+                self.service, "_reference_text_width", side_effect=self._width,
+            ):
+                request = urllib.request.Request(
+                    base + "/v1/preflight",
+                    data=json.dumps(payload).encode(), method="POST",
+                    headers={"Authorization": "Bearer api-token"},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    report = json.load(response)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(0.9, report["effective_overrides"]["title_scale"])
+        self.assertTrue(report["geometry"]["ok"])
+        self.assertTrue(report["checks"]["layer_overlap"]["ok"])
+        self.assertEqual(3.4, report["checks"]["contrast"]["ratio"])
+        self.assertTrue(report["checks"]["contrast"]["ok"])
+        self.assertEqual(3, report["checks"]["text_overflow"]["visuals"])
+
+    def test_control_audit_detects_palette_and_reader_drift(self):
+        index_path = self.service.reference_pack_root / "index.html"
+        source = index_path.read_text(encoding="utf-8")
+        audit = matrix.reference_pack_layer_audit(source)
+        self.assertTrue(audit["controls"]["tunable"])
+        self.assertEqual("#ff0086", audit["controls"]["accent_default"])
+        self.assertEqual("#f0ff0c", audit["controls"]["cta_text_color"])
+        self.assertEqual(8.0, audit["controls"]["top_offset_percent"])
+        self.assertEqual(15.0, audit["controls"]["bottom_offset_percent"])
+        with self.assertRaises(matrix.MatrixTemplateError) as context:
+            matrix.reference_v05_control_audit(
+                source.replace('id="%s"' % matrix.PUBLIC_TEMPLATE_PALETTE_STYLE_ID, 'id="other"')
+            )
+        self.assertIn("palette overlay is missing", str(context.exception))
+        with self.assertRaises(matrix.MatrixTemplateError) as context:
+            matrix.reference_v05_control_audit(
+                source.replace('#root .top { top: 8%; }', '#root .top { top: 96px; }')
+            )
+        self.assertIn("safe area anchor is missing", str(context.exception))
+        with self.assertRaises(matrix.MatrixTemplateError) as context:
+            matrix.reference_v05_control_audit(
+                source.replace("font: 900 102px/1.02", "font: 900 100px/1.02")
+            )
+        self.assertIn("baseline changed", str(context.exception))
+        self.assertEqual(
+            matrix.REFERENCE_V05_LAYER_BASES,
+            audit["controls"]["layers"],
+        )
+
+
 class NineGridTemplateTests(unittest.TestCase):
     def setUp(self):
+        _stub_disk_usage(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
@@ -4680,6 +5576,7 @@ class NineGridTemplateTests(unittest.TestCase):
 
 class FixedSkillTemplateTests(unittest.TestCase):
     def setUp(self):
+        _stub_disk_usage(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
@@ -4726,6 +5623,9 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 ],
                 brush_panel_root=self.template_roots[
                     matrix.BRUSH_PANEL_TEMPLATE_ID
+                ],
+                health_team_root=self.template_roots[
+                    matrix.HEALTH_TEAM_TEMPLATE_ID
                 ],
                 nine_grid_hyperframes_cli=self.cli,
                 motion_v2_hyperframes_cli=self.motion_v2_cli,
@@ -4908,8 +5808,8 @@ class FixedSkillTemplateTests(unittest.TestCase):
             + 2 * int(metrics.get("stroke_px") or 0)
         )
 
-    def test_catalog_exposes_four_fixed_templates_after_existing_catalog(self):
-        self.assertEqual(4, len(self.service.catalog))
+    def test_catalog_exposes_five_fixed_templates_after_existing_catalog(self):
+        self.assertEqual(5, len(self.service.catalog))
         self.assertEqual(
             list(matrix.FIXED_SKILL_TEMPLATE_IDS),
             [item["id"] for item in self.service.catalog],
@@ -4933,12 +5833,37 @@ class FixedSkillTemplateTests(unittest.TestCase):
             sorted(matrix.FIXED_SKILL_TEMPLATE_IDS),
             health["fixed_skill_templates"],
         )
-        self.assertEqual(4, health["fixed_skill_template_count"])
+        self.assertEqual(5, health["fixed_skill_template_count"])
         self.assertEqual("mixed", health["fixed_skill_hyperframes_version"])
         self.assertEqual(
-            {"0.8.33": 2, "0.8.34": 2},
+            {"0.8.33": 2, "0.8.34": 3},
             health["fixed_skill_hyperframes_versions"],
         )
+
+    def test_health_team_template_preserves_approved_six_layer_hierarchy(self):
+        top = "团队8个人，每天产出，100条短视频，覆盖全部短视频平台"
+        bottom = "有想进军健康赛道的，勾兑勾兑"
+        with mock.patch.object(
+            self.service, "_reference_text_width", side_effect=self.text_width,
+        ):
+            layout = self.service._fixed_skill_text_layout(
+                matrix.HEALTH_TEAM_TEMPLATE_ID,
+                top,
+                bottom,
+                self.semantic(top, bottom),
+            )
+        self.assertEqual({
+            "title": "团队8个人",
+            "subtitle": "每天产出",
+            "metric": "100条短视频",
+            "platform": "覆盖全部短视频平台",
+            "lead": "有想进军健康赛道的",
+            "cta": "勾兑勾兑",
+        }, layout["display"])
+        self.assertEqual({
+            "title": 128, "subtitle": 59, "metric": 76,
+            "platform": 58, "lead": 72, "cta": 132,
+        }, layout["font_size_px"])
 
     def test_shared_sixty_eighty_copy_contract_preserves_source_text(self):
         top = "创业团队，" * 12
@@ -5107,7 +6032,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
             )
             self.assertEqual(1, library.call_count)
 
-    def test_production_without_pexels_uses_library_for_every_slot(self):
+    def test_production_requires_user_visuals_without_bgm_library_call(self):
         def version(command, **_kwargs):
             value = (
                 "0.8.34" if str(command[0]) == str(self.motion_v2_cli)
@@ -5137,6 +6062,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 concurrency=5,
                 legacy_templates_enabled=False,
                 start_worker=True,
+                enforce_user_materials=True,
             )
 
         library_scene_groups = []
@@ -5181,7 +6107,7 @@ class FixedSkillTemplateTests(unittest.TestCase):
         def execute(job_id):
             row = production.store.get(job_id)
             payload = json.loads(row["payload"])
-            selected.extend(production._select_materials_once(payload, job_id))
+            selected.extend(production._select_materials(payload, job_id))
             return {"file_url": f"/v1/files/{job_id}.mp4"}
 
         server = matrix.build_server("127.0.0.1", 0, production, "api-token")
@@ -5215,6 +6141,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
             ),
             "bgm": False,
         }
+        asset_root = production.data_root / matrix.USER_ASSET_DIRNAME
+        asset_root.mkdir(parents=True, exist_ok=True)
+        body["user_materials"] = []
+        for index in range(
+            self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"]
+        ):
+            content = ("production-user-%d" % index).encode()
+            sha = hashlib.sha256(content).hexdigest()
+            (asset_root / (sha + ".mp4")).write_bytes(content)
+            body["user_materials"].append({
+                "sha256": sha, "media_type": "video",
+            })
         try:
             with mock.patch.object(
                 production, "_library_request", side_effect=library_request,
@@ -5222,14 +6160,18 @@ class FixedSkillTemplateTests(unittest.TestCase):
                 production, "_execute", side_effect=execute,
             ), mock.patch.object(
                 production, "_reference_text_width", side_effect=self.text_width,
+            ), mock.patch.object(
+                production, "_inspect_user_asset", return_value=30.0,
             ):
                 health = production.health()
                 self.assertTrue(health["ok"])
                 self.assertTrue(health["material_library_ready"])
                 self.assertEqual(
-                    "huangque-library-only",
+                    "account-upload-visuals+shared-bgm",
                     health["material_source_policy"],
                 )
+                self.assertFalse(health["shared_material_library_visuals_enabled"])
+                self.assertTrue(health["shared_material_library_bgm_enabled"])
                 self.assertEqual(5, health["worker_count"])
 
                 with post("/v1/preflight", body) as response:
@@ -5252,13 +6194,10 @@ class FixedSkillTemplateTests(unittest.TestCase):
                     self.configs[matrix.FAN_WHIP_TEMPLATE_ID]["required_visuals"],
                     len(selected),
                 )
-                self.assertEqual({"huangque"}, {
+                self.assertEqual({"user"}, {
                     item["provider"] for item in selected
                 })
-                self.assertEqual(
-                    [[item["scene_id"] for item in selected]],
-                    library_scene_groups,
-                )
+                self.assertEqual([], library_scene_groups)
         finally:
             server.shutdown()
             server.server_close()
@@ -5462,6 +6401,17 @@ class FixedSkillTemplateTests(unittest.TestCase):
                             ".footer{top:auto!important;"
                             "bottom:15%!important}", index_html,
                         )
+                    elif template_id == matrix.HEALTH_TEAM_TEMPLATE_ID:
+                        self.assertIn(
+                            ".top-copy{top:76px!important}", index_html,
+                        )
+                        self.assertIn(
+                            ".bottom-copy{top:auto!important;"
+                            "bottom:102px!important}", index_html,
+                        )
+                        self.assertIn(
+                            "#cta{font-size:132px!important", index_html,
+                        )
                     else:
                         self.assertIn(
                             ".top,#copy-top{top:8%!important}", index_html,
@@ -5506,6 +6456,7 @@ class UserMaterialsTests(unittest.TestCase):
     """用户自带素材（provider=user）内测功能回归测试。"""
 
     def setUp(self):
+        _stub_disk_usage(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.skill = self.root / "skill"
@@ -5540,6 +6491,7 @@ class UserMaterialsTests(unittest.TestCase):
             library_token="library-token",
             start_worker=False,
         )
+        self.service.enforce_user_materials = True
         self.inspect_patch = mock.patch.object(
             self.service, "_inspect_user_asset", return_value=30.0,
         )
@@ -5615,78 +6567,71 @@ class UserMaterialsTests(unittest.TestCase):
                 "huangque", matrix._material_source_plan(count)[-1],
             )
 
-    # BGM 始终来自黄雀库
-    def test_bgm_always_huangque(self):
-        payload = self.service.validate_payload({
-            "top_text": "大健康行业", "bottom_text": "评论交流", "bgm": True,
-        })
-        self.assertEqual("shared", payload["material_policy"])
-        library_scene_groups = []
-
-        def fake_library(method, path, body):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            library_scene_groups.append(body.get("scenes") or [])
-            return {
-                "materials": [], "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
-        with mock.patch.object(
-            self.service, "_library_request", side_effect=fake_library,
-        ), mock.patch.object(
-            self.service, "_validate_material_selection",
-            side_effect=lambda p, v, c: v,
-        ):
-            self.service._select_materials_once(payload, "a" * 32)
-        library_scene_ids = {
-            scene["scene_id"] for group in library_scene_groups
-            for scene in group
-        }
-        self.assertIn("bgm", library_scene_ids)
-
-    def test_owned_public_without_upload_uses_library_for_every_slot(self):
-        body = {
-            "top_text": "普通用户素材策略",
-            "bottom_text": "没有素材时全部使用本地素材库",
-            "material_policy": "owned_public",
-            "bgm": False,
-        }
-
+    def test_shared_policy_uses_user_visuals_and_library_bgm_only(self):
+        materials = [{
+            "sha256": self._store_user_asset(
+                ("bgm-user-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
+            self.assertEqual(["bgm"], [
+                scene["scene_id"] for scene in request_body["scenes"]
+            ])
             return {
                 "materials": [{
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": "video", "provider": "huangque",
-                    "clip_id": format(index + 100, "064x"),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": scene["clip_duration_seconds"],
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                } for index, scene in enumerate(request_body["scenes"], 1)],
+                    "scene_id": "bgm", "record_id": "library-bgm",
+                    "sha256": "b" * 64, "media_type": "bgm",
+                    "provider": "huangque",
+                }],
                 "selection_contract_version": 2,
                 "clip_contract_version": 3,
             }
 
         with mock.patch.object(
             self.service, "_library_request", side_effect=library,
-        ) as library_request:
-            accepted = self.service.submit(body, "owned-public-no-user")
-            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
-            result = self.service._select_materials(payload, accepted["job_id"])
-            replay = self.service.submit(body, "owned-public-no-user")
-            replay_result = self.service._select_materials(
-                payload, replay["job_id"],
+        ) as library_request, mock.patch.object(
+            self.service, "_ensure_disk_capacity",
+        ):
+            accepted = self.service.submit({
+                "top_text": "大健康行业", "bottom_text": "评论交流",
+                "bgm": True, "user_materials": materials,
+            }, "shared-bgm-only")
+            payload = json.loads(
+                self.service.store.get(accepted["job_id"])["payload"]
             )
-        self.assertEqual(3, len(result))
-        self.assertEqual(accepted["job_id"], replay["job_id"])
-        self.assertEqual(result, replay_result)
-        self.assertEqual({"huangque"}, {item["provider"] for item in result})
+            selected = self.service._select_materials(
+                payload, accepted["job_id"],
+            )
         self.assertEqual(1, library_request.call_count)
+        self.assertEqual(
+            ["user", "user", "user", "huangque"],
+            [item["provider"] for item in selected],
+        )
+
+    def test_all_policies_reject_without_user_uploads(self):
+        for policy in ("shared", "owned_public"):
+            with self.subTest(policy=policy), mock.patch.object(
+                self.service, "_library_request",
+                side_effect=AssertionError("shared library must not be called"),
+            ), self.assertRaisesRegex(
+                matrix.MatrixTemplateError, "停用共享素材库",
+            ):
+                self.service.submit({
+                    "top_text": "本人素材策略",
+                    "bottom_text": "没有本人素材时明确拒绝",
+                    "material_policy": policy,
+                    "bgm": False,
+                }, "no-user-" + policy)
 
     def test_owned_public_user_materials_must_exist_and_be_visual(self):
         nonvisual_sha = self._store_user_asset(b"owned-user-audio")
+        valid = [{
+            "sha256": self._store_user_asset(
+                ("owned-valid-%d" % index).encode(), ".jpg",
+            ),
+            "media_type": "image",
+        } for index in range(2)]
         cases = (
             ({"sha256": "f" * 64, "media_type": "video"}, "不存在"),
             ({"sha256": nonvisual_sha, "media_type": "audio"}, "图片或视频"),
@@ -5700,24 +6645,27 @@ class UserMaterialsTests(unittest.TestCase):
                     "top_text": "普通用户素材校验",
                     "bottom_text": "素材必须存在且类型有效",
                     "material_policy": "owned_public",
-                    "user_materials": [material],
+                    "user_materials": [material] + valid,
                     "bgm": False,
                 }, request_id)
             self.assertIsNone(
                 self.service.store.get_by_request_id(request_id)
             )
 
-    def test_owned_public_preflight_checks_library_readiness(self):
-        user_sha = self._store_user_asset(b"owned-preflight-video")
+    def test_preflight_uses_exact_user_materials_without_library_probe(self):
+        user_materials = [{
+            "sha256": self._store_user_asset(
+                ("owned-preflight-video-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         server, thread, base = self._start_server()
         try:
             body = json.dumps({
                 "top_text": "普通用户预检策略",
-                "bottom_text": "只检查自有素材与本地素材库",
+                "bottom_text": "只检查当前账号本人素材",
                 "material_policy": "owned_public",
-                "user_materials": [{
-                    "sha256": user_sha, "media_type": "video",
-                }],
+                "user_materials": user_materials,
                 "bgm": False,
             }).encode()
             request = urllib.request.Request(
@@ -5725,12 +6673,10 @@ class UserMaterialsTests(unittest.TestCase):
                 headers={"Authorization": "Bearer api-token"},
             )
             with mock.patch.object(
+                self.service, "_inspect_user_asset", return_value=30.0,
+            ), mock.patch.object(
                 self.service, "_library_request",
-                return_value={
-                    "ok": True, "records": 100,
-                    "selection_contract_version": 2,
-                    "clip_contract_version": 3,
-                },
+                side_effect=AssertionError("shared library must not be called"),
             ) as library, urllib.request.build_opener(
                 urllib.request.ProxyHandler({})
             ).open(request, timeout=3) as response:
@@ -5739,19 +6685,17 @@ class UserMaterialsTests(unittest.TestCase):
             self.assertEqual(2, result["material_selection_contract_version"])
             self.assertEqual(3, result["material_clip_contract_version"])
             self.assertEqual([], self.service.store.pending_ids())
-            self.assertEqual(("GET", "/v1/ping"), (
-                library.call_args.args[0], library.call_args.args[1],
-            ))
+            library.assert_not_called()
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
 
-    def test_owned_public_partial_user_materials_fill_from_library(self):
+    def test_owned_public_partial_user_materials_are_rejected_without_library(self):
         user_sha = self._store_user_asset(b"owned-user-image", ".jpg")
         body = {
             "top_text": "普通用户部分素材",
-            "bottom_text": "剩余画面使用本地素材库",
+            "bottom_text": "素材不足时明确拒绝",
             "material_policy": "owned_public",
             "duration": 10,
             "user_materials": [{
@@ -5760,49 +6704,16 @@ class UserMaterialsTests(unittest.TestCase):
             "bgm": False,
         }
 
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            self.assertEqual(["media_02", "media_03", "media_04"], [
-                scene["scene_id"] for scene in request_body["scenes"]
-            ])
-            self.assertIn(user_sha, request_body["used_sha256"])
-            return {
-                "materials": [{
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": "video", "provider": "huangque",
-                    "clip_id": format(index + 100, "064x"),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": scene["clip_duration_seconds"],
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                } for index, scene in enumerate(request_body["scenes"], 1)],
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
-        ) as select_library:
-            accepted = self.service.submit(body, "owned-public-partial")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"]
-            )
+            self.service, "_library_request",
+            side_effect=AssertionError("shared library must not be called"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
+        ):
+            self.service.submit(body, "owned-public-partial")
+        library.assert_not_called()
 
-        self.assertEqual(1, select_library.call_count)
-        self.assertEqual(
-            ["user", "huangque", "huangque", "huangque"],
-            [item["provider"] for item in selected],
-        )
-        self.assertEqual(
-            ["media_01", "media_02", "media_03", "media_04"],
-            [item["scene_id"] for item in selected],
-        )
-
-    def test_three_user_materials_plus_ten_second_template_adds_one_library_clip(self):
+    def test_three_user_materials_do_not_trigger_shared_fallback(self):
         materials = [{
             "sha256": self._store_user_asset(
                 ("owned-%d" % index).encode(), ".mp4",
@@ -5811,7 +6722,7 @@ class UserMaterialsTests(unittest.TestCase):
         } for index in range(3)]
         body = {
             "top_text": "十秒模板三份素材",
-            "bottom_text": "只补一个本地素材库画面",
+            "bottom_text": "缺一个素材时明确拒绝",
             "material_policy": "owned_public",
             "user_materials": materials,
             "duration": 10,
@@ -5819,27 +6730,12 @@ class UserMaterialsTests(unittest.TestCase):
         }
         with mock.patch.object(
             self.service, "_library_request",
-            return_value={
-                "materials": [{
-                    "scene_id": "media_04", "record_id": "library-4",
-                    "sha256": "f" * 64, "media_type": "video",
-                    "provider": "huangque", "clip_id": "e" * 64,
-                    "clip_start_seconds": 0.0, "clip_duration_seconds": 2.5,
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                }],
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            },
-        ) as library:
-            accepted = self.service.submit(body, "owned-public-three-plus-one")
-            payload = json.loads(self.service.store.get(accepted["job_id"])["payload"])
-            selected = self.service._select_materials(payload, accepted["job_id"])
-        self.assertEqual(["user", "user", "user", "huangque"], [
-            item["provider"] for item in selected
-        ])
-        self.assertEqual(["media_04"], [
-            scene["scene_id"] for scene in library.call_args.args[2]["scenes"]
-        ])
+            side_effect=AssertionError("shared library must not be called"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
+        ):
+            self.service.submit(body, "owned-public-three-plus-one")
+        library.assert_not_called()
 
     def test_owned_public_rejects_too_many_user_materials(self):
         materials = [{
@@ -5956,6 +6852,18 @@ class UserMaterialsTests(unittest.TestCase):
     def test_user_material_clip_and_media_validation(self):
         image_sha = self._store_user_asset(b"image", ".jpg")
         video_sha = self._store_user_asset(b"video", ".mp4")
+        extra_images = [{
+            "sha256": self._store_user_asset(
+                ("image-extra-%d" % index).encode(), ".jpg",
+            ),
+            "media_type": "image",
+        } for index in range(2)]
+        extra_videos = [{
+            "sha256": self._store_user_asset(
+                ("video-extra-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(2)]
         with self.assertRaisesRegex(matrix.MatrixTemplateError, "图片素材不能设置"):
             self.service.submit({
                 "top_text": "图片不能设置入点", "bottom_text": "请直接使用图片",
@@ -5963,7 +6871,7 @@ class UserMaterialsTests(unittest.TestCase):
                 "user_materials": [{
                     "sha256": image_sha, "media_type": "image",
                     "clip_start_seconds": 1,
-                }],
+                }] + extra_images,
             }, "owned-image-start")
         with mock.patch.object(
             self.service, "_inspect_user_asset", return_value=2.0,
@@ -5974,7 +6882,7 @@ class UserMaterialsTests(unittest.TestCase):
                 "user_materials": [{
                     "sha256": video_sha, "media_type": "video",
                     "clip_start_seconds": 1,
-                }],
+                }] + extra_videos,
             }, "owned-video-start")
 
     def test_real_media_inspection_rejects_wrong_mime(self):
@@ -6026,7 +6934,9 @@ class UserMaterialsTests(unittest.TestCase):
         accepted_holder = {}
         with mock.patch.object(
             self.service, "_library_request", side_effect=library,
-        ) as library_request:
+        ) as library_request, mock.patch.object(
+            self.service, "_ensure_disk_capacity",
+        ):
             accepted = self.service.submit(body, "owned-public-bgm")
             accepted_holder["job_id"] = accepted["job_id"]
             payload = json.loads(
@@ -6043,9 +6953,7 @@ class UserMaterialsTests(unittest.TestCase):
         )
         self.assertEqual("bgm", selected[-1]["scene_id"])
 
-    def test_owned_public_partial_materials_plus_bgm_use_distinct_selection_ids(self):
-        # #8633 回归：同一任务先补画面再补 BGM，素材库把 selection_id 当唯一
-        # 收据键，两次同 key 会撞「selection_id request conflict」。
+    def test_partial_visuals_with_bgm_never_call_library(self):
         user_sha = self._store_user_asset(b"owned-partial-bgm", ".mp4")
         body = {
             "top_text": "普通用户部分素材配乐",
@@ -6057,140 +6965,49 @@ class UserMaterialsTests(unittest.TestCase):
             }],
             "bgm": True,
         }
-        selection_ids = []
-
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            selection_ids.append(request_body["selection_id"])
-            materials = []
-            for index, scene in enumerate(request_body["scenes"], 1):
-                sha = hashlib.sha256(
-                    (request_body["selection_id"] + ":" + scene["scene_id"])
-                    .encode()
-                ).hexdigest()
-                materials.append({
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": sha,
-                    "media_type": (
-                        "bgm" if scene["scene_id"] == "bgm" else "video"
-                    ),
-                    "provider": "huangque",
-                    "clip_id": (
-                        None if scene["scene_id"] == "bgm"
-                        else hashlib.sha256((sha + ":clip").encode()).hexdigest()
-                    ),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": (
-                        0.0 if scene["scene_id"] == "bgm"
-                        else scene["clip_duration_seconds"]
-                    ),
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                })
-            return {
-                "materials": materials,
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
+            self.service, "_library_request",
+            side_effect=AssertionError("visual shortage must fail before BGM"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "需要 4 个",
         ):
-            accepted = self.service.submit(body, "owned-public-partial-bgm")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"],
-            )
+            self.service.submit(body, "owned-public-partial-bgm")
+        library.assert_not_called()
 
-        self.assertEqual(2, len(selection_ids))
-        self.assertEqual(
-            "matrix-template:" + accepted["job_id"], selection_ids[0],
-        )
-        self.assertEqual(
-            "matrix-template:" + accepted["job_id"] + ":bgm", selection_ids[1],
-        )
-        self.assertEqual(
-            ["user", "huangque", "huangque", "huangque", "huangque"],
-            [item["provider"] for item in selected],
-        )
-        self.assertEqual("bgm", selected[-1]["scene_id"])
-
-    def test_owned_public_without_upload_selects_bgm_in_one_request(self):
+    def test_owned_public_without_upload_rejects_before_bgm(self):
         body = {
             "top_text": "普通用户无素材配乐",
             "bottom_text": "画面与音乐一次选全",
             "material_policy": "owned_public",
             "bgm": True,
         }
-        requested_scenes = []
-
-        def library(method, path, request_body=None, *, timeout=30):
-            self.assertEqual(("POST", "/v1/select"), (method, path))
-            requested_scenes.append(
-                [scene["scene_id"] for scene in request_body["scenes"]]
-            )
-            materials = []
-            for index, scene in enumerate(request_body["scenes"], 1):
-                materials.append({
-                    "scene_id": scene["scene_id"],
-                    "record_id": "library-%d" % index,
-                    "sha256": format(index, "064x"),
-                    "media_type": (
-                        "bgm" if scene["scene_id"] == "bgm" else "video"
-                    ),
-                    "provider": "huangque",
-                    "clip_id": (
-                        None if scene["scene_id"] == "bgm"
-                        else format(index + 100, "064x")
-                    ),
-                    "clip_start_seconds": 0.0,
-                    "clip_duration_seconds": (
-                        0.0 if scene["scene_id"] == "bgm"
-                        else scene["clip_duration_seconds"]
-                    ),
-                    "clip_slot_index": 1, "clip_slot_count": 1,
-                })
-            return {
-                "materials": materials,
-                "selection_contract_version": 2,
-                "clip_contract_version": 3,
-            }
-
         with mock.patch.object(
-            self.service, "_library_request", side_effect=library,
+            self.service, "_library_request",
+            side_effect=AssertionError("shared library must not supply visuals"),
+        ) as library, self.assertRaisesRegex(
+            matrix.MatrixTemplateError, "停用共享素材库",
         ):
-            accepted = self.service.submit(body, "owned-public-no-user-bgm")
-            payload = json.loads(
-                self.service.store.get(accepted["job_id"])["payload"]
-            )
-            selected = self.service._select_materials(
-                payload, accepted["job_id"],
-            )
-
-        self.assertEqual(1, len(requested_scenes))
-        self.assertEqual(
-            ["media_01", "media_02", "media_03", "bgm"],
-            requested_scenes[0],
-        )
-        self.assertEqual("bgm", selected[-1]["scene_id"])
+            self.service.submit(body, "owned-public-no-user-bgm")
+        library.assert_not_called()
 
     def test_owned_public_accepts_without_pexels(self):
-        user_sha = self._store_user_asset(b"owned-user-video")
+        user_materials = [{
+            "sha256": self._store_user_asset(
+                ("owned-user-video-%d" % index).encode(), ".mp4",
+            ),
+            "media_type": "video",
+        } for index in range(3)]
         body = {
             "top_text": "普通用户公共素材",
             "bottom_text": "不再依赖公网素材",
             "material_policy": "owned_public",
-            "user_materials": [{
-                "sha256": user_sha, "media_type": "video",
-            }],
+            "user_materials": user_materials,
             "bgm": False,
         }
         with mock.patch.object(
             self.service, "_library_request",
             side_effect=AssertionError("submit must not touch the library"),
-        ):
+        ), mock.patch.object(self.service, "_ensure_disk_capacity"):
             accepted = self.service.submit(body, "owned-public-no-pexels")
         self.assertEqual("pending", accepted["status"])
         self.assertIsNotNone(
@@ -6403,7 +7220,7 @@ class UserMaterialsTests(unittest.TestCase):
         target = self.root / "dl"
         target.mkdir()
         with self.assertRaisesRegex(
-            matrix.MatrixTemplateError, "只允许使用素材库或本人上传素材",
+            matrix.MatrixTemplateError, "只允许提供背景音乐",
         ):
             self.service._download({
                 "provider": "pexels", "sha256": "a" * 64,

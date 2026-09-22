@@ -107,7 +107,10 @@ def validate_plan(value):
         cues.append(dict(text=text, en=en, times=times, end=end, row=row, yellow=yellow))
     if sum(len(c["text"]) for c in cues) > 180:
         raise ValueError("双语字幕总长度无效")
-    return dict(version=1, audio_duration=voice, duration=duration, audio_fingerprint=fingerprint, cues=cues)
+    count = value.get("visual_count", min(20, max(3, math.ceil(duration / 2.8))))
+    if type(count) is not int or not 3 <= count <= 20:
+        raise ValueError("双语模板需要 3-20 段本人视频")
+    return dict(version=1, audio_duration=voice, duration=duration, audio_fingerprint=fingerprint, cues=cues, visual_count=count)
 
 
 def runtime_config(base, payload):
@@ -115,7 +118,7 @@ def runtime_config(base, payload):
         return base
     plan = validate_plan(payload["narration_plan"])
     duration = plan["duration"]
-    count = max(3, math.ceil(duration / 2.8))
+    count = plan["visual_count"]
     starts = [round(i * duration / count, 6) for i in range(count)]
     ends = [round(min(duration, (i + 1) * duration / count + (.18 if i < count - 1 else 0)), 6) for i in range(count)]
     return dict(base, duration=duration, frames=round(duration * 30), required_visuals=count,

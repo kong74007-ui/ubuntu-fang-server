@@ -438,6 +438,21 @@ def reference_fixture_html() -> str:
     ]
     for index in range(1, 18):
         variant = f"v{index:02d}"
+        if variant == "v05":
+            # Keep the fixture on the same frozen CSS patch the installer uses,
+            # rather than silently bypassing the production controls audit.
+            patch = (ROOT / "deploy/matrix-template-video/reference-featured-layout.patch").read_text(encoding="utf-8")
+            added_css = "\n".join(
+                line[1:] for line in patch.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            )
+            for layer in ("top1", "top2", "top3", "bottom2"):
+                rule = re.search(rf"\.v05 \.{layer}\s*\{{[^}}]+\}}", added_css)
+                if rule is None:
+                    raise AssertionError(f"missing frozen v05 CSS: {layer}")
+                styles.append(rule.group(0))
+            styles.append("#root .top { top: 8%; }")
+            continue
         if variant == "v07":
             styles.extend((
                 ".v07 .top1 { font-size: 118px; }",
@@ -458,10 +473,16 @@ def reference_fixture_html() -> str:
         f'<div id="{layer}" class="{layer}"></div>'
         for layer in REFERENCE_LAYERS
     )
+    controls_patch = (ROOT / "deploy/matrix-template-video/reference-v05-controls.patch").read_text(encoding="utf-8")
+    controls_script = "\n".join(
+        line[1:] for line in controls_patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
     return (
         '<html><head><style>\n' + "\n".join(styles) + "\n</style></head>"
         '<body><div id="root"><section id="typography" class="clip" '
-        'data-start="0">' + layers + "</section></div></body></html>"
+        'data-start="0">' + layers + "</section></div>"
+        + "<script>" + controls_script + "</script></body></html>"
     )
 
 
@@ -533,6 +554,18 @@ class ReferencePaletteIntegrationTests(unittest.TestCase):
                 self.matrix._reference_variant_has_layer(html, variant, "top3"),
                 variant,
             )
+
+    def test_controls_and_geometry_remain_required_after_palette_injection(self):
+        html = self.applier.inject(reference_fixture_html(), "reference")
+        for changed, error in (
+            (html.replace("matrix-reference-v05-controls", "missing-controls"), "controls reader is missing"),
+            (html.replace("102px/1.02", "103px/1.02"), "baseline changed"),
+        ):
+            self.assertNotEqual(html, changed)
+            with self.subTest(error=error), self.assertRaisesRegex(
+                self.matrix.MatrixTemplateError, error,
+            ):
+                self.matrix.reference_pack_layer_audit(changed)
 
     def test_rolled_back_variants_keep_two_visible_colors(self):
         """v06/v14/v17 不得被通用覆盖压平成单一近白色。"""
