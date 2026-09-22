@@ -10,7 +10,8 @@ test('collapsed geometry is not rendered',()=>{assert.equal(inverseQuad([0,0,0,0
 test('cover crop preserves source aspect and authored position',()=>{
  assert.deepEqual(objectCrop(100,100,200,100,'cover','50% 50%'),[.25,0,.5,1]);
  assert.deepEqual(objectCrop(200,100,100,200,'cover','50% 45%'),[0,.3375,1,.25]);
- assert.throws(()=>objectCrop(100,100,200,100,'contain','50% 50%'));
+ assert.deepEqual(objectCrop(100,100,200,100,'contain','50% 50%'),[0,-.5,1,2]);
+ assert.throws(()=>objectCrop(100,100,200,100,'scale-down','50% 50%'));
 });
 test('insets and polygons retain percentages',()=>{
  const rect=cssClip('inset(10% 20%)',200,100)[0].points;

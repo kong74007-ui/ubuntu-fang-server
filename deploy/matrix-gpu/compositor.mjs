@@ -56,7 +56,9 @@ fn radialSample(p:vec2f)->vec4f {
 @fragment fn fs(@builtin(position) position:vec4f)->@location(0) vec4f {
  let uv=project(position.xy,params.rows[0].xyz,params.rows[1].xyz,params.rows[2].xyz);
  if(any(uv<vec2f(0))||any(uv>vec2f(1))||!allowed(position.xy)){discard;}
- var tex=textureSampleLevel(image,sampleImage,params.crop.xy+uv*params.crop.zw,0);
+ let sourceUV=params.crop.xy+uv*params.crop.zw;
+ if(any(sourceUV<vec2f(0))||any(sourceUV>vec2f(1))){discard;}
+ var tex=textureSampleLevel(image,sampleImage,sourceUV,0);
  if(params.opacity.y>0.5){
   let height=mix(.31640625*params.radial.x*params.radial.y,1.0,params.radial.w);
   if(abs(uv.y-.5)>height*.5){discard;}

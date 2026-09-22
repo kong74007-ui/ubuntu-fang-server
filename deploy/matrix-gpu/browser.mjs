@@ -59,6 +59,13 @@ export class BrowserScene {
      return {id:i,elementId:el.id,src:el.getAttribute('src'),image:el.tagName==='IMG',...window,mediaStart:Number(el.dataset.mediaStart||0),playbackRate:Number(el.dataset.playbackRate||1)};
     });
     if(!media.length)throw Error('No visual media resolved; refusing text-only success');
+    for(const el of document.querySelectorAll('.clip[data-start][data-duration]')){
+     if(['VIDEO','IMG','AUDIO'].includes(el.tagName))continue;
+     const window=globalWindow(el);el.dataset.matrixGpuTimed='1';
+     el.dataset.matrixGpuStart=String(window.start);el.dataset.matrixGpuDuration=String(window.duration);
+    }
+    const timingStyle=document.createElement('style');
+    timingStyle.textContent='[data-matrix-gpu-outside="1"]{visibility:hidden!important}';document.head.append(timingStyle);
     for(const canvas of document.querySelectorAll('canvas')){
      if(root.dataset.compositionId!=='yellow-banner-zoom'||canvas.id!=='media-canvas'||typeof window.__yellowBannerPoseAt!=='function')throw Error('Unsupported canvas compositor');
     }
@@ -94,6 +101,10 @@ export class BrowserScene {
     let offset=0;for(let p=host;p;p=p.parentElement)if(p.hasAttribute('data-composition-file'))offset+=Number(p.dataset.start||0);
     timeline.seek(Math.max(0,t-offset),false);
    }
+   for(const el of document.querySelectorAll('[data-matrix-gpu-timed]')){
+    const start=Number(el.dataset.matrixGpuStart),end=start+Number(el.dataset.matrixGpuDuration);
+    el.dataset.matrixGpuOutside=t+1e-7<start||t>=end-1e-7?'1':'0';
+   }
   },time);
  }
  async captureLayer(foreground,filename) {
@@ -103,9 +114,10 @@ export class BrowserScene {
     for(const el of all)window.__gpuStyleRestore.push([el,el.getAttribute('style')]);
     const text=[...document.querySelectorAll('[data-matrix-gpu-overlay]')];
     if(mode){
+     const hidden=new Set([...document.querySelectorAll('body *')].filter(el=>getComputedStyle(el).visibility==='hidden'));
      const show=new Set();for(const el of text){for(let p=el;p;p=p.parentElement)show.add(p);for(const child of el.querySelectorAll('*'))show.add(child);}
-     for(const el of document.querySelectorAll('body *'))el.style.setProperty('visibility',show.has(el)?'visible':'hidden','important');
-     for(const el of [document.documentElement,document.body,document.querySelector('[data-composition-id]')])el.style.setProperty('background','transparent','important');
+     for(const el of document.querySelectorAll('body *'))el.style.setProperty('visibility',show.has(el)&&!hidden.has(el)?'visible':'hidden','important');
+     for(const el of [document.documentElement,document.body,document.querySelector('[data-composition-id]'),...document.querySelectorAll('[data-matrix-gpu-overlay-host]')])el.style.setProperty('background','transparent','important');
     }else{
      for(const el of text){el.style.setProperty('visibility','hidden','important');for(const child of el.querySelectorAll('*'))child.style.setProperty('visibility','hidden','important');}
      const typography=document.querySelector('.text-layer');if(typography)typography.style.setProperty('visibility','hidden','important');
@@ -142,6 +154,12 @@ export class BrowserScene {
      let points;
      const tag=shape.tagName.toLowerCase();
      if(tag==='polygon')points=Array.from(shape.points,p=>[p.x,p.y]);
+     else if(tag==='path'){
+      const length=shape.getTotalLength();
+      if(!Number.isFinite(length)||length<=0)return {kind:'polygon',points:[]};
+      const count=Math.min(256,Math.max(32,Math.ceil(length/8)));
+      points=Array.from({length:count},(_,i)=>{const p=shape.getPointAtLength(length*i/count);return[p.x,p.y];});
+     }
      else if(tag==='rect'){
       if(attr('rx')||attr('ry'))throw Error('Rounded SVG rect unsupported');
       const x=attr('x'),y=attr('y'),rw=attr('width'),rh=attr('height');points=[[x,y],[x+rw,y],[x+rw,y+rh],[x,y+rh]];

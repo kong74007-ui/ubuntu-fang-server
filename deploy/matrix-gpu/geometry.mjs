@@ -39,10 +39,10 @@ export function cssClip(value,w,h) {
 }
 export function objectCrop(boxW,boxH,sourceW,sourceH,fit,position) {
  if(fit==='fill') return [0,0,1,1];
- if(fit!=='cover') throw Error('Unsupported object-fit: '+fit);
+ if(fit!=='cover'&&fit!=='contain') throw Error('Unsupported object-fit: '+fit);
  const parts=position.trim().split(/\s+/);
  if(parts.length!==2||parts.some(p=>!/^\d+(\.\d+)?%$/.test(p))) throw Error('Unsupported object-position: '+position);
- const scale=Math.max(boxW/sourceW,boxH/sourceH),u=boxW/(sourceW*scale),v=boxH/(sourceH*scale);
+ const scale=(fit==='contain'?Math.min:Math.max)(boxW/sourceW,boxH/sourceH),u=boxW/(sourceW*scale),v=boxH/(sourceH*scale);
  return [(1-u)*parseFloat(parts[0])/100,(1-v)*parseFloat(parts[1])/100,u,v];
 }
 export function compareStack(a,b) {

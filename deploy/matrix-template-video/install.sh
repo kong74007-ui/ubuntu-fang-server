@@ -8,6 +8,7 @@ NINE_GRID_UPSTREAM_COMMIT="2a2db5877728dcf4987f85973cfba38bb80f45a2"
 HYPERFRAMES_VERSION="0.8.16"
 NINE_GRID_HYPERFRAMES_VERSION="0.8.33"
 MOTION_V2_HYPERFRAMES_VERSION="0.8.34"
+MOTION_V3_UPSTREAM_COMMIT="981ecf0584d963c6e26a2f9d5cfa7fd6985758d2"
 GSAP_VERSION="3.14.2"
 HYPERFRAMES_CLI="/usr/local/bin/hyperframes"
 HYPERFRAMES_BROWSER="/usr/bin/google-chrome-stable"
@@ -154,6 +155,7 @@ git -C "${RELEASE}/upstream" apply --directory=script-to-matrix-video "${LAYOUT_
 install -o root -g root -m 0644 "${API_SOURCE}" "${RELEASE}/api.py"
 install -o root -g root -m 0644 "${GPU_HELPER_SOURCE}" "${RELEASE}/matrix_gpu_runtime.py"
 install -o root -g root -m 0644 "${GPU_SUPERVISOR_SOURCE}" "${RELEASE}/matrix_gpu_supervisor.py"
+install -o root -g root -m 0644 "${DEPLOY_ROOT}/server/matrix_motion_v3.py" "${RELEASE}/matrix_motion_v3.py"
 SKILL_ROOT="${RELEASE}/upstream/script-to-matrix-video"
 python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py"
 python3 -c 'from PIL import Image, ImageDraw, ImageFont'
@@ -485,6 +487,26 @@ chmod 0755 "${MOTION_V2_CLI}"
 if [[ "$("${MOTION_V2_CLI}" --version)" != "${MOTION_V2_HYPERFRAMES_VERSION}" ]]; then
   echo "motion v2 HyperFrames CLI version mismatch" >&2; exit 1
 fi
+MOTION_V3_UPSTREAM="${RELEASE}/motion-v3-upstream"
+git init "${MOTION_V3_UPSTREAM}"
+git -C "${MOTION_V3_UPSTREAM}" remote add origin "${UPSTREAM_URL}"
+git -C "${MOTION_V3_UPSTREAM}" fetch --depth 1 origin "${MOTION_V3_UPSTREAM_COMMIT}"
+git -C "${MOTION_V3_UPSTREAM}" checkout --detach FETCH_HEAD
+[[ "$(git -C "${MOTION_V3_UPSTREAM}" rev-parse HEAD)" == "${MOTION_V3_UPSTREAM_COMMIT}" ]] || exit 1
+python3 "${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-motion-v3-template.py" \
+  --skill "${MOTION_V3_UPSTREAM}/script-to-matrix-video" --output "${RELEASE}/motion-v3-templates"
+MOTION_V3_RUNTIME="${RELEASE}/motion-v3-runtime"
+install -d -o root -g root -m 0755 "${MOTION_V3_RUNTIME}"
+install -o root -g root -m 0644 "${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v3-runtime/"package*.json "${MOTION_V3_RUNTIME}/"
+env ONNXRUNTIME_NODE_INSTALL_CUDA=skip "${NODE_NPM}" ci \
+  --prefix "${MOTION_V3_RUNTIME}" --ignore-scripts --no-audit --no-fund
+MOTION_V3_CLI="${MOTION_V3_RUNTIME}/hyperframes"
+cat > "${MOTION_V3_CLI}" <<EOF
+#!/usr/bin/env bash
+exec "${NODE_BINARY}" "${MOTION_V3_RUNTIME}/node_modules/hyperframes/bin/hyperframes.mjs" "\$@"
+EOF
+chmod 0755 "${MOTION_V3_CLI}"
+[[ "$("${MOTION_V3_CLI}" --version)" == "0.8.38" ]] || exit 1
 BUILD_ID="$(printf '%s\n' \
   "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" "${NINE_GRID_UPSTREAM_COMMIT}" \
   "${LAYOUT_PATCH_SHA256}" "${REFERENCE_LAYOUT_PATCH_SHA256}" "${NINE_GRID_ADAPTER_SHA256}" \
@@ -530,6 +552,8 @@ MATRIX_TEMPLATE_PRIVATE_FONT_ROOT=${PRIVATE_FONT_ROOT}
 MATRIX_TEMPLATE_HYPERFRAMES_CLI=${HYPERFRAMES_CLI}
 MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI=${SOURCE_LINK}/nine-grid-runtime/hyperframes
 MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI=${SOURCE_LINK}/motion-v2-runtime/hyperframes
+MATRIX_TEMPLATE_MOTION_V3_ROOT=${SOURCE_LINK}/motion-v3-templates
+MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI=${SOURCE_LINK}/motion-v3-runtime/hyperframes
 MATRIX_TEMPLATE_HYPERFRAMES_GSAP=${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js
 MATRIX_TEMPLATE_HYPERFRAMES_BROWSER=${HYPERFRAMES_BROWSER}
 MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY=2
@@ -556,6 +580,8 @@ else
   BRUSH_PANEL_ROOT_VALUE="${SOURCE_LINK}/nine-grid-upstream/script-to-matrix-video/assets/templates/brush-panel-transitions" \
   NINE_GRID_CLI_VALUE="${SOURCE_LINK}/nine-grid-runtime/hyperframes" \
   MOTION_V2_CLI_VALUE="${SOURCE_LINK}/motion-v2-runtime/hyperframes" \
+  MOTION_V3_ROOT_VALUE="${SOURCE_LINK}/motion-v3-templates" \
+  MOTION_V3_CLI_VALUE="${SOURCE_LINK}/motion-v3-runtime/hyperframes" \
   HYPERFRAMES_CLI_VALUE="${HYPERFRAMES_CLI}" \
   HYPERFRAMES_GSAP_VALUE="${SOURCE_LINK}/reference-runtime/node_modules/gsap/dist/gsap.min.js" \
   HYPERFRAMES_BROWSER_VALUE="${HYPERFRAMES_BROWSER}" python3 - <<'PY'
@@ -575,6 +601,8 @@ settings = {
     "MATRIX_TEMPLATE_HYPERFRAMES_CLI": os.environ["HYPERFRAMES_CLI_VALUE"],
     "MATRIX_TEMPLATE_NINE_GRID_HYPERFRAMES_CLI": os.environ["NINE_GRID_CLI_VALUE"],
     "MATRIX_TEMPLATE_MOTION_V2_HYPERFRAMES_CLI": os.environ["MOTION_V2_CLI_VALUE"],
+    "MATRIX_TEMPLATE_MOTION_V3_ROOT": os.environ["MOTION_V3_ROOT_VALUE"],
+    "MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI": os.environ["MOTION_V3_CLI_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_GSAP": os.environ["HYPERFRAMES_GSAP_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_BROWSER": os.environ["HYPERFRAMES_BROWSER_VALUE"],
     "MATRIX_TEMPLATE_HYPERFRAMES_CONCURRENCY": "2",
@@ -624,7 +652,7 @@ fi
 for _ in $(seq 1 30); do
   response="$(curl --fail --silent --max-time 2 http://127.0.0.1:8112/health 2>/dev/null || true)"
   if EXPECTED_BUILD_ID="${BUILD_ID}" python3 -c \
-      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==22 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["brush-panel-transitions","fan-whip-static","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==4 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
+      'import json,os,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("build_id")==os.environ["EXPECTED_BUILD_ID"] and d.get("templates")==25 and d.get("hyperframes_templates")==17 and d.get("hyperframes_version")=="0.8.16" and d.get("nine_grid_templates")==1 and d.get("nine_grid_hyperframes_version")=="0.8.33" and d.get("fixed_skill_templates")==["bilingual-stagger-salon","brush-panel-transitions","fan-whip-static","fixed-opening-whip","inset-flip-whip","triple-strip-shutter","yellow-banner-zoom"] and d.get("fixed_skill_template_count")==7 and d.get("fixed_skill_hyperframes_version")=="mixed" and d.get("fixed_skill_hyperframes_versions")=={"0.8.33":2,"0.8.34":2,"0.8.38":3} and d.get("reference_top_layer_counts")=={"2":6,"3":10,"4":1} and d.get("reference_fixed_private_fonts")==["Smiley Sans Oblique"] and d.get("reference_semantic_layout_templates")==["v01","v02","v03","v04","v05","v06","v07","v08","v09","v10","v11","v12","v13","v14","v15","v16","v17"] and d.get("public_template_palette_version")=="reference-palettes-v2" and d.get("public_template_palette_count")==20 and d.get("material_library_ready") is True and d.get("material_source_policy")=="huangque-library-only" and d.get("material_selection_contract_version")==2 and d.get("material_clip_contract_version")==3 and d.get("max_batch_size")==5 and d.get("engine_concurrency")=={"ffmpeg":5,"hyperframes":2} and d.get("hyperframes_concurrency")==2 and d.get("hyperframes_total_timeout_seconds")==900 and d.get("hyperframes_slot_timeout_seconds")==600 and d.get("concurrency")==5 and d.get("worker_count")==5 else 1)' \
       <<<"${response}"; then
     SUCCEEDED=1
     [[ -n "${LEGACY_SOURCE}" && -d "${LEGACY_SOURCE}" ]] && rm -rf "${LEGACY_SOURCE}"

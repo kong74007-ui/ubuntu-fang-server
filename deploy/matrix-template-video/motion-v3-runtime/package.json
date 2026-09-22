@@ -1,0 +1,6 @@
+{
+  "name": "huangque-matrix-motion-v3-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {"hyperframes": "0.8.38"}
+}

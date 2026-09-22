@@ -191,10 +191,10 @@ class MaterialLibraryTests(unittest.TestCase):
         library = self.library()
 
         for value in (
-            True, "2.5", 1.99, 5.01, float("nan"), 10 ** 400,
+            True, "2.5", 1.99, 6.01, float("nan"), 10 ** 400,
         ):
             with self.subTest(value=value), self.assertRaisesRegex(
-                ValueError, "between 2 and 5",
+                ValueError, "between 2 and 6",
             ):
                 library.select([{
                     "scene_id": "s1", "media_type": "video",
@@ -233,6 +233,16 @@ class MaterialLibraryTests(unittest.TestCase):
         selected = result["materials"][0]
         self.assertEqual(expected, selected["sha256"])
         self.assertEqual(5.0, selected["clip_duration_seconds"])
+
+    def test_new_template_windows_and_capacity_are_advertised(self):
+        expected = self.add("long-opening", media=".mp4", 时长秒=6.2)
+        library = self.library()
+        stats = library.stats()
+        self.assertEqual(6.0, stats["max_clip_duration_seconds"])
+        self.assertEqual(22, stats["max_selection_scenes"])
+        result = library.select([{"scene_id":"opening", "media_type":"video", "clip_duration_seconds":5.1}])
+        self.assertEqual(expected, result["materials"][0]["sha256"])
+        self.assertEqual(5.1, result["materials"][0]["clip_duration_seconds"])
 
     def test_source_minimum_must_cover_clip_and_safety_margin(self):
         self.add("video", media=".mp4", 时长秒=10.0)
@@ -966,13 +976,13 @@ class MaterialLibraryTests(unittest.TestCase):
         self.assertEqual([expected] * 16, values)
         self.assertEqual(1, calls)
 
-    def test_scene_contract_rejects_non_objects_and_more_than_twenty_one(self):
+    def test_scene_contract_rejects_non_objects_and_more_than_twenty_two(self):
         self.add("only", 标签=["库存"])
         library = self.library()
         with self.assertRaisesRegex(ValueError, "object"):
             library.select(["bad"])
-        with self.assertRaisesRegex(ValueError, "21"):
-            library.select([{"scene_id": str(index)} for index in range(22)])
+        with self.assertRaisesRegex(ValueError, "22"):
+            library.select([{"scene_id": str(index)} for index in range(23)])
         with self.assertRaisesRegex(ValueError, "selection_mode"):
             library.select([{"scene_id": "s1"}], selection_mode="weighted")
 
