@@ -1,0 +1,100 @@
+diff --git a/script-to-matrix-video/assets/templates/reference-typography-17/index.html b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
+index b777ae5..32cc9d4 100644
+--- a/script-to-matrix-video/assets/templates/reference-typography-17/index.html
++++ b/script-to-matrix-video/assets/templates/reference-typography-17/index.html
+@@ -279,6 +279,95 @@
+           document.getElementById("bottom1")
+         );
+       }
++      // 05 参数微调（仅 v05）：服务端注入的 JSON 只含已校验数值与 hex，
++      // 这里按同一套取整规则（Math.round）把有效字号/描边/边距落到元素行内样式，
++      // 未注入 JSON 时（默认版）本段完全不生效。
++      const v05ControlsNode = document.getElementById("matrix-reference-v05-controls");
++      if (vars.variant === "v05" && v05ControlsNode) {
++        let v05Controls = null;
++        try {
++          v05Controls = JSON.parse(v05ControlsNode.textContent || "null");
++        } catch (error) {
++          v05Controls = null;
++        }
++        if (v05Controls && typeof v05Controls === "object") {
++          const v05Number = value => (
++            typeof value === "number" && Number.isFinite(value) ? value : null
++          );
++          const v05ScaleLayer = (element, scale) => {
++            if (!element || scale === null || scale === 1) return;
++            const computed = getComputedStyle(element);
++            const size = parseFloat(computed.fontSize);
++            const strokeWidth = parseFloat(computed.webkitTextStrokeWidth || "0");
++            const marginTop = parseFloat(computed.marginTop || "0");
++            if (Number.isFinite(size)) {
++              element.style.fontSize = Math.round(size * scale) + "px";
++            }
++            if (Number.isFinite(strokeWidth) && strokeWidth > 0) {
++              element.style.webkitTextStrokeWidth = Math.round(strokeWidth * scale) + "px";
++            }
++            if (Number.isFinite(marginTop) && marginTop > 0) {
++              element.style.marginTop = Math.round(marginTop * scale) + "px";
++            }
++          };
++          const titleScale = v05Number(v05Controls.title_scale);
++          if (titleScale !== null) {
++            for (const layerId of ["top1", "top2", "top3"]) {
++              v05ScaleLayer(document.getElementById(layerId), titleScale);
++            }
++          }
++          const ctaScale = v05Number(v05Controls.cta_scale);
++          if (ctaScale !== null) {
++            v05ScaleLayer(document.getElementById("bottom2"), ctaScale);
++          }
++          const titleOffset = v05Number(v05Controls.title_offset_y);
++          if (titleOffset !== null && titleOffset !== 0) {
++            const topGroup = document.querySelector("#root .top");
++            if (topGroup) {
++              const usedTop = parseFloat(getComputedStyle(topGroup).top);
++              if (Number.isFinite(usedTop)) {
++                topGroup.style.top = (usedTop + titleOffset) + "px";
++              }
++            }
++          }
++          const ctaOffset = v05Number(v05Controls.cta_offset_y);
++          if (ctaOffset !== null && ctaOffset !== 0) {
++            const bottomGroup = document.querySelector("#root .bottom");
++            if (bottomGroup) {
++              const usedBottom = parseFloat(getComputedStyle(bottomGroup).bottom);
++              if (Number.isFinite(usedBottom)) {
++                bottomGroup.style.bottom = (usedBottom - ctaOffset) + "px";
++              }
++            }
++          }
++          const accentColor = (
++            typeof v05Controls.accent_color === "string"
++            && /^#[0-9A-Fa-f]{6}$/.test(v05Controls.accent_color)
++          ) ? v05Controls.accent_color : null;
++          if (accentColor) {
++            const cta = document.getElementById("bottom2");
++            if (cta) cta.style.backgroundColor = accentColor;
++          }
++          if (Array.isArray(v05Controls.media_focus)) {
++            const videoIds = ["videoA", "videoB", "videoC", "videoD", "videoE"];
++            for (const item of v05Controls.media_focus) {
++              if (!item || typeof item !== "object") continue;
++              const slot = v05Number(item.slot);
++              const focusX = v05Number(item.x);
++              const focusY = v05Number(item.y);
++              if (
++                slot === null || !Number.isInteger(slot)
++                || slot < 1 || slot > videoIds.length
++                || focusX === null || focusY === null
++              ) continue;
++              const video = document.getElementById(videoIds[slot - 1]);
++              if (video) {
++                video.style.objectPosition = (focusX * 100) + "% " + (focusY * 100) + "%";
++              }
++            }
++          }
++        }
++      }
+       root.dataset.duration = String(duration);
+       typography.dataset.duration = String(duration);
+       bgm.dataset.duration = String(duration);

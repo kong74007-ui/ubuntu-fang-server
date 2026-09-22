@@ -329,6 +329,89 @@ class MatrixTemplateDeploymentTests(unittest.TestCase):
         self.assertNotIn(".v04 .top1 {\n+", patch)
         self.assertNotIn(".v06 .top1 {\n+", patch)
 
+    def test_v05_controls_patch_is_hash_locked_and_wired_into_installer(self):
+        patch_path = (
+            ROOT / "deploy/matrix-template-video/reference-v05-controls.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            "79ea8b5c50b07178de605468bc8ee4de677bef36e791b4df422db0346b1a3798",
+            hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+        )
+        self.assertIn(
+            "script-to-matrix-video/assets/templates/reference-typography-17/index.html",
+            patch,
+        )
+        # 模板读取器与注入标签共用同一个 id；没注入 JSON 时（默认版）整段不生效。
+        self.assertIn(
+            'const v05ControlsNode = document.getElementById("matrix-reference-v05-controls");',
+            patch,
+        )
+        self.assertIn('if (vars.variant === "v05" && v05ControlsNode) {', patch)
+        self.assertIn("JSON.parse(v05ControlsNode.textContent", patch)
+        # 字号/描边/上边距按 Math.round 与 api.py 的 _round_half_up 对齐
+        self.assertIn(
+            'element.style.fontSize = Math.round(size * scale) + "px";', patch,
+        )
+        self.assertIn(
+            'element.style.webkitTextStrokeWidth = Math.round(strokeWidth * scale) + "px";',
+            patch,
+        )
+        self.assertIn(
+            'element.style.marginTop = Math.round(marginTop * scale) + "px";',
+            patch,
+        )
+        # 顶部组下移 + 底部组上移（bottom 用减号）与 api.py 几何校验同向
+        self.assertIn(
+            'topGroup.style.top = (usedTop + titleOffset) + "px";', patch,
+        )
+        self.assertIn(
+            'bottomGroup.style.bottom = (usedBottom - ctaOffset) + "px";', patch,
+        )
+        # 强调色只写 bottom2 背景，且先过 hex 正则
+        self.assertIn("/^#[0-9A-Fa-f]{6}$/.test(v05Controls.accent_color)", patch)
+        self.assertIn("cta.style.backgroundColor = accentColor;", patch)
+        # 槽位焦点写 object-position（百分比形式），槽位表覆盖 3~5 格
+        self.assertIn(
+            'const videoIds = ["videoA", "videoB", "videoC", "videoD", "videoE"];',
+            patch,
+        )
+        self.assertIn(
+            'video.style.objectPosition = (focusX * 100) + "% " + (focusY * 100) + "%";',
+            patch,
+        )
+        installer = (
+            ROOT / "deploy/matrix-template-video/install.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'REFERENCE_V05_CONTROLS_PATCH_SHA256="79ea8b5c50b07178de605468bc8ee4de677bef36e791b4df422db0346b1a3798"',
+            installer,
+        )
+        self.assertIn(
+            'REFERENCE_V05_CONTROLS_PATCH_SOURCE="${DEPLOY_ROOT}/deploy/matrix-template-video/reference-v05-controls.patch"',
+            installer,
+        )
+        self.assertIn('"${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"', installer)
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply --check "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"',
+            installer,
+        )
+        self.assertIn(
+            'git -C "${REFERENCE_UPSTREAM}" apply "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"',
+            installer,
+        )
+        # 顺序：featured 补丁 → v05 参数补丁（v05 补丁不改 featured 的行，只追加脚本段）
+        self.assertLess(
+            installer.index('apply "${REFERENCE_LAYOUT_PATCH_SOURCE}"'),
+            installer.index('apply "${REFERENCE_V05_CONTROLS_PATCH_SOURCE}"'),
+        )
+        self.assertIn('d.get("overrides_contract_version")==1', installer)
+        self.assertIn(
+            'd.get("tunable_templates")==["ref-05-changsha-white-red"]',
+            installer,
+        )
+        self.assertIn('d.get("preview_concurrency")==2', installer)
+
     def test_v04_preview_browser_guard_rejects_visual_regressions(self):
         path = ROOT / "deploy/matrix-template-video/verify_v04_preview.py"
         spec = importlib.util.spec_from_file_location("verify_v04_preview", path)
