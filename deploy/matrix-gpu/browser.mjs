@@ -42,6 +42,7 @@ export class BrowserScene {
     for(const el of document.querySelectorAll('[data-var-text]'))if(values[el.dataset.varText]!==undefined)el.textContent=String(values[el.dataset.varText]);
     for(const el of document.querySelectorAll('[data-var-src]'))if(values[el.dataset.varSrc]!==undefined)el.setAttribute('src',String(values[el.dataset.varSrc]));
     await document.fonts.ready;
+    if(window.__matrixApplyTextStyles){window.__matrixApplyTextStyles();await window.__matrixTextFontsReady;await document.fonts.ready;}
     if([...document.fonts].some(f=>f.status==='error'))throw Error('Font load failed');
     const root=document.querySelector('[data-composition-id]');
     if(!root)throw Error('Missing root');
@@ -105,6 +106,7 @@ export class BrowserScene {
     const start=Number(el.dataset.matrixGpuStart),end=start+Number(el.dataset.matrixGpuDuration);
     el.dataset.matrixGpuOutside=t+1e-7<start||t>=end-1e-7?'1':'0';
    }
+   if(window.__matrixApplyTextStyles)window.__matrixApplyTextStyles();
   },time);
  }
  async captureLayer(foreground,filename) {
@@ -143,6 +145,8 @@ export class BrowserScene {
  async frame(time,metadata) {
   await this.seek(time);
   const state=await this.page.evaluate(t=>{
+   const textErrors=window.__matrixValidateTextStyles?window.__matrixValidateTextStyles():[];
+   if(textErrors.length)throw Error(textErrors.join('; '));
    const root=document.querySelector('[data-composition-id]');
    const chainFor=el=>{const result=[];for(let p=el;p&&p!==document.body;p=p.parentElement)result.unshift(p);return result;};
    const svgShapes=(value,w,h)=>{

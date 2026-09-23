@@ -6,6 +6,8 @@ param(
     [string]$Npm = 'npm.cmd'
 )
 $ErrorActionPreference = 'Stop'
+& $Python -c 'import tinycss2, cssselect2'
+if ($LASTEXITCODE -ne 0) { throw 'Install deploy/requirements-matrix-text-controls.txt in the service Python environment first.' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $destinationPath) { throw 'Use a new release directory; active files are never overwritten.' }
@@ -32,7 +34,7 @@ $version = & $cli --version
 if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne '0.8.38') { throw 'HyperFrames version mismatch.' }
 $service = Join-Path $destinationPath 'service'
 New-Item -ItemType Directory -Path $service | Out-Null
-foreach ($name in 'matrix_template_api.py','matrix_motion_v3.py','matrix_gpu_runtime.py','matrix_gpu_supervisor.py') {
+foreach ($name in 'matrix_template_api.py','matrix_motion_v3.py','matrix_text_controls.py','matrix_gpu_runtime.py','matrix_gpu_supervisor.py') {
     Copy-Item -LiteralPath (Join-Path $repo "server/$name") -Destination (Join-Path $service $name)
 }
 & (Join-Path $repo 'deploy/matrix-gpu/stage-runtime.ps1') -Destination (Join-Path $destinationPath 'gpu') -Browser $Browser -Node $Node -Npm $Npm

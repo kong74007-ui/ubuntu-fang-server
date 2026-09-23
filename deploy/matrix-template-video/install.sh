@@ -105,6 +105,7 @@ for source in "${UNIT_SOURCE}" "${API_SOURCE}" "${LAYOUT_PATCH_SOURCE}" "${REFER
   fi
 done
 for source in "${DEPLOY_ROOT}/server/matrix_motion_v3.py" \
+  "${DEPLOY_ROOT}/server/matrix_text_controls.py" \
   "${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-motion-v3-template.py" \
   "${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v3-runtime/package.json" \
   "${DEPLOY_ROOT}/deploy/matrix-template-video/motion-v3-runtime/package-lock.json"; do
@@ -120,6 +121,7 @@ if [[ ! -f /etc/huangque/pixelle-material-library.env || -L /etc/huangque/pixell
 fi
 source "${ROLLBACK_LIB}"
 python3 "${DEPLOY_ROOT}/deploy/matrix-template-video/verify-hdr-runtime.py"
+python3 -c 'import tinycss2, cssselect2' || { echo "Install deploy/requirements-matrix-text-controls.txt in the service Python environment first" >&2; exit 2; }
 systemctl is-active --quiet "${SERVICE}" && WAS_ACTIVE=1 || true
 systemctl is-enabled --quiet "${SERVICE}" && WAS_ENABLED=1 || true
 if [[ "${WAS_ACTIVE}" -eq 1 ]]; then
@@ -170,6 +172,7 @@ install -o root -g root -m 0644 "${API_SOURCE}" "${RELEASE}/api.py"
 install -o root -g root -m 0644 "${GPU_HELPER_SOURCE}" "${RELEASE}/matrix_gpu_runtime.py"
 install -o root -g root -m 0644 "${GPU_SUPERVISOR_SOURCE}" "${RELEASE}/matrix_gpu_supervisor.py"
 install -o root -g root -m 0644 "${DEPLOY_ROOT}/server/matrix_motion_v3.py" "${RELEASE}/matrix_motion_v3.py"
+install -o root -g root -m 0644 "${DEPLOY_ROOT}/server/matrix_text_controls.py" "${RELEASE}/matrix_text_controls.py"
 SKILL_ROOT="${RELEASE}/upstream/script-to-matrix-video"
 python3 -m py_compile "${RELEASE}/api.py" "${SKILL_ROOT}/scripts/render_video.py"
 python3 -c 'from PIL import Image, ImageDraw, ImageFont'
@@ -553,6 +556,7 @@ chmod 0755 "${MOTION_V3_CLI}"
 BUILD_ID="$(printf '%s\n' \
   "${MOTION_V3_UPSTREAM_COMMIT}" \
   "$(sha256sum "${RELEASE}/matrix_motion_v3.py" | awk '{print $1}')" \
+  "$(sha256sum "${RELEASE}/matrix_text_controls.py" | awk '{print $1}')" \
   "$(sha256sum "${DEPLOY_ROOT}/deploy/matrix-template-video/prepare-motion-v3-template.py" | awk '{print $1}')" \
   "$(sha256sum "${MOTION_V3_RUNTIME}/package-lock.json" | awk '{print $1}')" \
   "${UPSTREAM_COMMIT}" "${REFERENCE_UPSTREAM_COMMIT}" "${NINE_GRID_UPSTREAM_COMMIT}" \
