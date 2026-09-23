@@ -5050,19 +5050,29 @@ class MatrixTemplateService:
     def _reference_duration_with_user_materials(
         self, nominal: int, payload: dict, *, minimum: int = 3, maximum: int = 5,
     ) -> int:
-        """参考模板随机时长按本人视频素材最短板封顶（#8635）。"""
+        """随机时长须匹配已选画面数量，并受最短本人视频时长限制。"""
+        materials = payload.get("user_materials") or []
+        if not materials:
+            return nominal
+        count = len(materials)
+        candidates = [value for value in range(8, 16)
+                      if self._reference_visual_count(value, minimum, maximum) == count]
+        if not candidates:
+            raise MatrixTemplateError(
+                "当前模板需要 %d 至 %d 个本人画面素材" % (minimum, maximum)
+            )
+        target = max(candidates[0], min(int(nominal), candidates[-1]))
         durations = []
-        for item in payload.get("user_materials") or []:
+        for item in materials:
             if not isinstance(item, dict) or item.get("media_type") != "video":
                 continue
             source = self.user_asset_path(str(item.get("sha256") or ""))
             if source is None:
                 raise MatrixTemplateError("用户素材不存在或已过期，请重新上传")
             durations.append(self._inspect_user_asset(source, "video"))
-        if not durations:
-            return nominal
-        for candidate in range(min(int(nominal), 15), 7, -1):
-            count = self._reference_visual_count(candidate, minimum, maximum)
+        for candidate in reversed(candidates):
+            if candidate > target:
+                continue
             segment = float(candidate) / count
             if all(
                 float(value) - REFERENCE_MEDIA_SAFETY_SECONDS + 0.001
@@ -5071,7 +5081,7 @@ class MatrixTemplateService:
             ):
                 return candidate
         shortest = min(durations)
-        needed = 8.0 / 3.0 + REFERENCE_MEDIA_SAFETY_SECONDS
+        needed = candidates[0] / count + REFERENCE_MEDIA_SAFETY_SECONDS
         raise MatrixTemplateError(
             "本人视频素材时长不足：最短只有 %.1f 秒，"
             "该模板每段画面至少需要 %.1f 秒" % (shortest, needed)
