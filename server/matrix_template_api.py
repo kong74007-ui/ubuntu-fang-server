@@ -5101,6 +5101,13 @@ class MatrixTemplateService:
         template = self.reference_templates.get(str(payload.get("template_id") or ""))
         minimum = int((template or {}).get("required_visuals") or 3)
         maximum = int((template or {}).get("required_visuals_max") or 5)
+        owned = payload.get("user_materials")
+        if template is not None and not isinstance(reference, dict) and isinstance(owned, list) and owned:
+            if not minimum <= len(owned) <= maximum:
+                raise MatrixTemplateError(
+                    "当前模板需要 %d 至 %d 个本人画面素材" % (minimum, maximum)
+                )
+            return len(owned)
         return max(minimum, min(maximum, calculated))
 
     def _reference_visual_count(
@@ -6767,6 +6774,14 @@ class MatrixTemplateService:
         if set(by_scene) != set(expected) or len(by_scene) != len(expected):
             raise MatrixTemplateError("素材库返回的分镜绑定不完整")
         ordered = [by_scene[scene_id] for scene_id in expected]
+        # The authenticated material-library API omits provider. This default
+        # applies only to its BGM scene, never to visual slots or explicit origins.
+        ordered = [
+            dict(item, provider=MATERIAL_PROVIDER_LIBRARY)
+            if item.get("scene_id") == "bgm" and item.get("media_type") == "bgm"
+            and item.get("provider") is None else item
+            for item in ordered
+        ]
         if self.enforce_user_materials:
             if any(
                 item.get("provider") != MATERIAL_PROVIDER_USER
@@ -7072,6 +7087,15 @@ class MatrixTemplateService:
             return None
         if not isinstance(raw, list):
             raise MatrixTemplateError("用户素材清单格式无效")
+        template = self.reference_templates.get(str(payload.get("template_id") or ""))
+        if template is not None and not isinstance(payload.get("_reference_template"), dict):
+            # Preflight runs before the random timeline is frozen. Validate the
+            # same count-bounded windows without changing the idempotent payload.
+            payload = dict(payload, duration=self._reference_duration_with_user_materials(
+                int(payload["duration"]), payload,
+                minimum=int(template.get("required_visuals") or 3),
+                maximum=int(template.get("required_visuals_max") or 5),
+            ))
         scenes, count, _reference = self._material_scenes(payload)
         if len(raw) != count:
             raise MatrixTemplateError(
