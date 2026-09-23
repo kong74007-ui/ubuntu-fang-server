@@ -92,6 +92,7 @@ jobs:
           MATRIX_GPU_REQUIRE_BROWSER_TEST: "1"
         run: |
           npm ci --prefix deploy/matrix-gpu --ignore-scripts --no-audit --no-fund
+          node --test deploy/matrix-gpu/browser.test.mjs
           python -m pytest tests/test_matrix_gpu_posix.py tests/test_matrix_gpu_cleanup.py -q
 
       - name: 测试全部工作台 JavaScript

@@ -30,6 +30,15 @@ from shutil import copyfileobj
 from urllib.parse import urlencode, urlsplit
 
 from PIL import Image, ImageDraw, ImageFont
+try:
+    from . import matrix_motion_v3 as motion_v3
+except ImportError:
+    import importlib.util
+    _motion_spec = importlib.util.spec_from_file_location(
+        "matrix_motion_v3", Path(__file__).with_name("matrix_motion_v3.py"),
+    )
+    motion_v3 = importlib.util.module_from_spec(_motion_spec)
+    _motion_spec.loader.exec_module(motion_v3)
 
 
 MAX_BODY_BYTES = 128 * 1024
@@ -637,6 +646,7 @@ FIXED_SKILL_TEMPLATE_CONFIGS = {
         },
     },
 }
+FIXED_SKILL_TEMPLATE_CONFIGS.update(motion_v3.configs(FIXED_SKILL_TEMPLATE_CONFIGS[BRUSH_PANEL_TEMPLATE_ID]))
 REFERENCE_FEATURED_VARIANT = "v05"
 REFERENCE_V01_VARIANT = "v01"
 REFERENCE_V07_VARIANT = "v07"
@@ -3311,6 +3321,8 @@ class MatrixTemplateService:
                  hyperframes_cli: Path | None = None,
                  nine_grid_hyperframes_cli: Path | None = None,
                  motion_v2_hyperframes_cli: Path | None = None,
+                 motion_v3_root: Path | None = None,
+                 motion_v3_hyperframes_cli: Path | None = None,
                  hyperframes_gsap: Path | None = None,
                  hyperframes_browser: Path | None = None,
                  gpu_mode: str = "disabled",
@@ -3401,6 +3413,10 @@ class MatrixTemplateService:
             if root is not None
         }
         self.fixed_skill_templates: dict[str, dict] = {}
+        if motion_v3_root is not None:
+            for identifier in motion_v3.IDS:
+                self.fixed_skill_roots[identifier] = motion_v3_root.resolve() / identifier
+        self.motion_v3_hyperframes_cli = motion_v3_hyperframes_cli.resolve() if motion_v3_hyperframes_cli else None
         self.fixed_skill_fonts: dict[str, dict[str, dict]] = {}
         self.fixed_skill_source_sha256: dict[str, str] = {}
         self.fixed_skill_measure_fonts: dict[
@@ -3505,7 +3521,7 @@ class MatrixTemplateService:
             self.catalog.extend(self._load_reference_catalog())
         if self.nine_grid_root is not None:
             self.catalog.append(self._load_nine_grid_catalog())
-        for template_id in FIXED_SKILL_TEMPLATE_IDS:
+        for template_id in (*FIXED_SKILL_TEMPLATE_IDS, *motion_v3.IDS):
             if template_id in self.fixed_skill_roots:
                 self.catalog.append(self._load_fixed_skill_template(template_id))
         if not self.catalog and start_worker:
@@ -4030,10 +4046,12 @@ class MatrixTemplateService:
             raise MatrixTemplateError("fixed Skill template root is unavailable")
         required = {
             "index.html", "template.json", "package.json",
-            str(config["bgm_path"]),
             *(f"assets/fonts/{filename}" for filename in config["font_files"].values()),
             *config.get("required_files", ()),
         }
+        has_bgm = bool(config["bgm_path"])
+        if has_bgm:
+            required.add(str(config["bgm_path"]))
         if template_id == TRIPLE_STRIP_TEMPLATE_ID:
             required.update({
                 "hyperframes.json", "index.motion.json",
@@ -4051,6 +4069,9 @@ class MatrixTemplateService:
             path = root.joinpath(*relative.split("/"))
             if path.is_symlink() or not path.is_file():
                 raise MatrixTemplateError("fixed Skill template is incomplete")
+        for relative, digest in config.get("fixed_assets", {}).items():
+            if _file_sha256(root / relative) != digest:
+                raise MatrixTemplateError("固定开场素材校验失败")
 
         manifest = _read_json(root / "template.json")
         manifest_version = config.get("manifest_version", config["version"])
@@ -4068,12 +4089,12 @@ class MatrixTemplateService:
             or manifest.get("height") != 1920
             or manifest.get("fps") != 30
             or abs(float(manifest.get("duration") or 0) - config["duration"]) > 1e-9
-            or not isinstance(binding, dict)
+            or (has_bgm and (not isinstance(binding, dict)
             or binding.get("path") != config["bgm_path"]
             or binding.get("sha256") != config["bgm_sha256"]
             or abs(float(binding.get("duration") or 0) - config["bgm_duration"]) > 1e-6
             or _file_sha256(root / str(config["bgm_path"]))
-                != config["bgm_sha256"]
+                != config["bgm_sha256"]))
         ):
             raise MatrixTemplateError("fixed Skill template contract is invalid")
         if template_id == TRIPLE_STRIP_TEMPLATE_ID:
@@ -4135,7 +4156,7 @@ class MatrixTemplateService:
                 rf'<audio\b[^>]*\bid="{re.escape(audio_id)}"'
                 r'[^>]*\bdata-volume="1"',
                 index_html,
-            )
+            ) and has_bgm
         ):
             raise MatrixTemplateError("fixed Skill template HTML contract changed")
         if (
@@ -4151,8 +4172,8 @@ class MatrixTemplateService:
                 "sha256": _file_sha256(path),
             }
         cli = (
-            self.motion_v2_hyperframes_cli
-            if hyperframes_version == MOTION_V2_HYPERFRAMES_VERSION
+            self.motion_v3_hyperframes_cli if template_id in motion_v3.IDS else self.motion_v2_hyperframes_cli
+            if hyperframes_version in {MOTION_V2_HYPERFRAMES_VERSION, motion_v3.VERSION}
             else self.nine_grid_hyperframes_cli
         )
         if cli is None or cli.is_symlink() or not cli.is_file():
@@ -4191,23 +4212,29 @@ class MatrixTemplateService:
             "id": template_id,
             "name": config["name"],
             "description": config["description"],
-            "tags": ["HyperFrames", "固定节奏", "绑定音乐"],
+            "tags": ["HyperFrames", "配音同步", "双语字幕"] if template_id == motion_v3.BILINGUAL else ["HyperFrames", "固定节奏", "绑定音乐"],
             "engine": "hyperframes",
             "font_mode": "template_locked",
             "font_selectable": False,
             "variant": config["variant"],
-            "duration_mode": "fixed",
+            "duration_mode": config.get("duration_mode", "fixed"),
             "fixed_duration_seconds": config["duration"],
             "required_visuals": config["required_visuals"],
-            "required_visuals_max": config["required_visuals"],
+            "required_visuals_max": 20 if template_id == motion_v3.BILINGUAL else config["required_visuals"],
             "clip_duration_range_seconds": [
                 min(config["slot_frames"]) / 30,
                 max(config["slot_frames"]) / 30,
             ],
-            "bgm_mode": "bound",
+            "bgm_mode": "bound" if has_bgm else "none",
             "bgm_optional": True,
             "semantic_layout": public_semantic,
+            **({"requires_voiceover": True, "copy_mode": "bilingual_titles", "narration_contract_version": 1}
+               if template_id == motion_v3.BILINGUAL else {}),
+            **({"accepted_media_types": ["video"]} if template_id in motion_v3.IDS else {}),
         }
+        if template_id == motion_v3.BILINGUAL:
+            record.pop("fixed_duration_seconds", None)
+            record["narration_duration_range_seconds"] = [.1, 60]
         source_hashes = {
             relative: _file_sha256(root.joinpath(*relative.split("/")))
             for relative in sorted(required)
@@ -4938,9 +4965,7 @@ class MatrixTemplateService:
         if nine_grid_template:
             duration = NINE_GRID_DURATION_SECONDS
         elif fixed_skill_template:
-            duration = float(
-                FIXED_SKILL_TEMPLATE_CONFIGS[template_id]["duration"]
-            )
+            duration = float(motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[template_id], raw)["duration"])
         else:
             duration = _duration(
                 top, bottom,
@@ -4949,6 +4974,8 @@ class MatrixTemplateService:
         bgm = raw.get("bgm", True)
         if not isinstance(bgm, bool):
             raise ValueError("bgm must be boolean")
+        if template_id == motion_v3.BILINGUAL and bgm:
+            raise ValueError("双语字幕模板按原版规则不使用背景音乐")
         material_policy = raw.get("material_policy", "shared")
         if (
             not isinstance(material_policy, str)
@@ -4968,6 +4995,8 @@ class MatrixTemplateService:
             "template_id": template_id, "duration": duration,
             "bgm": bgm, "material_policy": material_policy,
         }
+        if template_id == motion_v3.BILINGUAL and raw.get("narration_plan") is not None:
+            result["narration_plan"] = motion_v3.validate_plan(raw["narration_plan"])
         if material_scope is not None:
             result["material_scope"] = material_scope
         if font_family and not hyperframes_template:
@@ -5028,9 +5057,7 @@ class MatrixTemplateService:
         if payload.get("template_id") == NINE_GRID_TEMPLATE_ID:
             return NINE_GRID_VISUAL_COUNT
         if payload.get("template_id") in FIXED_SKILL_TEMPLATE_CONFIGS:
-            return int(FIXED_SKILL_TEMPLATE_CONFIGS[
-                payload["template_id"]
-            ]["required_visuals"])
+            return int(motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[payload["template_id"]], payload)["required_visuals"])
         duration = payload["duration"]
         reference = payload.get("_reference_template")
         if isinstance(reference, dict):
@@ -5457,7 +5484,13 @@ class MatrixTemplateService:
                 raise MatrixTemplateError(
                     "固定 Skill 模板必须提供 AI 语义排版"
                 )
-            config = FIXED_SKILL_TEMPLATE_CONFIGS[template_id]
+            config = motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[template_id], payload)
+            if template_id == motion_v3.BILINGUAL and not payload.get("narration_plan"):
+                raise MatrixTemplateError("双语模板需要配音字幕时间轴才能创建任务")
+            if template_id == motion_v3.BILINGUAL:
+                for cue in payload["narration_plan"]["cues"]:
+                    if self._reference_text_width(cue["en"]+" ", {"family":"Noto Serif SC", "font_size_px":38, "font_weight":400}) > 930:
+                        raise MatrixTemplateError("双语英文字幕超出显示宽度，请缩短翻译")
             text = self._fixed_skill_text_layout(
                 template_id, payload["top_text"], payload["bottom_text"],
                 semantic_layout,
@@ -5960,6 +5993,8 @@ class MatrixTemplateService:
         ready = workers_ready and library["ready"] and (
             not getattr(self, "gpu_runtime", None) or gpu_status["ready"]
         )
+        fixed_versions = {str(FIXED_SKILL_TEMPLATE_CONFIGS[t].get("hyperframes_version", FIXED_SKILL_HYPERFRAMES_VERSION))
+                          for t in self.fixed_skill_templates}
         return {
             "ok": ready,
             "gpu_render": gpu_status,
@@ -5995,25 +6030,7 @@ class MatrixTemplateService:
             "fixed_skill_templates": sorted(self.fixed_skill_templates),
             "fixed_skill_template_count": len(self.fixed_skill_templates),
             "fixed_skill_hyperframes_version": (
-                (
-                    "mixed"
-                    if any(
-                        template_id in MOTION_V2_TEMPLATE_IDS
-                        for template_id in self.fixed_skill_templates
-                    ) and any(
-                        template_id not in MOTION_V2_TEMPLATE_IDS
-                        for template_id in self.fixed_skill_templates
-                    )
-                    else (
-                        MOTION_V2_HYPERFRAMES_VERSION
-                        if any(
-                            template_id in MOTION_V2_TEMPLATE_IDS
-                            for template_id in self.fixed_skill_templates
-                        )
-                        else FIXED_SKILL_HYPERFRAMES_VERSION
-                    )
-                )
-                if self.fixed_skill_templates else ""
+                next(iter(fixed_versions)) if len(fixed_versions) == 1 else "mixed" if fixed_versions else ""
             ),
             "fixed_skill_hyperframes_versions": {
                 version: sum(
@@ -6026,7 +6043,9 @@ class MatrixTemplateService:
                 for version in (
                     FIXED_SKILL_HYPERFRAMES_VERSION,
                     MOTION_V2_HYPERFRAMES_VERSION,
+                    motion_v3.VERSION,
                 )
+                if version != motion_v3.VERSION or any(t in self.fixed_skill_templates for t in motion_v3.IDS)
             },
             "reference_top_layer_counts": {
                 str(layer_count): sum(
@@ -6627,9 +6646,7 @@ class MatrixTemplateService:
         if fixed_skill_template:
             clip_durations = [
                 round(frames / 30.0, 6)
-                for frames in FIXED_SKILL_TEMPLATE_CONFIGS[
-                    payload["template_id"]
-                ]["slot_frames"]
+                for frames in motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[payload["template_id"]], payload)["slot_frames"]
             ]
         else:
             segment_duration = (
@@ -6744,7 +6761,7 @@ class MatrixTemplateService:
                 duration = _bounded_float(
                     item.get("clip_duration_seconds"),
                     REFERENCE_MIN_SEGMENT_SECONDS,
-                    MAX_MATERIAL_CLIP_DURATION_SECONDS,
+                    max(MAX_MATERIAL_CLIP_DURATION_SECONDS, expected_duration),
                 )
                 slot_index = item.get("clip_slot_index")
                 slot_count = item.get("clip_slot_count")
@@ -7024,7 +7041,7 @@ class MatrixTemplateService:
                 "slot_index": index + 1,
                 "slot_count": count,
                 "clip_start_seconds": round(float(clip_start), 3),
-                "clip_duration_seconds": round(clip_duration, 3),
+                "clip_duration_seconds": round(clip_duration, 6),
             }
             records.append(record)
         return records
@@ -7706,7 +7723,7 @@ class MatrixTemplateService:
 #lead{{font-size:{sizes["lead"]}px!important;line-height:1.13!important}}
 #cta{{font-size:{sizes["cta"]}px!important;line-height:1.13!important}}
 </style>'''
-        elif template_id in MOTION_V2_TEMPLATE_IDS:
+        elif template_id in (*MOTION_V2_TEMPLATE_IDS, *motion_v3.IDS):
             style = f'''<style id="matrix-fixed-skill-copy">
 [data-var-text]:empty{{display:none!important}}
 #title,#subtitle,#body,#cta{{white-space:pre-line!important;overflow-wrap:normal!important;text-align:center}}
@@ -7756,7 +7773,7 @@ class MatrixTemplateService:
             or not math.isfinite(float(start))
             or float(start) < 0
             or not isinstance(frames, int) or frames <= 0
-            or height not in {640, 1920}
+            or height not in {608, 640, 1920}
         ):
             raise MatrixTemplateError("固定 Skill 模板素材切片参数无效")
         visible = frames / 30.0
@@ -7809,6 +7826,22 @@ class MatrixTemplateService:
     def _prepare_fixed_skill_stills(
         self, workdir: Path, config: dict, *, deadline_at: float,
     ) -> None:
+        if config.get("intro_backplate"):
+            source = workdir / "assets/media/00.mp4"
+            target = workdir / "assets/media/00-opening-backplate.mp4"
+            color = self._source_color(source)
+            pixel, encoder = self._clip_color_encoding(color, gpu=bool(getattr(self, "gpu_runtime", None)))
+            weights = (.2627, .678, .0593) if color.get("primaries") == "bt2020" else (.2126,.7152,.0722)
+            coefficients = ':'.join(f'{a}{b}={.85*weights[j]+(.15 if i==j else 0):.8f}'
+                                    for i,a in enumerate('rgb') for j,b in enumerate('rgb'))
+            vf = ("format=gbrp16le,colorchannelmixer="+coefficients+":enable='lt(t,1.1)',"
+                  "lutrgb=r='max(val-1966,0)':g='max(val-1966,0)':b='max(val-1966,0)':enable='lt(t,1.1)',format="+pixel)
+            rc, _, _ = self._run_tracked_process(
+                ['ffmpeg','-hide_banner','-loglevel','error','-nostdin','-y','-i',str(source),
+                 '-an','-vf',vf,*encoder,'-movflags','+faststart',str(target)],
+                timeout_seconds=deadline_at-time.time(), timeout_error="小窗模板底片处理超时")
+            if rc:
+                raise MatrixTemplateError("小窗模板底片处理失败")
         still_layers = {}
         for number, (source_relative, target_relative, at_seconds) in enumerate(config.get(
             "still_frames", ()
@@ -7898,13 +7931,13 @@ class MatrixTemplateService:
         *, deadline_at: float,
     ) -> dict:
         template_id = payload["template_id"]
-        config = FIXED_SKILL_TEMPLATE_CONFIGS.get(template_id)
+        config = motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[template_id], payload)
         hyperframes_version = str((config or {}).get(
             "hyperframes_version", FIXED_SKILL_HYPERFRAMES_VERSION,
         ))
         cli = (
-            self.motion_v2_hyperframes_cli
-            if hyperframes_version == MOTION_V2_HYPERFRAMES_VERSION
+            self.motion_v3_hyperframes_cli if template_id in motion_v3.IDS else self.motion_v2_hyperframes_cli
+            if hyperframes_version in {MOTION_V2_HYPERFRAMES_VERSION, motion_v3.VERSION}
             else self.nine_grid_hyperframes_cli
         )
         frozen = payload.get("_fixed_skill_template")
@@ -7933,6 +7966,9 @@ class MatrixTemplateService:
             raise MatrixTemplateError("固定 Skill 模板冻结数据无效")
         expected_fonts = frozen.get("font_sha256")
         fonts = self.fixed_skill_fonts[template_id]
+        for relative, digest in config.get("fixed_assets", {}).items():
+            if _file_sha256(root / relative) != digest:
+                raise MatrixTemplateError("固定开场素材发生变化")
         if (
             expected_fonts != {
                 family: item["sha256"] for family, item in fonts.items()
@@ -7944,8 +7980,8 @@ class MatrixTemplateService:
             or frozen.get("source_sha256")
                 != self.fixed_skill_source_sha256[template_id]
             or frozen.get("bgm_sha256") != config["bgm_sha256"]
-            or _file_sha256(root / str(config["bgm_path"]))
-                != config["bgm_sha256"]
+            or (config["bgm_path"] and _file_sha256(root / str(config["bgm_path"]))
+                != config["bgm_sha256"])
         ):
             raise MatrixTemplateError("固定 Skill 模板资源发生变化")
         selected_starts = [item.get("clip_start_seconds") for item in materials]
@@ -7978,10 +8014,14 @@ class MatrixTemplateService:
             index_path.read_text(encoding="utf-8"),
             text["display"], text["font_size_px"], template_id,
         )
-        index_html = self._rewrite_fixed_skill_bgm(
-            index_html, bool(payload["bgm"]),
-            str(config.get("audio_id", "bound-bgm")),
-        )
+        if template_id == motion_v3.BILINGUAL:
+            index_html = motion_v3.build_bilingual((workdir / "index.html.in").read_text(encoding="utf-8"),
+                text["display"], text["font_size_px"], payload["narration_plan"], config)
+            cues = [dict(cue, id=f"c{i:02d}") for i, cue in enumerate(payload["narration_plan"]["cues"])]
+            (workdir / "captions.js").write_text("window.CAPTION_CUES=" + json.dumps(cues, ensure_ascii=True) + ";", encoding="utf-8")
+        else:
+            index_html = self._rewrite_fixed_skill_bgm(
+                index_html, bool(payload["bgm"]), str(config.get("audio_id", "bound-bgm")))
         index_html = self._hdr_text_layers(index_html, float(config["duration"]))
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
@@ -8090,7 +8130,7 @@ class MatrixTemplateService:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 raise MatrixTemplateError("固定 Skill 模板任务超过总时限")
-            if template_id not in MOTION_V2_TEMPLATE_IDS:
+            if template_id not in (*MOTION_V2_TEMPLATE_IDS, *motion_v3.IDS):
                 self._validate_reference_visual_coverage(
                     output, timeout_seconds=min(120.0, remaining),
                 )
@@ -8777,10 +8817,8 @@ class MatrixTemplateService:
                 "nine_grid_visuals": NINE_GRID_VISUAL_COUNT,
             } if nine_grid_template else {}),
             **({
-                "bgm_mode": "bound",
-                "fixed_duration_seconds": FIXED_SKILL_TEMPLATE_CONFIGS[
-                    payload["template_id"]
-                ]["duration"],
+                "bgm_mode": "none" if payload["template_id"] == motion_v3.BILINGUAL else "bound",
+                "fixed_duration_seconds": motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[payload["template_id"]], payload)["duration"],
                 "fixed_skill_template": True,
             } if fixed_skill_template else {}),
         }
@@ -9105,7 +9143,11 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.service.validate_payload(
                     body, require_reference_semantic_layout=True,
                 )
-                self.service._validate_material_policy(payload)
+                # Text-only admission precedes TTS. Actual creation still checks
+                # all account assets against the measured narration windows.
+                if not (payload.get("template_id") == motion_v3.BILINGUAL
+                        and not payload.get("narration_plan")):
+                    self.service._validate_material_policy(payload)
                 override_preflight: dict = {}
                 if payload.get("overrides"):
                     frozen = self.service._freeze_font_provenance(
@@ -9261,6 +9303,10 @@ def main() -> None:
             "/opt/huangque/matrix-template-video/source/"
             "motion-v2-runtime/hyperframes",
         )),
+        motion_v3_root=(Path(os.environ["MATRIX_TEMPLATE_MOTION_V3_ROOT"])
+                        if os.environ.get("MATRIX_TEMPLATE_MOTION_V3_ROOT") else None),
+        motion_v3_hyperframes_cli=(Path(os.environ["MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI"])
+                                  if os.environ.get("MATRIX_TEMPLATE_MOTION_V3_HYPERFRAMES_CLI") else None),
         hyperframes_gsap=Path(os.environ.get(
             "MATRIX_TEMPLATE_HYPERFRAMES_GSAP",
             "/opt/huangque/matrix-template-video/source/reference-runtime/node_modules/gsap/dist/gsap.min.js",

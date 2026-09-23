@@ -1,0 +1,338 @@
+{
+  "templates_passed": 25,
+  "runtime_sha256": "73e4a3769f1db5867502f6f7f9ca5991161de9b87978db272b7f7b4f48a96916",
+  "upstream_commit": "981ecf0584d963c6e26a2f9d5cfa7fd6985758d2",
+  "notes": "Local NVIDIA GPU renders. New templates use account asset validation and service render entries; 22 legacy prepared fixtures are replayed. Narration cue fixture and silent mux test; no paid ASR/TTS/translation call. Not a deployment report. Separately merged health-team-hook was excluded from passing count: authored saturate/contrast/brightness/blur video filter is unsupported by the pre-existing GPU runtime.",
+  "mux": {
+    "duration": 6.6,
+    "video_packets_unchanged": true,
+    "audio_fixture": "six-second silence; no paid provider call"
+  },
+  "templates": [
+    {
+      "id": "ref-01-chengdu-green-brush",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "67bfa9b418300f26143088634d279ee108f840fe6cb5f0cc66c3a008e9cb3ec9",
+      "render_seconds": 12.503,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        65.681,
+        73.233,
+        81.261
+      ]
+    },
+    {
+      "id": "ref-02-shenzhen-ai-orange",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "02ef9f3eadfc3963aad47629dc257ee4af7dd10bba610c5cf5b4b9f5609fe633",
+      "render_seconds": 10.314,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.273,
+        90.56,
+        98.303
+      ]
+    },
+    {
+      "id": "ref-03-zhengzhou-blue-banner",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "b76827948cba7cc9267c8d11e007d0ccc054833ab2c487e28b1c88b955f01519",
+      "render_seconds": 10.662,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        64.296,
+        72.168,
+        80.631
+      ]
+    },
+    {
+      "id": "ref-04-foshan-yellow-strip",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "76ca1cc657282eb97f13e02c61b698d4b5cc4b3cb6834a89bdb693c71975a534",
+      "render_seconds": 10.086,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        82.916,
+        89.854,
+        98.12
+      ]
+    },
+    {
+      "id": "ref-05-changsha-white-red",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "192dbf87be14404ba7790029c0820bd458c0f4c4edea6fb111e2086ac74915a9",
+      "render_seconds": 10.53,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        78.444,
+        84.997,
+        93.101
+      ]
+    },
+    {
+      "id": "ref-06-guangzhou-yellow-button",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "155cba168955c1ab2a04e7f52cc08872eec5c5281b5aa4509f0d4e98e0b7293c",
+      "render_seconds": 11.368,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        82.905,
+        89.843,
+        98.132
+      ]
+    },
+    {
+      "id": "ref-07-shenzhen-red-growth",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "709186413ac229b1f955db578ac91dc8acce46d4acfd87d0eb8f7bcd7e016151",
+      "render_seconds": 10.872,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.266,
+        90.55,
+        98.292
+      ]
+    },
+    {
+      "id": "ref-08-puyang-yellow-white",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "508471f316dde7380ec2f0491175ba767b9ef1f02def13a689f04fc906011815",
+      "render_seconds": 10.634,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        82.917,
+        89.872,
+        98.141
+      ]
+    },
+    {
+      "id": "ref-09-urumqi-soft-brush",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "9416bf3245a4575c441b2862b068bc69e237a2a499d6d8d04cce9c2ebde403d2",
+      "render_seconds": 10.561,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        82.997,
+        89.874,
+        98.156
+      ]
+    },
+    {
+      "id": "ref-10-shenzhen-sisters",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "b4d04d78e7808bd133646a73ee9a8ef665f9d4048f1b4fe169c09b6ec690cccd",
+      "render_seconds": 10.299,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.279,
+        90.583,
+        98.29
+      ]
+    },
+    {
+      "id": "ref-11-nansha-clean",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "d8048374acc3ea1e60f1e44d90db4f8b4f3180fa3ff3ceeae92187d7f19e7fa0",
+      "render_seconds": 10.397,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.301,
+        90.578,
+        98.383
+      ]
+    },
+    {
+      "id": "ref-12-guangzhou-brush",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "c09a8b42d2d353d466c13cbd686142ba959a6603be98f78baf0d1ea5fb27a1d3",
+      "render_seconds": 10.427,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.28,
+        90.582,
+        98.301
+      ]
+    },
+    {
+      "id": "ref-13-shenzhen-green-location",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "501cdbb497df9c2cca81186a2eab880b14b1624277983bb5d653363801d8c11f",
+      "render_seconds": 10.91,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        82.99,
+        89.901,
+        98.128
+      ]
+    },
+    {
+      "id": "ref-14-karamay-green",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "34f6f100f1485d3cb0e7be2d4c8c69394c18368228dba5a026a7954089a0cccc",
+      "render_seconds": 10.26,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        63.484,
+        71.53,
+        80.227
+      ]
+    },
+    {
+      "id": "ref-15-tianjin-monochrome",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "31584393f5e72a75a17bf548bdfb097c56991708e325e872dfb789055749b030",
+      "render_seconds": 10.528,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        63.45,
+        71.527,
+        80.237
+      ]
+    },
+    {
+      "id": "ref-16-shenzhen-opc",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "4a4856d2503902291ed8573bf4b48b57401ff0292fd3ed4b57540472462294e0",
+      "render_seconds": 10.67,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        84.28,
+        90.582,
+        98.316
+      ]
+    },
+    {
+      "id": "ref-17-shenzhen-yellow-red",
+      "frames": 240,
+      "mode": "hlg",
+      "video_sha256": "1903044a91ab0dda2480aad01b990eb8fb683ab73eebf3313b5fd9c6e5d2357b",
+      "render_seconds": 10.671,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        83.568,
+        90.219,
+        98.27
+      ]
+    },
+    {
+      "id": "nine-grid-reveal",
+      "frames": 360,
+      "mode": "hlg",
+      "video_sha256": "4064a895a51537f159030293a22487ff56bab861718c29ff8e28098daaca2f0e",
+      "render_seconds": 21.982,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        87.598,
+        61.236,
+        78.291
+      ]
+    },
+    {
+      "id": "triple-strip-shutter",
+      "frames": 528,
+      "mode": "hlg",
+      "video_sha256": "f738f67c47e6de805f1f43534cb2cfba699b589c3e3d7e1b72b8dcfdf0186457",
+      "render_seconds": 35.811,
+      "foreground_captures": 25,
+      "media_midpoint_stddev": [
+        46.063,
+        52.989,
+        58.403
+      ]
+    },
+    {
+      "id": "yellow-banner-zoom",
+      "frames": 302,
+      "mode": "hlg",
+      "video_sha256": "509342126b47e7c421581dfe242bf2d129c8619feb7f9a67dd34f94abd05fe42",
+      "render_seconds": 15.082,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        81.068,
+        88.798,
+        97.534
+      ]
+    },
+    {
+      "id": "fan-whip-static",
+      "frames": 377,
+      "mode": "hlg",
+      "video_sha256": "323cdea15eaffbaf6ec854234470e706354cb555bb56ed3e2a583b17f3426be3",
+      "render_seconds": 19.102,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        81.893,
+        65.224,
+        57.779
+      ]
+    },
+    {
+      "id": "brush-panel-transitions",
+      "frames": 454,
+      "mode": "hlg",
+      "video_sha256": "e736aa373c1cffe755857c51bc036af9beb97ef6b9c2506d4d4fd9e9d7c049be",
+      "render_seconds": 25.879,
+      "foreground_captures": 1,
+      "media_midpoint_stddev": [
+        57.961,
+        55.614,
+        58.09
+      ]
+    },
+    {
+      "id": "inset-flip-whip",
+      "frames": 443,
+      "mode": "hlg",
+      "video_sha256": "88ca8c55feaf5883cafc40a0fb23114049366fb47abedc9872c91c87e0530da7",
+      "render_seconds": 21.078,
+      "foreground_captures": 30,
+      "media_midpoint_stddev": [
+        69.092,
+        75.361,
+        83.616
+      ]
+    },
+    {
+      "id": "fixed-opening-whip",
+      "frames": 519,
+      "mode": "hlg",
+      "video_sha256": "a17434c768531334ecf8ce7e973921ab90e6accafced736d8510062e536c613e",
+      "render_seconds": 17.238,
+      "foreground_captures": 2,
+      "media_midpoint_stddev": [
+        64.363,
+        60.847,
+        60.554
+      ]
+    },
+    {
+      "id": "bilingual-stagger-salon",
+      "frames": 198,
+      "mode": "hlg",
+      "video_sha256": "175386db3c4c3baf3fbe05f2ce14e42212879d14a79e407008e3eed1363715d0",
+      "render_seconds": 28.655,
+      "foreground_captures": 81,
+      "media_midpoint_stddev": [
+        80.881,
+        88.432,
+        96.561
+      ]
+    }
+  ]
+}
