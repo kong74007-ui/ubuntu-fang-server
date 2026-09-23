@@ -32,6 +32,14 @@ from urllib.parse import urlencode, urlsplit
 
 from PIL import Image, ImageDraw, ImageFont
 try:
+    from . import matrix_material_adaptation as material_adaptation
+except ImportError:
+    import importlib.util
+    _adapt_spec = importlib.util.spec_from_file_location(
+        "matrix_material_adaptation", Path(__file__).with_name("matrix_material_adaptation.py"))
+    material_adaptation = importlib.util.module_from_spec(_adapt_spec)
+    _adapt_spec.loader.exec_module(material_adaptation)
+try:
     from . import matrix_motion_v3 as motion_v3
 except ImportError:
     import importlib.util
@@ -5043,6 +5051,10 @@ class MatrixTemplateService:
         user_materials = raw.get("user_materials")
         if user_materials:
             result["user_materials"] = user_materials
+        if "material_adaptation" in raw:
+            if raw["material_adaptation"] != "auto-v1":
+                raise ValueError("unsupported material adaptation contract")
+            result["material_adaptation"] = "auto-v1"
         # 模板参数微调（§1/§2）：只有真的带参数/预览身份时才写入，
         # 空 overrides 与旧请求的存储载荷保持逐字节一致（旧路径零变化）。
         if normalized_overrides or preview_id is not None:
@@ -5103,6 +5115,8 @@ class MatrixTemplateService:
         maximum = int((template or {}).get("required_visuals_max") or 5)
         owned = payload.get("user_materials")
         if template is not None and not isinstance(reference, dict) and isinstance(owned, list) and owned:
+            if payload.get("material_adaptation") == "auto-v1":
+                return max(minimum, min(maximum, calculated))
             if not minimum <= len(owned) <= maximum:
                 raise MatrixTemplateError(
                     "当前模板需要 %d 至 %d 个本人画面素材" % (minimum, maximum)
@@ -5121,6 +5135,8 @@ class MatrixTemplateService:
     ) -> int:
         """随机时长须匹配已选画面数量，并受最短本人视频时长限制。"""
         materials = payload.get("user_materials") or []
+        if payload.get("material_adaptation") == "auto-v1":
+            return nominal
         if not materials:
             return nominal
         count = len(materials)
@@ -6067,7 +6083,8 @@ class MatrixTemplateService:
             {"contract_version": 1, "ready": False, "templates": []}
         )
         if gpu_status.get("ready") and gpu_status.get("text_controls_contract_version") == 1:
-            gpu_status = dict(gpu_status, text_style_contract=self._text_control_model().node_contract())
+            gpu_status = dict(gpu_status, text_style_contract=self._text_control_model().node_contract(),
+                material_adaptation_contract="auto-v1")
         ready = workers_ready and library["ready"] and (
             not getattr(self, "gpu_runtime", None) or gpu_status["ready"]
         )
@@ -6804,7 +6821,7 @@ class MatrixTemplateService:
         shas = [str(item.get("sha256") or "").lower() for item in ordered]
         if (
             any(not SHA_RE.fullmatch(value) for value in shas)
-            or len(set(shas)) != len(shas)
+            or (len(set(shas)) != len(shas) and payload.get("material_adaptation") != "auto-v1")
         ):
             raise MatrixTemplateError("用户素材包含无效或重复内容")
         user_supplied = any(
@@ -7087,6 +7104,20 @@ class MatrixTemplateService:
             return None
         if not isinstance(raw, list):
             raise MatrixTemplateError("用户素材清单格式无效")
+        if payload.get("material_adaptation") == "auto-v1":
+            scenes, count, _ = self._material_scenes(payload)
+
+            def inspect(item):
+                if not isinstance(item, dict) or not SHA_RE.fullmatch(str(item.get("sha256") or "")):
+                    raise ValueError("invalid owned material identity")
+                if item.get("media_type") not in {"image", "video"}:
+                    raise ValueError("invalid media type")
+                source = self.user_asset_path(item["sha256"])
+                if source is None:
+                    raise ValueError("owned material unavailable")
+                return self._inspect_user_asset(source, item["media_type"])
+
+            return material_adaptation.plan(raw, scenes[:count], inspect)
         template = self.reference_templates.get(str(payload.get("template_id") or ""))
         if template is not None and not isinstance(payload.get("_reference_template"), dict):
             # Preflight runs before the random timeline is frozen. Validate the
@@ -8765,6 +8796,10 @@ class MatrixTemplateService:
                 "match_level": item.get("match_level"),
             }
             record["sha256"] = item.get("sha256")
+            if item.get("adaptation"):
+                record["adaptation"] = dict(item["adaptation"])
+                record["mode"] = item["adaptation"]["mode"]
+                record["clip_start_seconds"] = item["adaptation"]["source_start"]
             if item.get("clip_id"):
                 record.update({
                     "clip_id": item.get("clip_id"),
@@ -8804,13 +8839,29 @@ class MatrixTemplateService:
             print("[matrix-template] 下载 %-8s %.1fs" % (_p, time.monotonic() - _t), flush=True)
             return out
 
-        if len(materials) > 1:
+        download_items = materials
+        if payload.get("material_adaptation") == "auto-v1":
+            # Reused slots share a source download, never the writer's .part file.
+            download_items = list({(i.get("provider"), i["sha256"]): i for i in materials}.values())
+        if len(download_items) > 1:
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(materials), MATERIAL_DOWNLOAD_WORKERS)
+                max_workers=min(len(download_items), MATERIAL_DOWNLOAD_WORKERS)
             ) as _pool:
-                paths = list(_pool.map(_fetch, materials))
+                downloaded = list(_pool.map(_fetch, download_items))
         else:
-            paths = [_fetch(item) for item in materials]
+            downloaded = [_fetch(item) for item in download_items]
+        if payload.get("material_adaptation") == "auto-v1":
+            by_source = {(i.get("provider"), i["sha256"]): p for i, p in zip(download_items, downloaded)}
+            paths = [by_source[(i.get("provider"), i["sha256"])] for i in materials]
+        else:
+            paths = downloaded
+        if payload.get("material_adaptation") == "auto-v1":
+            for index, (item, source) in enumerate(zip(materials, paths)):
+                if item.get("adaptation"):
+                    paths[index] = material_adaptation.prepare(
+                        self, item, source, root / "assets/adapted" / f"{index}.mp4",
+                        float(row["created_at"]) + self.hyperframes_total_timeout_seconds,
+                    )
         # 分段耗时（2026-09-12）：出片慢要先分清是"等素材"还是"渲染算得慢"。
         # 渲染时长 = 任务总时长 − 选素材 − 下载（总时长在 job 记录里）。
         print("[matrix-template] 分段 选素材%.1fs 下载%.1fs 模板=%s 素材%d格"
@@ -8895,6 +8946,7 @@ class MatrixTemplateService:
         material_contract_version = self._material_contract_version(payload)
         return {
             **probe,
+            **({"material_adaptation": "auto-v1"} if payload.get("material_adaptation") == "auto-v1" else {}),
             **({"text_revision": payload["text_revision"], "text_overrides": payload["text_overrides"]}
                if payload.get("text_overrides") else {}),
             **({"gpu_render": gpu_evidence} if gpu_evidence else {}),
@@ -9061,6 +9113,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/templates":
             self.send_json(200, {
+                "material_adaptation_contract": "auto-v1",
                 "templates": [
                     {
                         **item,
