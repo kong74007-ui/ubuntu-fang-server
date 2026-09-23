@@ -41,6 +41,8 @@ class GpuRuntime:
         if contract.get("version") != CONTRACT_VERSION or not isinstance(contract.get("templates"), list):
             raise ValueError("Invalid GPU template contract")
         self.templates = frozenset(contract["templates"])
+        text_version = contract.get("text_controls_contract_version", 0)
+        self.text_controls_contract_version = text_version if type(text_version) is int and text_version == 1 else 0
         if os.name != "nt":
             subprocess.run([sys.executable, str(SUPERVISOR), "--check"],
                            capture_output=True, timeout=10, check=True)
@@ -82,6 +84,7 @@ class GpuRuntime:
         except OSError:
             ready = False
         return {"contract_version": CONTRACT_VERSION, "ready": ready,
+                "text_controls_contract_version": getattr(self, "text_controls_contract_version", 0),
                 "compositor": "webgpu-native", "encoder": "hevc_nvenc",
                 "runtime_sha256": self.fingerprint,
                 "adapter": self.evidence["adapter"], "templates": sorted(templates)}

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import contextlib
+import copy
 import hashlib
 import hmac
 import html
@@ -39,6 +40,16 @@ except ImportError:
     )
     motion_v3 = importlib.util.module_from_spec(_motion_spec)
     _motion_spec.loader.exec_module(motion_v3)
+
+try:
+    from . import matrix_text_controls as text_controls
+except ImportError:
+    import importlib.util
+    _text_spec = importlib.util.spec_from_file_location(
+        "matrix_text_controls", Path(__file__).with_name("matrix_text_controls.py"),
+    )
+    text_controls = importlib.util.module_from_spec(_text_spec)
+    _text_spec.loader.exec_module(text_controls)
 
 
 MAX_BODY_BYTES = 128 * 1024
@@ -4255,7 +4266,8 @@ class MatrixTemplateService:
         cached = self.reference_measure_fonts.get(key)
         if cached is not None:
             return cached
-        record = self.private_fonts.get(family) or self.reference_fonts.get(family)
+        record = (getattr(self, "_text_font_registry", {}).get(family)
+                  or self.private_fonts.get(family) or self.reference_fonts.get(family))
         if record is None:
             record = next((
                 values[family]
@@ -4322,10 +4334,9 @@ class MatrixTemplateService:
         return float(box[2] - box[0]) + letter_spacing
 
     def _nine_grid_measure_font(self, role: str, size: int):
-        spec = (
-            NINE_GRID_TOP_FONT if role == "top_text"
-            else NINE_GRID_BOTTOM_FONT
-        )
+        spec = self._nine_grid_spec(role)
+        if getattr(self, "_text_style_view", False):
+            return self._reference_measure_font(spec["family"], size, spec["weight"])
         key = (role, int(size), int(spec["weight"]))
         cached = self.nine_grid_measure_fonts.get(key)
         if cached is not None:
@@ -4362,17 +4373,14 @@ class MatrixTemplateService:
             return 0.0
         font = self._nine_grid_measure_font(role, size)
         box = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(
-            (0, 0), display, font=font, stroke_width=2,
+            (0, 0), display, font=font, stroke_width=int(self._nine_grid_spec(role).get("stroke_px", 2)),
         )
         return float(box[2] - box[0])
 
     def _nine_grid_pack_lines(
         self, text: str, break_after: list[int], role: str,
     ) -> tuple[list[str], list[str], int]:
-        spec = (
-            NINE_GRID_TOP_FONT if role == "top_text"
-            else NINE_GRID_BOTTOM_FONT
-        )
+        spec = self._nine_grid_spec(role)
         boundaries = [0] + sorted({
             item + 1 for item in break_after if item < len(text) - 1
         }) + [len(text)]
@@ -4474,7 +4482,7 @@ class MatrixTemplateService:
     def _fixed_skill_field_font_size(
         self, template_id: str, field: str, value: str,
     ) -> int:
-        spec = FIXED_SKILL_TEMPLATE_CONFIGS[template_id]["field_specs"][field]
+        spec = self._fixed_text_config(template_id)["field_specs"][field]
         lines = [line for line in str(value or "").splitlines() if line]
         if not lines:
             return int(spec["maximum"])
@@ -4506,7 +4514,7 @@ class MatrixTemplateService:
         self, template_id: str, top: str, bottom: str,
         semantic_layout: dict,
     ) -> dict:
-        config = FIXED_SKILL_TEMPLATE_CONFIGS[template_id]
+        config = self._fixed_text_config(template_id)
         health_fields = None
         if template_id == HEALTH_TEAM_TEMPLATE_ID:
             normalized = _normalize_reference_semantic_layout(
@@ -4849,6 +4857,18 @@ class MatrixTemplateService:
                          require_reference_semantic_layout: bool = False) -> dict:
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
+        if not getattr(self, "_text_style_view", False):
+            model = self._text_control_model()
+            changes = model.normalize(raw)
+            if changes:
+                canonical = dict(raw, text_overrides=changes)
+                return model.view(canonical, changes).validate_payload(
+                    canonical, require_available_font=require_available_font,
+                    allowed_template_ids=allowed_template_ids,
+                    default_template_id=default_template_id,
+                    enforce_reference_layout=enforce_reference_layout,
+                    require_reference_semantic_layout=require_reference_semantic_layout,
+                )
         top = " ".join(str(raw.get("top_text") or "").split())
         bottom = " ".join(str(raw.get("bottom_text") or "").split())
         if not 2 <= len(top) <= 60:
@@ -5031,7 +5051,22 @@ class MatrixTemplateService:
             result["overrides"] = normalized_overrides
         if preview_id is not None:
             result["preview_id"] = preview_id
+        if getattr(self, "_text_style_view", False) and raw.get("text_overrides"):
+            result["text_overrides"] = raw["text_overrides"]
+            result["text_revision"] = raw["text_revision"]
         return result
+
+    def _text_control_model(self):
+        return text_controls.TextControls(self, FIXED_SKILL_TEMPLATE_CONFIGS,
+            {"top_text": NINE_GRID_TOP_FONT, "bottom_text": NINE_GRID_BOTTOM_FONT}, FONT_LABELS)
+
+    def _fixed_text_config(self, template_id):
+        return getattr(self, "_fixed_text_configs", FIXED_SKILL_TEMPLATE_CONFIGS)[template_id]
+
+    def _nine_grid_spec(self, role):
+        return getattr(self, "_nine_grid_text_specs", {
+            "top_text": NINE_GRID_TOP_FONT, "bottom_text": NINE_GRID_BOTTOM_FONT,
+        })[role]
 
     def _untunable_message(self, template_id: str) -> str:
         return (
@@ -5129,7 +5164,16 @@ class MatrixTemplateService:
         if existing is not None:
             stored_payload = json.loads(existing["payload"])
             stored_template_id = str(stored_payload.get("template_id") or "")
-            payload = self.validate_payload(
+            validator = self
+            if stored_payload.get("text_overrides"):
+                saved = (stored_payload.get("_text_style") or {}).get("controls")
+                if not saved:
+                    raise ValueError("任务缺少冻结的文字样式合同")
+                changes = self._text_control_model().normalize(raw, controls=saved)
+                raw = dict(raw, text_overrides=changes)
+                validator = copy.copy(self)
+                validator._text_style_view = True
+            payload = validator.validate_payload(
                 raw,
                 require_available_font=False,
                 allowed_template_ids={stored_template_id},
@@ -5150,6 +5194,7 @@ class MatrixTemplateService:
                 raw, require_available_font=False,
                 require_reference_semantic_layout=True,
             )
+            self._require_text_gpu(payload)
             self._validate_material_policy(payload)
             if (
                 self.enforce_library_readiness
@@ -5194,6 +5239,12 @@ class MatrixTemplateService:
             self._enqueue(job["job_id"])
         return job
 
+    def _require_text_gpu(self, payload):
+        if payload.get("text_overrides") and (
+                not getattr(self, "gpu_runtime", None)
+                or getattr(self.gpu_runtime, "text_controls_contract_version", 0) != 1):
+            raise MatrixTemplateError("当前节点尚未升级文字微调 GPU 渲染组件")
+
     def _adopt_preview(self, preview_id: str, payload: dict) -> dict:
         """校验预览身份与输入摘要，返回可复用的冻结 payload 与素材选择。"""
         row = self.store.get_preview(preview_id)
@@ -5233,6 +5284,8 @@ class MatrixTemplateService:
         """POST /v1/preview-jobs：冻结一份 prepared，随后渲染默认版+微调版。"""
         if not isinstance(raw, dict):
             raise ValueError("request body must be an object")
+        if raw.get("text_overrides"):
+            raise ValueError("逐层文字微调目前用于正式生成，不支持旧版双版本预览")
         payload = self.validate_payload(
             raw, require_available_font=False,
             require_reference_semantic_layout=True,
@@ -5489,6 +5542,12 @@ class MatrixTemplateService:
             )
 
     def _freeze_font_provenance(self, job_id: str, payload: dict) -> dict:
+        if payload.get("text_overrides") and not getattr(self, "_text_style_view", False):
+            model = self._text_control_model()
+            changes = model.normalize(payload)
+            view = model.view(payload, changes)
+            frozen = view._freeze_font_provenance(job_id, payload)
+            return model.freeze(frozen, changes, view)
         payload["_video_color_contract"] = 1
         payload["_material_selection_contract_version"] = (
             MATERIAL_SELECTION_CONTRACT_VERSION
@@ -5504,7 +5563,7 @@ class MatrixTemplateService:
             config = motion_v3.runtime_config(FIXED_SKILL_TEMPLATE_CONFIGS[template_id], payload)
             if template_id == motion_v3.BILINGUAL and not payload.get("narration_plan"):
                 raise MatrixTemplateError("双语模板需要配音字幕时间轴才能创建任务")
-            if template_id == motion_v3.BILINGUAL:
+            if template_id == motion_v3.BILINGUAL and not getattr(self, "_text_style_view", False):
                 for cue in payload["narration_plan"]["cues"]:
                     if self._reference_text_width(cue["en"]+" ", {"family":"Noto Serif SC", "font_size_px":38, "font_weight":400}) > 930:
                         raise MatrixTemplateError("双语英文字幕超出显示宽度，请缩短翻译")
@@ -6007,6 +6066,8 @@ class MatrixTemplateService:
             if getattr(self, "gpu_runtime", None) else
             {"contract_version": 1, "ready": False, "templates": []}
         )
+        if gpu_status.get("ready") and gpu_status.get("text_controls_contract_version") == 1:
+            gpu_status = dict(gpu_status, text_style_contract=self._text_control_model().node_contract())
         ready = workers_ready and library["ready"] and (
             not getattr(self, "gpu_runtime", None) or gpu_status["ready"]
         )
@@ -8057,6 +8118,7 @@ class MatrixTemplateService:
             index_html = self._rewrite_fixed_skill_bgm(
                 index_html, bool(payload["bgm"]), str(config.get("audio_id", "bound-bgm")))
         index_html = self._hdr_text_layers(index_html, float(config["duration"]))
+        index_html = self._text_control_model().inject(payload, index_html, workdir)
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -8155,6 +8217,8 @@ class MatrixTemplateService:
                     detail = b"\n".join((stdout or b"", stderr or b"")).decode(
                         "utf-8", "replace",
                     ).strip()[-800:]
+                    if payload.get("text_overrides"):
+                        detail = text_controls.render_error(stdout, stderr) or detail
                     raise MatrixTemplateError(
                         "固定 Skill 模板成片渲染失败"
                         + (": " + detail if detail else "")
@@ -8268,6 +8332,7 @@ class MatrixTemplateService:
             index_html, variables,
         )
         index_html = self._hdr_text_layers(index_html, NINE_GRID_DURATION_SECONDS)
+        index_html = self._text_control_model().inject(payload, index_html, workdir)
         index_path.write_text(index_html, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -8340,6 +8405,8 @@ class MatrixTemplateService:
                     detail = b"\n".join((stdout or b"", stderr or b"")).decode(
                         "utf-8", "replace",
                     ).strip()[-800:]
+                    if payload.get("text_overrides"):
+                        detail = text_controls.render_error(stdout, stderr) or detail
                     raise MatrixTemplateError(
                         "九宫格模板成片渲染失败"
                         + (": " + detail if detail else "")
@@ -8555,6 +8622,7 @@ class MatrixTemplateService:
             index = _inject_reference_editing_plan(
                 index, editing_plan, gpu_safe_clips=bool(getattr(self, "gpu_runtime", None)),
             )
+        index = self._text_control_model().inject(payload, index, workdir)
         index_path.write_text(index, encoding="utf-8")
         variables_path = workdir / "variables.json"
         variables_path.write_text(
@@ -8626,6 +8694,8 @@ class MatrixTemplateService:
                     detail = b"\n".join((stdout or b"", stderr or b"")).decode(
                         "utf-8", "replace"
                     ).strip()[-800:]
+                    if payload.get("text_overrides"):
+                        detail = text_controls.render_error(stdout, stderr) or detail
                     raise MatrixTemplateError(
                         "HyperFrames 模板成片渲染失败"
                         + (": " + detail if detail else "")
@@ -8708,6 +8778,7 @@ class MatrixTemplateService:
         _t0 = time.monotonic()
         row = self.store.get(job_id)
         payload = json.loads(row["payload"])
+        self._require_text_gpu(payload)
         root = self.data_root / job_id
         self._discard_output(job_id)
         assets = root / "assets/library"
@@ -8824,6 +8895,8 @@ class MatrixTemplateService:
         material_contract_version = self._material_contract_version(payload)
         return {
             **probe,
+            **({"text_revision": payload["text_revision"], "text_overrides": payload["text_overrides"]}
+               if payload.get("text_overrides") else {}),
             **({"gpu_render": gpu_evidence} if gpu_evidence else {}),
             "template_id": payload["template_id"],
             "batch_id": payload.get("batch_id") or "",
@@ -8992,6 +9065,7 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         **item,
                         "tunable": bool(item.get("tunable")),
+                        "text_controls": self.service._text_control_model().describe(item["id"]),
                         "palette_version": PUBLIC_TEMPLATE_PALETTE_VERSION,
                     }
                     for item in self.service.catalog

@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "text_controls_contract_version": 1,
   "compositor": "webgpu-native",
   "templates": [
     "ref-01-chengdu-green-brush", "ref-02-shenzhen-ai-orange",
