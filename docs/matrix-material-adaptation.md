@@ -6,6 +6,10 @@ The user-facing unified API and account/COS ownership checks live in content-api
 not in this low-level trusted renderer service. No account name alone authorizes
 access to arbitrary renderer-side SHA assets.
 
+The legacy `/v1/preview-jobs` endpoint rejects `material_adaptation` before
+validation, source selection or preview creation. Its two-version render path
+does not implement this adaptation contract. Use formal generation for auto-v1.
+
 For auto-v1 jobs:
 
 - Probe the uploaded, SHA-verified sources; skip unreadable sources.

@@ -5302,6 +5302,8 @@ class MatrixTemplateService:
             raise ValueError("request body must be an object")
         if raw.get("text_overrides"):
             raise ValueError("逐层文字微调目前用于正式生成，不支持旧版双版本预览")
+        if "material_adaptation" in raw:
+            raise ValueError("material_adaptation 仅支持正式生成，不支持旧版双版本预览")
         payload = self.validate_payload(
             raw, require_available_font=False,
             require_reference_semantic_layout=True,

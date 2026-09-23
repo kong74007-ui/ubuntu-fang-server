@@ -8,6 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+import hashlib
+import threading
+import urllib.request
+import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 import matrix_material_adaptation as adaptation
@@ -72,6 +76,46 @@ class AdmissionIntegrationTests(unittest.TestCase):
             self.assertGreaterEqual(len(selected), 3)
             self.assertEqual(selected, self.service._select_materials(frozen, first["job_id"]))
             self.assertEqual(first["job_id"], self.service.submit(raw, "adaptive-source-01")["job_id"])
+
+    def assert_preview_rejected(self, source, kind):
+        from server import matrix_template_api as matrix
+        assets = self.service.data_root / matrix.USER_ASSET_DIRNAME
+        assets.mkdir(exist_ok=True)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        shutil.copyfile(source, assets / (digest + source.suffix))
+        raw = dict(self._raw(materials=[{"sha256":digest,"media_type":kind}],
+            policy="owned_public", revision=self.service.reference_template_revision,
+            overrides={"title_scale":.9}), material_adaptation="auto-v1")
+        server = matrix.build_server("127.0.0.1", 0, self.service, "preview-test")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/v1/preview-jobs",
+                data=json.dumps(raw).encode(), headers={"Authorization":"Bearer preview-test"})
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                opener.open(request, timeout=5)
+            self.assertEqual(error.exception.code, 400)
+            self.assertIn("material_adaptation", json.load(error.exception)["detail"])
+            with self.service.store.connect() as db:
+                self.assertEqual(0, db.execute("SELECT COUNT(*) FROM preview_jobs").fetchone()[0])
+            self.assertEqual([], self.service.store.pending_ids())
+            self.assertTrue(self.service.preview_queue.empty())
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=3)
+
+    def test_real_png_rejected_before_preview_admission(self):
+        from PIL import Image
+        source = self.root / "preview.png"
+        Image.new("RGB", (80,60), "green").save(source)
+        self.assert_preview_rejected(source, "image")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg needed for real short clip")
+    def test_real_short_video_rejected_before_preview_admission(self):
+        source = self.root / "preview.mp4"
+        subprocess.run(["ffmpeg","-v","error","-y","-f","lavfi","-i",
+            "testsrc2=size=80x60:rate=30:duration=0.7","-c:v","libx264",str(source)], check=True)
+        self.assert_preview_rejected(source, "video")
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg needed")
