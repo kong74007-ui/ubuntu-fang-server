@@ -6780,7 +6780,7 @@ class UserMaterialsTests(unittest.TestCase):
         # #8635 回归：参考模板随机 8-15 秒，本人视频最短板决定上界。
         sha = self._store_user_asset(b"short-user-video", ".mp4")
         payload = {
-            "user_materials": [{"sha256": sha, "media_type": "video"}],
+            "user_materials": [{"sha256": sha, "media_type": "video"}] * 5,
         }
         with mock.patch.object(
             self.service, "_inspect_user_asset", return_value=3.0,
@@ -6791,9 +6791,9 @@ class UserMaterialsTests(unittest.TestCase):
                     15, payload,
                 ),
             )
-            # 本来就短于封顶值时保持不变。
+            # 五个画面至少需要十三秒；随机值不能让画面数量改变。
             self.assertEqual(
-                8, self.service._reference_duration_with_user_materials(
+                13, self.service._reference_duration_with_user_materials(
                     8, payload,
                 ),
             )
@@ -6807,14 +6807,14 @@ class UserMaterialsTests(unittest.TestCase):
                 15, self.service._reference_duration_with_user_materials(
                     15, {"user_materials": [
                         {"sha256": sha, "media_type": "image"},
-                    ]},
+                    ] * 5},
                 ),
             )
 
     def test_reference_duration_rejects_too_short_user_video(self):
         sha = self._store_user_asset(b"too-short-video", ".mp4")
         payload = {
-            "user_materials": [{"sha256": sha, "media_type": "video"}],
+            "user_materials": [{"sha256": sha, "media_type": "video"}] * 3,
         }
         with mock.patch.object(
             self.service, "_inspect_user_asset", return_value=2.7,
@@ -6823,6 +6823,26 @@ class UserMaterialsTests(unittest.TestCase):
                 matrix.MatrixTemplateError, "时长不足",
             ):
                 self.service._reference_duration_with_user_materials(8, payload)
+
+    def test_reference_random_duration_keeps_user_material_count(self):
+        sha = self._store_user_asset(b"owned-video", ".mp4")
+        for media_type in ("video", "image"):
+            for count in (3, 4, 5):
+                for nominal in range(8, 16):
+                    with self.subTest(media_type=media_type, count=count, nominal=nominal):
+                        duration = self.service._reference_duration_with_user_materials(
+                            nominal, {"user_materials": [
+                                {"sha256": sha, "media_type": media_type},
+                            ] * count},
+                        )
+                        self.assertEqual(count, self.service.required_visuals({
+                            "template_id": "ref-test", "duration": duration,
+                        }))
+        for count in (1, 2, 6):
+            with self.assertRaisesRegex(matrix.MatrixTemplateError, "本人画面素材"):
+                self.service._reference_duration_with_user_materials(15, {
+                    "user_materials": [{"sha256": sha, "media_type": "image"}] * count,
+                })
 
     def test_owned_public_manifest_contains_only_user_and_library_sources(self):
         payload = {
